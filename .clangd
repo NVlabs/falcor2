@@ -1,0 +1,6 @@
+CompileFlags:
+  CompilationDatabase: ./build/windows-msvc/
+  Add: [-std=c++20]
+
+Diagnostics:
+  Suppress: [unused-variable, unused-but-set-variable, sign-compare, missing-field-initializers, odr, unused-private-field, braced-scalar-init, self-assign-overloaded, deprecated-copy]

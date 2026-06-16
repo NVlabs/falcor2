@@ -1,0 +1,13 @@
+diff --git a/config/LibraryDefine.cmake b/config/LibraryDefine.cmake
+index 8ba198b..11fe77b 100644
+--- a/config/LibraryDefine.cmake
++++ b/config/LibraryDefine.cmake
+@@ -60,7 +60,7 @@ function(IMATH_DEFINE_LIBRARY libname)
+   else()
+       target_compile_definitions(${objlib} PUBLIC IMATH_USE_DEFAULT_VISIBILITY)
+   endif()
+   if (_imath_extra_flags)
+-    target_compile_options(${objlib} PUBLIC ${_imath_extra_flags})
++    target_compile_options(${objlib} PRIVATE ${_imath_extra_flags})
+   endif()
+   set_property(TARGET ${objlib} PROPERTY PUBLIC_HEADER ${IMATH_CURLIB_HEADERS})

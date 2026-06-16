@@ -1,0 +1,107 @@
+#!/usr/bin/env python
+# SPDX-License-Identifier: Apache-2.0
+
+"""
+A wrapper script around clang-format for formatting Slang code.
+Uses clang-format's ability to format C# files, which syntax is close to Slang.
+A few replacements are filtered out that don't apply to Slang.
+"""
+
+import sys
+import argparse
+import subprocess
+import xml.etree.ElementTree as ET
+from typing import Any
+
+
+def slang_format(args: Any, file: str):
+    try:
+        ins = open(file, "rb").read()
+    except:
+        raise RuntimeError(f"Failed read file '{file}'")
+
+    invocation = [args.clang_format_executable]
+
+    if args.style:
+        invocation.extend(["--style", args.style])
+
+    invocation.extend(["--assume-filename", "source.cs"])
+    invocation.extend(["--output-replacements-xml"])
+
+    invocation.extend(["--"])
+
+    try:
+        proc = subprocess.Popen(
+            invocation,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except OSError as exc:
+        raise RuntimeError(
+            f"Command '{subprocess.list2cmdline(invocation)}' failed to start: {exc}"
+        )
+
+    outs, errs = proc.communicate(input=ins)
+
+    # Apply replacements
+    if outs != "":
+        replacements = ET.fromstring(outs)
+        formatted = ins
+        for replacement in reversed(replacements):
+            offset = int(replacement.attrib["offset"])
+            length = int(replacement.attrib["length"])
+            text = replacement.text
+            if text == None:
+                text = ""
+
+            # Do not allow inserting a new line after '}' and before ';'
+            if length == 0 and formatted[offset] == ord(";") and formatted[offset - 1] == ord("}"):
+                continue
+
+            formatted = formatted[:offset] + text.encode("utf-8") + formatted[offset + length :]
+
+        outs = formatted
+    else:
+        outs = ins
+
+    if proc.returncode:
+        raise RuntimeError(
+            f"Command '{subprocess.list2cmdline(invocation)}' returned non-zero exit status {proc.returncode}"
+        )
+
+    if args.in_place:
+        if outs != ins:
+            open(file, "wb").write(outs)
+    else:
+        print(outs.decode("utf-8"))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--clang-format-executable",
+        metavar="EXECUTABLE",
+        help="path to the clang-format executable",
+        default="clang-format",
+    )
+    parser.add_argument(
+        "-i",
+        "--in-place",
+        action="store_true",
+        help="format file instead of printing differences",
+    )
+    parser.add_argument("files", metavar="file", nargs="+")
+    parser.add_argument(
+        "--style",
+        help="formatting style to apply (LLVM, Google, Chromium, Mozilla, WebKit)",
+    )
+
+    args = parser.parse_args()
+
+    for file in args.files:
+        slang_format(args, file)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

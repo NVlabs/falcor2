@@ -1,0 +1,23 @@
+#usda 1.0
+(
+    defaultPrim = "Root"
+)
+
+def Xform "Root"
+{
+    def Scope "MaterialX" (
+        references = [
+            @../../../external/MaterialX/resources/Materials/Examples/OpenPbr/open_pbr_default.mtlx@</MaterialX>,
+        ]
+    )
+    {
+    }
+
+    def Mesh "Mesh"
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+        rel material:binding = </Root/MaterialX/Materials/Default>
+    }
+}

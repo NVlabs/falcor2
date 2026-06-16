@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<materialx version="1.39">
+  <!--
+    Falcor MX139 path-tracing target.
+    This target inherits the MaterialX 1.39 Slang target so MX139 can reuse the
+    standard Slang/Genglsl graph resolution path while allowing path-tracing
+    overrides to be added under target="genslangpt".
+  -->
+  <targetdef name="genslangpt" inherit="genslang" />
+</materialx>

@@ -1,0 +1,55 @@
+<?xml version="1.0"?>
+<materialx version="1.39">
+  <!--
+    MX139 path-tracing implementation override library.
+
+    These implementations keep MaterialX's normal source-code-node convention:
+    graph emission calls functions with `out BSDF` outputs. The BSDF value is a
+    small builder handle, and the functions fill the generated MX139
+    stack with typed path-tracing BSDF closures and composition metadata.
+  -->
+
+  <!-- Retained MX139 BSDF closures. -->
+  <implementation name="IM_oren_nayar_diffuse_bsdf_genslangpt" nodedef="ND_oren_nayar_diffuse_bsdf" file="mx_bsdfs.slang" function="mx_oren_nayar_diffuse_bsdf" target="genslangpt" />
+  <implementation name="IM_burley_diffuse_bsdf_genslangpt" nodedef="ND_burley_diffuse_bsdf" file="mx_bsdfs.slang" function="mx_burley_diffuse_bsdf" target="genslangpt" />
+  <implementation name="IM_translucent_bsdf_genslangpt" nodedef="ND_translucent_bsdf" file="mx_bsdfs.slang" function="mx_translucent_bsdf" target="genslangpt" />
+  <implementation name="IM_dielectric_bsdf_genslangpt" nodedef="ND_dielectric_bsdf" file="mx_bsdfs.slang" function="mx_dielectric_bsdf" target="genslangpt" />
+  <implementation name="IM_conductor_bsdf_genslangpt" nodedef="ND_conductor_bsdf" file="mx_bsdfs.slang" function="mx_conductor_bsdf" target="genslangpt" />
+  <implementation name="IM_generalized_schlick_bsdf_genslangpt" nodedef="ND_generalized_schlick_bsdf" file="mx_bsdfs.slang" function="mx_generalized_schlick_bsdf" target="genslangpt" />
+  <implementation name="IM_sheen_bsdf_genslangpt" nodedef="ND_sheen_bsdf" file="mx_bsdfs.slang" function="mx_sheen_bsdf" target="genslangpt" />
+  <implementation name="IM_chiang_hair_bsdf_genslangpt" nodedef="ND_chiang_hair_bsdf" file="mx_bsdfs.slang" function="mx_chiang_hair_bsdf" target="genslangpt" />
+
+  <!-- MX139 SSS fallback: preserve graph structure but approximate as diffuse transmission until MX139 SSS exists. -->
+  <implementation name="IM_subsurface_bsdf_genslangpt" nodedef="ND_subsurface_bsdf" file="mx_bsdfs.slang" function="mx_subsurface_bsdf" target="genslangpt" />
+
+  <!-- TODO(@tdavidovic): Raster-compatible VDF emulation until MX139 has full VDF support. -->
+  <implementation name="IM_absorption_vdf_genslangpt" nodedef="ND_absorption_vdf" file="mx_vdf.slang" function="mx_absorption_vdf" target="genslangpt" />
+  <implementation name="IM_anisotropic_vdf_genslangpt" nodedef="ND_anisotropic_vdf" file="mx_vdf.slang" function="mx_anisotropic_vdf" target="genslangpt" />
+  <implementation name="IM_layer_vdf_genslangpt" nodedef="ND_layer_vdf" file="mx_vdf.slang" function="mx_layer_vdf" target="genslangpt" />
+
+  <!-- Composition and closure weighting. -->
+  <implementation name="IM_layer_bsdf_genslangpt" nodedef="ND_layer_bsdf" file="mx_ops.slang" function="mx_layer_bsdf" target="genslangpt" />
+  <implementation name="IM_mix_bsdf_genslangpt" nodedef="ND_mix_bsdf" file="mx_ops.slang" function="mx_mix_bsdf" target="genslangpt" />
+  <implementation name="IM_mix_surfaceshader_genslangpt" nodedef="ND_mix_surfaceshader" file="mx_ops.slang" function="mx_mix_surfaceshader" target="genslangpt" />
+  <implementation name="IM_add_bsdf_genslangpt" nodedef="ND_add_bsdf" file="mx_ops.slang" function="mx_add_bsdf" target="genslangpt" />
+  <implementation name="IM_multiply_bsdfC_genslangpt" nodedef="ND_multiply_bsdfC" file="mx_ops.slang" function="mx_multiply_bsdf" target="genslangpt" />
+  <implementation name="IM_multiply_bsdfF_genslangpt" nodedef="ND_multiply_bsdfF" file="mx_ops.slang" function="mx_multiply_bsdf" target="genslangpt" />
+
+  <!-- Surface/EDF support. -->
+  <implementation name="IM_surface_genslangpt" nodedef="ND_surface" file="mx_ops.slang" function="mx_surface" target="genslangpt" />
+  <implementation name="IM_uniform_edf_genslangpt" nodedef="ND_uniform_edf" file="mx_ops.slang" function="mx_uniform_edf" target="genslangpt" />
+  <implementation name="IM_multiply_edfC_genslangpt" nodedef="ND_multiply_edfC" file="mx_ops.slang" function="mx_multiply_edf" target="genslangpt" />
+  <implementation name="IM_multiply_edfF_genslangpt" nodedef="ND_multiply_edfF" file="mx_ops.slang" function="mx_multiply_edf" target="genslangpt" />
+  <implementation name="IM_mix_edf_genslangpt" nodedef="ND_mix_edf" file="mx_ops.slang" function="mx_mix_edf" target="genslangpt" />
+  <implementation name="IM_add_edf_genslangpt" nodedef="ND_add_edf" file="mx_ops.slang" function="mx_add_edf" target="genslangpt" />
+  <implementation name="IM_generalized_schlick_edf_genslangpt" nodedef="ND_generalized_schlick_edf" file="mx_ops.slang" function="mx_generalized_schlick_edf" target="genslangpt" />
+  <implementation name="IM_blackbody_genslangpt" nodedef="ND_blackbody" file="mx_ops.slang" function="mx_blackbody" target="genslangpt" />
+
+  <!-- PBR helper nodes used by Standard Surface. -->
+  <implementation name="IM_roughness_anisotropy_genslangpt" nodedef="ND_roughness_anisotropy" file="mx_pbr_helpers.slang" function="mx_roughness_anisotropy" target="genslangpt" />
+  <implementation name="IM_roughness_dual_genslangpt" nodedef="ND_roughness_dual" file="mx_pbr_helpers.slang" function="mx_roughness_dual" target="genslangpt" />
+  <implementation name="IM_artistic_ior_genslangpt" nodedef="ND_artistic_ior" file="mx_pbr_helpers.slang" function="mx_artistic_ior" target="genslangpt" />
+  <implementation name="IM_deon_hair_absorption_from_melanin_genslangpt" nodedef="ND_deon_hair_absorption_from_melanin" file="mx_pbr_helpers.slang" function="mx_deon_hair_absorption_from_melanin" target="genslangpt" />
+  <implementation name="IM_chiang_hair_absorption_from_color_genslangpt" nodedef="ND_chiang_hair_absorption_from_color" file="mx_pbr_helpers.slang" function="mx_chiang_hair_absorption_from_color" target="genslangpt" />
+  <implementation name="IM_chiang_hair_roughness_genslangpt" nodedef="ND_chiang_hair_roughness" file="mx_pbr_helpers.slang" function="mx_chiang_hair_roughness" target="genslangpt" />
+</materialx>

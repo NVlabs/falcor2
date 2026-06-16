@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: Apache-2.0
+
+import falcor2.render;
+
+#define SCENE_RAY_TYPE_MISS(ray_type_name, func, payload_type)                                                         \
+    [shader("miss")]                                                                                                   \
+    void _scene_##ray_type_name##_miss(inout payload_type payload)                                                     \
+    {                                                                                                                  \
+        func(payload);                                                                                                 \
+    }
+
+#define SCENE_RAY_TYPE_CLOSEST_HIT(ray_type_name, func, payload_type)                                                                                   \
+    [shader("closesthit")]                                                                                                                              \
+    void _scene_##ray_type_name##_triangle_closest_hit(inout payload_type payload, BuiltInTriangleIntersectionAttributes attribs)                       \
+    {                                                                                                                                                   \
+        DeferredTriangleHitInfo deferred_hit = { attribs.barycentrics };                                                                                \
+        func(payload, deferred_hit);                                                                                                                    \
+    }                                                                                                                                                   \
+    [shader("closesthit")]                                                                                                                              \
+    void _scene_##ray_type_name##_lss_closest_hit(inout payload_type payload, BuiltInTriangleIntersectionAttributes attribs)                            \
+    {                                                                                                                                                   \
+        DeferredLSSHitInfo deferred_hit = {};                                                                                                           \
+        func(payload, deferred_hit);                                                                                                                    \
+    }                                                                                                                                                   \
+    [shader("closesthit")]                                                                                                                              \
+    void _scene_##ray_type_name##_procedural_lss_closest_hit(inout payload_type payload, ProceduralLSSIntersectionAttributes attribs)                   \
+    {                                                                                                                                                   \
+        DeferredProceduralLSSHitInfo deferred_hit = { g_scene.get_lss_segment(GeometryInstanceID(InstanceID() + GeometryIndex2()), PrimitiveIndex()) }; \
+        func(payload, deferred_hit);                                                                                                                    \
+    }
+
+#define SCENE_RAY_TYPE_ANY_HIT(ray_type_name, func, payload_type)                                                                                       \
+    [shader("anyhit")]                                                                                                                                  \
+    void _scene_##ray_type_name##_triangle_any_hit(inout payload_type payload, BuiltInTriangleIntersectionAttributes attribs)                           \
+    {                                                                                                                                                   \
+        DeferredTriangleHitInfo deferred_hit = { attribs.barycentrics };                                                                                \
+        func(payload, deferred_hit);                                                                                                                    \
+    }                                                                                                                                                   \
+    [shader("anyhit")]                                                                                                                                  \
+    void _scene_##ray_type_name##_lss_any_hit(inout payload_type payload, BuiltInTriangleIntersectionAttributes attribs)                                \
+    {                                                                                                                                                   \
+        DeferredLSSHitInfo deferred_hit = {};                                                                                                           \
+        func(payload, deferred_hit);                                                                                                                    \
+    }                                                                                                                                                   \
+    [shader("anyhit")]                                                                                                                                  \
+    void _scene_##ray_type_name##_procedural_lss_any_hit(inout payload_type payload, ProceduralLSSIntersectionAttributes attribs)                       \
+    {                                                                                                                                                   \
+        DeferredProceduralLSSHitInfo deferred_hit = { g_scene.get_lss_segment(GeometryInstanceID(InstanceID() + GeometryIndex2()), PrimitiveIndex()) }; \
+        func(payload, deferred_hit);                                                                                                                    \
+    }
+
+
+[shader("intersection")]
+public void procedural_lss_intersection()
+{
+    float t;
+    ProceduralLSSIntersectionAttributes attribs = {};
+    if (intersect_procedural_lss(
+            ObjectRayOrigin(),
+            ObjectRayDirection(),
+            RayTMin(),
+            RayTCurrent(),
+            g_scene.get_lss_segment(GeometryInstanceID(InstanceID() + GeometryIndex2()), PrimitiveIndex()),
+            t
+        )) {
+#ifdef __TARGET_CUDA__
+        // TODO: Slang should really just support ReportHit on OptiX as well!
+        ReportHitOptix(t, 0, 0);
+#else
+        ReportHit(t, 0, attribs);
+#endif
+    }
+}

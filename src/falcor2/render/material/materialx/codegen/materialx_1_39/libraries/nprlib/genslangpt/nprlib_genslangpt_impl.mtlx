@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<materialx version="1.39">
+  <!-- MX139 Falcor NPR bindings for the genslangpt target. -->
+
+  <implementation name="IM_viewdirection_vector3_genslangpt" nodedef="ND_viewdirection_vector3" sourcecode="mx_viewdirection_vector3(si)" target="genslangpt" />
+</materialx>

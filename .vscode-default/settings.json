@@ -1,0 +1,26 @@
+{
+    "files.associations": {
+        "*.pyscene": "python"
+    },
+    "cmake.configureOnEdit": false,
+    "cmake.options.statusBarVisibility": "visible",
+    "cmake.configureOnOpen": false,
+    "files.watcherExclude": {
+        // Skip slangpy's vendored vcpkg buildtree (~324k files) and slangpy's own
+        // build output. They are effectively static from the editor's point of view
+        // and otherwise cause the Windows file watcher to register hundreds of
+        // thousands of change subscriptions, starving search and Quick Open.
+        "**/external/slangpy/external/vcpkg/**": true,
+        "**/external/slangpy/build/**": true
+    },
+    "python.testing.pytestEnabled": true,
+    "python.testing.pytestArgs": [
+        "./tests/python",
+        "./external/slangpy/slangpy/tests",
+        //"--image-tests",           // Enable this to run image comparison tests
+        //"--image-tests-only",      // Enable this to run only image comparison tests
+        //"--image-tests-generate",  // Enable this to generate reference images for image comparison tests
+        //"-vs",                     // Enable this to get verbose output and TTY from tests
+        //"-n 8",                    // Enable this to run tests in parallel (requires pytest-xdist)
+    ]
+}

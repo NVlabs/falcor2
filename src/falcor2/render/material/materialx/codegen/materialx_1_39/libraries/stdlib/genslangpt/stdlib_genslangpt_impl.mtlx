@@ -1,0 +1,68 @@
+<?xml version="1.0"?>
+<materialx version="1.39">
+  <!-- MX139 Falcor texture and geometry bindings for the genslangpt target. -->
+
+  <implementation name="IM_image_float_genslangpt" nodedef="ND_image_float" sourcecode="sample_texture({{file}}, {{texcoord}}, lod_sampler, float4({{default}}, 0.0, 0.0, 1.0)).x" target="genslangpt">
+    <input name="default" type="float" implname="default_value" />
+  </implementation>
+  <implementation name="IM_image_color3_genslangpt" nodedef="ND_image_color3" sourcecode="sample_texture({{file}}, {{texcoord}}, lod_sampler, float4({{default}}, 1.0)).xyz" target="genslangpt">
+    <input name="default" type="color3" implname="default_value" />
+  </implementation>
+  <implementation name="IM_image_color4_genslangpt" nodedef="ND_image_color4" sourcecode="sample_texture({{file}}, {{texcoord}}, lod_sampler, {{default}})" target="genslangpt">
+    <input name="default" type="color4" implname="default_value" />
+  </implementation>
+  <implementation name="IM_image_vector2_genslangpt" nodedef="ND_image_vector2" sourcecode="sample_texture({{file}}, {{texcoord}}, lod_sampler, float4({{default}}, 0.0, 1.0)).xy" target="genslangpt">
+    <input name="default" type="vector2" implname="default_value" />
+  </implementation>
+  <implementation name="IM_image_vector3_genslangpt" nodedef="ND_image_vector3" sourcecode="sample_texture({{file}}, {{texcoord}}, lod_sampler, float4({{default}}, 1.0)).xyz" target="genslangpt">
+    <input name="default" type="vector3" implname="default_value" />
+  </implementation>
+  <implementation name="IM_image_vector4_genslangpt" nodedef="ND_image_vector4" sourcecode="sample_texture({{file}}, {{texcoord}}, lod_sampler, {{default}})" target="genslangpt">
+    <input name="default" type="vector4" implname="default_value" />
+  </implementation>
+
+  <implementation name="IM_hextiledimage_color3_genslangpt" nodedef="ND_hextiledimage_color3" file="mx_hextiledimage.slang" function="mx_hextiledimage_color3" target="genslangpt">
+    <input name="default" type="color3" implname="default_value" />
+  </implementation>
+  <implementation name="IM_hextiledimage_color4_genslangpt" nodedef="ND_hextiledimage_color4" file="mx_hextiledimage.slang" function="mx_hextiledimage_color4" target="genslangpt">
+    <input name="default" type="color4" implname="default_value" />
+  </implementation>
+  <implementation name="IM_hextilednormalmap_vector3_genslangpt" nodedef="ND_hextilednormalmap_vector3" file="mx_hextiledimage.slang" function="mx_hextilednormalmap_vector3" target="genslangpt">
+    <input name="default" type="vector3" implname="default_value" />
+  </implementation>
+  <implementation name="IM_normalmap_float_genslangpt" nodedef="ND_normalmap_float" file="mx_normalmap.slang" function="mx_normalmap_float" target="genslangpt" />
+  <implementation name="IM_normalmap_vector2_genslangpt" nodedef="ND_normalmap_vector2" file="mx_normalmap.slang" function="mx_normalmap_vector2" target="genslangpt" />
+
+  <implementation name="IM_position_vector3_genslangpt" nodedef="ND_position_vector3" sourcecode="si.position_ws" target="genslangpt" />
+  <implementation name="IM_texcoord_vector2_genslangpt" nodedef="ND_texcoord_vector2" target="genslangpt" />
+  <implementation name="IM_texcoord_vector3_genslangpt" nodedef="ND_texcoord_vector3" target="genslangpt" />
+  <implementation name="IM_normal_vector3_genslangpt" nodedef="ND_normal_vector3" sourcecode="si.shading_frame_ws.normal" target="genslangpt" />
+  <implementation name="IM_tangent_vector3_genslangpt" nodedef="ND_tangent_vector3" sourcecode="mx_geomprop_tangent(si)" target="genslangpt" />
+  <implementation name="IM_bitangent_vector3_genslangpt" nodedef="ND_bitangent_vector3" sourcecode="mx_geomprop_bitangent(si)" target="genslangpt" />
+  <implementation name="IM_frame_float_genslangpt" nodedef="ND_frame_float" sourcecode="1.0 /* SurfaceInteraction frame stub */" target="genslangpt" />
+  <implementation name="IM_time_float_genslangpt" nodedef="ND_time_float" sourcecode="0.0 /* SurfaceInteraction time stub */" target="genslangpt" />
+
+  <implementation name="IM_smoothstep_float_genslangpt" nodedef="ND_smoothstep_float" sourcecode="mx_smoothstep_float({{low}}, {{high}}, {{in}})" target="genslangpt" />
+
+  <!-- TODO(@tdavidovic): Replace this MaterialX test-stream emulation with real
+       geometry color streams when MaterialVisualizer can provide extra data. -->
+  <implementation name="IM_geomcolor_float_genslangpt" nodedef="ND_geomcolor_float" target="genslangpt" />
+  <implementation name="IM_geomcolor_color3_genslangpt" nodedef="ND_geomcolor_color3" target="genslangpt" />
+  <implementation name="IM_geomcolor_color4_genslangpt" nodedef="ND_geomcolor_color4" target="genslangpt" />
+
+  <implementation name="IM_transformpoint_vector3_genslangpt" nodedef="ND_transformpoint_vector3" sourcecode="mx_transform_point({{in}}, {{fromspace}}, {{tospace}}, object_from_world, world_from_object)" target="genslangpt" />
+  <implementation name="IM_transformvector_vector3_genslangpt" nodedef="ND_transformvector_vector3" sourcecode="mx_transform_vector({{in}}, {{fromspace}}, {{tospace}}, object_from_world, world_from_object)" target="genslangpt" />
+  <implementation name="IM_transformnormal_vector3_genslangpt" nodedef="ND_transformnormal_vector3" sourcecode="mx_transform_normal({{in}}, {{fromspace}}, {{tospace}}, object_from_world_it, world_from_object_it)" target="genslangpt" />
+
+  <implementation name="IM_geompropvalue_integer_genslangpt" nodedef="ND_geompropvalue_integer" target="genslangpt" />
+  <implementation name="IM_geompropvalue_boolean_genslangpt" nodedef="ND_geompropvalue_boolean" target="genslangpt" />
+  <implementation name="IM_geompropvalue_string_genslangpt" nodedef="ND_geompropvalueuniform_string" sourcecode="0" target="genslangpt" />
+  <implementation name="IM_geompropvalue_float_genslangpt" nodedef="ND_geompropvalue_float" target="genslangpt" />
+  <implementation name="IM_geompropvalue_color3_genslangpt" nodedef="ND_geompropvalue_color3" target="genslangpt" />
+  <implementation name="IM_geompropvalue_color4_genslangpt" nodedef="ND_geompropvalue_color4" target="genslangpt" />
+  <implementation name="IM_geompropvalue_vector2_genslangpt" nodedef="ND_geompropvalue_vector2" target="genslangpt" />
+  <implementation name="IM_geompropvalue_vector3_genslangpt" nodedef="ND_geompropvalue_vector3" target="genslangpt" />
+  <implementation name="IM_geompropvalue_vector4_genslangpt" nodedef="ND_geompropvalue_vector4" target="genslangpt" />
+
+  <implementation name="IM_surface_unlit_genslangpt" nodedef="ND_surface_unlit" file="mx_surface_unlit.slang" function="mx_surface_unlit" target="genslangpt" />
+</materialx>

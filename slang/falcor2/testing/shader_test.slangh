@@ -1,0 +1,188 @@
+// SPDX-License-Identifier: Apache-2.0
+
+// Minimal Slang-side test framework mirroring doctest vocabulary.
+//
+// This is a header file -- include it via #include, not import, so that
+// preprocessor macros (TEST_CASE, CHECK, ...) are visible in the test file.
+//
+// Example usage:
+//
+// #include "falcor2/testing/shader_test.slangh"
+// import falcor2.utils;
+//
+// TEST_CASE(ray_sphere_hit)
+// {
+//     CHECK(some_condition);
+//     CHECK_EQ(a, b);
+//     CHECK_APPROX(a, b, 1e-6);
+// }
+//
+// Optional host-side expected-outcome directives (comments consumed by pytest collector):
+// // PYTEST_MARK(pytest.mark.skip(reason="Unsupported backend"))
+// // PYTEST_MARK(pytest.mark.xfail(reason="Known issue", strict=True, run=False))
+//
+// Directives apply to the next TEST_CASE only.
+
+#pragma once
+
+import sgl.device.print;
+
+/// Global failure counter. One element, zeroed before each dispatch.
+public RWStructuredBuffer<uint> g_test_failure_count;
+
+/// Increment the failure count by one.
+internal void increment_failure_count()
+{
+    InterlockedAdd(g_test_failure_count[0], 1);
+}
+
+// ----------------------------------------------------------------------------
+// Generic check helpers
+// ----------------------------------------------------------------------------
+
+public void _check_fail(PrintableString file, int line)
+{
+    print("FAIL {}:{}: CHECK failed", file, line);
+    increment_failure_count();
+}
+
+public void _check_false_fail(PrintableString file, int line)
+{
+    print("FAIL {}:{}: CHECK_FALSE failed", file, line);
+    increment_failure_count();
+}
+
+public void _check_eq_fail<T : detail::IPrintable>(PrintableString file, int line, T a, T b)
+{
+    print("FAIL {}:{}: CHECK_EQ({}, {}) failed", file, line, a, b);
+    increment_failure_count();
+}
+
+public void _check_ne_fail<T : detail::IPrintable>(PrintableString file, int line, T a, T b)
+{
+    print("FAIL {}:{}: CHECK_NE({}, {}) failed", file, line, a, b);
+    increment_failure_count();
+}
+
+public void
+_check_approx_fail<T : detail::IPrintable, U : detail::IPrintable>(PrintableString file, int line, T a, T b, U tol)
+{
+    print("FAIL {}:{}: CHECK_APPROX({}, {}, {}) failed", file, line, a, b, tol);
+    increment_failure_count();
+}
+
+// ----------------------------------------------------------------------------
+// Equality comparison
+// ----------------------------------------------------------------------------
+
+public bool _is_equal<T : IComparable>(T a, T b)
+{
+    return a == b;
+}
+
+public bool _is_equal<T : IComparable, let N : int>(vector<T, N> a, vector<T, N> b)
+{
+    [ForceUnroll]
+    for (int i = 0; i < N; i++)
+        if (a[i] != b[i])
+            return false;
+    return true;
+}
+
+public bool _is_equal<T : IComparable, let R : int, let C : int>(matrix<T, R, C> a, matrix<T, R, C> b)
+{
+    [ForceUnroll]
+    for (int r = 0; r < R; r++)
+        [ForceUnroll] for (int c = 0; c < C; c++) if (a[r][c] != b[r][c]) return false;
+    return true;
+}
+
+// ----------------------------------------------------------------------------
+// Approximate equality comparison
+// ----------------------------------------------------------------------------
+
+public bool _approx_equal<T : IArithmetic>(T a, T b, T tol)
+{
+    // Use ternary to avoid unsigned underflow from (a - b) when b > a.
+    return (a >= b ? a - b : b - a) <= tol;
+}
+
+public bool _approx_equal<T : IArithmetic, let N : int>(vector<T, N> a, vector<T, N> b, vector<T, N> tol)
+{
+    [ForceUnroll]
+    for (int i = 0; i < N; i++)
+        if (!_approx_equal(a[i], b[i], tol[i]))
+            return false;
+    return true;
+}
+
+// Convenience: broadcast scalar tolerance to all components.
+public bool _approx_equal<T : IArithmetic, let N : int>(vector<T, N> a, vector<T, N> b, T tol)
+{
+    return _approx_equal(a, b, vector<T, N>(tol));
+}
+
+public bool
+_approx_equal<T : IArithmetic, let R : int, let C : int>(matrix<T, R, C> a, matrix<T, R, C> b, matrix<T, R, C> tol)
+{
+    [ForceUnroll]
+    for (int r = 0; r < R; r++)
+        [ForceUnroll] for (int c = 0; c < C; c++) if (!_approx_equal(a[r][c], b[r][c], tol[r][c])) return false;
+    return true;
+}
+
+// Convenience: broadcast scalar tolerance to all matrix elements.
+public bool _approx_equal<T : IArithmetic, let R : int, let C : int>(matrix<T, R, C> a, matrix<T, R, C> b, T tol)
+{
+    [ForceUnroll]
+    for (int r = 0; r < R; r++)
+        [ForceUnroll] for (int c = 0; c < C; c++) if (!_approx_equal(a[r][c], b[r][c], tol)) return false;
+    return true;
+}
+
+// ----------------------------------------------------------------------------
+// Test macros
+// ----------------------------------------------------------------------------
+
+// Each TEST_CASE expands to a plain callable function whose name is prefixed
+// with _test_case_.  The pytest plugin discovers these functions via Slang
+// reflection, generates a single dispatcher entry point per file, and runs
+// each test case through it.
+#define TEST_CASE(name) public void _test_case_##name()
+
+#define CHECK(cond)                                                                                                    \
+    do {                                                                                                               \
+        if (!(cond))                                                                                                   \
+            _check_fail(__FILE__, __LINE__);                                                                           \
+    } while (false)
+
+#define CHECK_FALSE(cond)                                                                                              \
+    do {                                                                                                               \
+        if (cond)                                                                                                      \
+            _check_false_fail(__FILE__, __LINE__);                                                                     \
+    } while (false)
+
+#define CHECK_EQ(a, b)                                                                                                 \
+    do {                                                                                                               \
+        let _a = (a);                                                                                                  \
+        let _b = (b);                                                                                                  \
+        if (!_is_equal(_a, _b))                                                                                        \
+            _check_eq_fail(__FILE__, __LINE__, _a, _b);                                                                \
+    } while (false)
+
+#define CHECK_NE(a, b)                                                                                                 \
+    do {                                                                                                               \
+        let _a = (a);                                                                                                  \
+        let _b = (b);                                                                                                  \
+        if (_is_equal(_a, _b))                                                                                         \
+            _check_ne_fail(__FILE__, __LINE__, _a, _b);                                                                \
+    } while (false)
+
+#define CHECK_APPROX(a, b, tol)                                                                                        \
+    do {                                                                                                               \
+        let _a = (a);                                                                                                  \
+        let _b = (b);                                                                                                  \
+        let _t = (tol);                                                                                                \
+        if (!_approx_equal(_a, _b, _t))                                                                                \
+            _check_approx_fail(__FILE__, __LINE__, _a, _b, _t);                                                        \
+    } while (false)

@@ -1,0 +1,15 @@
+diff --git a/include/tbb/task.h b/include/tbb/task.h
+--- a/include/tbb/task.h
++++ b/include/tbb/task.h
+@@ -374,7 +374,10 @@ public:
+     enum kind_type {
+         isolated,
+-        bound
++        bound,
++        binding_completed_value,
++        detached_value,
++        dying_value
+     };
+
+     enum traits_type {
+         exact_exception = 0x0001ul << traits_offset,

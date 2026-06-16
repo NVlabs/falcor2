@@ -1,0 +1,115 @@
+<?xml version="1.0"?>
+<materialx version="1.39">
+  <nodedef name="ND_beer_bsdf" node="beer_bsdf" bsdf="R" nodegroup="pbr" doc="A BSDF node for Beer's Law absorption transmission.">
+    <input name="weight" type="float" value="1.0" uimin="0.0" uimax="1.0" />
+    <input name="absorption" type="color3" value="0.18, 0.18, 0.18" />
+    <input name="pathshortening" type="float" value="1.0" />
+    <input name="normal" type="vector3" defaultgeomprop="Nworld" />
+    <output name="out" type="BSDF" />
+  </nodedef>
+
+  <nodegraph name="IM_beer_bsdf_fallback" nodedef="ND_beer_bsdf" target="genosl,genglsl,genmdl,genslang">
+    <convert name="absorption_vector" type="vector3">
+      <input name="in" type="color3" interfacename="absorption" />
+    </convert>
+    <ln name="deexp_vector" type="vector3">
+      <input name="in" type="vector3" nodename="absorption_vector" />
+    </ln>
+    <convert name="deexp" type="color3">
+      <input name="in" type="vector3" nodename="deexp_vector" />
+    </convert>
+    <dielectric_bsdf name="dielectric" type="BSDF">
+      <input name="weight" type="float" interfacename="weight" />
+      <input name="tint" type="color3" nodename="deexp" />
+      <input name="ior" type="float" value="1.0" />
+      <input name="normal" type="vector3" interfacename="normal" />
+    </dielectric_bsdf>
+    <output name="out" type="BSDF" nodename="dielectric" />
+  </nodegraph>
+
+  <implementation name="IM_beer_bsdf_genslangpt" nodedef="ND_beer_bsdf" file="pbrlib/genslangpt/mx_bsdfs.slang" function="mx_beer_bsdf" target="genslangpt" />
+
+  <nodedef name="ND_scratchconductor_brdf" node="scratchconductor_brdf" bsdf="R" nodegroup="pbr" doc="A conductor BSDF with microscratches.">
+    <input name="weight" type="float" value="1.0" uimin="0.0" uimax="1.0" />
+    <input name="ior" type="color3" value="0.18, 0.18, 0.18" />
+    <input name="extinction" type="color3" value="0.18, 0.18, 0.18" />
+    <input name="roughness" type="vector2" value="0.05, 0.05" />
+    <input name="scratchdirection" type="vector3" value="1.0, 0.5, 0.5" />
+    <input name="depth" type="float" value="1.0" />
+    <input name="mask" type="vector3" value="0.0, 0.0, 0.0" />
+    <input name="scratchRoughness" type="float" value="0.00632" />
+    <input name="normal" type="vector3" defaultgeomprop="Nworld" />
+    <input name="tangent" type="vector3" defaultgeomprop="Tworld" />
+    <input name="distribution" type="string" value="ggx" />
+    <output name="out" type="BSDF" />
+  </nodedef>
+
+  <nodegraph name="IM_scratchconductor_brdf_fallback" nodedef="ND_scratchconductor_brdf" target="genosl,genglsl,genmdl,genslang">
+    <conductor_bsdf name="conductor" type="BSDF">
+      <input name="weight" type="float" interfacename="weight" />
+      <input name="ior" type="color3" interfacename="ior" />
+      <input name="extinction" type="color3" interfacename="extinction" />
+      <input name="roughness" type="vector2" interfacename="roughness" />
+      <input name="normal" type="vector3" interfacename="normal" />
+      <input name="tangent" type="vector3" interfacename="tangent" />
+      <input name="distribution" type="string" interfacename="distribution" />
+    </conductor_bsdf>
+    <output name="out" type="BSDF" nodename="conductor" />
+  </nodegraph>
+
+  <implementation name="IM_scratchconductor_brdf_genslangpt" nodedef="ND_scratchconductor_brdf" file="pbrlib/genslangpt/mx_bsdfs.slang" function="mx_scratchconductor_brdf" target="genslangpt" />
+
+  <nodedef name="ND_weighted_layer_bsdf" node="weighted_layer" nodegroup="pbr" defaultinput="top" doc="Layer two BSDFs with color3 coverage for the top layer.">
+    <input name="top" type="BSDF" value="" />
+    <input name="top_weight" type="color3" value="1.0, 1.0, 1.0" uimin="0.0" uimax="1.0" doc="Coverage weight for the top BSDF, range [0, 1]." />
+    <input name="base" type="BSDF" value="" />
+    <output name="out" type="BSDF" />
+  </nodedef>
+
+  <nodegraph name="IM_weighted_layer_bsdf_fallback" nodedef="ND_weighted_layer_bsdf" target="genosl,genglsl,genmdl,genslang">
+    <layer name="layered" type="BSDF">
+      <input name="top" type="BSDF" interfacename="top" />
+      <input name="base" type="BSDF" interfacename="base" />
+    </layer>
+    <luminance name="top_weight_luminance" type="color3">
+      <input name="in" type="color3" interfacename="top_weight" />
+    </luminance>
+    <extract name="top_weight_scalar" type="float">
+      <input name="in" type="color3" nodename="top_weight_luminance" />
+      <input name="index" type="integer" value="0" />
+    </extract>
+    <mix name="coverage" type="BSDF">
+      <input name="fg" type="BSDF" nodename="layered" />
+      <input name="bg" type="BSDF" interfacename="base" />
+      <input name="mix" type="float" nodename="top_weight_scalar" />
+    </mix>
+    <output name="out" type="BSDF" nodename="coverage" />
+  </nodegraph>
+
+  <implementation name="IM_weighted_layer_bsdf_genslangpt" nodedef="ND_weighted_layer_bsdf" file="pbrlib/genslangpt/mx_ops.slang" function="mx_weighted_layer_bsdf" target="genslangpt" />
+
+  <nodedef name="ND_mix_bsdfC" node="mix" nodegroup="pbr" defaultinput="bg" doc="Mix two BSDFs according to a color3 mix amount.">
+    <input name="fg" type="BSDF" value="" />
+    <input name="bg" type="BSDF" value="" />
+    <input name="mix" type="color3" value="0.0, 0.0, 0.0" uimin="0.0" uimax="1.0" doc="Color-valued mixing weight, range [0, 1]." />
+    <output name="out" type="BSDF" />
+  </nodedef>
+
+  <nodegraph name="IM_mix_bsdfC_fallback" nodedef="ND_mix_bsdfC" target="genosl,genglsl,genmdl,genslang">
+    <luminance name="mix_luminance" type="color3">
+      <input name="in" type="color3" interfacename="mix" />
+    </luminance>
+    <extract name="mix_scalar" type="float">
+      <input name="in" type="color3" nodename="mix_luminance" />
+      <input name="index" type="integer" value="0" />
+    </extract>
+    <mix name="mix_bsdf" type="BSDF">
+      <input name="fg" type="BSDF" interfacename="fg" />
+      <input name="bg" type="BSDF" interfacename="bg" />
+      <input name="mix" type="float" nodename="mix_scalar" />
+    </mix>
+    <output name="out" type="BSDF" nodename="mix_bsdf" />
+  </nodegraph>
+
+  <implementation name="IM_mix_bsdfC_genslangpt" nodedef="ND_mix_bsdfC" file="pbrlib/genslangpt/mx_ops.slang" function="mx_mix_bsdf" target="genslangpt" />
+</materialx>

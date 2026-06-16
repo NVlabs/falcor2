@@ -1,0 +1,25 @@
+{
+    "name": "falcor2",
+    "version-string": "0.0.1",
+    "dependencies": [
+        "usd",
+        "mikktspace",
+        "opensubdiv",
+
+        "libjpeg-turbo",
+        "libpng",
+        "openexr",
+        "asmjit",
+        "crashpad"
+    ],
+    "builtin-baseline": "ce613c41372b23b1f51333815feb3edd87ef8a8b",
+    "vcpkg-configuration": {
+        "overlay-triplets": [
+            "./external/slangpy/external/vcpkg-triplets"
+        ],
+        "overlay-ports": [
+            "./external/vcpkg_overlays",
+            "./external/slangpy/external/vcpkg-overlays"
+        ]
+    }
+}

@@ -1,0 +1,253 @@
+# -----------------------------------------------------------------------------
+# Global variables
+# -----------------------------------------------------------------------------
+
+variables:
+  GIT_SUBMODULE_STRATEGY: recursive
+  GIT_SUBMODULE_FORCE_HTTPS: "true"
+  GIT_SUBMODULE_DEPTH: 0
+  GIT_STRATEGY: fetch
+
+
+# -----------------------------------------------------------------------------
+# Rule templates
+# -----------------------------------------------------------------------------
+
+# Rule to trigger on merge requests and updates to default branch
+.default-rules:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'api'
+      when: never
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == 'schedule'
+    - if: $CI_PIPELINE_SOURCE == 'web'
+
+# Rule to trigger on merge requests and updates to default branch
+.on-default-branch:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'api'
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# -----------------------------------------------------------------------------
+# Pre-commit check
+# -----------------------------------------------------------------------------
+
+pre-commit:
+  extends:
+    - .default-rules
+  stage: build
+  tags:
+    - linux
+  script:
+    # Setup conda environment
+    - source /opt/ci/miniconda3/bin/activate
+    - |
+      if ! conda env list | grep falcor2; then
+        conda create -n falcor2 python=3.10 -y
+      fi
+    - conda activate falcor2
+    # Install & run pre-commit
+    - pip install pre-commit
+    - pre-commit run --all-files --show-diff-on-failure
+
+# -----------------------------------------------------------------------------
+# Build job templates
+# -----------------------------------------------------------------------------
+
+# Windows (initializes conda environment then runs ci.py script)
+.windows-base:
+  stage: build
+  tags:
+    - windows
+    - gpu
+  variables:
+    GIT_CLONE_PATH: C:\sw\gl\falcor2_%CI_PROJECT_ID%
+    VS_PATH: C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools
+    CONDA_ENV: falcor2
+  hooks:
+    pre_get_sources_script:
+      - git config --global core.longpaths true
+      # Remove build folder
+      - cmd.exe /c "rmdir /s /q %CI_PROJECT_DIR%\build || exit 0"
+  script:
+    # Setup conda environment
+    # Requires PowerShell 7.3+ for $PSNativeCommandUseErrorActionPreference
+    - |
+      if ($PSVersionTable.PSVersion.Major -lt 7 -or
+          ($PSVersionTable.PSVersion.Major -eq 7 -and $PSVersionTable.PSVersion.Minor -lt 3)) {
+        throw "PowerShell 7.3 or newer is required. Current version: $($PSVersionTable.PSVersion)"
+      }
+    - Set-StrictMode -Version Latest
+    - $ErrorActionPreference = 'Stop'
+    - $PSNativeCommandUseErrorActionPreference = $true
+    - Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+    - '& C:\Anaconda3\shell\condabin\conda-hook.ps1' # Initialize conda for the shell
+    - |
+      if (-not (conda env list | Select-String -Quiet -Pattern "falcor2\s")) {
+        conda create -n falcor2 python=3.10 -y
+      }
+    - conda activate falcor2
+
+    # Run CI script
+    - python -u tools/ci.py info
+    - |
+      if ($env:UPDATE_SLANGPY -eq "true") {
+        python -u tools/ci.py update-slangpy
+      }
+    - python -u tools/ci.py setup
+    - python -u tools/ci.py configure
+    - python -u tools/ci.py build
+
+    # Run unit tests if RUN_UNIT_TESTS is true
+    - |
+      if ($env:RUN_UNIT_TESTS -eq "true") {
+        python -u tools/ci.py unit-test-cpp
+        python -u tools/ci.py unit-test-python
+      }
+
+# Linux (initializes conda environment then runs ci.py script)
+.linux-base:
+  stage: build
+  tags:
+    - linux
+    - gpu
+  hooks:
+    pre_get_sources_script:
+      # Remove build folder
+      rm -rf ${CI_PROJECT_DIR}/build
+  script:
+    # Setup conda environment
+    - source /opt/ci/miniconda3/bin/activate # Initialize conda for the shell
+    - |
+      if ! conda env list | grep falcor2; then
+        conda create -n falcor2 python=3.10 -y
+      fi
+    - conda activate falcor2
+    # Otherwise we are picking up the vulkan sdk version of slang.
+    # See https://github.com/shader-slang/slang/issues/7694
+    - unset LD_LIBRARY_PATH
+
+    # Run CI script
+    - python -u tools/ci.py info
+    - |
+      if [ "$UPDATE_SLANGPY" = "true" ]; then
+        python -u tools/ci.py update-slangpy
+      fi
+    - python -u tools/ci.py setup
+    - python -u tools/ci.py configure
+    - python -u tools/ci.py build
+
+    # Run unit tests if RUN_UNIT_TESTS is true
+    - |
+      if [ "$RUN_UNIT_TESTS" = "true" ]; then
+        python -u tools/ci.py unit-test-cpp
+        python -u tools/ci.py unit-test-python
+      fi
+
+# Add standard unit test variables
+.unit-test:
+  variables:
+    RUN_UNIT_TESTS: true
+    CI_FLAGS: crashpad
+  artifacts:
+    when: always
+    paths:
+      - "reports/*junit.xml"
+      - ".crashpad/"
+    reports:
+      junit:
+        - "reports/*junit.xml"
+
+# -----------------------------------------------------------------------------
+# Windows build jobs
+# -----------------------------------------------------------------------------
+
+windows-release:
+  extends:
+    - .default-rules
+    - .windows-base
+    - .unit-test
+  variables:
+    CI_CONFIG: Release
+
+windows-debug:
+  extends:
+    - .default-rules
+    - .windows-base
+    - .unit-test
+  variables:
+    CI_CONFIG: Debug
+
+# -----------------------------------------------------------------------------
+# Linux build jobs
+# -----------------------------------------------------------------------------
+
+linux-gcc-release:
+  extends:
+    - .default-rules
+    - .linux-base
+    - .unit-test
+  variables:
+    CI_CONFIG: Release
+
+linux-gcc-debug:
+  extends:
+    - .default-rules
+    - .linux-base
+    - .unit-test
+  variables:
+    CI_CONFIG: Debug
+
+# -----------------------------------------------------------------------------
+# Container build job
+# -----------------------------------------------------------------------------
+
+linux-build-container:
+  stage: build
+  extends:
+    - .linux-base
+  tags:
+    - linux
+    - gpu
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'api' && $JOB_TYPE_BUILD
+    - if: $CI_PIPELINE_SOURCE == 'schedule' && $SCHEDULE_REASON == 'deploy'
+  script:
+    # Setup conda environment
+    - source /opt/ci/miniconda3/bin/activate
+    - conda activate falcor2
+
+    # Quick bodge to make sure requests is installed
+    - pip install requests
+
+    # Docker login
+    - echo "$JOB_DEPLOY_TOKEN" | docker login -u $JOB_DEPLOY_USERNAME --password-stdin "$CI_REGISTRY"
+
+    # Run the supplied build command
+    - python -u $BUILD_COMMAND
+
+# -----------------------------------------------------------------------------
+# Development container build job
+# -----------------------------------------------------------------------------
+
+devcontainer-build:
+  stage: build
+  tags:
+    - linux
+    - gpu
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'api' && $JOB_TYPE_DEV_CONTAINER_BUILD
+    - if: $CI_PIPELINE_SOURCE == 'web' && $JOB_TYPE_DEV_CONTAINER_BUILD
+  variables:
+    IMAGE_TAG: $CI_REGISTRY_IMAGE/devcontainer:$CI_COMMIT_SHORT_SHA
+    LATEST_IMAGE_TAG: $CI_REGISTRY_IMAGE/devcontainer:latest
+  script:
+    # Docker login
+    - echo "$CI_REGISTRY_PASSWORD" | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin
+
+    # Build and publish the development image. The commit tag is immutable;
+    # latest is convenient for VS Code devcontainer use on current mainline.
+    - python -u .devcontainer/scripts/build_dev_image.py "$IMAGE_TAG"
+    - python -u .devcontainer/scripts/publish_dev_image.py "$IMAGE_TAG" "$IMAGE_TAG" "$LATEST_IMAGE_TAG"

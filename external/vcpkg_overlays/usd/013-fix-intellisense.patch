@@ -1,0 +1,16 @@
+diff --git a/pxr/base/tf/staticTokens.h b/pxr/base/tf/staticTokens.h
+index d4b98b12f..7afadbc72 100644
+--- a/pxr/base/tf/staticTokens.h
++++ b/pxr/base/tf/staticTokens.h
+@@ -78,7 +78,11 @@ PXR_NAMESPACE_OPEN_SCOPE
+ /// Macro to define public tokens. This declares a list of tokens that can be
+ /// used globally.  Use in conjunction with TF_DEFINE_PUBLIC_TOKENS.
+ /// \hideinitializer
++#if defined(__INTELLISENSE__) && !defined(USD_DISABLE_INTELLISENSE_WORKAROUND)
++#define TF_DECLARE_PUBLIC_TOKENS(...)
++#else // __INTELLISENSE__
+ #define TF_DECLARE_PUBLIC_TOKENS(...) _TF_DECLARE_PUBLIC_TOKENS_EXPAND( _TF_DECLARE_PUBLIC_TOKENS_EVAL(_TF_DECLARE_PUBLIC_TOKENS_EXPAND( TF_PP_VARIADIC_SIZE(__VA_ARGS__) ))(__VA_ARGS__) )
++#endif // __INTELLISENSE__
+ 
+ /// Macro to define public tokens.  Use in conjunction with
+ /// TF_DECLARE_PUBLIC_TOKENS.

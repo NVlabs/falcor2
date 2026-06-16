@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<AutoVisualizer xmlns="http://schemas.microsoft.com/vstudio/debugger/natvis/2010">
+    <!-- falcor::RenderObjectHandle -->
+    <Type Name="falcor::RenderObjectHandle&lt;*,*&gt;">
+        <DisplayString Condition="m_index == INVALID_INDEX">invalid (type={TYPE})</DisplayString>
+        <DisplayString Condition="m_index != INVALID_INDEX">index={m_index,d}, type={TYPE}</DisplayString>
+        <Expand>
+            <ExpandedItem Condition="m_index != INVALID_INDEX &amp;&amp; m_debug_info != 0">
+                *m_debug_info-&gt;self
+            </ExpandedItem>
+        </Expand>
+    </Type>
+</AutoVisualizer>

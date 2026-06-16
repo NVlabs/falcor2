@@ -1,0 +1,44 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+
+        {
+            "name": "Python C++ Debugger Windows",
+            "type": "pythoncpp",
+            "request": "launch",
+            "pythonConfig": "default",
+            "cppConfig": "default (win) Attach"
+        },
+        {
+            "name": "Python C++ Debugger GDB",
+            "type": "pythoncpp",
+            "request": "launch",
+            "pythonConfig": "default",
+            "cppConfig": "default (gdb) Attach"
+        },
+        {
+            "name": "Python Debugger: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Python Debugger: Cloud renderer demo",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/falcor2/minitracer/example.py",
+            "args": ["data/assets/kronos/TextureLinearInterpolationTest/glTF/TextureLinearInterpolationTest.gltf"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Selected CMake Target",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${command:cmake.launchTargetPath}",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${command:cmake.launchTargetDirectory}"
+        }
+    ]
+}

@@ -1,0 +1,9 @@
+[submodule "external/slangpy"]
+	path = external/slangpy
+	url = https://github.com/shader-slang/slangpy.git
+[submodule "external/openpbr-bsdf"]
+	path = external/openpbr-bsdf
+	url = https://github.com/adobe/openpbr-bsdf
+[submodule "external/MaterialX"]
+	path = external/MaterialX
+	url = https://github.com/tdavidovicNV/MaterialX

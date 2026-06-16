@@ -1,0 +1,3 @@
+# Dependencies for examples/pathtracer/torchdepthmodel.py
+safetensors>=0.4
+transformers>=4.46,<5

@@ -1,0 +1,11 @@
+{
+  "test_checkerboard[128-64]": {
+    "reference": "e8b375e0783c590720a069a1633780ec0c2bd1f1073f4880374726b9b8bf7c6a"
+  },
+  "test_checkerboard[32-32]": {
+    "reference": "c416933e291714cd4f9f970bc326c6e0e356552c4eec4608cc8c3efa9bf02658"
+  },
+  "test_checkerboard[64-64]": {
+    "reference": "c94307a9912d64c7db96965dcd40fec185fcf501f274a04e41748a6e16e94085"
+  }
+}
