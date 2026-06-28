@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
@@ -20,6 +21,20 @@
 #include <span>
 
 namespace falcor {
+
+/// Texture coordinate origin convention for authored UVs.
+enum class UVOrigin {
+    upper_left,
+    lower_left,
+};
+SGL_ENUM_INFO(
+    UVOrigin,
+    {
+        {UVOrigin::upper_left, "upper_left"},
+        {UVOrigin::lower_left, "lower_left"},
+    }
+);
+SGL_ENUM_REGISTER(UVOrigin);
 
 /// Semantic meaning that importer assigns to a vertex attribute. For some
 /// formats this may be explicitly specified, for others it may be inferred
@@ -139,6 +154,15 @@ class FALCOR_API ImporterMesh {
 public:
     /// Mesh name.
     std::string name;
+
+    /// Authored image origin convention for this mesh's texture coordinates.
+    ///
+    /// This describes the texcoord data stored on this mesh. It may differ
+    /// from the ImporterScene or Scene target UV origin; scene loading converts
+    /// mesh UVs when the mesh convention differs from the target convention.
+    /// UV-origin conversion does not update tangent handedness; tangent-frame
+    /// parity and normal-map channel conventions are separate concerns.
+    UVOrigin uv_origin = UVOrigin::upper_left;
 
     struct Subgeometry {
         /// Subgeometry name.
@@ -741,6 +765,14 @@ SGL_ENUM_REGISTER(ImporterLight::Type);
 
 class FALCOR_API ImporterScene : public Object {
 public:
+    /// Target image origin convention for scenes created from this importer scene.
+    ///
+    /// This is the preferred scene-wide destination convention. Individual
+    /// ImporterMesh instances still describe their own authored texcoord
+    /// convention via ImporterMesh::uv_origin and are converted on load if it
+    /// differs from this scene convention.
+    UVOrigin uv_origin = UVOrigin::upper_left;
+
     /// Material array.
     std::vector<ImporterMaterial> materials;
     /// Texture array.

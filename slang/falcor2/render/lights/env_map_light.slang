@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 implementing render;
@@ -8,7 +9,7 @@ public struct EnvMapLight : ILight
     public LightHeader header;
     public float3x3 world_from_object;
     public float3 scale;
-    public TextureHandle<float4, 0> env_map_texture_handle;
+    public TextureHandle<float4, uint(TextureHandleFlags::none)> env_map_texture_handle;
     public DescriptorHandleWAR<Texture2D<float>> importance_map_texture;
 
     public float3 eval_direction<Interaction : IInteraction>(const Interaction ref, const DirectionSample sample)

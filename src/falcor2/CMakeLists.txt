@@ -185,6 +185,7 @@ target_sources(falcor2 PRIVATE
     render/scene_import.h
     render/scene_object.cpp
     render/scene_object.h
+    render/scene_options.h
     render/scene_requirements.h
     render/scene_system.cpp
     render/scene_system.h

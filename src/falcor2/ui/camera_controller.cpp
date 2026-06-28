@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "camera_controller.h"
@@ -22,6 +23,30 @@ static const MoveKeyBinding MOVE_KEYS[] = {
     {sgl::KeyCode::w, float3(0, 0, 1)},
     {sgl::KeyCode::s, float3(0, 0, -1)},
 };
+
+bool is_move_key(sgl::KeyCode key)
+{
+    for (const MoveKeyBinding& binding : MOVE_KEYS) {
+        if (binding.key == key)
+            return true;
+    }
+    return false;
+}
+
+bool is_shift_key(sgl::KeyCode key)
+{
+    return key == sgl::KeyCode::left_shift || key == sgl::KeyCode::right_shift;
+}
+
+bool is_ctrl_key(sgl::KeyCode key)
+{
+    return key == sgl::KeyCode::left_control || key == sgl::KeyCode::right_control;
+}
+
+bool is_alt_key(sgl::KeyCode key)
+{
+    return key == sgl::KeyCode::left_alt || key == sgl::KeyCode::right_alt;
+}
 
 } // anonymous namespace
 
@@ -65,11 +90,6 @@ void CameraController::set_smoothing(bool enabled)
     }
 }
 
-void CameraController::set_capture_callback(CaptureCallback capture_callback)
-{
-    m_capture_callback = capture_callback;
-}
-
 void CameraController::focus(const float3& target, float distance)
 {
     distance = std::max(distance, MIN_ORBIT_DISTANCE);
@@ -83,34 +103,42 @@ void CameraController::focus(const float3& target, float distance)
     m_transform.set_translation(new_pos);
 }
 
-void CameraController::handle_keyboard_event(const sgl::KeyboardEvent& event)
+bool CameraController::handle_keyboard_event(const sgl::KeyboardEvent& event)
 {
+    bool camera_key = is_move_key(event.key) || is_shift_key(event.key) || is_ctrl_key(event.key);
+
     if (event.is_key_press() || event.is_key_release()) {
         bool down = event.is_key_press();
-        bool is_move_key = false;
+        bool move_key = false;
         for (size_t i = 0; i < MOVE_KEY_COUNT; ++i) {
             if (MOVE_KEYS[i].key == event.key) {
-                m_move_key_down[i] = down;
-                is_move_key = true;
+                if (m_state == State::first_person || !down)
+                    m_move_key_down[i] = down;
+                move_key = true;
                 break;
             }
         }
-        if (!is_move_key) {
-            if (event.key == sgl::KeyCode::left_shift)
+        if (!move_key) {
+            if (is_shift_key(event.key))
                 m_shift_down = down;
-            else if (event.key == sgl::KeyCode::left_control)
+            else if (is_ctrl_key(event.key))
                 m_ctrl_down = down;
-            else if (event.key == sgl::KeyCode::left_alt)
+            else if (is_alt_key(event.key))
                 m_alt_down = down;
         }
     }
+
+    return m_state == State::first_person && camera_key
+        && (event.is_key_press() || event.is_key_release() || event.is_key_repeat());
 }
 
-void CameraController::handle_mouse_event(const sgl::MouseEvent& event)
+bool CameraController::handle_mouse_event(const sgl::MouseEvent& event)
 {
     m_shift_down = event.has_modifier(sgl::KeyModifier::shift);
     m_ctrl_down = event.has_modifier(sgl::KeyModifier::ctrl);
     m_alt_down = event.has_modifier(sgl::KeyModifier::alt);
+
+    bool handled = m_state != State::idle;
 
     switch (m_state) {
     case State::idle: {
@@ -120,22 +148,22 @@ void CameraController::handle_mouse_event(const sgl::MouseEvent& event)
                 // Alt + button: orbit/dolly/track modes.
                 if (event.button == sgl::MouseButton::left) {
                     m_state = State::orbit;
-                    set_capture(true);
+                    handled = true;
                 } else if (event.button == sgl::MouseButton::right) {
                     m_state = State::dolly;
-                    set_capture(true);
+                    handled = true;
                 } else if (event.button == sgl::MouseButton::middle) {
                     m_state = State::track;
-                    set_capture(true);
+                    handled = true;
                 }
             } else {
                 // No Alt: original behavior.
                 if (event.button == sgl::MouseButton::right) {
                     m_state = State::first_person;
-                    set_capture(true);
+                    handled = true;
                 } else if (event.button == sgl::MouseButton::middle) {
                     m_state = State::pan;
-                    set_capture(true);
+                    handled = true;
                 }
             }
         }
@@ -145,31 +173,26 @@ void CameraController::handle_mouse_event(const sgl::MouseEvent& event)
         if (event.is_button_up() && event.button == sgl::MouseButton::right) {
             m_state = State::idle;
             m_look_velocity = float2(0.f);
-            set_capture(false);
         }
         break;
     case State::pan:
         if (event.is_button_up() && event.button == sgl::MouseButton::middle) {
             m_state = State::idle;
-            set_capture(false);
         }
         break;
     case State::orbit:
         if (event.is_button_up() && event.button == sgl::MouseButton::left) {
             m_state = State::idle;
-            set_capture(false);
         }
         break;
     case State::dolly:
         if (event.is_button_up() && event.button == sgl::MouseButton::right) {
             m_state = State::idle;
-            set_capture(false);
         }
         break;
     case State::track:
         if (event.is_button_up() && event.button == sgl::MouseButton::middle) {
             m_state = State::idle;
-            set_capture(false);
         }
         break;
     }
@@ -183,8 +206,12 @@ void CameraController::handle_mouse_event(const sgl::MouseEvent& event)
         m_mouse_pos = event.pos;
     }
 
-    if (event.is_scroll())
+    if (event.is_scroll()) {
         m_mouse_scroll_delta = event.scroll;
+        handled = true;
+    }
+
+    return handled;
 }
 
 bool CameraController::update(float dt)
@@ -227,18 +254,26 @@ bool CameraController::update(float dt)
     return changed;
 }
 
-void CameraController::set_capture(bool capture)
-{
-    m_captured = capture;
-    if (m_capture_callback)
-        m_capture_callback(capture);
-}
-
 void CameraController::update_pivot_from_camera()
 {
     float3x3 rot = sgl::math::matrix_from_quat(m_transform.rotation());
     float3 fwd = -rot.get_col(2);
     m_pivot = m_transform.translation() + fwd * m_orbit_distance;
+}
+
+void CameraController::cancel_interaction()
+{
+    m_state = State::idle;
+    m_mouse_delta = float2(0.f);
+    m_mouse_scroll_delta = float2(0.f);
+    m_first_mouse_delta = true;
+    m_move_key_down.fill(false);
+    m_shift_down = false;
+    m_ctrl_down = false;
+    m_alt_down = false;
+    m_orbit_velocity = float2(0.f);
+    m_look_velocity = float2(0.f);
+    m_scroll_velocity = 0.f;
 }
 
 bool CameraController::update_scroll(float dt, bool apply_smoothing)

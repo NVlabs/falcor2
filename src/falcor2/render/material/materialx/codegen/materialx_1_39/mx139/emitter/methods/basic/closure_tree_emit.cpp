@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "closure_tree_emit.h"
@@ -72,7 +73,7 @@ std::string emit_closure_tree_composition_value(
         const std::string value_name = fmt::format("bsdf_{}", bsdf_index);
         const std::string frame_expr = layering.bsdfs[bsdf_index].preserve_tangent_frame
             ? fmt::format(
-                  "Frame({}.bsdf_n[{}], {}.bsdf_t[{}], Frame::Component::tangent)",
+                  "Frame({}.bsdf_n[{}], {}.bsdf_t[{}], 1.0, Frame::Component::tangent)",
                   stack_name,
                   bsdf_index,
                   stack_name,
@@ -215,7 +216,7 @@ std::string build_closure_tree_composition_value_text(
         const std::string value_name = fmt::format("bsdf_{}", bsdf_index);
         const std::string frame_expr = layering.bsdfs[bsdf_index].preserve_tangent_frame
             ? fmt::format(
-                  "Frame({}.bsdf_n[{}], {}.bsdf_t[{}], Frame::Component::tangent)",
+                  "Frame({}.bsdf_n[{}], {}.bsdf_t[{}], 1.0, Frame::Component::tangent)",
                   stack_name,
                   bsdf_index,
                   stack_name,

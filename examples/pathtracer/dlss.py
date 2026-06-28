@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
@@ -77,13 +78,13 @@ def parse_args() -> argparse.Namespace:
         "--scene-path",
         type=Path,
         default=DEFAULT_SCENE_PATH,
-        help="Scene file to render.",
+        help="Path to a scene file.",
     )
     parser.add_argument(
         "--device-type",
         choices=("automatic", "d3d12", "vulkan", "cuda"),
-        default="d3d12",
-        help="Device backend to use for the viewer.",
+        default="automatic",
+        help="Device type used for renderer.",
     )
     parser.add_argument(
         "--quality",
@@ -459,7 +460,7 @@ def main() -> None:
     )
     print_support(ngx, support)
 
-    scene = f2.Scene(device, args.scene_path)
+    scene = f2.Scene.create(device, args.scene_path)
 
     viewer = DlssViewer(
         device,

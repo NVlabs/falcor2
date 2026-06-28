@@ -1,0 +1,57 @@
+{
+  // Render test Suite Options.
+  //
+  // This file is intentionally shaped after MaterialX's _options.mtlx so the MDL and
+  // MaterialX render-material examples can be driven in the same way. MaterialX-only
+  // options are omitted when they have no MDL/Falcor meaning.
+  "version": 1,
+  "name": "mdl-sdk-examples",
+
+  // List of module file names acts as a filter to only test documents with these names.
+  // Empty means all modules discovered under renderTestPaths.
+  "overrideFiles": [],
+
+  // Run using a given set of shader interface generation options. Default value is 2 where:
+  // 1 = run reduced only.
+  // 2 = run complete only.
+  // 3 = run complete + reduced.
+  // Falcor2 note: complete maps to MDL class compilation, while reduced uses non-class
+  // compilation and writes artifacts to the reduced output bucket.
+  "shaderInterfaces": 2,
+
+  // Rendered image size if render validation test enabled.
+  "renderSize": [512, 512],
+
+  // Falcor2 render backend.
+  // pathtracer renders OBJ preview geometry with the PathTracerPipeline and writes _falcor2 images.
+  // material_visualizer renders through Falcor2's MaterialVisualizer and writes _visualizer images.
+  "renderBackend": "pathtracer",
+
+  // Set this to be true if it is desired to always dump out generated source code.
+  "dumpGeneratedCode": true,
+
+  // The geometry file to be rendered in tests.
+  // Falcor2 note: only OBJ preview geometry is supported.
+  "renderGeometry": "../../../external/MaterialX/resources/Geometry/sphere.obj",
+
+  // Enable direct lighting. Default is false.
+  // Falcor2 note: toggles the path tracer's analytic-light flag.
+  "enableDirectLighting": false,
+
+  // Suggested radiance IBL file path.
+  "radianceIBLPath": "../../../data/assets/mdl_sdk_examples/resources/environment.hdr",
+
+  // Additional MDL library/search roots.
+  // Falcor2 note: retained for option parity, but not implemented yet.
+  "extraLibraryPaths": [],
+
+  // List of document paths for render tests.
+  "renderTestPaths": ["../../../data/assets/mdl_sdk_examples"],
+
+  // Enable reference quality rendering.
+  // Falcor2 note: increases sample count only; MaterialX supersampling is not reproduced exactly.
+  "enableReferenceQuality": false,
+
+  // Base directory for all test output artifacts.
+  "outputDirectory": ".tmp/render_material_mdl",
+}

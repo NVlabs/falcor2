@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "standard_specgloss_material.h"
@@ -84,25 +85,34 @@ void StandardSpecGlossMaterial::update(SceneUpdateContext& ctx)
     FALCOR_UNUSED(ctx);
 }
 
+shared::MaterialFlags StandardSpecGlossMaterial::flags() const
+{
+    shared::MaterialFlags result = shared::MaterialFlags::none;
+    if (m_double_sided)
+        result |= shared::MaterialFlags::double_sided;
+    if (m_thin_walled)
+        result |= shared::MaterialFlags::thin_walled;
+    return result;
+}
+
 template<typename CursorT>
 void StandardSpecGlossMaterial::write_to_cursor_impl(CursorT cursor) const
 {
+    cursor["header"]["flags"] = uint(flags());
     cursor["diffuse_texture"] = m_diffuse_texture_handle;
     cursor["specular_glossiness_texture"] = m_specular_glossiness_texture_handle;
     cursor["normal_texture"] = m_normal_texture_handle;
     cursor["emissive_texture"] = m_emissive_texture_handle;
     cursor["transmission_texture"] = m_transmission_texture_handle;
-    cursor["diffuse_factor"] = m_diffuse_factor;
-    cursor["specular_factor"] = m_specular_factor;
+    cursor["diffuse_factor"] = float16_t4(m_diffuse_factor, 0.f);
+    cursor["specular_factor"] = float16_t4(m_specular_factor, 0.f);
     cursor["glossiness_factor"] = m_glossiness_factor;
     cursor["normal_texture_scale"] = m_normal_texture_scale;
     cursor["emissive_factor"] = m_emissive_factor;
     cursor["ior"] = m_ior;
-    cursor["transmission_factor"] = m_transmission_factor;
+    cursor["transmission_factor"] = float16_t4(m_transmission_factor, 0.f);
     cursor["diffuse_transmission_factor"] = m_diffuse_transmission_factor;
     cursor["specular_transmission_factor"] = m_specular_transmission_factor;
-    cursor["thin_surface"] = m_thin_surface;
-    cursor["double_sided"] = m_double_sided;
 }
 
 template void StandardSpecGlossMaterial::write_to_cursor_impl(sgl::BufferElementCursor cursor) const;

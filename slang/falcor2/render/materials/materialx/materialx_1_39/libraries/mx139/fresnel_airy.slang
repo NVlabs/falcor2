@@ -1,4 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+
 //
 // Thin-film Airy Fresnel helpers for Mx139 microfacet Fresnel policies.
 

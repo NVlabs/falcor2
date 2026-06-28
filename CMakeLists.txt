@@ -29,6 +29,12 @@ if("$ENV{FALCOR2_FETCHCONTENT_FULLY_DISCONNECTED}" STREQUAL "1")
     set(FETCHCONTENT_FULLY_DISCONNECTED ON CACHE BOOL "Use already-populated FetchContent dependencies")
 endif()
 
+# Reuse CMake-fetched dependencies across KernelVM jobs on the persistent work disk.
+if(DEFINED ENV{KERNELVM_WORK} AND NOT DEFINED FETCHCONTENT_BASE_DIR)
+    cmake_path(CONVERT "$ENV{KERNELVM_WORK}/cmake/fetchcontent" TO_CMAKE_PATH_LIST _fetchcontent_base NORMALIZE)
+    set(FETCHCONTENT_BASE_DIR "${_fetchcontent_base}" CACHE PATH "Base directory for FetchContent dependencies")
+endif()
+
 include(DetermineTargetArchitecture)
 include(GNUInstallDirs)
 include(CMakeRC)

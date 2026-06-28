@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "codegen.h"
@@ -12,9 +13,9 @@ std::unique_ptr<CodeGenResult> CodeGen::generate(const CodeGenDesc& desc)
     return materialx_1_39::CodeGen_1_39::generate(desc);
 }
 
-std::vector<std::string> CodeGen::discover_material_node_names(const CodeGenDesc& desc)
+std::vector<RenderableElement> CodeGen::discover_renderable_elements(const CodeGenDesc& desc)
 {
-    return materialx_1_39::CodeGen_1_39::discover_material_node_names(desc);
+    return materialx_1_39::CodeGen_1_39::discover_renderable_elements(desc);
 }
 
 } // namespace materialx

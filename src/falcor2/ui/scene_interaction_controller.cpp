@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "scene_interaction_controller.h"
@@ -43,23 +44,38 @@ void SceneInteractionController::set_reset_callback(ResetCallback callback)
     m_reset_callback = std::move(callback);
 }
 
+void SceneInteractionController::set_pointer_capture_callback(PointerCaptureCallback callback)
+{
+    m_pointer_capture_callback = std::move(callback);
+}
+
+SceneInteractionController::PointerOwner SceneInteractionController::pointer_owner()
+{
+    reconcile_pointer_owner();
+    return m_pointer_owner;
+}
+
+bool SceneInteractionController::has_pointer_capture()
+{
+    reconcile_pointer_owner();
+    return m_pointer_owner != PointerOwner::none;
+}
+
+void SceneInteractionController::cancel_pointer_owner()
+{
+    if (m_camera_controller)
+        m_camera_controller->cancel_interaction();
+    set_pointer_owner(PointerOwner::none);
+}
+
 bool SceneInteractionController::handle_keyboard_event(const sgl::KeyboardEvent& event)
 {
     if (!m_camera_controller)
         return false;
 
-    // When captured, route all keyboard events to the camera controller.
-    // If the controller releases capture during handling, fall through to let
-    // the rest of the input chain process the event.
-    if (m_camera_controller->is_captured()) {
-        m_camera_controller->handle_keyboard_event(event);
-        return m_camera_controller->is_captured();
-    }
-
-    // Non-captured keyboard events are forwarded to the camera controller
-    // (for modifier tracking etc.) but are not consumed.
-    m_camera_controller->handle_keyboard_event(event);
-    return false;
+    // The camera always sees keyboard events so movement/modifier state stays coherent,
+    // but it only consumes keys it actually owns in its current mode.
+    return m_camera_controller->handle_keyboard_event(event);
 }
 
 bool SceneInteractionController::handle_mouse_event(const sgl::MouseEvent& event)
@@ -67,26 +83,36 @@ bool SceneInteractionController::handle_mouse_event(const sgl::MouseEvent& event
     if (!m_camera_controller)
         return false;
 
-    // When captured, route all mouse events to the camera controller.
-    if (m_camera_controller->is_captured()) {
+    reconcile_pointer_owner();
+
+    if (m_pointer_owner == PointerOwner::camera) {
         m_camera_controller->handle_mouse_event(event);
-        return m_camera_controller->is_captured();
+        if (!m_camera_controller->is_interacting())
+            set_pointer_owner(PointerOwner::none);
+        return true;
     }
 
-    m_camera_controller->handle_mouse_event(event);
+    bool route_allowed = can_route_viewport_event(event);
+    bool camera_handled = false;
+    if (route_allowed) {
+        camera_handled = m_camera_controller->handle_mouse_event(event);
+        if (m_camera_controller->is_interacting())
+            set_pointer_owner(PointerOwner::camera);
+    }
 
     // Handle picking on left-click in the viewport, but only if the camera
     // controller didn't just enter an active mode (e.g. Alt+LMB orbit).
-    if (!m_camera_controller->is_captured() && m_scene_picker && m_scene_editor && m_scene && event.is_button_down()
+    if (route_allowed && !camera_handled && m_scene_picker && m_scene_editor && m_scene && event.is_button_down()
         && event.button == sgl::MouseButton::left) {
         uint2 local_pos;
         if (m_scene_editor->can_pick_at(event.pos, local_pos)) {
             Entity* entity = m_scene_picker->pick_entity(m_scene, local_pos);
             m_scene_editor->set_selected_object(entity);
+            camera_handled = true;
         }
     }
 
-    return false;
+    return camera_handled;
 }
 
 void SceneInteractionController::update_selection_overlay()
@@ -130,6 +156,39 @@ void SceneInteractionController::request_reset()
 {
     if (m_reset_callback)
         m_reset_callback();
+}
+
+void SceneInteractionController::set_pointer_owner(PointerOwner owner)
+{
+    if (m_pointer_owner == owner)
+        return;
+
+    m_pointer_owner = owner;
+    if (m_pointer_capture_callback)
+        m_pointer_capture_callback(m_pointer_owner != PointerOwner::none);
+}
+
+void SceneInteractionController::reconcile_pointer_owner()
+{
+    if (m_pointer_owner == PointerOwner::camera && (!m_camera_controller || !m_camera_controller->is_interacting()))
+        set_pointer_owner(PointerOwner::none);
+}
+
+bool SceneInteractionController::can_route_viewport_event(const sgl::MouseEvent& event) const
+{
+    if (!m_scene_editor || !m_scene_editor->visible())
+        return true;
+
+    if (!m_scene_editor->is_viewport_interactive())
+        return false;
+
+    bool gizmo_active = m_scene_editor->is_gizmo_active();
+    if (!gizmo_active)
+        return true;
+
+    // ImGuizmo owns left-button interaction and active drags, but RMB/MMB
+    // navigation may still start while the cursor merely hovers the gizmo.
+    return !(event.is_move() || event.button == sgl::MouseButton::left);
 }
 
 } // namespace falcor::ui

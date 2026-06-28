@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "property_type_map.h"
@@ -114,9 +115,11 @@ const std::vector<PropertyTypeMapEntry>& property_type_map()
     // Table order is load-bearing for matches_python dispatch:
     // - bool must come before int64_t (Python bool subclasses int)
     static const std::vector<PropertyTypeMapEntry> table = {
+        // clang-format off
         make_entry<bool>(PropertyType::bool_),
         make_entry<int64_t>(PropertyType::int_),
         make_entry<double>(PropertyType::float_),
+        make_entry<float16_t>(PropertyType::float_),
         make_entry<int2>(PropertyType::int2),
         make_entry<int3>(PropertyType::int3),
         make_entry<int4>(PropertyType::int4),
@@ -126,9 +129,13 @@ const std::vector<PropertyTypeMapEntry>& property_type_map()
         make_entry<float2>(PropertyType::float2),
         make_entry<float3>(PropertyType::float3),
         make_entry<float4>(PropertyType::float4),
+        make_entry<float16_t2>(PropertyType::float2),
+        make_entry<float16_t3>(PropertyType::float3),
+        make_entry<float16_t4>(PropertyType::float4),
         make_entry<float3x3>(PropertyType::float3x3),
         make_entry<float4x4>(PropertyType::float4x4),
         make_entry<std::string>(PropertyType::string),
+        // clang-format on
     };
     return table;
 }
@@ -149,8 +156,11 @@ const PropertyTypeMapEntry* property_type_map_find(PropertyType pt)
         constexpr int max_pt = static_cast<int>(PropertyType::count_);
         std::array<const PropertyTypeMapEntry*, max_pt> arr{};
         arr.fill(nullptr);
-        for (const auto& entry : property_type_map())
-            arr[static_cast<int>(entry.property_type)] = &entry;
+        for (const auto& entry : property_type_map()) {
+            const int index = static_cast<int>(entry.property_type);
+            if (!arr[index])
+                arr[index] = &entry;
+        }
         return arr;
     }();
 

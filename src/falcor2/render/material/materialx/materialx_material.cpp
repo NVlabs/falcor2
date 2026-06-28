@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "materialx_material.h"
@@ -141,12 +142,7 @@ MaterialXMaterial::MaterialXMaterial()
     m_material_properties.set_instance(this);
 }
 
-MaterialXMaterial::~MaterialXMaterial()
-{
-    // Scene globals are detached in on_remove_from_scene(); Scene internals may
-    // already be partially destroyed when this destructor runs.
-    m_lut_globals.reset();
-}
+MaterialXMaterial::~MaterialXMaterial() { }
 
 void MaterialXMaterial::set_properties(const Properties& props_)
 {
@@ -165,17 +161,10 @@ void MaterialXMaterial::set_properties(const Properties& props_)
     );
 
     Properties props = props_;
-    // Converts two important properties from the legacy naming.
+    // Convert important properties from legacy naming.
     if (!props.has_property("mtlx_transmissive_bsdfs")) {
         if (auto it = props_.get_optional<std::string_view>("transmissiveBsdfs")) {
             props.set("mtlx_transmissive_bsdfs", *it);
-        }
-    }
-    if (!props.has_property("mtlx_flip_v_texcoord")) {
-        if (auto it = props.get_optional<std::string_view>("mtlx_source")) {
-            props.set<bool>("mtlx_flip_v_texcoord", *it == "houdini");
-        } else if (auto it2 = props.get_optional<std::string_view>("source")) {
-            props.set<bool>("mtlx_flip_v_texcoord", *it2 == "houdini");
         }
     }
     class_descriptor().read_from_properties(this, props);
@@ -283,24 +272,26 @@ std::vector<TextureHandle> MaterialXMaterial::build_texture_list() const
     return result;
 }
 
-void MaterialXMaterial::on_remove_from_scene()
-{
-    remove_lut_scene_globals();
-}
-
 void MaterialXMaterial::update(SceneUpdateContext& ctx)
 {
+    if (!m_lut_globals)
+        m_lut_globals = m_scene->get_or_create_scene_globals(
+            "MaterialX.mx139.LutSceneGlobals.lut_globals",
+            [device = ctx.device()]() -> ref<SceneGlobals>
+            {
+                return make_ref<materialx::mx139::LutSceneGlobals>(device);
+            }
+        );
+
     if (m_require_codegen)
         run_codegen();
 
     if (!m_codegen_result) {
         m_slang_type_name = "InvalidMaterial";
-        update_lut_scene_globals(ctx);
         return;
     }
 
     m_slang_type_name = m_codegen_result->material_name;
-    update_lut_scene_globals(ctx);
 
     // If explicit write_shader_path is provided, write shader to the given path
     if (!m_debug_write_shader_path.empty()) {
@@ -350,32 +341,6 @@ void MaterialXMaterial::update(SceneUpdateContext& ctx)
     m_has_entry_point_volume_properties = m_codegen_result->has_entry_point_volume_properties;
 }
 
-void MaterialXMaterial::remove_lut_scene_globals()
-{
-    if (!m_lut_globals)
-        return;
-
-    if (m_scene)
-        m_scene->remove_scene_globals(m_lut_globals.get());
-    m_lut_globals.reset();
-}
-
-void MaterialXMaterial::update_lut_scene_globals(SceneUpdateContext& ctx)
-{
-    const bool needs_mx139_globals = m_codegen_result && m_codegen_result->needs_mx139_lut_scene_globals;
-    if (needs_mx139_globals) {
-        if (!m_lut_globals) {
-            // TODO: Not every MaterialX material instance should create a new MX139 LUT scene globals object.
-            // We need to share an instance among all MX139 materials (probably cached on the scene itself).
-            // Also, this ideally should happen during initialization and not during update.
-            m_lut_globals = materialx::mx139::create_lut_scene_globals(ctx.device());
-            m_scene->add_scene_globals(m_lut_globals);
-        }
-    } else {
-        remove_lut_scene_globals();
-    }
-}
-
 template<typename CursorT>
 void MaterialXMaterial::write_to_cursor_impl(CursorT cursor) const
 {
@@ -416,14 +381,14 @@ void MaterialXMaterial::run_codegen()
         m_mtlx_editable_params,
         m_mtlx_node_name,
         m_mtlx_layeringmethod,
-        m_mtlx_flip_v_texcoord,
         m_mtlx_transmissive_bsdfs,
         m_mtlx_auto_transmission,
         m_mtlx_optimize_graph,
         m_mtlx_layering_mode,
         m_mtlx_compensation,
         m_mtlx_autogamma,
-        m_mtlx_target_color_space_override
+        m_mtlx_target_color_space_override,
+        m_mtlx_use_slang_derivatives
     );
     codegen_properties_hash = hash_add_vector(codegen_properties_hash, m_mtlx_geomprop_names);
     codegen_properties_hash = hash_add_vector(codegen_properties_hash, m_mtlx_geomprop_ids);
@@ -466,7 +431,6 @@ void MaterialXMaterial::run_codegen()
     m_codegen_desc.document = document_desc;
     m_codegen_desc.node_name = m_mtlx_node_name;
     m_codegen_desc.asset_resolver = m_mtlx_path_resolver;
-    m_codegen_desc.flip_v_texcoord = m_mtlx_flip_v_texcoord;
     m_codegen_desc.positionfree_layering = (m_mtlx_layeringmethod == "positionfree");
     // Currently unused
     // m_codegen_desc.sigma_a;
@@ -479,6 +443,7 @@ void MaterialXMaterial::run_codegen()
     m_codegen_desc.compensation_mode = m_mtlx_compensation;
     m_codegen_desc.auto_gamma_image = m_mtlx_autogamma;
     m_codegen_desc.target_color_space_override = m_mtlx_target_color_space_override;
+    m_codegen_desc.use_slang_derivatives = m_mtlx_use_slang_derivatives;
     m_codegen_desc.make_editable = !m_mtlx_editable_params.empty();
     FALCOR_CHECK(
         m_mtlx_geomprop_names.size() == m_mtlx_geomprop_ids.size(),

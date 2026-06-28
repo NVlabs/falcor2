@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "scene.h"
@@ -42,8 +43,20 @@ static uint64_t next_generation_id()
     return ++id;
 }
 
-Scene::Scene(ref<sgl::Device> device)
+static ref<sgl::SlangModule> create_settings_module(sgl::Device* device, UVOrigin uv_origin)
+{
+    bool is_lower_left = uv_origin == UVOrigin::lower_left;
+    const char* module_name
+        = is_lower_left ? "falcor2_scene_uv_origin_lower_left" : "falcor2_scene_uv_origin_upper_left";
+    const char* source = is_lower_left
+        ? "export static const bool FALCOR_TEXTURE_COORDINATE_ORIGIN_LOWER_LEFT = true;\n"
+        : "export static const bool FALCOR_TEXTURE_COORDINATE_ORIGIN_LOWER_LEFT = false;\n";
+    return device->load_module_from_source(module_name, source);
+}
+
+Scene::Scene(ref<sgl::Device> device, const SceneOptions& options)
     : m_device(std::move(device))
+    , m_options(options)
     , m_material_collection(this)
     , m_materials(m_material_collection)
     , m_geometry_collection(this)
@@ -56,6 +69,9 @@ Scene::Scene(ref<sgl::Device> device)
     , m_components(m_component_collection)
 {
     m_render_module = m_device->load_module("falcor2.render");
+    m_settings_module = create_settings_module(m_device.get(), m_options.uv_origin);
+    m_requirements.modules.push_back(m_settings_module);
+    m_requirements_generation = next_generation_id();
 
     m_texture_manager.reset(new TextureManager(m_device));
 
@@ -66,33 +82,27 @@ Scene::Scene(ref<sgl::Device> device)
     m_render_scene = ref<RenderScene>(new RenderScene(m_device));
 }
 
-Scene::Scene(ref<sgl::Device> device, ref<ImporterScene> importer_scene)
-    : Scene(std::move(device))
-{
-    load_importer_scene(this, *importer_scene);
-}
-
-Scene::Scene(ref<sgl::Device> device, const std::filesystem::path& path, bool recompute_normals)
-    : Scene(std::move(device))
-{
-    load_scene(this, path, recompute_normals);
-}
-
 Scene::~Scene() { }
 
-ref<Scene> Scene::create(ref<sgl::Device> device)
+ref<Scene> Scene::create(ref<sgl::Device> device, std::optional<UVOrigin> uv_origin)
 {
-    return ref<Scene>{new Scene(std::move(device))};
+    return ref<Scene>{new Scene(std::move(device), SceneOptions(uv_origin.value_or(UVOrigin::upper_left)))};
 }
 
-ref<Scene> Scene::create(ref<sgl::Device> device, ref<ImporterScene> importer_scene)
+ref<Scene>
+Scene::create(ref<sgl::Device> device, const ImporterScene& importer_scene, std::optional<UVOrigin> uv_origin)
 {
-    return ref<Scene>{new Scene(std::move(device), std::move(importer_scene))};
+    return detail::create_scene(std::move(device), importer_scene, uv_origin);
 }
 
-ref<Scene> Scene::create(ref<sgl::Device> device, const std::filesystem::path& path, bool recompute_normals)
+ref<Scene> Scene::create(
+    ref<sgl::Device> device,
+    const std::filesystem::path& path,
+    bool recompute_normals,
+    std::optional<UVOrigin> uv_origin
+)
 {
-    return ref<Scene>{new Scene(std::move(device), path, recompute_normals)};
+    return detail::create_scene(std::move(device), path, recompute_normals, uv_origin);
 }
 
 Material* Scene::create_material(std::string_view type, std::optional<Properties> props)
@@ -130,6 +140,24 @@ void Scene::add_scene_globals(ref<SceneGlobals> globals)
     m_scene_globals.push_back(std::move(globals));
 }
 
+ref<SceneGlobals> Scene::get_or_create_scene_globals(std::string_view name, std::function<ref<SceneGlobals>()> factory)
+{
+    FALCOR_CHECK(!name.empty(), "Scene globals name must not be empty.");
+    FALCOR_CHECK(factory, "Scene globals factory must be valid.");
+
+    auto refcounted_it = m_refcounted_scene_globals.find(name);
+    if (refcounted_it != m_refcounted_scene_globals.end()) {
+        FALCOR_ASSERT(refcounted_it->second);
+        return ref<SceneGlobals>(refcounted_it->second);
+    }
+
+    ref<SceneGlobals> globals = factory();
+    FALCOR_CHECK(globals, "Scene globals factory for '{}' returned null.", name);
+    m_scene_globals.push_back(globals);
+    m_refcounted_scene_globals.emplace(std::string(name), globals.get());
+    return globals;
+}
+
 void Scene::remove_scene_globals(SceneGlobals* globals)
 {
     auto it = std::find_if(
@@ -142,6 +170,32 @@ void Scene::remove_scene_globals(SceneGlobals* globals)
     );
     if (it != m_scene_globals.end())
         m_scene_globals.erase(it);
+}
+
+void Scene::run_garbage_collect()
+{
+    auto refcounted_it = m_refcounted_scene_globals.begin();
+    while (refcounted_it != m_refcounted_scene_globals.end()) {
+        SceneGlobals* globals = refcounted_it->second;
+        FALCOR_ASSERT(globals);
+        if (globals->ref_count() > 1) {
+            ++refcounted_it;
+            continue;
+        }
+
+        auto scene_globals_it = std::find_if(
+            m_scene_globals.begin(),
+            m_scene_globals.end(),
+            [globals](const ref<SceneGlobals>& scene_globals)
+            {
+                return scene_globals.get() == globals;
+            }
+        );
+
+        FALCOR_ASSERT(scene_globals_it != m_scene_globals.end());
+        m_scene_globals.erase(scene_globals_it);
+        refcounted_it = m_refcounted_scene_globals.erase(refcounted_it);
+    }
 }
 
 Camera* Scene::active_camera() const
@@ -309,8 +363,9 @@ SceneUpdateFlags Scene::_update(SceneUpdateContext& ctx)
     // scene requirements to determine if shaders need to be recompiled (for sampling material emission).
     {
         SceneRequirements new_requirements;
+        new_requirements.modules.push_back(m_settings_module);
         const auto& mm = m_material_system->required_modules();
-        new_requirements.modules.assign(mm.begin(), mm.end());
+        new_requirements.modules.insert(new_requirements.modules.end(), mm.begin(), mm.end());
         const auto& mc = m_material_system->required_type_conformances();
         new_requirements.type_conformances.assign(mc.begin(), mc.end());
         const auto& lc = m_light_system->required_type_conformances();
@@ -354,6 +409,8 @@ SceneUpdateFlags Scene::_update(SceneUpdateContext& ctx)
     m_entity_collection.reset_dirty_flags();
     m_component_collection.remove_marked_and_compact();
     m_component_collection.reset_dirty_flags();
+
+    run_garbage_collect();
 
     m_update_flags = update_flags;
     if (update_flags != SceneUpdateFlags::none)

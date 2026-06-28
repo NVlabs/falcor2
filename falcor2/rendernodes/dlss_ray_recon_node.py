@@ -1,4 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+
 """DLSS Ray Reconstruction render node for path-tracer color and guide inputs."""
 
 from __future__ import annotations

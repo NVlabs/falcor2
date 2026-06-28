@@ -1,4 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+
 """Reference path-tracer render node and guide-output management."""
 
 from typing import Any, Optional
@@ -222,11 +224,17 @@ class ReferencePathTracerNode(RenderNode):
         if self._render_func is None or self._render_func_constants != render_func_constants:
             assert self._scene
 
-            ray_desc = f2.SceneRayTracingSetup.RayDesc()
-            ray_desc.name = "intersect"
-            ray_desc.has_miss = True
-            ray_desc.has_closest_hit = True
-            rt_setup = f2.SceneRayTracingSetup.create(self._scene, [ray_desc])
+            intersect_ray_desc = f2.SceneRayTracingSetup.RayDesc()
+            intersect_ray_desc.name = "intersect"
+            intersect_ray_desc.has_miss = True
+            intersect_ray_desc.has_closest_hit = True
+            visibility_ray_desc = f2.SceneRayTracingSetup.RayDesc()
+            visibility_ray_desc.name = "visibility"
+            visibility_ray_desc.has_miss = True
+            rt_setup = f2.SceneRayTracingSetup.create(
+                self._scene,
+                [intersect_ray_desc, visibility_ray_desc],
+            )
 
             # Generate a prelude that implements IWriteGuide for the requested guide
             # targets, then attach scene binding and ray tracing dispatch metadata.

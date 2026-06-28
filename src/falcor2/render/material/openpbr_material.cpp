@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "openpbr_material.h"
@@ -180,7 +181,10 @@ public:
 
     virtual void bind(sgl::ShaderCursor globals) const override
     {
-        auto openpbr_globals = globals["openpbr_globals"];
+        auto openpbr_globals = globals.find_field("openpbr_globals");
+        if (!openpbr_globals.is_valid())
+            return;
+
         for (const auto& lut : m_luts)
             openpbr_globals[lut.name] = lut.descriptor_handle;
         openpbr_globals["sampler"] = m_sampler_handle;
@@ -212,11 +216,7 @@ OpenPBRMaterial::OpenPBRMaterial()
     initialize_properties();
 }
 
-OpenPBRMaterial::~OpenPBRMaterial()
-{
-    if (m_globals)
-        m_scene->remove_scene_globals(m_globals);
-}
+OpenPBRMaterial::~OpenPBRMaterial() { }
 
 void OpenPBRMaterial::set_properties(const Properties& props)
 {
@@ -253,13 +253,14 @@ void OpenPBRMaterial::on_load_resources()
 
 void OpenPBRMaterial::update(SceneUpdateContext& ctx)
 {
-    // TODO: Not every material instance should create a new scene globals object.
-    // We need to share an instance among all materials (probably cached on the scene itself).
-    // Also, this ideally should happen during initialization and not during update.
-    if (!m_globals) {
-        m_globals = make_ref<OpenPBRSceneGlobals>(ctx.device());
-        m_scene->add_scene_globals(m_globals);
-    }
+    if (!m_globals)
+        m_globals = m_scene->get_or_create_scene_globals(
+            "OpenPBRSceneGlobals",
+            [device = ctx.device()]() -> ref<SceneGlobals>
+            {
+                return make_ref<OpenPBRSceneGlobals>(device);
+            }
+        );
 
     sync_attributes_from_properties();
 

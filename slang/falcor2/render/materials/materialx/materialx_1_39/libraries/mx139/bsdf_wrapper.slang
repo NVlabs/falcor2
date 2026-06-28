@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 implementing mx139;
@@ -21,18 +22,12 @@ public float clamp_dielectric_ior(float ior)
 
 public float3 mx_geomprop_tangent(SurfaceInteraction si)
 {
-    float3 tangent;
-    float3 bitangent;
-    branchless_ONB(si.shading_frame_ws.normal, tangent, bitangent);
-    return tangent;
+    return si.shading_frame_ws.tangent;
 }
 
 public float3 mx_geomprop_bitangent(SurfaceInteraction si)
 {
-    float3 tangent;
-    float3 bitangent;
-    branchless_ONB(si.shading_frame_ws.normal, tangent, bitangent);
-    return bitangent;
+    return si.shading_frame_ws.bitangent;
 }
 
 public float3 mx_viewdirection_vector3(SurfaceInteraction si)

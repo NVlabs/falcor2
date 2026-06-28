@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "testing.h"
@@ -255,6 +256,61 @@ TEST_CASE("float_double_unification")
         CHECK(props.type("val") == PropertyType::float_);
         CHECK(props.get<double>("val") == doctest::Approx(3.14));
         CHECK(props.get<float>("val") == doctest::Approx(3.14f));
+    }
+}
+
+TEST_CASE("float16_maps_to_float_storage")
+{
+    Properties props;
+
+    SUBCASE("scalar")
+    {
+        props.set("val", float16_t(0.5f));
+        CHECK(props.type("val") == PropertyType::float_);
+        CHECK(static_cast<float>(props.get<float16_t>("val")) == doctest::Approx(0.5f));
+        CHECK(props.get<float>("val") == doctest::Approx(0.5f));
+        CHECK(Properties::check_type<float16_t>() == PropertyType::float_);
+    }
+
+    SUBCASE("vector")
+    {
+        props.set("val", float16_t3{0.25f, 0.5f, 0.75f});
+        CHECK(props.type("val") == PropertyType::float3);
+        CHECK(float3(props.get<float16_t3>("val")) == float3{0.25f, 0.5f, 0.75f});
+        CHECK(props.get<float3>("val") == float3{0.25f, 0.5f, 0.75f});
+        CHECK(Properties::check_type<float16_t3>() == PropertyType::float3);
+    }
+
+    SUBCASE("scalar list")
+    {
+        props.set_list("val", std::vector<float16_t>{float16_t(0.25f), float16_t(0.5f)});
+        CHECK(props.type("val") == PropertyType::list);
+        CHECK(props.get<detail::PropertyList>("val").element_type() == PropertyType::float_);
+
+        const auto& double_values = props.get_list<double>("val");
+        REQUIRE(double_values.size() == 2);
+        CHECK(double_values[0] == doctest::Approx(0.25));
+        CHECK(double_values[1] == doctest::Approx(0.5));
+
+        std::vector<float16_t> half_values = props.get_list<float16_t>("val");
+        REQUIRE(half_values.size() == 2);
+        CHECK(static_cast<float>(half_values[0]) == doctest::Approx(0.25f));
+        CHECK(static_cast<float>(half_values[1]) == doctest::Approx(0.5f));
+    }
+
+    SUBCASE("vector list")
+    {
+        props.set_list("val", std::vector<float16_t3>{float16_t3{0.25f, 0.5f, 0.75f}});
+        CHECK(props.type("val") == PropertyType::list);
+        CHECK(props.get<detail::PropertyList>("val").element_type() == PropertyType::float3);
+
+        const auto& float_values = props.get_list<float3>("val");
+        REQUIRE(float_values.size() == 1);
+        CHECK(float_values[0] == float3{0.25f, 0.5f, 0.75f});
+
+        std::vector<float16_t3> half_values = props.get_list<float16_t3>("val");
+        REQUIRE(half_values.size() == 1);
+        CHECK(float3(half_values[0]) == float3{0.25f, 0.5f, 0.75f});
     }
 }
 

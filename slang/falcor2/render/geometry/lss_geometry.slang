@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 implementing render;
@@ -215,6 +216,7 @@ public extension Scene
         si.shading_frame_ws = Frame(
             si.normal_ws,
             normalize(transform_vector(world_from_object, tangent_os)),
+            1.0 /*handedness*/,
             Frame::Component::tangent
         );
 

@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 """Tests for PythonPropertyDescriptor and PythonClassReflection (C++ bridge)."""
@@ -59,6 +60,12 @@ class VectorSampleObject:
         spy.float3x3([1, 0, 0, 0, 1, 0, 0, 0, 1]),
         doc="Normal matrix",
     )
+
+
+@reflected
+class HalfSampleObject:
+    roughness = Property(spy.float16_t(0.5), doc="Half roughness")
+    color = Property(spy.float16_t3(0, 0, 0), doc="Half color")
 
 
 @reflected
@@ -428,6 +435,36 @@ class TestVectorMatrixSerialization:
     def test_float3x3_write_read(self):
         val = spy.float3x3([0, 1, 0, 1, 0, 0, 0, 0, 1])
         assert self._roundtrip("normal_matrix", val) == val
+
+
+class TestHalfSerialization:
+    def test_float16_write_read(self):
+        info = [p for p in HalfSampleObject._reflected_properties if p.name == "roughness"][0]
+        desc = PythonPropertyDescriptor(info)
+        obj = HalfSampleObject()
+        obj.roughness = spy.float16_t(0.75)
+
+        props = falcor2.Properties()
+        desc.write_to_properties(obj, props)
+
+        obj2 = HalfSampleObject()
+        result = desc.read_from_properties(obj2, props)
+        assert result is True
+        assert float(obj2.roughness) == pytest.approx(0.75)
+
+    def test_float16_vector_write_read(self):
+        info = [p for p in HalfSampleObject._reflected_properties if p.name == "color"][0]
+        desc = PythonPropertyDescriptor(info)
+        obj = HalfSampleObject()
+        obj.color = spy.float16_t3(0.25, 0.5, 0.75)
+
+        props = falcor2.Properties()
+        desc.write_to_properties(obj, props)
+
+        obj2 = HalfSampleObject()
+        result = desc.read_from_properties(obj2, props)
+        assert result is True
+        assert obj2.color == spy.float16_t3(0.25, 0.5, 0.75)
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+
 //
 // Runtime-indexed BSDL LUT payloads for mx139. Payloads are owned and
 // uploaded by the Python/C++ harness; this module only defines dimensions and

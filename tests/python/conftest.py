@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 import os
@@ -152,7 +153,7 @@ def device(device_type: spy.DeviceType) -> spy.Device:
 @pytest.fixture
 def empty_scene(device: spy.Device) -> f2.Scene:
     """A fresh empty scene, already updated."""
-    scene = f2.Scene(device)
+    scene = f2.Scene.create(device)
     scene.update()
     return scene
 
@@ -188,7 +189,7 @@ def workspace_tmp_path(request: pytest.FixtureRequest) -> Path:
 
 
 def _load_helmet_scene(device: spy.Device) -> f2.Scene:
-    scene = f2.Scene(device, "data/assets/kronos/DamagedHelmet/glTF/DamagedHelmet.gltf")
+    scene = f2.Scene.create(device, "data/assets/kronos/DamagedHelmet/glTF/DamagedHelmet.gltf")
     scene.update()
     scene.update()
     return scene

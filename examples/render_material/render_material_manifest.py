@@ -1,4 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+
 """Source-neutral manifest schema for material image tooling.
 
 Discovery providers emit :class:`RenderEntry` objects. The renderer and
@@ -8,17 +10,15 @@ other provider-specific identifiers.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 import hashlib
 import json
 from pathlib import Path
 from typing import Any, Iterable
 
 
-SCHEMA_VERSION = 1
 OUTPUT_KINDS = {"material", "preview_property"}
-COMPARISON_PROFILES = {"material", "preview"}
-COLOR_POLICIES = {"raw_linear", "display_srgb_preview"}
+SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -27,22 +27,14 @@ class RenderOutput:
 
     A material output renders the full material on the visualizer sphere. A
     preview-property output renders a named property such as albedo or emission.
-    The color policy is part of the entry fingerprint because it affects the
-    expected image values.
     """
 
     kind: str = "material"
     name: str | None = None
-    comparison_profile: str = "material"
-    color_policy: str = "raw_linear"
 
     def __post_init__(self) -> None:
         if self.kind not in OUTPUT_KINDS:
             raise ValueError(f"Unsupported output kind: {self.kind}")
-        if self.comparison_profile not in COMPARISON_PROFILES:
-            raise ValueError(f"Unsupported comparison profile: {self.comparison_profile}")
-        if self.color_policy not in COLOR_POLICIES:
-            raise ValueError(f"Unsupported color policy: {self.color_policy}")
         if self.kind == "material" and self.name is not None:
             raise ValueError("Material outputs must not name a preview property")
         if self.kind == "preview_property" and self.name not in {"albedo", "emission"}:
@@ -69,8 +61,11 @@ class RenderEntry:
     provider: str
     """Short provider name such as materialx or mdl."""
 
-    provider_metadata: dict[str, Any] = field(default_factory=dict)
-    """Provider-specific facts for humans; renderer/comparator must not parse it."""
+    output_subdirectory: str = ""
+    """Optional relative output bucket, for example reduced interface outputs."""
+
+    artifact_name: str | None = None
+    """Optional human-readable output basename, without extension."""
 
     def __post_init__(self) -> None:
         if not self.entry_id:
@@ -81,8 +76,9 @@ class RenderEntry:
             raise ValueError("material_class must not be empty")
         if not self.provider:
             raise ValueError("provider must not be empty")
+        _assert_relative_subdirectory(self.output_subdirectory, "output_subdirectory")
+        _assert_artifact_name(self.artifact_name)
         _assert_json_like(self.properties, "properties")
-        _assert_json_like(self.provider_metadata, "provider_metadata")
 
 
 @dataclass(frozen=True)
@@ -110,11 +106,10 @@ class RenderSettings:
 
 @dataclass(frozen=True)
 class RenderManifest:
-    """A collection of entries plus optional render settings and provenance."""
+    """A collection of entries plus optional render settings."""
 
     entries: tuple[RenderEntry, ...]
     settings: RenderSettings | None = None
-    provenance: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         seen: set[str] = set()
@@ -122,7 +117,6 @@ class RenderManifest:
             if entry.entry_id in seen:
                 raise ValueError(f"Duplicate entry_id: {entry.entry_id}")
             seen.add(entry.entry_id)
-        _assert_json_like(self.provenance, "provenance")
 
 
 @dataclass(frozen=True)
@@ -132,9 +126,7 @@ class RenderResult:
     entry_id: str
     status: str
     image: str | None
-    duration_seconds: float
     message: str = ""
-    fingerprint: str | None = None
 
 
 def stable_digest(payload: Any, length: int = 16) -> str:
@@ -144,10 +136,15 @@ def stable_digest(payload: Any, length: int = 16) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:length]
 
 
-def entry_fingerprint(entry: RenderEntry, settings: RenderSettings) -> str:
-    """Return the resume fingerprint for an entry under pixel-affecting settings."""
+def output_identity_payload(output: RenderOutput) -> dict[str, Any]:
+    """Return the stable output identity used by existing render entry IDs."""
 
-    return stable_digest({"entry": render_entry_to_dict(entry), "settings": asdict(settings)}, 32)
+    return {
+        "kind": output.kind,
+        "name": output.name,
+        "comparison_profile": "material" if output.kind == "material" else "preview",
+        "color_policy": "raw_linear",
+    }
 
 
 def manifest_to_dict(
@@ -158,7 +155,6 @@ def manifest_to_dict(
     payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "entries": [render_entry_to_dict(entry) for entry in manifest.entries],
-        "provenance": manifest.provenance,
     }
     if manifest.settings is not None:
         payload["settings"] = asdict(manifest.settings)
@@ -180,7 +176,6 @@ def manifest_from_dict(payload: dict[str, Any]) -> RenderManifest:
     return RenderManifest(
         entries=tuple(render_entry_from_dict(item) for item in payload.get("entries", [])),
         settings=settings,
-        provenance=dict(payload.get("provenance", {})),
     )
 
 
@@ -196,9 +191,8 @@ def render_entry_from_dict(payload: dict[str, Any]) -> RenderEntry:
     """Deserialize one render entry from a JSON-ready mapping."""
 
     data = dict(payload)
-    data["output"] = RenderOutput(**data["output"])
+    data["output"] = RenderOutput(**dict(data["output"]))
     data["properties"] = dict(data.get("properties", {}))
-    data["provider_metadata"] = dict(data.get("provider_metadata", {}))
     return RenderEntry(**data)
 
 
@@ -227,7 +221,14 @@ def read_results(path: str | Path) -> tuple[RenderResult, ...]:
     """Read render results embedded in a manifest JSON file."""
 
     payload = json.loads(Path(path).read_text(encoding="utf-8-sig"))
-    return tuple(RenderResult(**item) for item in payload.get("results", []))
+    if int(payload.get("schema_version", 0)) != SCHEMA_VERSION:
+        raise ValueError(
+            f"Unsupported material image schema version: {payload.get('schema_version')}"
+        )
+    results = []
+    for item in payload.get("results", []):
+        results.append(RenderResult(**dict(item)))
+    return tuple(results)
 
 
 def _assert_json_like(value: Any, label: str) -> None:
@@ -235,3 +236,24 @@ def _assert_json_like(value: Any, label: str) -> None:
         json.dumps(value, sort_keys=True, ensure_ascii=True)
     except TypeError as exc:
         raise TypeError(f"{label} must contain JSON-serializable values") from exc
+
+
+def _assert_relative_subdirectory(value: str, label: str) -> None:
+    if not value:
+        return
+    normalized = value.replace("\\", "/")
+    if normalized.startswith("/") or ":" in normalized:
+        raise ValueError(f"{label} must be relative")
+    if any(part in {"", ".", ".."} for part in normalized.split("/")):
+        raise ValueError(f"{label} must contain only plain directory names")
+
+
+def _assert_artifact_name(value: str | None) -> None:
+    if value is None:
+        return
+    if not value:
+        raise ValueError("artifact_name must not be empty")
+    if "/" in value or "\\" in value or ":" in value:
+        raise ValueError("artifact_name must be a plain filename stem")
+    if value in {".", ".."}:
+        raise ValueError("artifact_name must be a plain filename stem")

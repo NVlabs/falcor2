@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "nanobind.h"
@@ -203,6 +204,8 @@ FALCOR_PY_EXPORT(importers_importer_types)
 {
     using namespace falcor;
 
+    nb::sgl_enum<UVOrigin>(m, "UVOrigin", D(UVOrigin));
+
     nb::sgl_enum<ImporterSemantic> e(m, "ImporterSemantic", D(ImporterSemantic));
 
     nb::class_<ImporterMeshAttribute>(m, "ImporterMeshAttribute", D(ImporterMeshAttribute))
@@ -233,6 +236,7 @@ FALCOR_PY_EXPORT(importers_importer_types)
     nb::class_<ImporterMesh>(m, "ImporterMesh", D(ImporterMesh))
         .def_static("create", &mesh_create, "subgeometries"_a, "attributes"_a, "Create a new ImporterMesh.")
         .DEF_RW(ImporterMesh, name)
+        .DEF_RW(ImporterMesh, uv_origin)
         .DEF_RW(ImporterMesh, subgeometries, nb::rv_policy::reference_internal)
         .DEF_RO(ImporterMesh, local_aabb)
         .DEF_PROP_RO(ImporterMesh, vertex_count)
@@ -397,6 +401,7 @@ FALCOR_PY_EXPORT(importers_importer_types)
         );
 
     nb::class_<ImporterMaterial>(m, "ImporterMaterial", D(ImporterMaterial))
+        .def(nb::init<>(), "Create a new ImporterMaterial")
         .DEF_RW(ImporterMaterial, name)
         .DEF_RW(ImporterMaterial, params, nb::rv_policy::reference_internal);
 
@@ -486,6 +491,8 @@ FALCOR_PY_EXPORT(importers_importer_types)
         );
 
     nb::class_<ImporterScene, Object>(m, "ImporterScene", D(ImporterScene))
+        .def(nb::init<>())
+        .DEF_RW(ImporterScene, uv_origin)
         .DEF_RW(ImporterScene, materials, nb::rv_policy::reference_internal)
         .DEF_RW(ImporterScene, textures, nb::rv_policy::reference_internal)
         .DEF_RW(ImporterScene, meshes, nb::rv_policy::reference_internal)

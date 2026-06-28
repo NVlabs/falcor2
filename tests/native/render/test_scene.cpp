@@ -1,23 +1,224 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "testing.h"
 
 #include "falcor2/render/scene.h"
+#include "falcor2/render/scene_import.h"
 #include "falcor2/render/geometry/static_mesh_geometry.h"
 #include "falcor2/render/geometry/geometry_group.h"
 #include "falcor2/render/component/geometry_instance.h"
 #include "falcor2/render/component/camera.h"
 #include "falcor2/render/component/light.h"
+#include "falcor2/importers/importer_types.h"
 
 #include <sgl/math/vector.h>
 
 using namespace falcor;
+
+namespace {
+
+class TestSceneGlobals : public SceneGlobals {
+public:
+    explicit TestSceneGlobals(uint32_t key)
+        : m_key(key)
+    {
+    }
+
+    uint32_t key() const { return m_key; }
+
+    void bind(sgl::ShaderCursor) const override { }
+
+private:
+    uint32_t m_key;
+};
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 // 1. Object add/remove/compact cycle
 // ---------------------------------------------------------------------------
 
 TEST_SUITE_BEGIN("Scene");
+
+TEST_CASE_GPU("named refcounted scene globals garbage collection")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    uint32_t factory_calls = 0;
+    auto get_scene_globals = [&](const char* name, uint32_t key) -> ref<SceneGlobals>
+    {
+        return scene->get_or_create_scene_globals(
+            name,
+            [&]() -> ref<SceneGlobals>
+            {
+                ++factory_calls;
+                return make_ref<TestSceneGlobals>(key);
+            }
+        );
+    };
+
+    {
+        ref<SceneGlobals> material_globals = get_scene_globals("test_scene_globals_1", 1);
+        SceneGlobals* raw_globals = material_globals.get();
+        ref<SceneGlobals> external_globals = scene->scene_globals()[0];
+
+        REQUIRE_EQ(scene->scene_globals().size(), 1);
+        CHECK_EQ(scene->scene_globals()[0].get(), raw_globals);
+        CHECK_EQ(raw_globals->ref_count(), 3);
+        CHECK_EQ(factory_calls, 1);
+
+        material_globals.reset();
+        CHECK_EQ(scene->scene_globals()[0].get(), raw_globals);
+        CHECK_EQ(raw_globals->ref_count(), 2);
+        scene->update();
+        REQUIRE_EQ(scene->scene_globals().size(), 1);
+        CHECK_EQ(scene->scene_globals()[0].get(), raw_globals);
+
+        external_globals.reset();
+        CHECK_EQ(scene->scene_globals()[0].get(), raw_globals);
+        CHECK_EQ(raw_globals->ref_count(), 1);
+        scene->update();
+        CHECK_EQ(scene->scene_globals().size(), 0);
+    }
+
+    {
+        ref<SceneGlobals> material_globals = get_scene_globals("test_scene_globals_recreated", 1);
+        CHECK_EQ(factory_calls, 2);
+
+        material_globals.reset();
+        scene->update();
+        CHECK_EQ(scene->scene_globals().size(), 0);
+
+        ref<SceneGlobals> new_material_globals = get_scene_globals("test_scene_globals_recreated", 7);
+        CHECK_EQ(static_cast<TestSceneGlobals*>(new_material_globals.get())->key(), 7);
+        CHECK_EQ(factory_calls, 3);
+        CHECK_EQ(scene->scene_globals().size(), 1);
+
+        new_material_globals.reset();
+        scene->update();
+        CHECK_EQ(scene->scene_globals().size(), 0);
+    }
+
+    ref<SceneGlobals> material_globals = get_scene_globals("test_scene_globals_shared", 2);
+    SceneGlobals* raw_globals = material_globals.get();
+    {
+        ref<SceneGlobals> other_material_globals = get_scene_globals("test_scene_globals_shared", 99);
+        CHECK_EQ(other_material_globals.get(), raw_globals);
+        CHECK_EQ(static_cast<TestSceneGlobals*>(other_material_globals.get())->key(), 2);
+        CHECK_EQ(raw_globals->ref_count(), 3);
+        CHECK_EQ(factory_calls, 4);
+
+        other_material_globals.reset();
+        scene->update();
+        REQUIRE_EQ(scene->scene_globals().size(), 1);
+        CHECK_EQ(scene->scene_globals()[0].get(), raw_globals);
+        CHECK_EQ(raw_globals->ref_count(), 2);
+    }
+
+    ref<SceneGlobals> other_globals = get_scene_globals("test_scene_globals_other", 3);
+    CHECK_NE(other_globals.get(), raw_globals);
+    CHECK_EQ(scene->scene_globals().size(), 2);
+
+    material_globals.reset();
+    scene->update();
+    REQUIRE_EQ(scene->scene_globals().size(), 1);
+    CHECK_EQ(scene->scene_globals()[0].get(), other_globals.get());
+
+    other_globals.reset();
+    scene->update();
+    CHECK_EQ(scene->scene_globals().size(), 0);
+}
+
+TEST_CASE_GPU("importer scene uv origin conversion and adoption")
+{
+    auto importer_scene = make_ref<ImporterScene>();
+    importer_scene->uv_origin = UVOrigin::lower_left;
+    importer_scene->materials.emplace_back();
+    importer_scene->materials.back().name = "uv_origin_test_material";
+
+    ImporterMesh mesh;
+    mesh.name = "uv_origin_test_mesh";
+    mesh.uv_origin = UVOrigin::lower_left;
+    mesh.ensure_attributes({
+        {ImporterSemantic::position},
+        {ImporterSemantic::normal},
+        {ImporterSemantic::tangent},
+        {ImporterSemantic::handedness},
+        {ImporterSemantic::tex_coord},
+    });
+    mesh.allocate_vertices(3, true);
+
+    auto positions = mesh.position_stream();
+    positions[0] = float3(-1.f, 0.f, 0.f);
+    positions[1] = float3(1.f, 0.f, 0.f);
+    positions[2] = float3(0.f, 1.f, 0.f);
+
+    auto normals = mesh.normal_stream();
+    auto tangents = mesh.tangent_stream();
+    auto handedness = mesh.handedness_stream();
+    for (size_t i = 0; i < mesh.vertex_count(); ++i) {
+        normals[i] = float3(0.f, 0.f, 1.f);
+        tangents[i] = float3(1.f, 0.f, 0.f);
+        handedness[i] = 1.f;
+    }
+
+    auto texcoords = mesh.texcoord_stream();
+    texcoords[0] = float2(0.25f, -0.25f);
+    texcoords[1] = float2(0.5f, 0.5f);
+    texcoords[2] = float2(0.75f, 1.25f);
+
+    mesh.subgeometries.push_back(
+        ImporterMesh::Subgeometry{
+            .name = "uv_origin_test_submesh",
+            .indices = {uint3(0, 1, 2)},
+            .material_name = "uv_origin_test_material",
+        }
+    );
+    mesh.calculate_local_aabb();
+    importer_scene->meshes.push_back(mesh);
+
+    auto check_imported_uvs = [](Scene* scene, float2 uv0, float2 uv1, float2 uv2)
+    {
+        REQUIRE_EQ(scene->geometries().size(), 1);
+        auto* geometry = dynamic_cast<StaticMeshGeometry*>(scene->geometries()[0]);
+        REQUIRE(geometry != nullptr);
+        REQUIRE_EQ(geometry->sub_mesh_count(), 1);
+        REQUIRE_EQ(geometry->vertex_count(0), 3);
+
+        float2 expected_uvs[] = {uv0, uv1, uv2};
+        for (size_t i = 0; i < 3; ++i) {
+            auto actual_uv = shared::detail::unpack_triangle_vertex(geometry->vertices(0)[i]).uv[0];
+            CHECK(actual_uv.x == doctest::Approx(expected_uvs[i].x));
+            CHECK(actual_uv.y == doctest::Approx(expected_uvs[i].y));
+        }
+    };
+
+    {
+        auto scene = Scene::create(ref(ctx.device));
+        load_importer_scene(scene.get(), *importer_scene);
+
+        CHECK(scene->options().uv_origin == UVOrigin::upper_left);
+        check_imported_uvs(scene.get(), float2(0.25f, 1.25f), float2(0.5f, 0.5f), float2(0.75f, -0.25f));
+    }
+
+    {
+        auto scene = Scene::create(ref(ctx.device), *importer_scene);
+        CHECK(scene->options().uv_origin == UVOrigin::lower_left);
+        check_imported_uvs(scene.get(), float2(0.25f, -0.25f), float2(0.5f, 0.5f), float2(0.75f, 1.25f));
+    }
+
+    {
+        auto scene = Scene::create(ref(ctx.device), *importer_scene);
+        CHECK(scene->options().uv_origin == UVOrigin::lower_left);
+        check_imported_uvs(scene.get(), float2(0.25f, -0.25f), float2(0.5f, 0.5f), float2(0.75f, 1.25f));
+    }
+
+    {
+        auto scene = Scene::create(ref(ctx.device), *importer_scene, UVOrigin::upper_left);
+        CHECK(scene->options().uv_origin == UVOrigin::upper_left);
+        check_imported_uvs(scene.get(), float2(0.25f, 1.25f), float2(0.5f, 0.5f), float2(0.75f, -0.25f));
+    }
+}
 
 TEST_CASE_GPU("add remove compact materials")
 {

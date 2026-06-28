@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
@@ -9,8 +10,6 @@
 #include "falcor2/core/reflection/dynamic_properties.h"
 
 namespace falcor {
-
-class OpenPBRSceneGlobals;
 
 /// OpenPBR material.
 class OpenPBRMaterial : public Material {
@@ -171,7 +170,7 @@ private:
     /// Dynamic properties (generated from attributes).
     reflection::DynamicPropertySet m_material_properties;
 
-    ref<OpenPBRSceneGlobals> m_globals;
+    ref<SceneGlobals> m_globals;
 
     std::array<Attribute, ATTRIBUTE_COUNT> m_attributes;
     ref<sgl::Buffer> m_attributes_buffer;

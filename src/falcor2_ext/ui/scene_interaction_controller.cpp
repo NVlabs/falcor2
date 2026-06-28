@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "nanobind.h"
@@ -19,11 +20,12 @@ FALCOR_PY_EXPORT(ui_scene_interaction_controller)
 
     nb::module_ ui = nb::module_::import_("falcor2.ui");
 
-    nb::class_<ui::SceneInteractionController, Object>(
+    nb::class_<ui::SceneInteractionController, Object> scene_interaction_controller(
         ui,
         "SceneInteractionController",
         D(ui, SceneInteractionController)
-    )
+    );
+    scene_interaction_controller
         .def(
             nb::init<
                 ref<ui::SceneEditor>,
@@ -70,6 +72,28 @@ FALCOR_PY_EXPORT(ui_scene_interaction_controller)
             nb::arg().none(),
             D(ui, SceneInteractionController, reset_callback)
         )
+        .def_prop_ro(
+            "pointer_owner",
+            &ui::SceneInteractionController::pointer_owner,
+            D(ui, SceneInteractionController, pointer_owner)
+        )
+        .def(
+            "has_pointer_capture",
+            &ui::SceneInteractionController::has_pointer_capture,
+            D(ui, SceneInteractionController, has_pointer_capture)
+        )
+        .def_prop_rw(
+            "pointer_capture_callback",
+            &ui::SceneInteractionController::pointer_capture_callback,
+            &ui::SceneInteractionController::set_pointer_capture_callback,
+            nb::arg().none(),
+            D(ui, SceneInteractionController, pointer_capture_callback)
+        )
+        .def(
+            "cancel_pointer_owner",
+            &ui::SceneInteractionController::cancel_pointer_owner,
+            D(ui, SceneInteractionController, cancel_pointer_owner)
+        )
         .def(
             "handle_keyboard_event",
             &ui::SceneInteractionController::handle_keyboard_event,
@@ -93,4 +117,10 @@ FALCOR_PY_EXPORT(ui_scene_interaction_controller)
             "camera"_a.none(),
             D(ui, SceneInteractionController, focus_on_selection)
         );
+
+    nb::sgl_enum<ui::SceneInteractionController::PointerOwner>(
+        scene_interaction_controller,
+        "PointerOwner",
+        D(ui, SceneInteractionController, PointerOwner)
+    );
 }

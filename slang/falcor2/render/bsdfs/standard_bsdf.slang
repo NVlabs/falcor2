@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 implementing render;
@@ -23,8 +24,8 @@ public struct StandardBSDFData : IDifferentiable
     public float diffuse_transmission = {};
     /// Blend between opaque dielectric BRDF and specular transmissive BSDF.
     public float specular_transmission = {};
-    /// True for single-surface/thin transmission.
-    public bool thin_surface = {};
+    /// True for thin-walled transmission.
+    public bool thin_walled = {};
 };
 
 /// Falcor-style prepared standard BSDF.
@@ -57,8 +58,7 @@ public struct StandardBSDF : IBSDF, IDifferentiable
         spec_trans = saturate(data.specular_transmission);
 
         // Thick transmission stores Beer attenuation, so convert it to an interface albedo.
-        float3 transmission_albedo
-            = data.thin_surface ? saturate(data.transmission) : sqrt(saturate(data.transmission));
+        float3 transmission_albedo = data.thin_walled ? saturate(data.transmission) : sqrt(saturate(data.transmission));
 
         // The microfacet helpers treat alpha == 0 as a delta lobe.
         float alpha = roughness * roughness;

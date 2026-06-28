@@ -1,18 +1,24 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+
 """Image-set comparison and HTML report generation for material image runs."""
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-import csv
 import html
 from pathlib import Path
+import shutil
 from typing import Any
 
 import numpy as np
 from PIL import Image
 
-from .schema import RenderResult, read_manifest, read_results
+from examples.render_material.render_material_manifest import (
+    RenderResult,
+    read_manifest,
+    read_results,
+)
 
 
 LUMA = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
@@ -51,14 +57,12 @@ def compare_image_sets(
     tested_root: str | Path,
     output_dir: str | Path,
 ) -> ComparisonReport:
-    """Compare two render directories and write metrics plus visual HTML output."""
+    """Compare two render directories and write visual HTML output."""
 
     reference_dir = Path(reference_root)
     tested_dir = Path(tested_root)
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / ".reference_root").write_text(str(reference_dir), encoding="utf-8")
-    (out_dir / ".tested_root").write_text(str(tested_dir), encoding="utf-8")
 
     reference_entries = {
         entry.entry_id: entry for entry in read_manifest(reference_dir / "manifest.json").entries
@@ -83,7 +87,7 @@ def compare_image_sets(
         for entry_id in entry_ids
     ]
     rows.sort(key=_sort_key)
-    _write_outputs(out_dir, rows)
+    _write_outputs(out_dir, rows, reference_dir, tested_dir)
     return ComparisonReport(output_dir=out_dir, rows=tuple(rows))
 
 
@@ -164,16 +168,18 @@ def _build_row(
         return row
     if reference_result is None or not reference_result.image:
         row["status"] = "missing_reference_image"
+        row["message"] = reference_result.message if reference_result else ""
         return row
     if tested_result is None or not tested_result.image:
         row["status"] = "missing_tested_image"
+        row["message"] = tested_result.message if tested_result else ""
         return row
-    reference_path = reference_dir / reference_result.image
-    tested_path = tested_dir / tested_result.image
-    if not reference_path.exists():
+    reference_path = _find_source_image(reference_dir, reference_result.image)
+    tested_path = _find_source_image(tested_dir, tested_result.image)
+    if reference_path is None:
         row["status"] = "missing_reference_image"
         return row
-    if not tested_path.exists():
+    if tested_path is None:
         row["status"] = "missing_tested_image"
         return row
     try:
@@ -213,44 +219,32 @@ def _sort_key(row: dict[str, Any]) -> tuple[int, float, float, str]:
     )
 
 
-def _write_outputs(output_dir: Path, rows: list[dict[str, Any]]) -> None:
+def _write_outputs(
+    output_dir: Path,
+    rows: list[dict[str, Any]],
+    reference_dir: Path,
+    tested_dir: Path,
+) -> None:
     assets_dir = output_dir / "html_assets"
+    if assets_dir.exists():
+        shutil.rmtree(assets_dir)
     assets_dir.mkdir(parents=True, exist_ok=True)
     for index, row in enumerate(rows, start=1):
         if row.get("status") == "compared":
-            _write_preview_assets(output_dir, assets_dir, index, row)
-    _write_metrics(output_dir / "metrics.tsv", rows)
-    _write_html(output_dir / "comparison.html", rows)
+            _write_preview_assets(reference_dir, tested_dir, assets_dir, index, row)
+    _write_html(output_dir / "comparison.html", rows, reference_dir, tested_dir)
 
 
-def _write_metrics(path: Path, rows: list[dict[str, Any]]) -> None:
-    fields = [
-        "entry_id",
-        "label",
-        "provider",
-        "material_class",
-        "output",
-        "status",
-        "rmse_rgb",
-        "p95_abs_rgb",
-        "max_abs_rgb",
-        "mean_luma_bias",
-        "finite_fraction",
-        "message",
-    ]
-    with path.open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=fields, delimiter="\t", extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def _write_html(path: Path, rows: list[dict[str, Any]]) -> None:
-    """Write a card-based HTML report with summary metrics and visual triptychs."""
+def _write_html(
+    path: Path,
+    rows: list[dict[str, Any]],
+    reference_root: Path,
+    tested_root: Path,
+) -> None:
+    """Write a card-based HTML report with summary metrics and visual comparison cards."""
 
     summary = _html_summary(rows)
     cards = "\n".join(_row_card(index, row) for index, row in enumerate(rows, start=1))
-    reference_root = _read_side_root(path.parent, "reference")
-    tested_root = _read_side_root(path.parent, "tested")
     document = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -442,8 +436,8 @@ def _write_html(path: Path, rows: list[dict[str, Any]]) -> None:
   <header>
     <h1>Material Image Comparison</h1>
     <p>Rows are sorted worst-first by raw RGB RMSE, with structural issues first.</p>
-    <p>Reference root: <code>{html.escape(reference_root)}</code></p>
-    <p>Tested root: <code>{html.escape(tested_root)}</code></p>
+    <p>Reference root: <code>{html.escape(str(reference_root))}</code></p>
+    <p>Tested root: <code>{html.escape(str(tested_root))}</code></p>
   </header>
   <section class="controls" aria-label="Sort controls">
     <label for="sort-key">Sort by
@@ -629,20 +623,17 @@ def _max_metric(rows: list[dict[str, Any]], key: str) -> float | str:
     return max(values, default="")
 
 
-def _read_side_root(output_dir: Path, side: str) -> str:
-    side_file = output_dir / f".{side}_root"
-    if not side_file.exists():
-        return ""
-    return side_file.read_text(encoding="utf-8")
-
-
 def _write_preview_assets(
-    output_dir: Path, assets_dir: Path, index: int, row: dict[str, Any]
+    reference_dir: Path,
+    tested_dir: Path,
+    assets_dir: Path,
+    index: int,
+    row: dict[str, Any],
 ) -> None:
     reference_image = row.get("reference_image")
     tested_image = row.get("tested_image")
-    reference_path = _find_source_image(output_dir, "reference", str(reference_image))
-    tested_path = _find_source_image(output_dir, "tested", str(tested_image))
+    reference_path = _find_source_image(reference_dir, str(reference_image))
+    tested_path = _find_source_image(tested_dir, str(tested_image))
     if reference_path is None or tested_path is None:
         return
     reference = load_rgb(reference_path)
@@ -654,12 +645,17 @@ def _write_preview_assets(
     _write_png(prefix.with_name(prefix.name + "_diff.png"), diff)
 
 
-def _find_source_image(output_dir: Path, side: str, relative: str) -> Path | None:
-    side_file = output_dir / f".{side}_root"
-    if not side_file.exists():
+def _find_source_image(root: Path, relative: str) -> Path | None:
+    relative_path = Path(relative)
+    if relative_path.is_absolute():
         return None
-    path = Path(side_file.read_text(encoding="utf-8")) / relative
-    return path if path.exists() else None
+    root_resolved = root.resolve(strict=False)
+    path = (root_resolved / relative_path).resolve(strict=False)
+    try:
+        path.relative_to(root_resolved)
+    except ValueError:
+        return None
+    return path if path.is_file() else None
 
 
 def _write_png(path: Path, rgb: np.ndarray) -> None:

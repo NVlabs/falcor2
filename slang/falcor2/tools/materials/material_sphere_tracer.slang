@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 import slangpy;
@@ -435,9 +436,10 @@ void compensated_accumulate(inout float3 total, inout float3 residual, const flo
     total = next_total;
 }
 
-float3 resolved_accumulation(const float3 total, const float3 residual, const uint sample_count)
+float3
+resolved_accumulation(const float3 total, const float3 residual, const uint sample_count, const float3 background_color)
 {
-    return sample_count > 0 ? (total + residual) / float(sample_count) : visualizer_background_color();
+    return sample_count > 0 ? (total + residual) / float(sample_count) : background_color;
 }
 
 void material_visualizer_store_path_log4(uniform WTensor<float, 1> path_log, uint slot, float4 value)
@@ -462,6 +464,7 @@ void sphere_tracing_kernel(
     uniform uint direct_lighting_mode,
     uniform bool use_analytic_texture_filtering,
     uniform float texture_filter_width_scale,
+    uniform float3 background_color,
     uniform bool clear_result,
     uniform RWTexture2D<float4> accumulation_sum,
     uniform RWTexture2D<float4> accumulation_residual,
@@ -483,7 +486,7 @@ void sphere_tracing_kernel(
             accumulation_sum[tid.xy] = float4(0.0);
             accumulation_residual[tid.xy] = float4(0.0);
         }
-        result[tid.xy] = float4(visualizer_background_color(), 1.0);
+        result[tid.xy] = float4(background_color, 1.0);
         return;
     }
 
@@ -508,7 +511,7 @@ void sphere_tracing_kernel(
             bool hit = intersect_sphere(ray, float3(0), 1, t, false);
             if (!hit) {
                 if (bounce == 0 || !has_previous_scatter) {
-                    color.add(visualizer_background_color());
+                    color.add(background_color);
                 } else if (use_direct_hits) {
                     float3 contribution = throughput
                         * eval_environment_miss(
@@ -602,9 +605,9 @@ void sphere_tracing_kernel(
     accumulation_sum[tid.xy] = float4(total, 1.0);
     accumulation_residual[tid.xy] = float4(residual, 1.0);
 
-    float3 color_result = resolved_accumulation(total, residual, new_sample_count);
+    float3 color_result = resolved_accumulation(total, residual, new_sample_count, background_color);
     if (!is_finite_float3(color_result))
-        color_result = visualizer_background_color();
+        color_result = background_color;
     result[tid.xy] = float4(color_result, 1);
 }
 
@@ -798,6 +801,7 @@ void sphere_tracing_scene_material_kernel(
     uniform uint direct_lighting_mode,
     uniform bool use_analytic_texture_filtering,
     uniform float texture_filter_width_scale,
+    uniform float3 background_color,
     uniform bool clear_result,
     uniform RWTexture2D<float4> accumulation_sum,
     uniform RWTexture2D<float4> accumulation_residual,
@@ -822,7 +826,7 @@ void sphere_tracing_scene_material_kernel(
             accumulation_sum[tid.xy] = float4(0.0);
             accumulation_residual[tid.xy] = float4(0.0);
         }
-        result[tid.xy] = float4(visualizer_background_color(), 1.0);
+        result[tid.xy] = float4(background_color, 1.0);
         return;
     }
 
@@ -847,7 +851,7 @@ void sphere_tracing_scene_material_kernel(
             bool hit = intersect_sphere(ray, float3(0), 1, t, cull_backfaces);
             if (!hit) {
                 if (bounce == 0 || !has_previous_scatter) {
-                    color.add(visualizer_background_color());
+                    color.add(background_color);
                 } else if (use_direct_hits) {
                     float3 contribution = throughput
                         * eval_environment_miss(
@@ -941,9 +945,9 @@ void sphere_tracing_scene_material_kernel(
     accumulation_sum[tid.xy] = float4(total, 1.0);
     accumulation_residual[tid.xy] = float4(residual, 1.0);
 
-    float3 color_result = resolved_accumulation(total, residual, new_sample_count);
+    float3 color_result = resolved_accumulation(total, residual, new_sample_count, background_color);
     if (!is_finite_float3(color_result))
-        color_result = visualizer_background_color();
+        color_result = background_color;
     result[tid.xy] = float4(color_result, 1);
 }
 
@@ -960,6 +964,7 @@ void sphere_tracing_first_hit_aov_kernel(
     uniform uint direct_lighting_mode,
     uniform bool use_analytic_texture_filtering,
     uniform float texture_filter_width_scale,
+    uniform float3 background_color,
     uniform bool clear_result,
     uniform RWTexture2D<float4> beauty_sum,
     uniform RWTexture2D<float4> beauty_residual,
@@ -991,7 +996,7 @@ void sphere_tracing_first_hit_aov_kernel(
             secondary_transport_sum[tid.xy] = float4(0.0);
             secondary_transport_residual[tid.xy] = float4(0.0);
         }
-        const float4 background = float4(visualizer_background_color(), 1.0);
+        const float4 background = float4(background_color, 1.0);
         result[tid.xy] = background;
         first_hit_non_delta_ibl[tid.xy] = background;
         secondary_transport[tid.xy] = background;
@@ -1023,7 +1028,7 @@ void sphere_tracing_first_hit_aov_kernel(
             bool hit = intersect_sphere(ray, float3(0), 1, t, false);
             if (!hit) {
                 if (bounce == 0 || !has_previous_scatter) {
-                    let contribution = visualizer_background_color();
+                    let contribution = background_color;
                     beauty.add(contribution);
                 } else if (use_direct_hits) {
                     float3 contribution = throughput
@@ -1160,14 +1165,19 @@ void sphere_tracing_first_hit_aov_kernel(
     secondary_transport_sum[tid.xy] = float4(secondary_total, 1.0);
     secondary_transport_residual[tid.xy] = float4(secondary_residual_value, 1.0);
 
-    float3 beauty_result = resolved_accumulation(beauty_total, beauty_residual_value, new_sample_count);
+    float3 beauty_result
+        = resolved_accumulation(beauty_total, beauty_residual_value, new_sample_count, background_color);
     if (!is_finite_float3(beauty_result))
-        beauty_result = visualizer_background_color();
+        beauty_result = background_color;
     result[tid.xy] = float4(beauty_result, 1);
-    first_hit_non_delta_ibl[tid.xy]
-        = float4(resolved_accumulation(first_hit_total, first_hit_residual_value, new_sample_count), 1);
-    secondary_transport[tid.xy]
-        = float4(resolved_accumulation(secondary_total, secondary_residual_value, new_sample_count), 1);
+    first_hit_non_delta_ibl[tid.xy] = float4(
+        resolved_accumulation(first_hit_total, first_hit_residual_value, new_sample_count, background_color),
+        1
+    );
+    secondary_transport[tid.xy] = float4(
+        resolved_accumulation(secondary_total, secondary_residual_value, new_sample_count, background_color),
+        1
+    );
 }
 
 [shader("compute")]
@@ -1479,6 +1489,7 @@ void albedo_kernel(
     uniform Material material,
     uniform bool use_analytic_texture_filtering,
     uniform float texture_filter_width_scale,
+    uniform float3 background_color,
     uniform RWTexture2D<float4> result
 )
 {
@@ -1497,7 +1508,7 @@ void albedo_kernel(
     float t;
     bool hit = intersect_sphere(ray, float3(0), 1, t, true);
     if (!hit) {
-        result[tid.xy] = float4(visualizer_background_color(), 1);
+        result[tid.xy] = float4(background_color, 1);
         return;
     }
 
@@ -1524,6 +1535,7 @@ void preview_properties_kernel(
     uniform Material material,
     uniform bool use_analytic_texture_filtering,
     uniform float texture_filter_width_scale,
+    uniform float3 background_color,
     uniform RWTexture2D<float4> albedo_result,
     uniform RWTexture2D<float4> emission_result
 )
@@ -1543,7 +1555,7 @@ void preview_properties_kernel(
     float t;
     bool hit = intersect_sphere(ray, float3(0), 1, t, true);
     if (!hit) {
-        let background = float4(visualizer_background_color(), 1);
+        let background = float4(background_color, 1);
         albedo_result[tid.xy] = background;
         emission_result[tid.xy] = background;
         return;

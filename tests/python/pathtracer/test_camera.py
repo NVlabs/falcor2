@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ def matrix_to_numpy(matrix: spy.float4x4) -> np.ndarray:
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_camera_modify(device_type: spy.DeviceType, device: spy.Device) -> None:
-    scene = f2.Scene(device)
+    scene = f2.Scene.create(device)
     cam = helpers.create_test_camera(scene, width=1024, height=1024, fov_y=45.0)
     cam.fov_y = 90.0
     uniforms = cam.get_uniforms()
@@ -34,7 +35,7 @@ def test_camera_modify(device_type: spy.DeviceType, device: spy.Device) -> None:
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_camera_matrix_calculators(device_type: spy.DeviceType, device: spy.Device) -> None:
     """Camera matrices are calculated on demand, not GPU camera uniforms."""
-    scene = f2.Scene(device)
+    scene = f2.Scene.create(device)
     cam = helpers.create_test_camera(scene, width=64, height=64, fov_y=90.0)
     uniforms = cam.get_uniforms()
 
@@ -72,7 +73,7 @@ def test_camera_clip_uses_render_dims_without_dirtying(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
     """Projection matrices can use render dimensions without changing camera state."""
-    scene = f2.Scene(device)
+    scene = f2.Scene.create(device)
     cam = helpers.create_test_camera(scene, width=1280, height=720, fov_y=90.0)
     scene.update()
     update_generation = scene.update_generation
@@ -92,7 +93,7 @@ def test_camera_clip_uses_render_dims_without_dirtying(
 def test_camera_uniforms_use_render_dims_without_dirtying(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
-    scene = f2.Scene(device)
+    scene = f2.Scene.create(device)
     camera = helpers.create_test_camera(scene, width=1280, height=720)
     scene.update()
     update_generation = scene.update_generation
@@ -117,7 +118,7 @@ def test_camera_uniforms_use_render_dims_without_dirtying(
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_camera_transform(device_type: spy.DeviceType, device: spy.Device) -> None:
     """Camera transform position/rotation affects uniforms."""
-    scene = f2.Scene(device)
+    scene = f2.Scene.create(device)
     cam = helpers.create_test_camera(scene, width=512, height=512)
     entity = cam.entity
     t = f2.Transform()

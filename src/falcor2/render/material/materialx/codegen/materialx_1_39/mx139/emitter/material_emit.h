@@ -1,4 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+
 //
 // Shared signatures for the `emit_material_structs` / `emit_module_header`
 // routers.

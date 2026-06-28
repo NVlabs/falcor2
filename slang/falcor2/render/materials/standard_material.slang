@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 implementing render;
@@ -12,21 +13,21 @@ public struct StandardMaterial : IMaterial
     public TextureHandle metallic_roughness_texture;
     public TextureHandle emissive_texture;
     public TextureHandle transmission_texture;
-    public float3 base_color_factor;
-    public float metallic_factor;
-    public float roughness_factor;
-    public float normal_texture_scale;
-    public float3 emissive_factor;
-    public float ior;
-    public float3 transmission_factor;
-    public float diffuse_transmission_factor;
-    public float specular_transmission_factor;
-    public bool thin_surface;
-    public bool double_sided;
     /// Channel index for metallic value in metallic_roughness_texture.
     public uint metallic_texture_channel;
     /// Channel index for roughness value in metallic_roughness_texture.
     public uint roughness_texture_channel;
+    // TODO: These should be float16_t3 but CUDA backend has inconsistent reflection and dynamic dispatch layout rules!
+    public float16_t4 base_color_factor;
+    public float16_t4 transmission_factor;
+    public float16_t metallic_factor;
+    public float16_t roughness_factor;
+    public float16_t normal_texture_scale;
+    public float16_t ior;
+    public float16_t _pad_after_ior;
+    public float16_t diffuse_transmission_factor;
+    public float16_t specular_transmission_factor;
+    public float3 emissive_factor;
 
     public MaterialInstance setup_material_instance<LodSampler : ILodSampler>(
         const SurfaceInteraction si,
@@ -40,18 +41,23 @@ public struct StandardMaterial : IMaterial
         if (normal_texture.is_valid() && stdmat::is_normal_mapping_enabled(hints)) {
             float3 normal
                 = normalize(normal_texture.sample(lod_sampler, si.uv, float4(0.0, 0.0, 1.0, 0.0)).xyz * 2.0 - 1.0);
-            normal = normalize(lerp(float3(0.0, 0.0, 1.0), normal, normal_texture_scale));
-            mi.shading_frame_ws = Frame(si.shading_frame_ws.to_global(normal), si.shading_frame_ws.tangent);
+            normal = normalize(lerp(float3(0.0, 0.0, 1.0), normal, float(normal_texture_scale)));
+            mi.shading_frame_ws = Frame(
+                si.shading_frame_ws.to_global(normal),
+                si.shading_frame_ws.tangent,
+                si.shading_frame_ws.handedness_sign()
+            );
         } else {
             mi.shading_frame_ws = si.shading_frame_ws;
         }
-        mi.shading_frame_ws = stdmat::orient_shading_frame(si, mi.shading_frame_ws, double_sided);
+        mi.shading_frame_ws
+            = stdmat::orient_shading_frame(si, mi.shading_frame_ws, header.flags & MaterialFlags::double_sided);
         if (hints & MaterialInstanceHints::adjust_shading_normal) {
             adjust_shading_normal(mi.shading_frame_ws, si.front_normal_ws(), si.wi_ws);
         }
 
         // Resolve textured glTF metallic-roughness inputs into scalar controls.
-        float3 base_color = base_color_texture.sample(lod_sampler, si.uv, float4(1.0)).rgb * base_color_factor;
+        float3 base_color = base_color_texture.sample(lod_sampler, si.uv, float4(1.0)).rgb * base_color_factor.xyz;
 
         float4 metallic_roughness = metallic_roughness_texture.sample(lod_sampler, si.uv, float4(1.0));
         float metallic = clamp(metallic_roughness[metallic_texture_channel] * metallic_factor, 0.0, 1.0);
@@ -69,10 +75,11 @@ public struct StandardMaterial : IMaterial
         bsdf_data.roughness = roughness;
         bsdf_data.metallic = metallic;
         bsdf_data.eta = si.front_facing ? (si.ior / safe_ior) : (safe_ior / si.ior);
-        bsdf_data.transmission = transmission_texture.sample(lod_sampler, si.uv, float4(1.0)).rgb * transmission_factor;
+        bsdf_data.transmission
+            = transmission_texture.sample(lod_sampler, si.uv, float4(1.0)).rgb * transmission_factor.xyz;
         bsdf_data.diffuse_transmission = saturate(diffuse_transmission_factor);
         bsdf_data.specular_transmission = saturate(specular_transmission_factor);
-        bsdf_data.thin_surface = thin_surface;
+        bsdf_data.thin_walled = header.flags & MaterialFlags::thin_walled;
         mi.bsdf_data = bsdf_data;
 
         mi.emissive_radiance = emissive_texture.sample(lod_sampler, si.uv, float4(1.0)).rgb * emissive_factor;

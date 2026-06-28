@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "testing.h"
@@ -110,9 +111,17 @@ struct MemberOnly {
 static_assert(ArchiveValueType<ArchiveSignedEnum>);
 static_assert(ArchiveValueType<ArchiveUnsignedEnum>);
 static_assert(ArchiveValueType<ArchiveWideUnsignedEnum>);
+static_assert(ArchiveValueType<float16_t>);
+static_assert(ArchiveValueType<float16_t2>);
+static_assert(ArchiveValueType<float16_t3>);
+static_assert(ArchiveValueType<float16_t4>);
 static_assert(ArchiveCodec<ArchiveSignedEnum>::encoding == ArchiveEncoding::varsint);
 static_assert(ArchiveCodec<ArchiveUnsignedEnum>::encoding == ArchiveEncoding::varuint);
 static_assert(ArchiveCodec<ArchiveWideUnsignedEnum>::encoding == ArchiveEncoding::varuint);
+static_assert(ArchiveCodec<float16_t>::encoding == ArchiveEncoding::fixed4);
+static_assert(ArchiveCodec<float16_t2>::encoding == ArchiveEncoding::fixed4);
+static_assert(ArchiveCodec<float16_t3>::encoding == ArchiveEncoding::fixed8);
+static_assert(ArchiveCodec<float16_t4>::encoding == ArchiveEncoding::fixed8);
 static_assert(ArchiveValueType<archive_adl_tests::MacroFoo>);
 static_assert(ArchiveValueType<archive_adl_tests::MacroBar>);
 static_assert(ArchiveValueType<archive_adl_tests::DefaultedRecord>);
@@ -151,6 +160,20 @@ struct falcor::ArchiveCodec<ArchiveTestStruct> {
 static std::vector<uint8_t> make_bytes(std::initializer_list<uint8_t> values)
 {
     return std::vector<uint8_t>(values);
+}
+
+static std::vector<uint8_t>
+make_half_field_bytes(uint8_t header, std::initializer_list<float16_t> values, size_t payload_byte_count)
+{
+    std::vector<uint8_t> bytes = {header};
+    bytes.reserve(1 + payload_byte_count);
+    for (float16_t value : values) {
+        uint16_t bits = value.toBits();
+        bytes.push_back(static_cast<uint8_t>(bits & 0xff));
+        bytes.push_back(static_cast<uint8_t>(bits >> 8));
+    }
+    bytes.resize(1 + payload_byte_count, 0);
+    return bytes;
 }
 
 static std::vector<uint8_t> to_vector(std::span<const uint8_t> bytes)
@@ -378,6 +401,7 @@ TEST_CASE("field header golden bytes")
     CHECK(write_value(15, 1.0f) == make_bytes({0x7b, 0x00, 0x00, 0x80, 0x3f}));
     CHECK(write_value(16, 1.0) == make_bytes({0x84, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0x3f}));
     CHECK(write_value(17, std::string("abc")) == make_bytes({0x8f, 0x01, 0x03, 'a', 'b', 'c'}));
+    CHECK(write_value(1, float16_t(0.5f)) == make_half_field_bytes(0x0b, {float16_t(0.5f)}, 4));
     CHECK(
         write_value(1, float3{1.0f, 2.0f, 3.0f})
         == make_bytes({0x0d, 0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x40, 0x40})
@@ -387,6 +411,15 @@ TEST_CASE("field header golden bytes")
         == make_bytes(
             {0x0e, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00}
         )
+    );
+    CHECK(write_value(1, float16_t2{0.5f, 1.5f}) == make_half_field_bytes(0x0b, {float16_t(0.5f), float16_t(1.5f)}, 4));
+    CHECK(
+        write_value(1, float16_t3{0.25f, 0.5f, 0.75f})
+        == make_half_field_bytes(0x0c, {float16_t(0.25f), float16_t(0.5f), float16_t(0.75f)}, 8)
+    );
+    CHECK(
+        write_value(1, float16_t4{0.25f, 0.5f, 0.75f, 1.5f})
+        == make_half_field_bytes(0x0c, {float16_t(0.25f), float16_t(0.5f), float16_t(0.75f), float16_t(1.5f)}, 8)
     );
 }
 
@@ -411,6 +444,7 @@ TEST_CASE("primitive round trips")
 
     CHECK(read_value(write_value(10, 3.5f), 10, 0.0f) == 3.5f);
     CHECK(read_value(write_value(11, -0.25), 11, 0.0) == -0.25);
+    CHECK(read_value(write_value(12, float16_t(1.5f)), 12, float16_t{}) == float16_t(1.5f));
     CHECK(read_value(write_value(12, std::string("hello archive")), 12, std::string()) == "hello archive");
 }
 
@@ -602,6 +636,26 @@ TEST_CASE("counted lists")
     }
 
     {
+        std::vector<float16_t3> values = {
+            float16_t3{0.25f, 0.5f, 0.75f},
+            float16_t3{1.5f, -2.5f, 3.25f},
+        };
+
+        BufferArchiveSink sink;
+        ArchiveEncoder encoder(sink);
+        ArchiveSerializer serializer(encoder);
+        serializer.list(1, values);
+
+        SpanArchiveSource source(sink.bytes());
+        ArchiveDecoder decoder(source);
+        ArchiveDeserializer deserializer(decoder);
+        std::vector<float16_t3> decoded;
+        CHECK(deserializer.list(1, decoded));
+        deserializer.finish();
+        CHECK(decoded == values);
+    }
+
+    {
         std::vector<uint32_t> values = {11, 22};
         std::vector<uint32_t> empty;
 
@@ -683,6 +737,29 @@ TEST_CASE("math and path codecs")
         read_value(write_value(1, float4{1.5f, -2.5f, 3.25f, -4.75f}), 1, float4{})
         == float4{1.5f, -2.5f, 3.25f, -4.75f}
     );
+    CHECK(read_value(write_value(1, float16_t2{1.5f, -2.5f}), 1, float16_t2{}) == float16_t2{1.5f, -2.5f});
+    CHECK(
+        read_value(write_value(1, float16_t3{1.5f, -2.5f, 3.25f}), 1, float16_t3{}) == float16_t3{1.5f, -2.5f, 3.25f}
+    );
+    CHECK(
+        read_value(write_value(1, float16_t4{1.5f, -2.5f, 3.25f, -4.75f}), 1, float16_t4{})
+        == float16_t4{1.5f, -2.5f, 3.25f, -4.75f}
+    );
+    {
+        std::vector<uint8_t> bytes
+            = make_half_field_bytes(1 << 3 | uint8_t(ArchiveEncoding::fixed4), {float16_t(0.5f)}, 4);
+        bytes[3] = 1;
+        CHECK(read_value(bytes, 1, float16_t{}) == float16_t(0.5f));
+    }
+    {
+        std::vector<uint8_t> bytes = make_half_field_bytes(
+            1 << 3 | uint8_t(ArchiveEncoding::fixed8),
+            {float16_t(0.25f), float16_t(0.5f), float16_t(0.75f)},
+            8
+        );
+        bytes[7] = 1;
+        CHECK(read_value(bytes, 1, float16_t3{}) == float16_t3{0.25f, 0.5f, 0.75f});
+    }
 
     float3x3 matrix3{{1, 2, 3, 4, 5, 6, 7, 8, 9}};
     float4x4 matrix4{{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}};

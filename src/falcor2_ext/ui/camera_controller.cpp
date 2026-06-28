@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "nanobind.h"
@@ -47,14 +48,7 @@ FALCOR_PY_EXPORT(ui_camera_controller)
             &ui::CameraController::set_smoothing,
             D(ui, CameraController, smoothing)
         )
-        .def_prop_rw(
-            "capture_callback",
-            &ui::CameraController::capture_callback,
-            &ui::CameraController::set_capture_callback,
-            nb::arg().none(),
-            D(ui, CameraController, capture_callback)
-        )
-        .def("is_captured", &ui::CameraController::is_captured, D(ui, CameraController, is_captured))
+        .def("is_interacting", &ui::CameraController::is_interacting, D(ui, CameraController, is_interacting))
         .def_prop_ro("state", &ui::CameraController::state, D(ui, CameraController, state))
         .def("focus", &ui::CameraController::focus, "target"_a, "distance"_a, D(ui, CameraController, focus))
         .def(
@@ -68,6 +62,11 @@ FALCOR_PY_EXPORT(ui_camera_controller)
             &ui::CameraController::handle_mouse_event,
             "event"_a,
             D(ui, CameraController, handle_mouse_event)
+        )
+        .def(
+            "cancel_interaction",
+            &ui::CameraController::cancel_interaction,
+            D(ui, CameraController, cancel_interaction)
         )
         .def("update", &ui::CameraController::update, "dt"_a, D(ui, CameraController, update));
 

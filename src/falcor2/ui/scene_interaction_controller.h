@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
@@ -26,7 +27,7 @@ class SelectionOverlay;
 /// and selection overlay.
 ///
 /// Centralizes the input routing order, viewport-local coordinate remapping,
-/// gizmo suppression, camera capture side effects, and selection picking that
+/// gizmo suppression, explicit pointer ownership, and selection picking that
 /// would otherwise be scattered across the application.
 ///
 /// The controller does not own any of its services; they are injected by the
@@ -35,8 +36,22 @@ class SelectionOverlay;
 class FALCOR_API SceneInteractionController : public Object {
     FALCOR_OBJECT(SceneInteractionController)
 public:
+    enum class PointerOwner {
+        none,
+        camera,
+    };
+    SGL_ENUM_INFO(
+        PointerOwner,
+        {
+            {PointerOwner::none, "none"},
+            {PointerOwner::camera, "camera"},
+        }
+    );
+
     /// Callback invoked when the controller requests accumulation reset.
     using ResetCallback = std::function<void()>;
+    /// Callback invoked when pointer capture starts or ends.
+    using PointerCaptureCallback = std::function<void(bool capture)>;
 
     SceneInteractionController(
         ref<SceneEditor> scene_editor,
@@ -65,11 +80,26 @@ public:
     ResetCallback reset_callback() const { return m_reset_callback; }
     void set_reset_callback(ResetCallback callback);
 
-    /// Process a keyboard event. Routes through capture state, UI, and camera controller.
+    /// Current pointer owner for mouse drag/cursor capture.
+    PointerOwner pointer_owner();
+
+    /// Whether a pointer owner currently has mouse/cursor capture.
+    bool has_pointer_capture();
+
+    /// Callback invoked when pointer capture starts or ends.
+    const PointerCaptureCallback& pointer_capture_callback() const { return m_pointer_capture_callback; }
+    void set_pointer_capture_callback(PointerCaptureCallback callback);
+
+    /// Cancel the active pointer owner, if any.
+    void cancel_pointer_owner();
+
+    /// Process a keyboard event. Forwards to the camera controller and reports
+    /// whether the camera consumed it.
     /// @return True if the event was consumed.
     bool handle_keyboard_event(const sgl::KeyboardEvent& event);
 
-    /// Process a mouse event. Routes through capture state, UI, picker, and camera controller.
+    /// Process a mouse event. Routes viewport pointer ownership, camera interaction,
+    /// and selection picking.
     /// @return True if the event was consumed.
     bool handle_mouse_event(const sgl::MouseEvent& event);
 
@@ -83,6 +113,9 @@ public:
 
 private:
     void request_reset();
+    void set_pointer_owner(PointerOwner owner);
+    void reconcile_pointer_owner();
+    bool can_route_viewport_event(const sgl::MouseEvent& event) const;
 
     ref<SceneEditor> m_scene_editor;
     ref<ScenePicker> m_scene_picker;
@@ -94,6 +127,10 @@ private:
     uint64_t m_last_selection_version{0};
 
     ResetCallback m_reset_callback;
+    PointerCaptureCallback m_pointer_capture_callback;
+    PointerOwner m_pointer_owner{PointerOwner::none};
 };
+
+SGL_ENUM_REGISTER(SceneInteractionController::PointerOwner);
 
 } // namespace falcor::ui

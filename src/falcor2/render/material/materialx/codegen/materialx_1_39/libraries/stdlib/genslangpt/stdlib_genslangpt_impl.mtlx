@@ -32,6 +32,7 @@
   </implementation>
   <implementation name="IM_normalmap_float_genslangpt" nodedef="ND_normalmap_float" file="mx_normalmap.slang" function="mx_normalmap_float" target="genslangpt" />
   <implementation name="IM_normalmap_vector2_genslangpt" nodedef="ND_normalmap_vector2" file="mx_normalmap.slang" function="mx_normalmap_vector2" target="genslangpt" />
+  <implementation name="IM_heighttonormal_vector3_genslangpt" nodedef="ND_heighttonormal_vector3" target="genslangpt" />
 
   <implementation name="IM_position_vector3_genslangpt" nodedef="ND_position_vector3" sourcecode="si.position_ws" target="genslangpt" />
   <implementation name="IM_texcoord_vector2_genslangpt" nodedef="ND_texcoord_vector2" target="genslangpt" />

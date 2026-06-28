@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "nanobind.h"
@@ -18,6 +19,30 @@
 namespace nb = nanobind;
 using namespace nb::literals;
 
+namespace {
+
+nb::list discover_materialx_renderable_elements_impl(
+    const std::filesystem::path& path,
+    falcor::ref<falcor::AssetResolver> asset_resolver
+)
+{
+    falcor::materialx::CodeGenDesc desc;
+    desc.document = path;
+    desc.asset_resolver = std::move(asset_resolver);
+
+    nb::list records;
+    for (const falcor::materialx::RenderableElement& element :
+         falcor::materialx::CodeGen::discover_renderable_elements(desc)) {
+        nb::dict record;
+        record["name"] = element.name;
+        record["type"] = element.type;
+        records.append(record);
+    }
+    return records;
+}
+
+} // namespace
+
 FALCOR_PY_EXPORT(render_materialx_codegen)
 {
     using namespace falcor;
@@ -30,7 +55,8 @@ FALCOR_PY_EXPORT(render_materialx_codegen)
         "create_materialx_mx139_lut_bindings",
         [](sgl::Device* device)
         {
-            materialx::mx139::LutBuffers buffers = materialx::mx139::create_lut_buffers(device);
+            auto scene_globals = make_ref<materialx::mx139::LutSceneGlobals>(device);
+            const materialx::mx139::LutSceneGlobals::Buffers& buffers = scene_globals->buffers();
 
             nb::dict lut_globals;
             lut_globals["mini_microfacet_ggx_energy"] = buffers.mini_microfacet_ggx_energy;
@@ -47,15 +73,10 @@ FALCOR_PY_EXPORT(render_materialx_codegen)
     );
 
     m.def(
-        "discover_materialx_material_node_names",
-        [](const std::filesystem::path& path, ref<AssetResolver> asset_resolver)
-        {
-            materialx::CodeGenDesc desc;
-            desc.document = path;
-            desc.asset_resolver = std::move(asset_resolver);
-            return materialx::CodeGen::discover_material_node_names(desc);
-        },
+        "discover_materialx_renderable_elements",
+        &discover_materialx_renderable_elements_impl,
         "path"_a,
-        "asset_resolver"_a.none() = nb::none()
+        "asset_resolver"_a.none() = nb::none(),
+        "Discover renderable MaterialX elements and their MaterialX types."
     );
 }

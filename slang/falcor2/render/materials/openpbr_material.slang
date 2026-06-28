@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 implementing render;
@@ -204,6 +205,22 @@ public struct OpenPBRMaterialInstance : IMaterialInstance
         return openpbr_collect_properties(inputs, si.wi_ws, emissive_radiance);
     }
 
+    public override Optional<ExtraBsdfProperties>
+    collect_extra_bsdf_properties(const SurfaceInteraction si, const float3 wo)
+    {
+        ExtraBsdfProperties result = {};
+
+        result.bsdf_count = 1;
+        result.bsdf_N[0] = si.shading_frame_ws.to_local(inputs.geometry_basis.n);
+        result.bsdf_T[0] = si.shading_frame_ws.to_local(inputs.geometry_basis.t);
+        result.bsdf_B[0] = si.shading_frame_ws.to_local(inputs.geometry_basis.b);
+        result.bsdf_albedo[0] = inputs.base_color * inputs.base_weight;
+        result.bsdf_weight[0] = float3(1.0);
+        result.bsdf_roughness[0] = float2(inputs.specular_roughness);
+
+        return result;
+    }
+
     public override LobeTypes get_lobe_types(const SurfaceInteraction si)
     {
         // TODO: Return a more accurate set of lobes.
@@ -293,7 +310,11 @@ public struct OpenPBRMaterial : IMaterial
                 normal_texture_handle.sample(lod_sampler, si.uv, float4(0.0, 0.0, 1.0, 0.0)).xyz * 2.0 - 1.0
             );
             normal = normalize(lerp(float3(0.0, 0.0, 1.0), normal, normal_texture_scale));
-            shading_frame_ws = Frame(si.shading_frame_ws.to_global(normal), si.shading_frame_ws.tangent);
+            shading_frame_ws = Frame(
+                si.shading_frame_ws.to_global(normal),
+                si.shading_frame_ws.tangent,
+                si.shading_frame_ws.handedness_sign()
+            );
         } else {
             shading_frame_ws = si.shading_frame_ws;
         }

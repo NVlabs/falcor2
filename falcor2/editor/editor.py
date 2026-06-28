@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 from dataclasses import dataclass
@@ -80,7 +81,6 @@ class Editor:
 
         # C++ camera controller (Unreal Editor-style with orbit, dolly, etc.)
         self._camera_controller = f2.ui.CameraController()
-        self._camera_controller.capture_callback = self._on_camera_capture
         self._camera: Optional[f2.Camera] = None
 
         # Scene editor components
@@ -103,6 +103,7 @@ class Editor:
             self._selection_overlay,
             self._camera_controller,
         )
+        self._interaction_controller.pointer_capture_callback = self._on_camera_capture
         self._scene: Optional[f2.Scene] = None
 
         # Scene shader helper for debug modes
@@ -235,7 +236,7 @@ class Editor:
             return True
 
         # Begin ImGui frame (pass window when camera is not captured to allow ImGui to manage the cursor).
-        ui_window = None if self._camera_controller.is_captured() else self.window
+        ui_window = None if self._interaction_controller.has_pointer_capture() else self.window
         self._ui_context.begin_frame(self._image.width, self._image.height, ui_window)
 
         # Determine viewport render resolution.
@@ -442,20 +443,19 @@ class Editor:
         self.render_mode = modes[next_index]
 
     def _on_keyboard_event(self, event: spy.KeyboardEvent):
-        # When captured, the camera controller owns all input - skip ImGui.
-        if self._camera_controller.is_captured():
-            self._interaction_controller.handle_keyboard_event(event)
+        # Always feed ImGui first so its input state stays coherent.
+        imgui_consumed = self._ui_context.handle_keyboard_event(event)
+
+        # Forward to interaction controller for camera movement/modifier tracking.
+        camera_consumed = self._interaction_controller.handle_keyboard_event(event)
+
+        if imgui_consumed or camera_consumed:
             return
 
-        # Always feed ImGui for consistent state tracking.
-        self._ui_context.handle_keyboard_event(event)
+        if self._scene_editor.visible and self._scene_editor.handle_keyboard_shortcut(event):
+            return
 
-        # TODO: We should return here if ImGui wants text input.
-
-        # Forward to interaction controller for modifier tracking etc.
-        self._interaction_controller.handle_keyboard_event(event)
-
-        # App hotkeys (always processed).
+        # Remaining app hotkeys.
         if event.type == spy.KeyboardEventType.key_press:
             if event.key == spy.KeyCode.escape:
                 self.close()
@@ -478,18 +478,21 @@ class Editor:
             self.on_keyboard_event(event)
 
     def _on_mouse_event(self, event: spy.MouseEvent):
-        # When captured, the camera controller owns all input - skip ImGui.
-        if self._camera_controller.is_captured():
-            self._interaction_controller.handle_mouse_event(event)
-            return
-
         # Always feed ImGui so it maintains consistent state.
-        self._ui_context.handle_mouse_event(event)
+        imgui_consumed = self._ui_context.handle_mouse_event(event)
 
-        # Forward to interaction controller only when the mouse is over
-        # the viewport. When the editor is hidden, always forward.
-        if not self._scene_editor.visible or self._scene_editor.is_viewport_interactive():
-            self._interaction_controller.handle_mouse_event(event)
+        # Forward to interaction controller while it owns the pointer, or when
+        # the event is eligible for viewport interaction.
+        interaction_consumed = False
+        if (
+            self._interaction_controller.has_pointer_capture()
+            or not self._scene_editor.visible
+            or self._scene_editor.is_viewport_interactive()
+        ):
+            interaction_consumed = self._interaction_controller.handle_mouse_event(event)
+
+        if imgui_consumed or interaction_consumed:
+            return
 
         if self.on_mouse_event is not None:
             self.on_mouse_event(event)

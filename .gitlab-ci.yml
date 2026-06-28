@@ -7,7 +7,7 @@ variables:
   GIT_SUBMODULE_FORCE_HTTPS: "true"
   GIT_SUBMODULE_DEPTH: 0
   GIT_STRATEGY: fetch
-
+  GIT_SUBMODULE_UPDATE_FLAGS: --force
 
 # -----------------------------------------------------------------------------
 # Rule templates
@@ -60,17 +60,21 @@ pre-commit:
 .windows-base:
   stage: build
   tags:
-    - windows
-    - gpu
+    - kernelvm
   variables:
-    GIT_CLONE_PATH: C:\sw\gl\falcor2_%CI_PROJECT_ID%
+    KERNELVM_OS: windows11
+    KERNELVM_DRIVER: "610.62"
     VS_PATH: C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools
     CONDA_ENV: falcor2
   hooks:
     pre_get_sources_script:
       - git config --global core.longpaths true
       # Remove build folder
-      - cmd.exe /c "rmdir /s /q %CI_PROJECT_DIR%\build || exit 0"
+      - |
+        $buildDir = Join-Path $env:CI_PROJECT_DIR 'build'
+        if (Test-Path -LiteralPath $buildDir) {
+          Remove-Item -LiteralPath $buildDir -Recurse -Force
+        }
   script:
     # Setup conda environment
     # Requires PowerShell 7.3+ for $PSNativeCommandUseErrorActionPreference
@@ -111,8 +115,10 @@ pre-commit:
 .linux-base:
   stage: build
   tags:
-    - linux
-    - gpu
+    - kernelvm
+  variables:
+    KERNELVM_OS: ubuntu24
+    KERNELVM_DRIVER: "610.43.02"
   hooks:
     pre_get_sources_script:
       # Remove build folder
@@ -127,7 +133,6 @@ pre-commit:
     - conda activate falcor2
     # Otherwise we are picking up the vulkan sdk version of slang.
     # See https://github.com/shader-slang/slang/issues/7694
-    - unset LD_LIBRARY_PATH
 
     # Run CI script
     - python -u tools/ci.py info

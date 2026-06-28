@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "slang_source_postprocess.h"
@@ -17,12 +18,14 @@ namespace codegen_support {
 
 void strip_slang_snippet_file_header(std::string& text)
 {
-    constexpr std::string_view k_spdx_prefix = "// SPDX-License-Identifier:";
-    if (!text.starts_with(k_spdx_prefix))
-        return;
+    constexpr std::string_view k_spdx_copyright_prefix = "// SPDX-FileCopyrightText:";
+    constexpr std::string_view k_spdx_license_prefix = "// SPDX-License-Identifier:";
 
-    const size_t line_end = text.find('\n');
-    text.erase(0, line_end == std::string::npos ? text.size() : line_end + 1);
+    // Strip leading SPDX lines (copyright + license, or just license for legacy files)
+    while (text.starts_with(k_spdx_copyright_prefix) || text.starts_with(k_spdx_license_prefix)) {
+        const size_t line_end = text.find('\n');
+        text.erase(0, line_end == std::string::npos ? text.size() : line_end + 1);
+    }
     if (text.starts_with('\n'))
         text.erase(0, 1);
 }

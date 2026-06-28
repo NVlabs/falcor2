@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 import falcor2.render;
@@ -109,8 +110,8 @@ ParameterBlock<SelectionProbeParams> g_selection_probe_params;
 [raypayload]
 public struct SelectionProbePayload
 {
-    uint hit : read(caller, anyhit, miss)
-        : write(caller, anyhit, miss);
+    uint hit : read(caller)
+        : write(anyhit, miss);
 
     __init() { hit = 0; }
 };
@@ -122,6 +123,10 @@ void probe_miss(inout SelectionProbePayload payload)
 }
 
 SCENE_RAY_TYPE_ANY_HIT(probe, probe_any_hit, SelectionProbePayload);
+#ifdef __TARGET_CUDA__
+// Workaround for https://github.com/shader-slang/slang/issues/11658
+[ForceInline]
+#endif
 void probe_any_hit<D : IDeferredHitInfo>(inout SelectionProbePayload payload, D deferred_hit)
 {
     uint id = InstanceID() + GeometryIndex2();

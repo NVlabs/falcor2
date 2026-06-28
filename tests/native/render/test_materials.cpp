@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "testing.h"
@@ -43,7 +44,6 @@ materialx::CodeGenDesc make_materialx_codegen_desc(const std::string& shader)
     materialx::CodeGenDesc desc;
     desc.document = materialx_139_source_from_138(shader);
     desc.node_name = "Tiled_Brass";
-    desc.flip_v_texcoord = false;
     desc.positionfree_layering = false;
     desc.transmissive_bsdfs.clear();
     desc.auto_gamma_image = true;
@@ -261,21 +261,6 @@ std::string mix_edf_surface_shader()
 )";
 }
 
-std::string heighttonormal_preview_shader()
-{
-    return R"(<?xml version="1.0"?>
-<materialx version="1.38" colorspace="lin_rec709">
-  <nodegraph name="NG_heighttonormal">
-    <heighttonormal name="height1" type="vector3">
-      <input name="in" type="float" value="0.5" />
-      <input name="scale" type="float" value="0.2" />
-    </heighttonormal>
-    <output name="out" type="vector3" nodename="height1" />
-  </nodegraph>
-</materialx>
-)";
-}
-
 std::string mx139_layered_property_update_shader()
 {
     return R"(<materialx version="1.39" colorspace="lin_rec709">
@@ -420,7 +405,6 @@ TEST_CASE("scene materialx 1.39 successor variants compile without 1.38")
         auto result = materialx::CodeGen::generate(make_materialx_codegen_desc(variant.shader));
         REQUIRE(result);
         CHECK(starts_with(result->module_name, "mx139_"));
-        CHECK(result->needs_mx139_lut_scene_globals);
         CHECK(contains(result->module_source, "namespace mx139"));
         CHECK_FALSE(contains(result->module_source, "MaterialX138"));
         if (variant.expects_layering)

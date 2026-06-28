@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
@@ -5,6 +6,7 @@
 #include "falcor2/core/enum.h"
 
 #include <functional>
+#include <limits>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -54,6 +56,18 @@ struct ValueRange {
 inline ValueRange value_range(double min, double max)
 {
     return ValueRange{min, max};
+}
+
+/// Convenience factory for ValueRange with default min/max (0.0, 1.0).
+inline ValueRange value_range_unit()
+{
+    return ValueRange{0.0, 1.0};
+}
+
+/// Convenience factory for ValueRange with positive range (0.0, +inf).
+inline ValueRange value_range_positive()
+{
+    return ValueRange{0.0, std::numeric_limits<double>::max()};
 }
 
 /// A single enum value and its name.

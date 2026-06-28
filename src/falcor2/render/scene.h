@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
@@ -8,10 +9,12 @@
 #include "falcor2/render/scene_object.h"
 #include "falcor2/render/scene_update.h"
 #include "falcor2/render/material.h"
+#include "falcor2/render/scene_globals.h"
 #include "falcor2/render/geometry.h"
 #include "falcor2/render/animation.h"
 #include "falcor2/render/entity.h"
 #include "falcor2/render/component.h"
+#include "falcor2/render/scene_options.h"
 #include "falcor2/render/scene_import.h"
 #include "falcor2/render/hit_group_policy.h"
 #include "falcor2/render/render_scene.h"
@@ -20,13 +23,21 @@
 #include "falcor2/core/object.h"
 #include "falcor2/core/properties.h"
 #include "falcor2/core/signal.h"
+#include "falcor2/importers/importer_types.h"
 
 #include <sgl/device/fwd.h>
 #include <sgl/device/shader.h>
 
+#include <algorithm>
+#include <functional>
+#include <map>
 #include <optional>
 #include <span>
-
+#include <string>
+#include <string_view>
+#include <type_traits>
+#include <typeinfo>
+#include <utility>
 
 namespace falcor {
 
@@ -86,40 +97,38 @@ class FALCOR_API Scene : public Object {
 public:
     /// Constructor.
     /// @param device The device to use for rendering.
-    Scene(ref<sgl::Device> device);
-
-    /// Constructor.
-    /// @param device The device to use for rendering.
-    /// @param importer_scene The importer scene to create the scene from.
-    Scene(ref<sgl::Device> device, ref<ImporterScene> importer_scene);
-
-    /// Constructor.
-    /// @param device The device to use for rendering.
-    /// @param path Path to the scene file to load.
-    /// @param recompute_normals If true, recompute normals for all meshes.
-    Scene(ref<sgl::Device> device, const std::filesystem::path& path, bool recompute_normals = false);
+    /// @param options Scene creation options.
+    Scene(ref<sgl::Device> device, const SceneOptions& options);
 
     /// Destructor.
     virtual ~Scene() override;
 
     /// Create an empty scene.
     /// @param device The device to use for rendering.
+    /// @param uv_origin Optional target scene texture coordinate origin. If unset, defaults to upper_left.
     /// @return The created scene.
-    static ref<Scene> create(ref<sgl::Device> device);
+    static ref<Scene> create(ref<sgl::Device> device, std::optional<UVOrigin> uv_origin = {});
 
     /// Create a scene from an importer scene.
     /// @param device The device to use for rendering.
     /// @param importer_scene The importer scene to create the scene from.
+    /// @param uv_origin Optional target scene texture coordinate origin. If unset, uses importer_scene.uv_origin.
     /// @return The created scene.
-    static ref<Scene> create(ref<sgl::Device> device, ref<ImporterScene> importer_scene);
+    static ref<Scene>
+    create(ref<sgl::Device> device, const ImporterScene& importer_scene, std::optional<UVOrigin> uv_origin = {});
 
     /// Create a scene by loading from a file.
     /// @param device The device to use for rendering.
     /// @param path Path to the scene file to load.
     /// @param recompute_normals If true, recompute normals for all meshes.
+    /// @param uv_origin Optional target scene texture coordinate origin. If unset, uses imported scene convention.
     /// @return The created scene.
-    static ref<Scene>
-    create(ref<sgl::Device> device, const std::filesystem::path& path, bool recompute_normals = false);
+    static ref<Scene> create(
+        ref<sgl::Device> device,
+        const std::filesystem::path& path,
+        bool recompute_normals = false,
+        std::optional<UVOrigin> uv_origin = {}
+    );
 
     /// The devce device used for creating resources and executing rendering commands.
     sgl::Device* device() const { return m_device; }
@@ -130,10 +139,26 @@ public:
     /// The texture manager responsible for loading, caching, and managing scene textures.
     TextureManager* texture_manager() const { return m_texture_manager.get(); }
 
+    /// Scene creation options.
+    const SceneOptions& options() const { return m_options; }
+
     /// Add scene globals to the scene.
     /// Scene globals are shader globals that are set on the scene and automatically bound when rendering.
     /// @param globals The scene globals to add.
     void add_scene_globals(ref<SceneGlobals> globals);
+
+    /// Get named scene globals, or create and add them to the scene.
+    /// Expected usage is for scene-owned shared globals used by materials: the material keeps the returned ref
+    /// while it needs the shared globals, and Scene garbage collection reclaims the object after that ref is released.
+    /// Manual globals added with add_scene_globals() are not reused or removed by this helper. The caller is
+    /// responsible for using a unique name for each shared globals object.
+    /// The factory must create a new SceneGlobals object, so each managed SceneGlobals* is registered under exactly
+    /// one name. Managed globals must not be passed to remove_scene_globals(); a SceneGlobals object is either managed
+    /// by this helper and garbage collected by Scene, or manually added/removed by the caller.
+    /// @param name Unique scene globals name.
+    /// @param factory Factory called only when no scene globals with \p name exist yet.
+    /// @return The existing or newly created scene globals.
+    ref<SceneGlobals> get_or_create_scene_globals(std::string_view name, std::function<ref<SceneGlobals>()> factory);
 
     /// Remove scene globals from the scene.
     /// @param globals The scene globals to remove.
@@ -390,7 +415,13 @@ public:
     void _handle_removed_objects();
 
 private:
+    /// Garbage collect refcounted scene globals with no remaining external owners.
+    void run_garbage_collect();
+
     ref<sgl::Device> m_device;
+
+    /// Resolved scene creation options.
+    SceneOptions m_options;
 
     /// Collection of all materials.
     MaterialCollection m_material_collection;
@@ -421,6 +452,8 @@ private:
 
     /// List of scene globals to bind to the shader when rendering the scene.
     std::vector<ref<SceneGlobals>> m_scene_globals;
+    /// Non-owning globals managed by get_or_create_scene_globals().
+    std::map<std::string, SceneGlobals*, std::less<>> m_refcounted_scene_globals;
 
     /// Material system for managing materials.
     ref<MaterialSystem> m_material_system;
@@ -431,6 +464,8 @@ private:
 
     /// Slang module containing rendering shader code.
     ref<sgl::SlangModule> m_render_module;
+    /// Slang settings module that specializes scene conventions.
+    ref<sgl::SlangModule> m_settings_module;
     /// Shader object for binding scene data.
     ref<sgl::ShaderObject> m_scene_shader_object;
 

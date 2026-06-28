@@ -1,8 +1,10 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 implementing utils;
 
 /// Return true if value contains any bit from flag.
+[ForceInline]
 public bool is_set<T : __EnumType>(T value, T flag)
 {
     return value & flag;

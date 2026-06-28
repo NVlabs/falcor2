@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "falcor2/ui/scene_editor.h"
@@ -119,6 +120,41 @@ void SceneEditor::update_playback(double dt)
     m_scene->set_time(time);
 }
 
+bool SceneEditor::handle_keyboard_shortcut(const sgl::KeyboardEvent& event)
+{
+    if (!event.is_key_press())
+        return false;
+
+    if (!m_scene)
+        return false;
+
+    switch (event.key) {
+    case sgl::KeyCode::delete_:
+        remove_selected_object();
+        return true;
+    case sgl::KeyCode::space:
+        set_playing(!playing());
+        return true;
+    case sgl::KeyCode::q:
+        set_tool_mode(ToolMode::select);
+        return true;
+    case sgl::KeyCode::w:
+        set_tool_mode(ToolMode::move);
+        return true;
+    case sgl::KeyCode::e:
+        set_tool_mode(ToolMode::rotate);
+        return true;
+    case sgl::KeyCode::r:
+        set_tool_mode(ToolMode::scale);
+        return true;
+    case sgl::KeyCode::x:
+        set_transform_space(transform_space() == TransformSpace::local ? TransformSpace::world : TransformSpace::local);
+        return true;
+    default:
+        return false;
+    }
+}
+
 void SceneEditor::begin_frame()
 {
     m_gizmo_frame_initialized = ImGui::GetFrameCount();
@@ -150,22 +186,6 @@ void SceneEditor::editor_ui()
         ImGui::EndDisabled();
         return;
     }
-
-    if (ImGui::IsKeyPressed(ImGuiKey_Delete))
-        remove_selected_object();
-    if (ImGui::IsKeyPressed(ImGuiKey_Space))
-        set_playing(!playing());
-    if (ImGui::IsKeyPressed(ImGuiKey_Q))
-        m_tool_mode = ToolMode::select;
-    if (ImGui::IsKeyPressed(ImGuiKey_W))
-        m_tool_mode = ToolMode::move;
-    if (ImGui::IsKeyPressed(ImGuiKey_E))
-        m_tool_mode = ToolMode::rotate;
-    if (ImGui::IsKeyPressed(ImGuiKey_R))
-        m_tool_mode = ToolMode::scale;
-    if (ImGui::IsKeyPressed(ImGuiKey_X))
-        m_transform_space
-            = (m_transform_space == TransformSpace::local) ? TransformSpace::world : TransformSpace::local;
 }
 
 void SceneEditor::viewport_ui(sgl::Texture* output_texture, float fps)
@@ -623,6 +643,8 @@ void SceneEditor::viewport_gizmo()
     }
     ImGuizmo::MODE mode = (m_transform_space == TransformSpace::local) ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
 
+    bool camera_interacting = m_camera_controller && m_camera_controller->is_interacting();
+    ImGuizmo::Enable(!camera_interacting);
     if (ImGuizmo::Manipulate(
             transpose(m_view_matrix_no_scale).data(),
             transpose(m_proj_matrix).data(),
@@ -634,6 +656,7 @@ void SceneEditor::viewport_gizmo()
         float4x4 transform_matrix = mul(sgl::math::inverse(parent_world_from_object), world_from_object);
         entity->set_transform(Transform(transform_matrix));
     }
+    ImGuizmo::Enable(true);
 }
 
 void SceneEditor::help_ui()

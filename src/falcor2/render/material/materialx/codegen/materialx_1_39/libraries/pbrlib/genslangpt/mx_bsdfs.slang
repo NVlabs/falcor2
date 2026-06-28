@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #ifdef MX139_STACK_HAS_BSDF_FRAMES
@@ -11,7 +12,7 @@ void mx_store_curve_bsdf_frame(BSDF bsdf)
 {
     const int bsdf_index = bsdf.get_index();
     mx_stack.bsdf_frames[bsdf_index]
-        = Frame(mx_stack.bsdf_n[bsdf_index], mx_stack.bsdf_t[bsdf_index], Frame::Component::tangent);
+        = Frame(mx_stack.bsdf_n[bsdf_index], mx_stack.bsdf_t[bsdf_index], 1.0, Frame::Component::tangent);
 }
 #endif
 
@@ -171,7 +172,7 @@ void mx_scratchconductor_brdf(
             distribution
         )
     );
-    mx_prepare_bsdf(bsdf, normal, si.shading_frame_ws.tangent);
+    mx_prepare_bsdf(bsdf, normal, tangent);
 }
 
 void mx_dielectric_bsdf(

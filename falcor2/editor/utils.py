@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 from os import PathLike
@@ -49,7 +50,7 @@ def load_scene(
     recompute_normals: bool = False,
 ) -> f2.Scene:
     """Load a scene from a file using the C++ scene system."""
-    return f2.Scene(device, path, recompute_normals)
+    return f2.Scene.create(device, path, recompute_normals)
 
 
 def save_image(tensor: spy.Tensor, path: Union[str, PathLike[str]]) -> None:

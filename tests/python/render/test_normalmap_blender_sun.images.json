@@ -1,0 +1,14 @@
+{
+  "test_blender_sun_normalmap_scene[glb_bottom-DeviceType.d3d12]": {
+    "reference": "2695a604eeb91e2699e3191af7645b380f0f59dada316bec14b85089937d7088"
+  },
+  "test_blender_sun_normalmap_scene[glb_right-DeviceType.d3d12]": {
+    "reference": "9fae62025bf11640d7911a76e709fda094a2e40d9deabefcdaca9138116ac28d"
+  },
+  "test_blender_sun_normalmap_scene[usd_bottom-DeviceType.d3d12]": {
+    "reference": "3b94d9c2d3ab2e37ab5723f84a5fc2a1ace7bf5b0f131365bcf87095c070e2bf"
+  },
+  "test_blender_sun_normalmap_scene[usd_right-DeviceType.d3d12]": {
+    "reference": "0d7425bb9c441d7be878115f9355112be1604a10e8a46bb6619f80c874436302"
+  }
+}

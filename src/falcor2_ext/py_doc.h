@@ -370,6 +370,14 @@ static const char *__doc_falcor_ArchiveCodec_26 = R"doc()doc";
 
 static const char *__doc_falcor_ArchiveCodec_27 = R"doc()doc";
 
+static const char *__doc_falcor_ArchiveCodec_28 = R"doc()doc";
+
+static const char *__doc_falcor_ArchiveCodec_29 = R"doc()doc";
+
+static const char *__doc_falcor_ArchiveCodec_30 = R"doc()doc";
+
+static const char *__doc_falcor_ArchiveCodec_31 = R"doc()doc";
+
 static const char *__doc_falcor_ArchiveDecoder = R"doc(Reads primitive archive wire encodings from an ArchiveSource.)doc";
 
 static const char *__doc_falcor_ArchiveDecoder_ArchiveDecoder = R"doc(Create a decoder that reads from the given source.)doc";
@@ -2252,6 +2260,16 @@ static const char *__doc_falcor_ImporterMesh_texcoord_stream = R"doc()doc";
 
 static const char *__doc_falcor_ImporterMesh_texcoord_stream_2 = R"doc()doc";
 
+static const char *__doc_falcor_ImporterMesh_uv_origin =
+R"doc(Authored image origin convention for this mesh's texture coordinates.
+
+This describes the texcoord data stored on this mesh. It may differ
+from the ImporterScene or Scene target UV origin; scene loading
+converts mesh UVs when the mesh convention differs from the target
+convention. UV-origin conversion does not update tangent handedness;
+tangent-frame parity and normal-map channel conventions are separate
+concerns.)doc";
+
 static const char *__doc_falcor_ImporterMesh_vertex_count = R"doc(Current vertex count.)doc";
 
 static const char *__doc_falcor_ImporterNode = R"doc()doc";
@@ -2353,6 +2371,15 @@ Parameter ``box_size``:
 static const char *__doc_falcor_ImporterScene_root_nodes = R"doc(Root node indices.)doc";
 
 static const char *__doc_falcor_ImporterScene_textures = R"doc(Texture array.)doc";
+
+static const char *__doc_falcor_ImporterScene_uv_origin =
+R"doc(Target image origin convention for scenes created from this importer
+scene.
+
+This is the preferred scene-wide destination convention. Individual
+ImporterMesh instances still describe their own authored texcoord
+convention via ImporterMesh::uv_origin and are converted on load if it
+differs from this scene convention.)doc";
 
 static const char *__doc_falcor_ImporterSemantic =
 R"doc(Semantic meaning that importer assigns to a vertex attribute. For some
@@ -2846,8 +2873,6 @@ static const char *__doc_falcor_MaterialXMaterial_m_mtlx_compensation = R"doc()d
 
 static const char *__doc_falcor_MaterialXMaterial_m_mtlx_editable_params = R"doc()doc";
 
-static const char *__doc_falcor_MaterialXMaterial_m_mtlx_flip_v_texcoord = R"doc()doc";
-
 static const char *__doc_falcor_MaterialXMaterial_m_mtlx_geomprop_ids = R"doc()doc";
 
 static const char *__doc_falcor_MaterialXMaterial_m_mtlx_geomprop_names = R"doc()doc";
@@ -2870,6 +2895,8 @@ static const char *__doc_falcor_MaterialXMaterial_m_mtlx_target_color_space_over
 
 static const char *__doc_falcor_MaterialXMaterial_m_mtlx_transmissive_bsdfs = R"doc()doc";
 
+static const char *__doc_falcor_MaterialXMaterial_m_mtlx_use_slang_derivatives = R"doc()doc";
+
 static const char *__doc_falcor_MaterialXMaterial_m_require_codegen = R"doc()doc";
 
 static const char *__doc_falcor_MaterialXMaterial_m_slang_module = R"doc()doc";
@@ -2880,13 +2907,9 @@ static const char *__doc_falcor_MaterialXMaterial_mtlx_geomprop_names_property =
 
 static const char *__doc_falcor_MaterialXMaterial_on_load_resources = R"doc()doc";
 
-static const char *__doc_falcor_MaterialXMaterial_on_remove_from_scene = R"doc()doc";
-
 static const char *__doc_falcor_MaterialXMaterial_reflect = R"doc(Reflect this class.)doc";
 
 static const char *__doc_falcor_MaterialXMaterial_reflected_class_name = R"doc()doc";
-
-static const char *__doc_falcor_MaterialXMaterial_remove_lut_scene_globals = R"doc()doc";
 
 static const char *__doc_falcor_MaterialXMaterial_require_codegen = R"doc()doc";
 
@@ -2909,8 +2932,6 @@ static const char *__doc_falcor_MaterialXMaterial_set_properties = R"doc()doc";
 static const char *__doc_falcor_MaterialXMaterial_static_class_descriptor = R"doc()doc";
 
 static const char *__doc_falcor_MaterialXMaterial_update = R"doc()doc";
-
-static const char *__doc_falcor_MaterialXMaterial_update_lut_scene_globals = R"doc()doc";
 
 static const char *__doc_falcor_MaterialXMaterial_validate_device_support = R"doc()doc";
 
@@ -3253,8 +3274,6 @@ static const char *__doc_falcor_OpenPBRMaterial_write_to_cursor = R"doc()doc";
 static const char *__doc_falcor_OpenPBRMaterial_write_to_cursor_2 = R"doc()doc";
 
 static const char *__doc_falcor_OpenPBRMaterial_write_to_cursor_impl = R"doc()doc";
-
-static const char *__doc_falcor_OpenPBRSceneGlobals = R"doc()doc";
 
 static const char *__doc_falcor_OptixDenoiser = R"doc(OptiX denoiser wrapper.)doc";
 
@@ -4794,8 +4813,6 @@ static const char *__doc_falcor_SceneBindFlags_render_scene = R"doc()doc";
 
 static const char *__doc_falcor_SceneGlobals = R"doc()doc";
 
-static const char *__doc_falcor_SceneGlobals_2 = R"doc()doc";
-
 static const char *__doc_falcor_SceneGlobals_bind =
 R"doc(Bind this scene globals object to the shader.
 
@@ -5192,6 +5209,16 @@ static const char *__doc_falcor_SceneObject_set_default_name = R"doc(Called when
 
 static const char *__doc_falcor_SceneObject_set_name = R"doc()doc";
 
+static const char *__doc_falcor_SceneOptions = R"doc(Options controlling scene creation.)doc";
+
+static const char *__doc_falcor_SceneOptions_SceneOptions = R"doc()doc";
+
+static const char *__doc_falcor_SceneOptions_uv_origin =
+R"doc(Target image origin convention for scene texture coordinates.
+
+Individual ImporterMesh instances still carry their authored texcoord
+convention and are converted to this target convention while loading.)doc";
+
 static const char *__doc_falcor_SceneRayTracingSetup =
 R"doc(Helper to create a ray tracing pipeline and shader table for a scene.
 
@@ -5425,32 +5452,14 @@ static const char *__doc_falcor_Scene_Scene =
 R"doc(Constructor.
 
 Parameter ``device``:
-    The device to use for rendering.)doc";
-
-static const char *__doc_falcor_Scene_Scene_2 =
-R"doc(Constructor.
-
-Parameter ``device``:
     The device to use for rendering.
 
-Parameter ``importer_scene``:
-    The importer scene to create the scene from.)doc";
+Parameter ``options``:
+    Scene creation options.)doc";
 
-static const char *__doc_falcor_Scene_Scene_3 =
-R"doc(Constructor.
+static const char *__doc_falcor_Scene_Scene_2 = R"doc()doc";
 
-Parameter ``device``:
-    The device to use for rendering.
-
-Parameter ``path``:
-    Path to the scene file to load.
-
-Parameter ``recompute_normals``:
-    If true, recompute normals for all meshes.)doc";
-
-static const char *__doc_falcor_Scene_Scene_4 = R"doc()doc";
-
-static const char *__doc_falcor_Scene_Scene_5 = R"doc()doc";
+static const char *__doc_falcor_Scene_Scene_3 = R"doc()doc";
 
 static const char *__doc_falcor_Scene_active_camera =
 R"doc(The active camera used for rendering. This is automatically set if a
@@ -5510,6 +5519,10 @@ R"doc(Create an empty scene.
 Parameter ``device``:
     The device to use for rendering.
 
+Parameter ``uv_origin``:
+    Optional target scene texture coordinate origin. If unset,
+    defaults to upper_left.
+
 Returns:
     The created scene.)doc";
 
@@ -5521,6 +5534,10 @@ Parameter ``device``:
 
 Parameter ``importer_scene``:
     The importer scene to create the scene from.
+
+Parameter ``uv_origin``:
+    Optional target scene texture coordinate origin. If unset, uses
+    importer_scene.uv_origin.
 
 Returns:
     The created scene.)doc";
@@ -5536,6 +5553,10 @@ Parameter ``path``:
 
 Parameter ``recompute_normals``:
     If true, recompute normals for all meshes.
+
+Parameter ``uv_origin``:
+    Optional target scene texture coordinate origin. If unset, uses
+    imported scene convention.
 
 Returns:
     The created scene.)doc";
@@ -5695,6 +5716,29 @@ static const char *__doc_falcor_Scene_geometry_collection_2 =
 R"doc(The underlying geometry collection with dirty flag tracking (non-
 const).)doc";
 
+static const char *__doc_falcor_Scene_get_or_create_scene_globals =
+R"doc(Get named scene globals, or create and add them to the scene. Expected
+usage is for scene-owned shared globals used by materials: the
+material keeps the returned ref while it needs the shared globals, and
+Scene garbage collection reclaims the object after that ref is
+released. Manual globals added with add_scene_globals() are not reused
+or removed by this helper. The caller is responsible for using a
+unique name for each shared globals object. The factory must create a
+new SceneGlobals object, so each managed SceneGlobals* is registered
+under exactly one name. Managed globals must not be passed to
+remove_scene_globals(); a SceneGlobals object is either managed by
+this helper and garbage collected by Scene, or manually added/removed
+by the caller.
+
+Parameter ``name``:
+    Unique scene globals name.
+
+Parameter ``factory``:
+    Factory called only when no scene globals with \p name exist yet.
+
+Returns:
+    The existing or newly created scene globals.)doc";
+
 static const char *__doc_falcor_Scene_handle_removed_objects =
 R"doc(Called by Scene::update() to allow scene objects to clear invalid
 references. Calls SceneObject::clear_invalid_references() on each all
@@ -5744,6 +5788,10 @@ static const char *__doc_falcor_Scene_m_material_system = R"doc(Material system 
 
 static const char *__doc_falcor_Scene_m_materials = R"doc(View of materials collection.)doc";
 
+static const char *__doc_falcor_Scene_m_options = R"doc(Resolved scene creation options.)doc";
+
+static const char *__doc_falcor_Scene_m_refcounted_scene_globals = R"doc(Non-owning globals managed by get_or_create_scene_globals().)doc";
+
 static const char *__doc_falcor_Scene_m_render_module = R"doc(Slang module containing rendering shader code.)doc";
 
 static const char *__doc_falcor_Scene_m_render_scene = R"doc(Internal render scene representation.)doc";
@@ -5757,6 +5805,8 @@ changes.)doc";
 static const char *__doc_falcor_Scene_m_scene_globals = R"doc(List of scene globals to bind to the shader when rendering the scene.)doc";
 
 static const char *__doc_falcor_Scene_m_scene_shader_object = R"doc(Shader object for binding scene data.)doc";
+
+static const char *__doc_falcor_Scene_m_settings_module = R"doc(Slang settings module that specializes scene conventions.)doc";
 
 static const char *__doc_falcor_Scene_m_texture_manager = R"doc(Texture manager for loading and caching textures.)doc";
 
@@ -5804,6 +5854,8 @@ static const char *__doc_falcor_Scene_operator_assign = R"doc()doc";
 
 static const char *__doc_falcor_Scene_operator_assign_2 = R"doc()doc";
 
+static const char *__doc_falcor_Scene_options = R"doc(Scene creation options.)doc";
+
 static const char *__doc_falcor_Scene_remove_scene_globals =
 R"doc(Remove scene globals from the scene.
 
@@ -5828,6 +5880,10 @@ static const char *__doc_falcor_Scene_requirements_generation =
 R"doc(A monotonically increasing generation counter that is incremented when
 scene requirements change. This can be used to track if the scene
 requirements have changed since a certain point in time.)doc";
+
+static const char *__doc_falcor_Scene_run_garbage_collect =
+R"doc(Garbage collect refcounted scene globals with no remaining external
+owners.)doc";
 
 static const char *__doc_falcor_Scene_scene_globals = R"doc(List of all scene globals currently added to the scene.)doc";
 
@@ -6042,6 +6098,8 @@ static const char *__doc_falcor_StandardMaterial_emissive_factor = R"doc()doc";
 
 static const char *__doc_falcor_StandardMaterial_emissive_texture_handle = R"doc()doc";
 
+static const char *__doc_falcor_StandardMaterial_flags = R"doc()doc";
+
 static const char *__doc_falcor_StandardMaterial_ior = R"doc()doc";
 
 static const char *__doc_falcor_StandardMaterial_m_base_color_factor = R"doc()doc";
@@ -6090,7 +6148,7 @@ static const char *__doc_falcor_StandardMaterial_m_roughness_texture_channel = R
 
 static const char *__doc_falcor_StandardMaterial_m_specular_transmission_factor = R"doc()doc";
 
-static const char *__doc_falcor_StandardMaterial_m_thin_surface = R"doc()doc";
+static const char *__doc_falcor_StandardMaterial_m_thin_walled = R"doc()doc";
 
 static const char *__doc_falcor_StandardMaterial_m_transmission_factor = R"doc()doc";
 
@@ -6128,7 +6186,7 @@ static const char *__doc_falcor_StandardMaterial_specular_transmission_factor = 
 
 static const char *__doc_falcor_StandardMaterial_static_class_descriptor = R"doc()doc";
 
-static const char *__doc_falcor_StandardMaterial_thin_surface = R"doc()doc";
+static const char *__doc_falcor_StandardMaterial_thin_walled = R"doc()doc";
 
 static const char *__doc_falcor_StandardMaterial_transmission_factor = R"doc()doc";
 
@@ -6161,6 +6219,8 @@ static const char *__doc_falcor_StandardSpecGlossMaterial_double_sided = R"doc()
 static const char *__doc_falcor_StandardSpecGlossMaterial_emissive_factor = R"doc()doc";
 
 static const char *__doc_falcor_StandardSpecGlossMaterial_emissive_texture_handle = R"doc()doc";
+
+static const char *__doc_falcor_StandardSpecGlossMaterial_flags = R"doc()doc";
 
 static const char *__doc_falcor_StandardSpecGlossMaterial_glossiness_factor = R"doc()doc";
 
@@ -6208,7 +6268,7 @@ static const char *__doc_falcor_StandardSpecGlossMaterial_m_specular_glossiness_
 
 static const char *__doc_falcor_StandardSpecGlossMaterial_m_specular_transmission_factor = R"doc()doc";
 
-static const char *__doc_falcor_StandardSpecGlossMaterial_m_thin_surface = R"doc()doc";
+static const char *__doc_falcor_StandardSpecGlossMaterial_m_thin_walled = R"doc()doc";
 
 static const char *__doc_falcor_StandardSpecGlossMaterial_m_transmission_factor = R"doc()doc";
 
@@ -6240,7 +6300,7 @@ static const char *__doc_falcor_StandardSpecGlossMaterial_specular_transmission_
 
 static const char *__doc_falcor_StandardSpecGlossMaterial_static_class_descriptor = R"doc()doc";
 
-static const char *__doc_falcor_StandardSpecGlossMaterial_thin_surface = R"doc()doc";
+static const char *__doc_falcor_StandardSpecGlossMaterial_thin_walled = R"doc()doc";
 
 static const char *__doc_falcor_StandardSpecGlossMaterial_transmission_factor = R"doc()doc";
 
@@ -7111,6 +7171,14 @@ static const char *__doc_falcor_UDIMTile_tile_u = R"doc(Tile U coordinate (zero-
 
 static const char *__doc_falcor_UDIMTile_tile_v = R"doc(Tile V coordinate (zero-based).)doc";
 
+static const char *__doc_falcor_UVOrigin = R"doc(Texture coordinate origin convention for authored UVs.)doc";
+
+static const char *__doc_falcor_UVOrigin_info = R"doc()doc";
+
+static const char *__doc_falcor_UVOrigin_lower_left = R"doc()doc";
+
+static const char *__doc_falcor_UVOrigin_upper_left = R"doc()doc";
+
 static const char *__doc_falcor_UsdImporter = R"doc(USD importer.)doc";
 
 static const char *__doc_falcor_UsdImporter_class_name = R"doc()doc";
@@ -7185,6 +7253,12 @@ static const char *__doc_falcor_detail_ArchiveRawFixedCodec = R"doc()doc";
 static const char *__doc_falcor_detail_ArchiveRawFixedCodec_read_payload = R"doc()doc";
 
 static const char *__doc_falcor_detail_ArchiveRawFixedCodec_write_payload = R"doc()doc";
+
+static const char *__doc_falcor_detail_ArchiveRawFixedPaddedCodec = R"doc()doc";
+
+static const char *__doc_falcor_detail_ArchiveRawFixedPaddedCodec_read_payload = R"doc()doc";
+
+static const char *__doc_falcor_detail_ArchiveRawFixedPaddedCodec_write_payload = R"doc()doc";
 
 static const char *__doc_falcor_detail_ArchiveRawSizedCodec = R"doc()doc";
 
@@ -7349,6 +7423,35 @@ static const char *__doc_falcor_detail_compare_typeid = R"doc()doc";
 
 static const char *__doc_falcor_detail_create = R"doc(Create a PropertyList from a typed vector.)doc";
 
+static const char *__doc_falcor_detail_create_scene =
+R"doc(Create a scene from disk.
+
+Parameter ``device``:
+    Device to use for rendering.
+
+Parameter ``path``:
+    Path to scene file.
+
+Parameter ``recompute_normals``:
+    If true, recompute normals for all meshes.
+
+Parameter ``uv_origin``:
+    Optional target scene texture coordinate origin. If unset, use
+    imported scene convention.)doc";
+
+static const char *__doc_falcor_detail_create_scene_2 =
+R"doc(Create a scene from an importer scene.
+
+Parameter ``device``:
+    Device to use for rendering.
+
+Parameter ``importer_scene``:
+    Importer scene to load from.
+
+Parameter ``uv_origin``:
+    Optional target scene texture coordinate origin. If unset, use
+    importer_scene.uv_origin.)doc";
+
 static const char *__doc_falcor_detail_dispatch =
 R"doc(Dispatch a callable on the typed vector. The callable receives a const
 reference to std::vector<T> where T is the element type. Returns the
@@ -7421,6 +7524,14 @@ static const char *__doc_falcor_detail_prop_map_20 = R"doc()doc";
 
 static const char *__doc_falcor_detail_prop_map_21 = R"doc()doc";
 
+static const char *__doc_falcor_detail_prop_map_22 = R"doc()doc";
+
+static const char *__doc_falcor_detail_prop_map_23 = R"doc()doc";
+
+static const char *__doc_falcor_detail_prop_map_24 = R"doc()doc";
+
+static const char *__doc_falcor_detail_prop_map_25 = R"doc()doc";
+
 static const char *__doc_falcor_detail_skip_archive_payload = R"doc()doc";
 
 static const char *__doc_falcor_detail_throw_enum_type_error = R"doc(Throw an exception when an enum property has an incompatible type.)doc";
@@ -7491,6 +7602,8 @@ static const char *__doc_falcor_find_enum_info_adl_16 = R"doc()doc";
 static const char *__doc_falcor_find_enum_info_adl_17 = R"doc()doc";
 
 static const char *__doc_falcor_find_enum_info_adl_18 = R"doc()doc";
+
+static const char *__doc_falcor_find_enum_info_adl_19 = R"doc()doc";
 
 static const char *__doc_falcor_first = R"doc()doc";
 
@@ -7808,10 +7921,6 @@ genslangpt backend.)doc";
 
 static const char *__doc_falcor_materialx_CodeGenDesc_document = R"doc(Either the mtlx directly, or a path to it.)doc";
 
-static const char *__doc_falcor_materialx_CodeGenDesc_flip_v_texcoord =
-R"doc(Whether to flip the (fractional) part of UVs. True for USD, false for
-glTF.)doc";
-
 static const char *__doc_falcor_materialx_CodeGenDesc_geomprop_id_callback =
 R"doc(Optional mapping from MaterialX geomprop string/type pairs to stable
 shader IDs. Missing mappings intentionally fall back to the legacy
@@ -7857,6 +7966,11 @@ R"doc(List of BSDFs that can transmit through the material.
 TODO(@tdavidovic/@aweidlich): Investigate the use the R/T/RT on bsdfs
 instead.)doc";
 
+static const char *__doc_falcor_materialx_CodeGenDesc_use_slang_derivatives =
+R"doc(When true, inherit upstream Slang/GLSL derivative implementations such
+as heighttonormal. Leave false for path tracing because ray tracing
+shaders do not provide ddx/ddy derivatives.)doc";
+
 static const char *__doc_falcor_materialx_CodeGenResult = R"doc()doc";
 
 static const char *__doc_falcor_materialx_CodeGenResult_2 = R"doc()doc";
@@ -7889,13 +8003,11 @@ static const char *__doc_falcor_materialx_CodeGenResult_module_name = R"doc()doc
 
 static const char *__doc_falcor_materialx_CodeGenResult_module_source = R"doc()doc";
 
-static const char *__doc_falcor_materialx_CodeGenResult_needs_mx139_lut_scene_globals = R"doc()doc";
-
 static const char *__doc_falcor_materialx_CodeGenResult_required_geometry_streams = R"doc()doc";
 
 static const char *__doc_falcor_materialx_CodeGenResult_required_geomprop_streams = R"doc()doc";
 
-static const char *__doc_falcor_materialx_CodeGen_discover_material_node_names = R"doc()doc";
+static const char *__doc_falcor_materialx_CodeGen_discover_renderable_elements = R"doc()doc";
 
 static const char *__doc_falcor_materialx_CodeGen_generate = R"doc()doc";
 
@@ -7985,6 +8097,12 @@ static const char *__doc_falcor_materialx_OptimizeGraphFlags_none = R"doc()doc";
 
 static const char *__doc_falcor_materialx_OptimizeGraphFlags_static_scatter_mode = R"doc(Set IMxScatterModePolicy as Static rather than Runtime if possible.)doc";
 
+static const char *__doc_falcor_materialx_RenderableElement = R"doc()doc";
+
+static const char *__doc_falcor_materialx_RenderableElement_name = R"doc()doc";
+
+static const char *__doc_falcor_materialx_RenderableElement_type = R"doc()doc";
+
 static const char *__doc_falcor_materialx_find_enum_info_adl = R"doc()doc";
 
 static const char *__doc_falcor_materialx_find_enum_info_adl_2 = R"doc()doc";
@@ -7997,7 +8115,7 @@ static const char *__doc_falcor_materialx_is_set = R"doc()doc";
 
 static const char *__doc_falcor_materialx_materialx_1_39_CodeGen_1_39 = R"doc()doc";
 
-static const char *__doc_falcor_materialx_materialx_1_39_CodeGen_1_39_discover_material_node_names = R"doc()doc";
+static const char *__doc_falcor_materialx_materialx_1_39_CodeGen_1_39_discover_renderable_elements = R"doc()doc";
 
 static const char *__doc_falcor_materialx_materialx_1_39_CodeGen_1_39_generate = R"doc()doc";
 
@@ -8183,17 +8301,31 @@ static const char *__doc_falcor_materialx_mx139_LayeringDesc_combiners = R"doc()
 
 static const char *__doc_falcor_materialx_mx139_LayeringDesc_main_layer = R"doc()doc";
 
-static const char *__doc_falcor_materialx_mx139_LutBuffers = R"doc()doc";
+static const char *__doc_falcor_materialx_mx139_LutSceneGlobals = R"doc()doc";
 
-static const char *__doc_falcor_materialx_mx139_LutBuffers_dielectric_bothback_energy = R"doc()doc";
+static const char *__doc_falcor_materialx_mx139_LutSceneGlobals_Buffers = R"doc()doc";
 
-static const char *__doc_falcor_materialx_mx139_LutBuffers_dielectric_bothfront_energy = R"doc()doc";
+static const char *__doc_falcor_materialx_mx139_LutSceneGlobals_Buffers_dielectric_bothback_energy = R"doc()doc";
 
-static const char *__doc_falcor_materialx_mx139_LutBuffers_dielectric_reflfront_energy = R"doc()doc";
+static const char *__doc_falcor_materialx_mx139_LutSceneGlobals_Buffers_dielectric_bothfront_energy = R"doc()doc";
 
-static const char *__doc_falcor_materialx_mx139_LutBuffers_mini_microfacet_ggx_energy = R"doc()doc";
+static const char *__doc_falcor_materialx_mx139_LutSceneGlobals_Buffers_dielectric_reflfront_energy = R"doc()doc";
 
-static const char *__doc_falcor_materialx_mx139_LutBuffers_zeltner_sheen_ltc_param = R"doc()doc";
+static const char *__doc_falcor_materialx_mx139_LutSceneGlobals_Buffers_mini_microfacet_ggx_energy = R"doc()doc";
+
+static const char *__doc_falcor_materialx_mx139_LutSceneGlobals_Buffers_zeltner_sheen_ltc_param = R"doc()doc";
+
+static const char *__doc_falcor_materialx_mx139_LutSceneGlobals_LutSceneGlobals = R"doc()doc";
+
+static const char *__doc_falcor_materialx_mx139_LutSceneGlobals_bind = R"doc()doc";
+
+static const char *__doc_falcor_materialx_mx139_LutSceneGlobals_buffers = R"doc()doc";
+
+static const char *__doc_falcor_materialx_mx139_LutSceneGlobals_class_name = R"doc()doc";
+
+static const char *__doc_falcor_materialx_mx139_LutSceneGlobals_m_buffers = R"doc()doc";
+
+static const char *__doc_falcor_materialx_mx139_LutSceneGlobals_m_global_block_name = R"doc()doc";
 
 static const char *__doc_falcor_materialx_mx139_MxDielectricLutBuffers = R"doc()doc";
 
@@ -8443,8 +8575,6 @@ static const char *__doc_falcor_materialx_mx139_append_synthetic_opacity_mix = R
 
 static const char *__doc_falcor_materialx_mx139_apply_closure_simplification = R"doc()doc";
 
-static const char *__doc_falcor_materialx_mx139_bind_lut_globals = R"doc()doc";
-
 static const char *__doc_falcor_materialx_mx139_build_call_site_index = R"doc()doc";
 
 static const char *__doc_falcor_materialx_mx139_classify_layering = R"doc()doc";
@@ -8500,10 +8630,6 @@ static const char *__doc_falcor_materialx_mx139_codegen_support_strip_slang_snip
 static const char *__doc_falcor_materialx_mx139_codegen_support_trim = R"doc()doc";
 
 static const char *__doc_falcor_materialx_mx139_codegen_support_trim_trailing_whitespace_lines = R"doc()doc";
-
-static const char *__doc_falcor_materialx_mx139_create_lut_buffers = R"doc()doc";
-
-static const char *__doc_falcor_materialx_mx139_create_lut_scene_globals = R"doc()doc";
 
 static const char *__doc_falcor_materialx_mx139_create_mx_dielectric_lut_buffers = R"doc()doc";
 
@@ -8657,17 +8783,37 @@ static const char *__doc_falcor_materialx_mx139_genslangpt_GenslangPtSyntax_Gens
 
 static const char *__doc_falcor_materialx_mx139_genslangpt_GenslangPtSyntax_remapEnumeration = R"doc()doc";
 
-static const char *__doc_falcor_materialx_mx139_genslangpt_create_geomcolor_node = R"doc()doc";
+static const char *__doc_falcor_materialx_mx139_genslangpt_GeomColorNode = R"doc()doc";
 
-static const char *__doc_falcor_materialx_mx139_genslangpt_create_geomprop_value_node = R"doc()doc";
+static const char *__doc_falcor_materialx_mx139_genslangpt_GeomColorNode_create = R"doc()doc";
+
+static const char *__doc_falcor_materialx_mx139_genslangpt_GeomColorNode_emitFunctionCall = R"doc()doc";
+
+static const char *__doc_falcor_materialx_mx139_genslangpt_GeomPropValueNode = R"doc()doc";
+
+static const char *__doc_falcor_materialx_mx139_genslangpt_GeomPropValueNode_create = R"doc()doc";
+
+static const char *__doc_falcor_materialx_mx139_genslangpt_GeomPropValueNode_emitFunctionCall = R"doc()doc";
+
+static const char *__doc_falcor_materialx_mx139_genslangpt_HeightToNormalNode = R"doc()doc";
+
+static const char *__doc_falcor_materialx_mx139_genslangpt_HeightToNormalNode_create = R"doc()doc";
+
+static const char *__doc_falcor_materialx_mx139_genslangpt_HeightToNormalNode_emitFunctionCall = R"doc()doc";
+
+static const char *__doc_falcor_materialx_mx139_genslangpt_HeightToNormalNode_emitFunctionDefinition = R"doc()doc";
+
+static const char *__doc_falcor_materialx_mx139_genslangpt_TexCoordNode = R"doc()doc";
+
+static const char *__doc_falcor_materialx_mx139_genslangpt_TexCoordNode_create = R"doc()doc";
+
+static const char *__doc_falcor_materialx_mx139_genslangpt_TexCoordNode_emitFunctionCall = R"doc()doc";
 
 static const char *__doc_falcor_materialx_mx139_genslangpt_create_microfacet_conductor_node = R"doc()doc";
 
 static const char *__doc_falcor_materialx_mx139_genslangpt_create_microfacet_dielectric_node = R"doc()doc";
 
 static const char *__doc_falcor_materialx_mx139_genslangpt_create_microfacet_generalized_schlick_node = R"doc()doc";
-
-static const char *__doc_falcor_materialx_mx139_genslangpt_create_texcoord_node = R"doc()doc";
 
 static const char *__doc_falcor_materialx_mx139_genslangpt_geomprop_id_const_name = R"doc()doc";
 
@@ -11250,6 +11396,10 @@ static const char *__doc_falcor_reflection_ui_label = R"doc(Convenience factory 
 
 static const char *__doc_falcor_reflection_value_range = R"doc(Convenience factory for ValueRange.)doc";
 
+static const char *__doc_falcor_reflection_value_range_positive = R"doc(Convenience factory for ValueRange with positive range (0.0, +inf).)doc";
+
+static const char *__doc_falcor_reflection_value_range_unit = R"doc(Convenience factory for ValueRange with default min/max (0.0, 1.0).)doc";
+
 static const char *__doc_falcor_register_shutdown_callback = R"doc()doc";
 
 static const char *__doc_falcor_replace_substring = R"doc()doc";
@@ -11360,7 +11510,7 @@ R"doc(Apply a scroll dolly by the given amount. Positive scrolls toward the
 pivot. Uses multiplicative zoom so the camera can never reach the
 pivot.)doc";
 
-static const char *__doc_falcor_ui_CameraController_capture_callback = R"doc(Capture callback.)doc";
+static const char *__doc_falcor_ui_CameraController_cancel_interaction = R"doc(Cancel any active interaction and clear transient input state.)doc";
 
 static const char *__doc_falcor_ui_CameraController_focus =
 R"doc(Focus the camera on a target point. Sets the pivot to `target` and
@@ -11373,21 +11523,22 @@ Parameter ``target``:
 Parameter ``distance``:
     Distance from target to place the camera.)doc";
 
-static const char *__doc_falcor_ui_CameraController_handle_keyboard_event = R"doc(Process a keyboard event. Updates modifier and movement key state.)doc";
+static const char *__doc_falcor_ui_CameraController_handle_keyboard_event =
+R"doc(Process a keyboard event. Updates modifier and movement key state.
+
+Returns:
+    True if the event is consumed by camera movement.)doc";
 
 static const char *__doc_falcor_ui_CameraController_handle_mouse_event =
 R"doc(Process a mouse event. Manages mode transitions and accumulates mouse
-delta/scroll.)doc";
+delta/scroll.
 
-static const char *__doc_falcor_ui_CameraController_is_captured =
-R"doc(Whether the controller currently has the mouse captured (i.e. is in an
-active mode).)doc";
+Returns:
+    True if the event affected or was owned by camera interaction.)doc";
+
+static const char *__doc_falcor_ui_CameraController_is_interacting = R"doc(Whether the controller is currently in an active interaction mode.)doc";
 
 static const char *__doc_falcor_ui_CameraController_m_alt_down = R"doc()doc";
-
-static const char *__doc_falcor_ui_CameraController_m_capture_callback = R"doc(Callback for cursor capture/release.)doc";
-
-static const char *__doc_falcor_ui_CameraController_m_captured = R"doc(Whether the controller currently has the mouse captured.)doc";
 
 static const char *__doc_falcor_ui_CameraController_m_ctrl_down = R"doc()doc";
 
@@ -11428,12 +11579,6 @@ static const char *__doc_falcor_ui_CameraController_move_speed = R"doc(Movement 
 static const char *__doc_falcor_ui_CameraController_orbit_distance = R"doc(Distance from the camera to the pivot point.)doc";
 
 static const char *__doc_falcor_ui_CameraController_pivot = R"doc(Pivot point used as the center of orbit/dolly operations.)doc";
-
-static const char *__doc_falcor_ui_CameraController_set_capture = R"doc(Invoke the capture callback.)doc";
-
-static const char *__doc_falcor_ui_CameraController_set_capture_callback =
-R"doc(Set the capture callback. Called with `true` when entering an active
-mode (e.g. first-person, orbit) and `false` when returning to idle.)doc";
 
 static const char *__doc_falcor_ui_CameraController_set_move_speed = R"doc(Set the movement speed, clamped to [MIN_MOVE_SPEED, MAX_MOVE_SPEED].)doc";
 
@@ -11638,6 +11783,12 @@ static const char *__doc_falcor_ui_SceneEditor_geometry_instance_ui = R"doc()doc
 
 static const char *__doc_falcor_ui_SceneEditor_geometry_ui = R"doc()doc";
 
+static const char *__doc_falcor_ui_SceneEditor_handle_keyboard_shortcut =
+R"doc(Handle scene editor keyboard shortcuts.
+
+Returns:
+    True if the event was consumed by an editor shortcut.)doc";
+
 static const char *__doc_falcor_ui_SceneEditor_help_ui = R"doc()doc";
 
 static const char *__doc_falcor_ui_SceneEditor_inspector_ui = R"doc()doc";
@@ -11766,7 +11917,7 @@ R"doc(Coordinates input routing between the scene editor, camera controller,
 picker, and selection overlay.
 
 Centralizes the input routing order, viewport-local coordinate
-remapping, gizmo suppression, camera capture side effects, and
+remapping, gizmo suppression, explicit pointer ownership, and
 selection picking that would otherwise be scattered across the
 application.
 
@@ -11774,9 +11925,21 @@ The controller does not own any of its services; they are injected by
 the application and can be null (in which case the corresponding
 feature is disabled).)doc";
 
+static const char *__doc_falcor_ui_SceneInteractionController_PointerOwner = R"doc()doc";
+
+static const char *__doc_falcor_ui_SceneInteractionController_PointerOwner_camera = R"doc()doc";
+
+static const char *__doc_falcor_ui_SceneInteractionController_PointerOwner_info = R"doc()doc";
+
+static const char *__doc_falcor_ui_SceneInteractionController_PointerOwner_none = R"doc()doc";
+
 static const char *__doc_falcor_ui_SceneInteractionController_SceneInteractionController = R"doc()doc";
 
 static const char *__doc_falcor_ui_SceneInteractionController_camera_controller = R"doc(Camera controller used for navigation.)doc";
+
+static const char *__doc_falcor_ui_SceneInteractionController_can_route_viewport_event = R"doc()doc";
+
+static const char *__doc_falcor_ui_SceneInteractionController_cancel_pointer_owner = R"doc(Cancel the active pointer owner, if any.)doc";
 
 static const char *__doc_falcor_ui_SceneInteractionController_class_name = R"doc()doc";
 
@@ -11790,22 +11953,28 @@ Returns:
     True if the camera was moved.)doc";
 
 static const char *__doc_falcor_ui_SceneInteractionController_handle_keyboard_event =
-R"doc(Process a keyboard event. Routes through capture state, UI, and camera
-controller.
+R"doc(Process a keyboard event. Forwards to the camera controller and
+reports whether the camera consumed it.
 
 Returns:
     True if the event was consumed.)doc";
 
 static const char *__doc_falcor_ui_SceneInteractionController_handle_mouse_event =
-R"doc(Process a mouse event. Routes through capture state, UI, picker, and
-camera controller.
+R"doc(Process a mouse event. Routes viewport pointer ownership, camera
+interaction, and selection picking.
 
 Returns:
     True if the event was consumed.)doc";
 
+static const char *__doc_falcor_ui_SceneInteractionController_has_pointer_capture = R"doc(Whether a pointer owner currently has mouse/cursor capture.)doc";
+
 static const char *__doc_falcor_ui_SceneInteractionController_m_camera_controller = R"doc()doc";
 
 static const char *__doc_falcor_ui_SceneInteractionController_m_last_selection_version = R"doc()doc";
+
+static const char *__doc_falcor_ui_SceneInteractionController_m_pointer_capture_callback = R"doc()doc";
+
+static const char *__doc_falcor_ui_SceneInteractionController_m_pointer_owner = R"doc()doc";
 
 static const char *__doc_falcor_ui_SceneInteractionController_m_reset_callback = R"doc()doc";
 
@@ -11816,6 +11985,12 @@ static const char *__doc_falcor_ui_SceneInteractionController_m_scene_editor = R
 static const char *__doc_falcor_ui_SceneInteractionController_m_scene_picker = R"doc()doc";
 
 static const char *__doc_falcor_ui_SceneInteractionController_m_selection_overlay = R"doc()doc";
+
+static const char *__doc_falcor_ui_SceneInteractionController_pointer_capture_callback = R"doc(Callback invoked when pointer capture starts or ends.)doc";
+
+static const char *__doc_falcor_ui_SceneInteractionController_pointer_owner = R"doc(Current pointer owner for mouse drag/cursor capture.)doc";
+
+static const char *__doc_falcor_ui_SceneInteractionController_reconcile_pointer_owner = R"doc()doc";
 
 static const char *__doc_falcor_ui_SceneInteractionController_request_reset = R"doc()doc";
 
@@ -11830,6 +12005,10 @@ static const char *__doc_falcor_ui_SceneInteractionController_scene_editor = R"d
 static const char *__doc_falcor_ui_SceneInteractionController_scene_picker = R"doc(Scene picker used for viewport picking.)doc";
 
 static const char *__doc_falcor_ui_SceneInteractionController_selection_overlay = R"doc(Selection overlay used for selection highlighting.)doc";
+
+static const char *__doc_falcor_ui_SceneInteractionController_set_pointer_capture_callback = R"doc()doc";
+
+static const char *__doc_falcor_ui_SceneInteractionController_set_pointer_owner = R"doc()doc";
 
 static const char *__doc_falcor_ui_SceneInteractionController_set_reset_callback = R"doc()doc";
 
@@ -12073,6 +12252,8 @@ static const char *__doc_falcor_ui_find_enum_info_adl = R"doc()doc";
 static const char *__doc_falcor_ui_find_enum_info_adl_2 = R"doc()doc";
 
 static const char *__doc_falcor_ui_find_enum_info_adl_3 = R"doc()doc";
+
+static const char *__doc_falcor_ui_find_enum_info_adl_4 = R"doc()doc";
 
 static const char *__doc_falcor_ui_properties_editor =
 R"doc(Property editor for all properties of a class (including base classes
@@ -12585,7 +12766,13 @@ static const char *__doc_sgl_Device = R"doc()doc";
 
 static const char *__doc_sgl_Device_2 = R"doc()doc";
 
-static const char *__doc_sgl_ShaderCursor = R"doc()doc";
+static const char *__doc_sgl_ShaderCursor =
+R"doc(Cursor used for parsing and setting shader object fields. This class
+does *NOT* use the SGL reflection wrappers for accessing due to the
+performance implications of allocating/freeing them repeatedly. This
+is far faster, however does introduce a risk of mem access problems if
+the shader cursor is kept alive longer than the shader object it was
+created from.)doc";
 
 static const char *__doc_sgl_SignatureBuffer =
 R"doc(Stack-allocated signature buffer. Used in hot paths that need cheap,

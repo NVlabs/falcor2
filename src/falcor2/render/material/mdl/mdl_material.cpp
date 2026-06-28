@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "mdl_material.h"
@@ -675,10 +676,16 @@ public struct ${NAME} : IMaterial
             state.normal = -state.normal;
         state.position = si.position_ws;
         state.animation_time = 0.f;
-        // Flipping v coordinate (within the same given udim range)
-        state.text_coords[0] = float3(si.uv.x, floor(si.uv.y) + 1 - frac(si.uv.y), 0);
+        float2 mdl_uv = si.uv;
+        // MDL always receives lower-left coordinates. If the scene was upper-left, v_mdl = 1-v_scene
+        // makes positive MDL V point opposite the scene bitangent.
+        if (!FALCOR_TEXTURE_COORDINATE_ORIGIN_LOWER_LEFT)
+            mdl_uv.y = 1.0 - mdl_uv.y;
+        state.text_coords[0] = float3(mdl_uv, 0);
         state.tangent_u[0] = sf.tangent;
-        state.tangent_v[0] = -sf.bitangent;
+        state.tangent_v[0] = sf.bitangent;
+        if (!FALCOR_TEXTURE_COORDINATE_ORIGIN_LOWER_LEFT)
+            state.tangent_v[0] = -state.tangent_v[0];
         state.ro_data_segment_offset = 0;
         state.world_to_object = float4x4(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
         state.object_to_world = float4x4(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);

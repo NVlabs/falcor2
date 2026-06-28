@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: Apache-2.0 AND MIT
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
 
 // Based on https://github.com/sebbbi/OffsetAllocator
 // See LICENSES/offsetallocator.txt for the upstream MIT notice.

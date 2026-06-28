@@ -1,0 +1,72 @@
+<?xml version="1.0"?>
+<materialx version="1.39">
+  <!--
+    Falcor2 render-material options for a curated representative MaterialX set.
+
+    This recipe keeps the normal MaterialX suite controls but limits renderTestPaths
+    to a small set of diverse materials useful for quick documentation and regression
+    reports.
+  -->
+
+  <!-- Render test Suite Options -->
+  <nodedef name="TestSuiteOptions">
+    <!-- List of comma separated file names acts as a filter to only test documents with these names -->
+    <input name="overrideFiles" type="string" value="" />
+
+    <!-- Run using a given set of shader interface generation options. Default value is 2 where:
+         1 = run reduced only.
+         2 = run complete only.
+         3 = run complete + reduced.
+         Falcor2 note: value 2 matches the supported path; other values are warning-only.
+    -->
+    <input name="shaderInterfaces" type="integer" value="2" />
+
+    <!-- Rendered image size if render validation test enabled -->
+    <input name="renderSize" type="vector2" value="512, 512" />
+
+    <!-- Falcor2 render backend.
+         pathtracer renders OBJ preview geometry with the PathTracerPipeline and writes _falcor2 images.
+         material_visualizer renders through Falcor2's MaterialVisualizer and writes _visualizer images. -->
+    <input name="renderBackend" type="string" value="pathtracer" />
+
+    <!-- Set this to be true if it is desired to always dump out generated source code to disk instead of just on compile errors -->
+    <input name="dumpGeneratedCode" type="boolean" value="true" />
+
+    <!-- The geometry file to be rendered in tests.
+         File path is relative to the "/resources/Geometry/" folder
+         Falcor2 note: only OBJ preview geometry is supported. -->
+    <input name="renderGeometry" type="string" value="sphere.obj" />
+
+    <!-- Enable direct lighting. Default is false.
+         Falcor2 note: toggles the path tracer's analytic-light flag. -->
+    <input name="enableDirectLighting" type="boolean" value="false" />
+
+    <!-- Suggested radiance IBL file path -->
+    <input name="radianceIBLPath" type="string" value="resources/Lights/san_giuseppe_bridge.hdr" />
+
+    <!-- Additional MaterialX library roots.
+         Falcor2 note: retained for option parity, but not implemented yet. -->
+    <input name="extraLibraryPaths" type="string" value="" />
+
+    <!-- List of document paths for render tests -->
+    <input name="renderTestPaths" type="string" value="resources/Materials/TestSuite/pbrlib/surfaceshader/lama/lama_layer.mtlx,resources/Materials/Examples/OpenPbr/open_pbr_default.mtlx,resources/Materials/Examples/StandardSurface/standard_surface_default.mtlx,resources/Materials/Examples/StandardSurface/standard_surface_glass.mtlx,resources/Materials/Examples/StandardSurface/standard_surface_carpaint.mtlx,resources/Materials/Examples/StandardSurface/standard_surface_brass_tiled.mtlx,resources/Materials/Examples/StandardSurface/standard_surface_chess_set.mtlx" />
+
+    <!-- Enable reference quality rendering.
+         This option enables higher sample counts and supersampling in render tests,
+         allowing for visual comparisons and differencing across shading languages,
+         but requiring a more powerful GPU and longer CPU render times.
+         Falcor2 note: increases sample count only; MaterialX supersampling is not reproduced exactly.
+    -->
+    <input name="enableReferenceQuality" type="boolean" value="false" />
+
+    <!-- Base directory for all test output artifacts (shaders, images, logs).
+         If empty (default), artifacts are written to their default locations
+         (CWD for logs, alongside source materials for shaders/images).
+         Supports absolute paths or paths relative to the test working directory.
+         The directory will be created if it doesn't exist.
+         Falcor2 note: defaults to a repository .tmp directory instead of writing near inputs.
+    -->
+    <input name="outputDirectory" type="string" value=".tmp/render_material_mtlx_representative" />
+
+  </nodedef>
+</materialx>

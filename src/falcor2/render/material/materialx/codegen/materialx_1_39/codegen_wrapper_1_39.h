@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
@@ -18,7 +19,7 @@ class FALCOR_API CodeGen_1_39 {
 public:
     static MaterialX::DocumentPtr load_document(const CodeGenDesc& desc);
     static std::unique_ptr<CodeGenResult> generate(const CodeGenDesc& desc);
-    static std::vector<std::string> discover_material_node_names(const CodeGenDesc& desc);
+    static std::vector<RenderableElement> discover_renderable_elements(const CodeGenDesc& desc);
 };
 
 } // namespace materialx_1_39

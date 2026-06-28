@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
@@ -62,6 +63,7 @@ class SceneUpdateContext;
 // scene.h
 
 class Scene;
+struct SceneOptions;
 
 using MaterialCollection = SceneObjectCollection<Material>;
 using MaterialCollectionView = SceneObjectCollectionView<Material>;

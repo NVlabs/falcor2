@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 module reference;
@@ -50,7 +51,7 @@ struct PathState : IDifferentiable
 Ray create_visibility_ray(const SurfaceInteraction ref, const DirectionSample sample)
 {
     Ray ray;
-    ray.origin = offset_ray_origin(ref.position_ws, ref.normal_ws);
+    ray.origin = offset_ray_origin(ref.position_ws, ref.front_normal_ws());
     ray.dir = sample.dir_ws;
     ray.t_min = 0.0;
     ray.t_max = sample.distance;
@@ -115,8 +116,46 @@ public interface IWriteGuide
     public static bool geometry_id_enabled();
 }
 
+// Native callers do not bind guide outputs. Python can override this default with
+// the generated prelude implementation.
+public struct NoWriteGuide : IWriteGuide
+{
+    public static override void diffuse_albedo(uint2 coord, float4 value) { }
+    public static bool diffuse_albedo_enabled() { return false; }
+
+    public static override void material_color(uint2 coord, float4 value) { }
+    public static bool material_color_enabled() { return false; }
+
+    public static override void specular_albedo(uint2 coord, float4 value) { }
+    public static bool specular_albedo_enabled() { return false; }
+
+    public static override void normals(uint2 coord, float4 value) { }
+    public static bool normals_enabled() { return false; }
+
+    public static override void roughness(uint2 coord, float value) { }
+    public static bool roughness_enabled() { return false; }
+
+    public static override void depth(uint2 coord, float value) { }
+    public static bool depth_enabled() { return false; }
+
+    public static override void hardware_depth(uint2 coord, float value) { }
+    public static bool hardware_depth_enabled() { return false; }
+
+    public static override void specular_hit_distance(uint2 coord, float value) { }
+    public static bool specular_hit_distance_enabled() { return false; }
+
+    public static override void motion_vectors(uint2 coord, float2 value) { }
+    public static bool motion_vectors_enabled() { return false; }
+
+    public static override void emission(uint2 coord, float4 value) { }
+    public static bool emission_enabled() { return false; }
+
+    public static override void geometry_id(uint2 coord, uint4 value) { }
+    public static bool geometry_id_enabled() { return false; }
+};
+
 // The prelude also exports this WriteGuide type to be the implementation it generates.
-extern struct WriteGuide : IWriteGuide;
+extern struct WriteGuide : IWriteGuide = NoWriteGuide;
 
 // These link-time constants are also generated in the prelude. They let the
 // shader specialize away guide work when a corresponding output is not bound.
@@ -134,9 +173,7 @@ extern static const bool WriteGuide_motion_vectors = false;
 extern static const bool WriteGuide_emission = false;
 extern static const bool WriteGuide_geometry_id = false;
 
-// Path tracing function (adapted from scene_test path_tracer.slang)
-
-float3 trace_path<SceneIntersector : ISceneIntersector>(
+public float3 trace_path<SceneIntersector : ISceneIntersector>(
     SceneIntersector intersector,
     no_diff HitInfo primary_hit,
     no_diff Ray ray,
@@ -195,8 +232,9 @@ float3 trace_path<SceneIntersector : ISceneIntersector>(
         SurfaceInteraction si = g_scene.make_surface_interaction(hit, -ray.dir);
 
         // Ignore backface.
-        if (!si.front_facing)
+        if (!si.front_facing && (g_scene.get_material_header(hit).flags & MaterialFlags::double_sided) == 0)
             break;
+
         if (is_primary_hit)
             write_primary_surface_interaction(id, hit, si, current_camera, previous_camera);
 
@@ -271,9 +309,9 @@ float3 trace_path<SceneIntersector : ISceneIntersector>(
             }
         }
 
-        path.scatter_pos_ws = offset_ray_origin(si.position_ws, si.normal_ws);
+        path.scatter_pos_ws = offset_ray_origin(si.position_ws, si.front_normal_ws());
         path.scatter_dir_ws = sample.wo_ws;
-        path.scatter_normal_ws = si.normal_ws;
+        path.scatter_normal_ws = si.front_normal_ws();
         path.scatter_pdf = sample.pdf;
 
         // Generate next ray.
@@ -297,6 +335,15 @@ public struct IntersectorPayload
     __init() { hit = {}; }
 };
 
+[raypayload]
+public struct VisibilityPayload
+{
+    bool visible : read(caller)
+        : write(anyhit, miss);
+
+    __init() { visible = false; }
+};
+
 public struct SceneIntersector : ISceneIntersector
 {
     public HitInfo intersect(Ray ray)
@@ -317,8 +364,18 @@ public struct SceneIntersector : ISceneIntersector
 
     public bool is_occluded(Ray ray)
     {
-        HitInfo hit = intersect(ray);
-        return hit.valid;
+        VisibilityPayload payload = {};
+        TraceRay(
+            g_scene.tlas,
+            0,
+            0xff,
+            1 /* RayContributionToHitGroupIndex */,
+            0 /* MultiplierForGeometryContributionHitGroupIndex */,
+            1 /* MissShaderIndex */,
+            ray.to_ray_desc(),
+            payload
+        );
+        return !payload.visible;
     }
 };
 
@@ -331,6 +388,12 @@ SCENE_RAY_TYPE_CLOSEST_HIT(intersect, intersect_closest_hit, IntersectorPayload)
 void intersect_closest_hit<D : IDeferredHitInfo>(inout IntersectorPayload payload, D deferred_hit)
 {
     payload.hit = deferred_hit.create();
+}
+
+SCENE_RAY_TYPE_MISS(visibility, visibility_miss, VisibilityPayload);
+void visibility_miss(inout VisibilityPayload payload)
+{
+    payload.visible = true;
 }
 
 // Calculate primary ray UV coordinates.

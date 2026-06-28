@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 import slangpy as spy
@@ -35,6 +36,8 @@ def test_invalid_handle(device_type: spy.DeviceType):
         uvw=spy.float3(0, 0, 0),
         default_value=spy.float4(1, 0, 1, 0),
     ) == spy.float4(1, 0, 1, 0)
+
+    assert module.test_handle_flag_conversion(handle={"data": handle.data}) == handle.data
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)

@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 // Portions of this file are derived from Mitsuba 3.
@@ -223,12 +224,16 @@ template<> struct prop_map<bool> { using type = bool; };
 template<typename T> struct prop_map<T, std::enable_if_t<std::is_integral_v<T> && !std::is_same_v<T, bool>>> { using type = int64_t; };
 template<typename T> struct prop_map<T, std::enable_if_t<std::is_floating_point_v<T>>> { using type = double; };
 template<typename T> struct prop_map<T, std::enable_if_t<std::is_enum_v<T>>> { using type = PropertyEnumValue; };
+template<> struct prop_map<float16_t> { using type = double; };
 template<> struct prop_map<int2> { using type = int2; };
 template<> struct prop_map<int3> { using type = int3; };
 template<> struct prop_map<int4> { using type = int4; };
 template<> struct prop_map<uint2> { using type = uint2; };
 template<> struct prop_map<uint3> { using type = uint3; };
 template<> struct prop_map<uint4> { using type = uint4; };
+template<> struct prop_map<float16_t2> { using type = float2; };
+template<> struct prop_map<float16_t3> { using type = float3; };
+template<> struct prop_map<float16_t4> { using type = float4; };
 template<> struct prop_map<float2> { using type = float2; };
 template<> struct prop_map<float3> { using type = float3; };
 template<> struct prop_map<float4> { using type = float4; };

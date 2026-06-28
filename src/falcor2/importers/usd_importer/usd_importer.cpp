@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "usd_importer.h"
@@ -161,6 +162,10 @@ ref<ImporterScene> UsdImporter::load_scene(const std::filesystem::path& path)
     importer_context->finalize();
 
     auto scene = importer_context->get_scene();
+    scene->uv_origin = UVOrigin::lower_left;
+    for (ImporterMesh& mesh : scene->meshes)
+        mesh.uv_origin = UVOrigin::lower_left;
+
     return scene;
 }
 

@@ -29,6 +29,8 @@ add_library(falcor2_materialx_1_39_codegen OBJECT
     mx139/emitter/stack_data_emit.h
     mx139/genslangpt/builtin_nodes.cpp
     mx139/genslangpt/builtin_nodes.h
+    mx139/genslangpt/height_to_normal_node.cpp
+    mx139/genslangpt/height_to_normal_node.h
     mx139/genslangpt/microfacet_bsdf.cpp
     mx139/genslangpt/microfacet_bsdf.h
     mx139/genslangpt/syntax.cpp

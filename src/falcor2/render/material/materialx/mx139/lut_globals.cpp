@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "falcor2/render/material/materialx/mx139/lut_globals.h"
@@ -458,63 +459,36 @@ ref<sgl::Buffer> create_lut_buffer(sgl::Device* device, std::string label, const
     });
 }
 
-void bind_lut_global_block(sgl::ShaderCursor globals, const LutBuffers& buffers, const char* global_block_name)
-{
-    auto lut_globals = globals[global_block_name];
-    lut_globals["mini_microfacet_ggx_energy"] = buffers.mini_microfacet_ggx_energy;
-    lut_globals["dielectric_reflfront_energy"] = buffers.dielectric_reflfront_energy;
-    lut_globals["dielectric_bothfront_energy"] = buffers.dielectric_bothfront_energy;
-    lut_globals["dielectric_bothback_energy"] = buffers.dielectric_bothback_energy;
-    lut_globals["zeltner_sheen_ltc_param"] = buffers.zeltner_sheen_ltc_param;
-}
-
-class LutSceneGlobals : public SceneGlobals {
-    FALCOR_OBJECT(LutSceneGlobals)
-public:
-    LutSceneGlobals(sgl::Device* device, const char* global_block_name)
-        : m_buffers(create_lut_buffers(device))
-        , m_global_block_name(global_block_name)
-    {
-    }
-
-    void bind(sgl::ShaderCursor globals) const override
-    {
-        bind_lut_global_block(globals, m_buffers, m_global_block_name);
-    }
-
-private:
-    LutBuffers m_buffers;
-    const char* m_global_block_name = "lut_globals";
-};
-
 } // namespace
 
-LutBuffers create_lut_buffers(sgl::Device* device)
+LutSceneGlobals::LutSceneGlobals(sgl::Device* device, std::string_view global_block_name)
+    : m_global_block_name(global_block_name)
 {
     MxDielectricLutBuffers dielectric_buffers = create_mx_dielectric_lut_buffers(device);
-    return {
-        .mini_microfacet_ggx_energy = create_lut_buffer(
-            device,
-            "MX139_MINI_MICROFACET_GGX_ENERGY",
-            kMiniMicrofacetGgxEnergy,
-            kMiniMicrofacetGgxEnergySize
-        ),
-        .dielectric_reflfront_energy = dielectric_buffers.reflfront_energy,
-        .dielectric_bothfront_energy = dielectric_buffers.bothfront_energy,
-        .dielectric_bothback_energy = dielectric_buffers.bothback_energy,
-        .zeltner_sheen_ltc_param
-        = create_lut_buffer(device, "MX139_ZELTNER_SHEEN_LTC_PARAM", kZeltnerSheenLtcParam, kZeltnerSheenLtcParamSize),
-    };
+    m_buffers.mini_microfacet_ggx_energy = create_lut_buffer(
+        device,
+        "MX139_MINI_MICROFACET_GGX_ENERGY",
+        kMiniMicrofacetGgxEnergy,
+        kMiniMicrofacetGgxEnergySize
+    );
+    m_buffers.dielectric_reflfront_energy = dielectric_buffers.reflfront_energy;
+    m_buffers.dielectric_bothfront_energy = dielectric_buffers.bothfront_energy;
+    m_buffers.dielectric_bothback_energy = dielectric_buffers.bothback_energy;
+    m_buffers.zeltner_sheen_ltc_param
+        = create_lut_buffer(device, "MX139_ZELTNER_SHEEN_LTC_PARAM", kZeltnerSheenLtcParam, kZeltnerSheenLtcParamSize);
 }
 
-ref<SceneGlobals> create_lut_scene_globals(sgl::Device* device)
+void LutSceneGlobals::bind(sgl::ShaderCursor globals) const
 {
-    return make_ref<LutSceneGlobals>(device, "lut_globals");
-}
+    auto lut_globals = globals.find_field(m_global_block_name.c_str());
+    if (!lut_globals.is_valid())
+        return;
 
-void bind_lut_globals(sgl::ShaderCursor globals, const LutBuffers& buffers)
-{
-    bind_lut_global_block(globals, buffers, "lut_globals");
+    lut_globals["mini_microfacet_ggx_energy"] = m_buffers.mini_microfacet_ggx_energy;
+    lut_globals["dielectric_reflfront_energy"] = m_buffers.dielectric_reflfront_energy;
+    lut_globals["dielectric_bothfront_energy"] = m_buffers.dielectric_bothfront_energy;
+    lut_globals["dielectric_bothback_energy"] = m_buffers.dielectric_bothback_energy;
+    lut_globals["zeltner_sheen_ltc_param"] = m_buffers.zeltner_sheen_ltc_param;
 }
 
 } // namespace mx139

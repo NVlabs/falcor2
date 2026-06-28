@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ MaterialAOVName = Literal[
     "secondary_transport",
 ]
 PreviewPropertyName = Literal["albedo", "emission"]
+DEFAULT_VISUALIZER_BACKGROUND_COLOR = (0.0, 0.0, 0.0)
 DIRECT_LIGHTING_MODE_NEE_ONLY = 0
 DIRECT_LIGHTING_MODE_DIRECT_HITS_ONLY = 1
 DIRECT_LIGHTING_MODE_BOTH_50_50 = 2
@@ -202,6 +204,7 @@ class MaterialVisualizer:
         texture_filtering: TextureFilteringMode = "analytic",
         texture_filter_width_scale: float = DEFAULT_TEXTURE_FILTER_WIDTH_SCALE,
         direct_lighting_mode: DirectLightingMode = DEFAULT_DIRECT_LIGHTING_MODE,
+        background_color: Sequence[float] = DEFAULT_VISUALIZER_BACKGROUND_COLOR,
     ) -> spy.Texture:
         if not isinstance(session, AccumulationSession):
             raise TypeError("accumulate_material() requires an AccumulationSession")
@@ -216,6 +219,7 @@ class MaterialVisualizer:
             texture_filter_width_scale
         )
         direct_lighting_mode_value = direct_lighting_mode_code(direct_lighting_mode)
+        background_color_value = self._validate_float3(background_color, "background_color")
 
         self._ensure_env_map_light(scene, env_map_path)
         scene.update()
@@ -244,6 +248,7 @@ class MaterialVisualizer:
                 direct_lighting_mode=direct_lighting_mode_value,
                 use_analytic_texture_filtering=use_analytic_texture_filtering,
                 texture_filter_width_scale=texture_filter_width_scale,
+                background_color=background_color_value,
                 clear_result=completed_before_batch == 0 and batch_offset == 0,
                 accumulation_sum=session.sum_texture,
                 accumulation_residual=session.residual_texture,
@@ -267,6 +272,7 @@ class MaterialVisualizer:
         texture_filter_width_scale: float = DEFAULT_TEXTURE_FILTER_WIDTH_SCALE,
         aov_textures: MutableMapping[str, spy.Texture | None] | None = None,
         direct_lighting_mode: DirectLightingMode = DEFAULT_DIRECT_LIGHTING_MODE,
+        background_color: Sequence[float] = DEFAULT_VISUALIZER_BACKGROUND_COLOR,
     ) -> spy.Texture:
         """
         Renders the given scene Material using sphere tracing and returns the result texture.
@@ -311,6 +317,7 @@ class MaterialVisualizer:
                 texture_filtering=texture_filtering,
                 texture_filter_width_scale=texture_filter_width_scale,
                 direct_lighting_mode=direct_lighting_mode,
+                background_color=background_color,
             )
             self.device.wait()
             return texture
@@ -328,6 +335,7 @@ class MaterialVisualizer:
             texture_filter_width_scale=texture_filter_width_scale,
             aov_textures=aov_textures,
             direct_lighting_mode=direct_lighting_mode,
+            background_color=background_color,
         )
         self._last_accumulation_session = None
         self.device.wait()
@@ -348,6 +356,7 @@ class MaterialVisualizer:
         texture_filter_width_scale: float,
         aov_textures: MutableMapping[str, spy.Texture | None],
         direct_lighting_mode: DirectLightingMode,
+        background_color: Sequence[float],
     ) -> None:
         samples_per_pixel = self._validate_positive_int(samples_per_pixel, "samples_per_pixel")
         sample_batches = _sample_batches(samples_per_pixel, sample_batch_size)
@@ -356,6 +365,7 @@ class MaterialVisualizer:
             texture_filter_width_scale
         )
         direct_lighting_mode_value = direct_lighting_mode_code(direct_lighting_mode)
+        background_color_value = self._validate_float3(background_color, "background_color")
 
         self._ensure_env_map_light(scene, env_map_path)
         scene.update()
@@ -421,6 +431,7 @@ class MaterialVisualizer:
                 direct_lighting_mode=direct_lighting_mode_value,
                 use_analytic_texture_filtering=use_analytic_texture_filtering,
                 texture_filter_width_scale=texture_filter_width_scale,
+                background_color=background_color_value,
                 clear_result=completed_sample_count == 0 and batch_offset == 0,
                 beauty_sum=beauty_sum,
                 beauty_residual=beauty_residual,
@@ -529,6 +540,7 @@ class MaterialVisualizer:
         texture_filtering: TextureFilteringMode = "analytic",
         texture_filter_width_scale: float = DEFAULT_TEXTURE_FILTER_WIDTH_SCALE,
         direct_lighting_mode: DirectLightingMode = DEFAULT_DIRECT_LIGHTING_MODE,
+        background_color: Sequence[float] = DEFAULT_VISUALIZER_BACKGROUND_COLOR,
     ) -> spy.Texture:
         """
         Renders a material through the scene material system instead of binding the
@@ -544,6 +556,7 @@ class MaterialVisualizer:
             texture_filter_width_scale
         )
         direct_lighting_mode_value = direct_lighting_mode_code(direct_lighting_mode)
+        background_color_value = self._validate_float3(background_color, "background_color")
         samples_per_pixel = self._validate_positive_int(samples_per_pixel, "samples_per_pixel")
         sample_batches = _sample_batches(samples_per_pixel, sample_batch_size)
 
@@ -585,6 +598,7 @@ class MaterialVisualizer:
                 direct_lighting_mode=direct_lighting_mode_value,
                 use_analytic_texture_filtering=use_analytic_texture_filtering,
                 texture_filter_width_scale=texture_filter_width_scale,
+                background_color=background_color_value,
                 clear_result=completed_sample_count == 0 and batch_offset == 0,
                 accumulation_sum=accumulation_sum,
                 accumulation_residual=accumulation_residual,
@@ -602,6 +616,7 @@ class MaterialVisualizer:
         property_textures: MutableMapping[str, spy.Texture | None] | None = None,
         texture_filtering: TextureFilteringMode = "analytic",
         texture_filter_width_scale: float = DEFAULT_TEXTURE_FILTER_WIDTH_SCALE,
+        background_color: Sequence[float] = DEFAULT_VISUALIZER_BACKGROUND_COLOR,
     ) -> dict[PreviewPropertyName, spy.Texture]:
         """
         Renders material preview properties on the same preview sphere used by show_material.
@@ -618,6 +633,7 @@ class MaterialVisualizer:
         texture_filter_width_scale = self._validate_texture_filter_width_scale(
             texture_filter_width_scale
         )
+        background_color_value = self._validate_float3(background_color, "background_color")
 
         scene.update()
         module = self._get_module(scene, material)
@@ -631,6 +647,7 @@ class MaterialVisualizer:
             material=material,
             use_analytic_texture_filtering=use_analytic_texture_filtering,
             texture_filter_width_scale=texture_filter_width_scale,
+            background_color=background_color_value,
             albedo_result=properties["albedo"],
             emission_result=properties["emission"],
         )
@@ -644,6 +661,7 @@ class MaterialVisualizer:
         result_texture: spy.Texture | None = None,
         texture_filtering: TextureFilteringMode = "analytic",
         texture_filter_width_scale: float = DEFAULT_TEXTURE_FILTER_WIDTH_SCALE,
+        background_color: Sequence[float] = DEFAULT_VISUALIZER_BACKGROUND_COLOR,
     ) -> spy.Texture:
         """
         Renders the material albedo on the same preview sphere used by show_material.
@@ -657,6 +675,7 @@ class MaterialVisualizer:
         texture_filter_width_scale = self._validate_texture_filter_width_scale(
             texture_filter_width_scale
         )
+        background_color_value = self._validate_float3(background_color, "background_color")
 
         scene.update()
         module = self._get_module(scene, material)
@@ -670,6 +689,7 @@ class MaterialVisualizer:
             material=material,
             use_analytic_texture_filtering=use_analytic_texture_filtering,
             texture_filter_width_scale=texture_filter_width_scale,
+            background_color=background_color_value,
             result=result_texture,
         )
 
@@ -1070,6 +1090,15 @@ class MaterialVisualizer:
         if length <= 0.0:
             raise ValueError(f"{name} must be non-zero")
         array = array / length
+        return spy.float3(float(array[0]), float(array[1]), float(array[2]))
+
+    @staticmethod
+    def _validate_float3(value: Sequence[float], name: str) -> spy.float3:
+        array = np.asarray(value, dtype=np.float32)
+        if array.shape != (3,):
+            raise ValueError(f"{name} must have exactly three components")
+        if not np.all(np.isfinite(array)):
+            raise ValueError(f"{name} must contain only finite values")
         return spy.float3(float(array[0]), float(array[1]), float(array[2]))
 
     @staticmethod

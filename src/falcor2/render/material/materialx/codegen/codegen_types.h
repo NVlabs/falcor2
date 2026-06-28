@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
@@ -27,6 +28,11 @@ class Properties;
 class AssetResolver;
 
 namespace materialx {
+
+struct RenderableElement {
+    std::string name;
+    std::string type;
+};
 
 // Declared outside CodeGen to allow forward declare.
 struct CodeGenResult {
@@ -60,8 +66,6 @@ struct CodeGenResult {
     size_t material_instance_byte_size{};
     // True when the generated material needs path-state storage for entry-point volume properties.
     bool has_entry_point_volume_properties = false;
-    // True when the generated material needs MX139 LUT scene globals.
-    bool needs_mx139_lut_scene_globals = false;
     // Metadata emitted by codegen for diagnostics and reports.
     Properties codegen_metadata;
     // Geometry streams needed by the generated graph. Entries are stable text descriptors such as
@@ -133,8 +137,6 @@ struct CodeGenDesc {
     /// Optional resolver used to resolve the document and MaterialX search paths.
     ref<AssetResolver> asset_resolver;
 
-    /// Whether to flip the (fractional) part of UVs. True for USD, false for glTF.
-    bool flip_v_texcoord = true;
     /// When true, use position free layering instead of the standard one.
     bool positionfree_layering = false;
 
@@ -175,6 +177,10 @@ struct CodeGenDesc {
     /// colorspace and then lose explicit srgb_texture -> lin_rec709 shader transforms.
     /// Keep auto_gamma_image false for MaterialX files that emit shader-side transforms.
     std::string target_color_space_override;
+
+    /// When true, inherit upstream Slang/GLSL derivative implementations such as heighttonormal.
+    /// Leave false for path tracing because ray tracing shaders do not provide ddx/ddy derivatives.
+    bool use_slang_derivatives = false;
 
     /// When set to true, all unbound parameters of the material are exposed.
     bool make_editable = false;

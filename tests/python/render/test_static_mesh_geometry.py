@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 """Tests for StaticMeshGeometry numpy copy getters and setters."""
@@ -17,7 +18,7 @@ def device(device_type: spy.DeviceType) -> spy.Device:
 
 @pytest.fixture
 def quad_mesh(device: spy.Device) -> tuple[f2.Scene, f2.StaticMeshGeometry, dict[str, np.ndarray]]:
-    scene = f2.Scene(device)
+    scene = f2.Scene.create(device)
     geom = scene.create_geometry(f2.StaticMeshGeometry)
 
     data = {
@@ -198,7 +199,7 @@ class TestStaticMeshGeometryProceduralCreation:
     author procedural preview geometry (see .plans/materialport.md Phase 1a)."""
 
     def test_set_mesh_data_quad(self, device: spy.Device):
-        scene = f2.Scene(device)
+        scene = f2.Scene.create(device)
         geom = scene.create_geometry(f2.StaticMeshGeometry)
 
         positions = np.array(
@@ -237,7 +238,7 @@ class TestStaticMeshGeometryProceduralCreation:
     def test_set_mesh_data_positions_only(self, device: spy.Device):
         # Optional attributes should be accepted as None; the mesh must still
         # populate without raising.
-        scene = f2.Scene(device)
+        scene = f2.Scene.create(device)
         geom = scene.create_geometry(f2.StaticMeshGeometry)
 
         positions = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
@@ -249,7 +250,7 @@ class TestStaticMeshGeometryProceduralCreation:
         assert geom.vertex_count(0) == 3
 
     def test_set_mesh_data_attribute_count_mismatch_raises(self, device: spy.Device):
-        scene = f2.Scene(device)
+        scene = f2.Scene.create(device)
         geom = scene.create_geometry(f2.StaticMeshGeometry)
 
         positions = np.zeros((4, 3), dtype=np.float32)

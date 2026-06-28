@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "codegen.h"
@@ -11,6 +12,7 @@
 #include "emitter/material_wrapper_helpers.h"
 #include "emitter/stack_data_emit.h"
 #include "genslangpt/builtin_nodes.h"
+#include "genslangpt/height_to_normal_node.h"
 #include "genslangpt/microfacet_bsdf.h"
 #include "genslangpt/syntax.h"
 #include "graph_prepare/graph_prepare.h"
@@ -163,43 +165,42 @@ class GenslangPtShaderGenerator : public mx::SlangShaderGenerator {
 public:
     static constexpr const char* TARGET = "genslangpt";
 
-    explicit GenslangPtShaderGenerator(mx::TypeSystemPtr type_system)
+    explicit GenslangPtShaderGenerator(mx::TypeSystemPtr type_system, bool use_slang_derivatives = false)
         : mx::SlangShaderGenerator(type_system ? type_system : mx::TypeSystem::create())
     {
         _syntax = std::make_shared<GenslangPtSyntax>(_typeSystem);
-        registerImplementation("IM_texcoord_vector2_" + std::string(TARGET), genslangpt::create_texcoord_node);
-        registerImplementation("IM_texcoord_vector3_" + std::string(TARGET), genslangpt::create_texcoord_node);
-        registerImplementation("IM_geomcolor_float_" + std::string(TARGET), genslangpt::create_geomcolor_node);
-        registerImplementation("IM_geomcolor_color3_" + std::string(TARGET), genslangpt::create_geomcolor_node);
-        registerImplementation("IM_geomcolor_color4_" + std::string(TARGET), genslangpt::create_geomcolor_node);
+        registerImplementation("IM_texcoord_vector2_" + std::string(TARGET), genslangpt::TexCoordNode::create);
+        registerImplementation("IM_texcoord_vector3_" + std::string(TARGET), genslangpt::TexCoordNode::create);
+        if (!use_slang_derivatives)
+            registerImplementation(
+                "IM_heighttonormal_vector3_" + std::string(TARGET),
+                genslangpt::HeightToNormalNode::create
+            );
+        registerImplementation("IM_geomcolor_float_" + std::string(TARGET), genslangpt::GeomColorNode::create);
+        registerImplementation("IM_geomcolor_color3_" + std::string(TARGET), genslangpt::GeomColorNode::create);
+        registerImplementation("IM_geomcolor_color4_" + std::string(TARGET), genslangpt::GeomColorNode::create);
         registerImplementation(
             "IM_geompropvalue_integer_" + std::string(TARGET),
-            genslangpt::create_geomprop_value_node
+            genslangpt::GeomPropValueNode::create
         );
         registerImplementation(
             "IM_geompropvalue_boolean_" + std::string(TARGET),
-            genslangpt::create_geomprop_value_node
+            genslangpt::GeomPropValueNode::create
         );
-        registerImplementation("IM_geompropvalue_float_" + std::string(TARGET), genslangpt::create_geomprop_value_node);
-        registerImplementation(
-            "IM_geompropvalue_color3_" + std::string(TARGET),
-            genslangpt::create_geomprop_value_node
-        );
-        registerImplementation(
-            "IM_geompropvalue_color4_" + std::string(TARGET),
-            genslangpt::create_geomprop_value_node
-        );
+        registerImplementation("IM_geompropvalue_float_" + std::string(TARGET), genslangpt::GeomPropValueNode::create);
+        registerImplementation("IM_geompropvalue_color3_" + std::string(TARGET), genslangpt::GeomPropValueNode::create);
+        registerImplementation("IM_geompropvalue_color4_" + std::string(TARGET), genslangpt::GeomPropValueNode::create);
         registerImplementation(
             "IM_geompropvalue_vector2_" + std::string(TARGET),
-            genslangpt::create_geomprop_value_node
+            genslangpt::GeomPropValueNode::create
         );
         registerImplementation(
             "IM_geompropvalue_vector3_" + std::string(TARGET),
-            genslangpt::create_geomprop_value_node
+            genslangpt::GeomPropValueNode::create
         );
         registerImplementation(
             "IM_geompropvalue_vector4_" + std::string(TARGET),
-            genslangpt::create_geomprop_value_node
+            genslangpt::GeomPropValueNode::create
         );
         registerImplementation(
             "IM_dielectric_bsdf_" + std::string(TARGET),
@@ -215,9 +216,12 @@ public:
         );
     }
 
-    static mx::ShaderGeneratorPtr create(mx::TypeSystemPtr type_system = nullptr)
+    static mx::ShaderGeneratorPtr create(mx::TypeSystemPtr type_system = nullptr, bool use_slang_derivatives = false)
     {
-        return std::make_shared<GenslangPtShaderGenerator>(type_system ? type_system : mx::TypeSystem::create());
+        return std::make_shared<GenslangPtShaderGenerator>(
+            type_system ? type_system : mx::TypeSystem::create(),
+            use_slang_derivatives
+        );
     }
 
     const std::string& getTarget() const override
@@ -334,7 +338,6 @@ public:
         replace_all(result.material_data_name, "$HASH", hash);
         result.material_instance_byte_size = 0;
         result.has_entry_point_volume_properties = false;
-        result.needs_mx139_lut_scene_globals = true;
         result.codegen_metadata.set("bsdf_profile", std::string("mx139"));
         result.codegen_metadata.set("target", std::string(TARGET));
         result.codegen_metadata.set("graph_emission", true);
@@ -698,13 +701,13 @@ private:
     ) const
     {
         static const std::unordered_map<std::string, std::string> k_geomprop_definitions = {
-            {"Pobject", "mul(object_from_world, si.position_ws)"},
+            {"Pobject", "mul(object_from_world, float4(si.position_ws, 1.0)).xyz"},
             {"Pworld", "si.position_ws"},
             {"Nobject", "mul(object_from_world_it, si.shading_frame_ws.normal)"},
             {"Nworld", "si.shading_frame_ws.normal"},
-            {"Tobject", "mul(object_from_world, si.shading_frame_ws.tangent)"},
+            {"Tobject", "mul(object_from_world, float4(si.shading_frame_ws.tangent, 0.0)).xyz"},
             {"Tworld", "si.shading_frame_ws.tangent"},
-            {"Bobject", "mul(object_from_world, si.shading_frame_ws.bitangent)"},
+            {"Bobject", "mul(object_from_world, float4(si.shading_frame_ws.bitangent, 0.0)).xyz"},
             {"Bworld", "si.shading_frame_ws.bitangent"},
             {"UV0", "si.uv"},
             {"UVMap", "si.uv"},
@@ -813,9 +816,6 @@ private:
         emitLine("si = si_", stage);
         emitLine("lod_sampler = lod_sampler_", stage);
         emitLine("hints = hints_", stage);
-        if (auto user_data = context.getUserData<CodegenUserData>("mx139");
-            user_data && user_data->inputs.desc->flip_v_texcoord)
-            emitLine("si.uv = float2(si.uv.x, floor(si.uv.y) + 1.0 - frac(si.uv.y))", stage);
         emitLine(
             "object_from_world = GeomPropProvider::get_space_transform(si, GeomPropSpace::object, "
             "GeomPropSpace::world)",
@@ -1117,7 +1117,10 @@ struct PreparedCodegenContext {
         user_data->inputs.document = doc;
         user_data->inputs.result = result.get();
 
-        shader_generator = GenslangPtShaderGenerator::create();
+        if (desc.use_slang_derivatives)
+            doc->removeImplementation("IM_heighttonormal_vector3_genslangpt");
+
+        shader_generator = GenslangPtShaderGenerator::create(nullptr, desc.use_slang_derivatives);
         context = std::make_unique<mx::GenContext>(shader_generator);
         register_mx139_source_paths(*context);
         shader_generator->setColorManagementSystem(

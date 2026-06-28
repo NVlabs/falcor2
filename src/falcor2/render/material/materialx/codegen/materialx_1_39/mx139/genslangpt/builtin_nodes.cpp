@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "builtin_nodes.h"
@@ -81,13 +82,13 @@ std::optional<std::string> builtin_geomprop_expression(const std::string& geompr
     static const std::unordered_map<std::string_view, BuiltinGeomProp> k_builtins = {
         {"UV0", {"vector2", "si.uv"}},
         {"UVMap", {"vector2", "si.uv"}},
-        {"Pobject", {"vector3", "mul(object_from_world, si.position_ws)"}},
+        {"Pobject", {"vector3", "mul(object_from_world, float4(si.position_ws, 1.0)).xyz"}},
         {"Pworld", {"vector3", "si.position_ws"}},
         {"Nobject", {"vector3", "mul(object_from_world_it, si.shading_frame_ws.normal)"}},
         {"Nworld", {"vector3", "si.shading_frame_ws.normal"}},
-        {"Tobject", {"vector3", "mul(object_from_world_it, si.shading_frame_ws.tangent)"}},
+        {"Tobject", {"vector3", "mul(object_from_world, float4(si.shading_frame_ws.tangent, 0.0)).xyz"}},
         {"Tworld", {"vector3", "si.shading_frame_ws.tangent"}},
-        {"Bobject", {"vector3", "mul(object_from_world_it, si.shading_frame_ws.bitangent)"}},
+        {"Bobject", {"vector3", "mul(object_from_world, float4(si.shading_frame_ws.bitangent, 0.0)).xyz"}},
         {"Bworld", {"vector3", "si.shading_frame_ws.bitangent"}},
         {"Vworld", {"vector3", "si.wi_ws"}},
     };
@@ -193,75 +194,6 @@ geomcolor_provider_expression(const CodeGenDesc& desc, const std::string& index,
     return expression ? *expression : geomcolor_fallback_expression(output_type);
 }
 
-class GeomPropValueNode : public mx::ShaderNodeImpl {
-public:
-    static mx::ShaderNodeImplPtr create() { return std::make_shared<GeomPropValueNode>(); }
-
-    void emitFunctionCall(const mx::ShaderNode& node, mx::GenContext& context, mx::ShaderStage& stage) const override
-    {
-        auto user_data = context.getUserData<CodegenUserData>("mx139");
-        FALCOR_CHECK(user_data && user_data->inputs.desc, "MX139 geompropvalue node missing user data.");
-
-        const std::string geomprop = required_shader_input_value_string(node, k_geomprop_input_name, "");
-        const std::string output_type = shader_output_type_name(node);
-        const mx::ShaderOutput* output = node.getOutput();
-        FALCOR_CHECK(output, "MX139 geompropvalue node missing output.");
-        const std::string expression = geomprop_provider_expression(*user_data->inputs.desc, geomprop, output_type);
-
-        const mx::ShaderGenerator& shadergen = context.getShaderGenerator();
-        shadergen.emitLineBegin(stage);
-        shadergen.emitOutput(output, true, false, context, stage);
-        shadergen.emitString(" = " + expression, stage);
-        shadergen.emitLineEnd(stage);
-    }
-};
-
-class TexCoordNode : public mx::ShaderNodeImpl {
-public:
-    static mx::ShaderNodeImplPtr create() { return std::make_shared<TexCoordNode>(); }
-
-    void emitFunctionCall(const mx::ShaderNode& node, mx::GenContext& context, mx::ShaderStage& stage) const override
-    {
-        auto user_data = context.getUserData<CodegenUserData>("mx139");
-        FALCOR_CHECK(user_data && user_data->inputs.desc, "MX139 texcoord node missing user data.");
-
-        const std::string index = required_shader_input_value_string(node, "index", "0");
-        const std::string output_type = shader_output_type_name(node);
-        const mx::ShaderOutput* output = node.getOutput();
-        FALCOR_CHECK(output, "MX139 texcoord node missing output.");
-        const std::string expression = texcoord_provider_expression(*user_data->inputs.desc, index, output_type);
-
-        const mx::ShaderGenerator& shadergen = context.getShaderGenerator();
-        shadergen.emitLineBegin(stage);
-        shadergen.emitOutput(output, true, false, context, stage);
-        shadergen.emitString(" = " + expression, stage);
-        shadergen.emitLineEnd(stage);
-    }
-};
-
-class GeomColorNode : public mx::ShaderNodeImpl {
-public:
-    static mx::ShaderNodeImplPtr create() { return std::make_shared<GeomColorNode>(); }
-
-    void emitFunctionCall(const mx::ShaderNode& node, mx::GenContext& context, mx::ShaderStage& stage) const override
-    {
-        auto user_data = context.getUserData<CodegenUserData>("mx139");
-        FALCOR_CHECK(user_data && user_data->inputs.desc, "MX139 geomcolor node missing user data.");
-
-        const std::string index = required_shader_input_value_string(node, "index", "0");
-        const std::string output_type = shader_output_type_name(node);
-        const mx::ShaderOutput* output = node.getOutput();
-        FALCOR_CHECK(output, "MX139 geomcolor node missing output.");
-        const std::string expression = geomcolor_provider_expression(*user_data->inputs.desc, index, output_type);
-
-        const mx::ShaderGenerator& shadergen = context.getShaderGenerator();
-        shadergen.emitLineBegin(stage);
-        shadergen.emitOutput(output, true, false, context, stage);
-        shadergen.emitString(" = " + expression, stage);
-        shadergen.emitLineEnd(stage);
-    }
-};
-
 } // namespace
 
 std::string geomprop_id_const_name(const std::string& stream_name)
@@ -284,17 +216,77 @@ resolve_geomprop_id(const CodeGenDesc& desc, std::string_view geomprop, std::str
     return ::falcor::materialx::mx139::materialx_test_geomprop_id(geomprop);
 }
 
-mx::ShaderNodeImplPtr create_geomprop_value_node()
+mx::ShaderNodeImplPtr GeomPropValueNode::create()
 {
-    return GeomPropValueNode::create();
+    return std::make_shared<GeomPropValueNode>();
 }
-mx::ShaderNodeImplPtr create_texcoord_node()
+
+void GeomPropValueNode::emitFunctionCall(
+    const mx::ShaderNode& node,
+    mx::GenContext& context,
+    mx::ShaderStage& stage
+) const
 {
-    return TexCoordNode::create();
+    auto user_data = context.getUserData<CodegenUserData>("mx139");
+    FALCOR_CHECK(user_data && user_data->inputs.desc, "MX139 geompropvalue node missing user data.");
+
+    const std::string geomprop = required_shader_input_value_string(node, k_geomprop_input_name, "");
+    const std::string output_type = shader_output_type_name(node);
+    const mx::ShaderOutput* output = node.getOutput();
+    FALCOR_CHECK(output, "MX139 geompropvalue node missing output.");
+    const std::string expression = geomprop_provider_expression(*user_data->inputs.desc, geomprop, output_type);
+
+    const mx::ShaderGenerator& shadergen = context.getShaderGenerator();
+    shadergen.emitLineBegin(stage);
+    shadergen.emitOutput(output, true, false, context, stage);
+    shadergen.emitString(" = " + expression, stage);
+    shadergen.emitLineEnd(stage);
 }
-mx::ShaderNodeImplPtr create_geomcolor_node()
+
+mx::ShaderNodeImplPtr TexCoordNode::create()
 {
-    return GeomColorNode::create();
+    return std::make_shared<TexCoordNode>();
+}
+
+void TexCoordNode::emitFunctionCall(const mx::ShaderNode& node, mx::GenContext& context, mx::ShaderStage& stage) const
+{
+    auto user_data = context.getUserData<CodegenUserData>("mx139");
+    FALCOR_CHECK(user_data && user_data->inputs.desc, "MX139 texcoord node missing user data.");
+
+    const std::string index = required_shader_input_value_string(node, "index", "0");
+    const std::string output_type = shader_output_type_name(node);
+    const mx::ShaderOutput* output = node.getOutput();
+    FALCOR_CHECK(output, "MX139 texcoord node missing output.");
+    const std::string expression = texcoord_provider_expression(*user_data->inputs.desc, index, output_type);
+
+    const mx::ShaderGenerator& shadergen = context.getShaderGenerator();
+    shadergen.emitLineBegin(stage);
+    shadergen.emitOutput(output, true, false, context, stage);
+    shadergen.emitString(" = " + expression, stage);
+    shadergen.emitLineEnd(stage);
+}
+
+mx::ShaderNodeImplPtr GeomColorNode::create()
+{
+    return std::make_shared<GeomColorNode>();
+}
+
+void GeomColorNode::emitFunctionCall(const mx::ShaderNode& node, mx::GenContext& context, mx::ShaderStage& stage) const
+{
+    auto user_data = context.getUserData<CodegenUserData>("mx139");
+    FALCOR_CHECK(user_data && user_data->inputs.desc, "MX139 geomcolor node missing user data.");
+
+    const std::string index = required_shader_input_value_string(node, "index", "0");
+    const std::string output_type = shader_output_type_name(node);
+    const mx::ShaderOutput* output = node.getOutput();
+    FALCOR_CHECK(output, "MX139 geomcolor node missing output.");
+    const std::string expression = geomcolor_provider_expression(*user_data->inputs.desc, index, output_type);
+
+    const mx::ShaderGenerator& shadergen = context.getShaderGenerator();
+    shadergen.emitLineBegin(stage);
+    shadergen.emitOutput(output, true, false, context, stage);
+    shadergen.emitString(" = " + expression, stage);
+    shadergen.emitLineEnd(stage);
 }
 
 } // namespace genslangpt

@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
@@ -11,6 +12,7 @@
 
 #include "falcor2/render/fwd.h"
 
+#include <sgl/core/input.h>
 #include <sgl/device/fwd.h>
 
 #include <string>
@@ -130,6 +132,10 @@ public:
 
     /// Last rendered viewport state.
     ViewportState viewport_state() const { return m_viewport_state; }
+
+    /// Handle scene editor keyboard shortcuts.
+    /// @return True if the event was consumed by an editor shortcut.
+    bool handle_keyboard_shortcut(const sgl::KeyboardEvent& event);
 
     /// Optional explicit ImGuizmo initialization for the current ImGui frame.
     /// viewport_ui() will initialize ImGuizmo automatically if this was not called.

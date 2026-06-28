@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 import sys
@@ -169,7 +170,7 @@ SCENE_MATERIALS = [
             "ior": 1.5,
             "transmission_factor": spy.float3(0.8, 0.9, 1.0),
             "specular_transmission_factor": 0.75,
-            "thin_surface": True,
+            "thin_walled": True,
         },
         {
             "eval": spy.float3(0.11459155, 0.11459155, 0.11459155),
@@ -365,7 +366,7 @@ def create_scene_material(
     )
 
 
-def test_discover_materialx_material_node_names_defaults_to_mx139() -> None:
+def test_discover_materialx_renderable_elements_defaults_to_mx139() -> None:
     materialx_root = DATA_DIR.parent / "external/MaterialX"
     material_path = (
         materialx_root
@@ -374,27 +375,28 @@ def test_discover_materialx_material_node_names_defaults_to_mx139() -> None:
     asset_resolver = f2.AssetResolver()
     asset_resolver.add_search_path(materialx_root)
 
-    node_names = f2.discover_materialx_material_node_names(
+    elements = f2.discover_materialx_renderable_elements(
         material_path,
         asset_resolver=asset_resolver,
     )
 
-    assert "Tiled_Brass" in node_names
+    assert ("Tiled_Brass", "material") in {(item["name"], item["type"]) for item in elements}
 
 
-def test_discover_materialx_material_node_names_includes_renderable_outputs() -> None:
+def test_discover_materialx_renderable_elements_includes_output_types() -> None:
     materialx_root = DATA_DIR.parent / "external/MaterialX"
     material_path = materialx_root / "resources/Materials/TestSuite/pbrlib/bsdf/dielectric.mtlx"
     asset_resolver = f2.AssetResolver()
     asset_resolver.add_search_path(materialx_root)
 
-    node_names = f2.discover_materialx_material_node_names(
+    elements = f2.discover_materialx_renderable_elements(
         material_path,
         asset_resolver=asset_resolver,
     )
+    element_types = {item["name"]: item["type"] for item in elements}
 
-    assert "dielectric_bsdf/RT_out" in node_names
-    assert "dielectric_bsdf/layer_RT_out" in node_names
+    assert element_types["dielectric_bsdf/RT_out"] == "surfaceshader"
+    assert element_types["dielectric_bsdf/layer_RT_out"] == "surfaceshader"
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
@@ -403,7 +405,7 @@ def test_materialx_rejects_cuda_by_default(device_type: spy.DeviceType) -> None:
         pytest.skip("CUDA-only MaterialX guard test.")
 
     device = helpers.get_device(device_type)
-    scene = f2.Scene(device)
+    scene = f2.Scene.create(device)
 
     with pytest.raises(Exception) as exc_info:
         scene.create_material("MaterialXMaterial", f2.Properties())
@@ -414,7 +416,7 @@ def test_materialx_rejects_cuda_by_default(device_type: spy.DeviceType) -> None:
 
 
 def _float3_array(value: Any) -> np.ndarray:
-    return np.array([value.x, value.y, value.z], dtype=np.float32)
+    return np.array([float(value.x), float(value.y), float(value.z)], dtype=np.float32)
 
 
 def _assert_finite_float3(value: Any) -> None:
@@ -446,7 +448,7 @@ def test_materialx_mx139_tiled_brass_scene_material_successor(
     )
 
     device = helpers.get_device(device_type)
-    scene = f2.Scene(device)
+    scene = f2.Scene.create(device)
 
     props = f2.Properties()
     props["mtlx_path"] = str(material_path)
@@ -570,7 +572,7 @@ def test_scene_material_codegen(
     _skip_materialx_on_cuda(device_type, test_material.scene_material_type)
 
     device = helpers.get_device(device_type)
-    scene = f2.Scene(device)
+    scene = f2.Scene.create(device)
 
     material = create_scene_material(scene, test_material)
     scene.update()
@@ -601,7 +603,7 @@ def test_scene_material_texture_lists(device_type: spy.DeviceType) -> None:
         if _is_materialx_on_cuda(device_type, test_material.scene_material_type):
             continue
 
-        scene = f2.Scene(device)
+        scene = f2.Scene.create(device)
         material = create_scene_material(scene, test_material)
         scene.update()
 
@@ -618,7 +620,7 @@ def test_scene_material_texture_lists(device_type: spy.DeviceType) -> None:
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_scene_material_cursor_writers(device_type: spy.DeviceType) -> None:
     device = helpers.get_device(device_type)
-    scene = f2.Scene(device)
+    scene = f2.Scene.create(device)
 
     standard = scene.create_material(
         f2.StandardMaterial,
@@ -627,6 +629,16 @@ def test_scene_material_cursor_writers(device_type: spy.DeviceType) -> None:
                 "base_color_factor": spy.float3(0.25, 0.5, 0.75),
                 "metallic_factor": 0.125,
                 "roughness_factor": 0.625,
+            }
+        ),
+    )
+    spec_gloss = scene.create_material(
+        f2.StandardSpecGlossMaterial,
+        f2.Properties(
+            {
+                "diffuse_factor": spy.float3(0.25, 0.5, 0.75),
+                "specular_factor": spy.float3(0.125, 0.25, 0.5),
+                "glossiness_factor": 0.625,
             }
         ),
     )
@@ -642,9 +654,22 @@ def test_scene_material_cursor_writers(device_type: spy.DeviceType) -> None:
     standard_cursor = material_cursor(scene.render_module.layout, "StandardMaterial")
     standard_cursor[0] = standard
     standard_result = standard_cursor[0].read()
-    assert standard_result["base_color_factor"] == pytest.approx(spy.float3(0.25, 0.5, 0.75))
-    assert standard_result["metallic_factor"] == pytest.approx(0.125)
-    assert standard_result["roughness_factor"] == pytest.approx(0.625)
+    assert _float3_array(standard_result["base_color_factor"]) == pytest.approx(
+        np.array([0.25, 0.5, 0.75], dtype=np.float32)
+    )
+    assert float(standard_result["metallic_factor"]) == pytest.approx(0.125)
+    assert float(standard_result["roughness_factor"]) == pytest.approx(0.625)
+
+    spec_gloss_cursor = material_cursor(scene.render_module.layout, "StandardSpecGlossMaterial")
+    spec_gloss_cursor[0] = spec_gloss
+    spec_gloss_result = spec_gloss_cursor[0].read()
+    assert _float3_array(spec_gloss_result["diffuse_factor"]) == pytest.approx(
+        np.array([0.25, 0.5, 0.75], dtype=np.float32)
+    )
+    assert _float3_array(spec_gloss_result["specular_factor"]) == pytest.approx(
+        np.array([0.125, 0.25, 0.5], dtype=np.float32)
+    )
+    assert float(spec_gloss_result["glossiness_factor"]) == pytest.approx(0.625)
 
     required_module = python_material.required_module()
     assert required_module is not None
@@ -667,7 +692,7 @@ def test_scene_material_sampler(
     _skip_materialx_on_cuda(device_type, test_material.scene_material_type)
 
     device = helpers.get_device(device_type)
-    scene = f2.Scene(device)
+    scene = f2.Scene.create(device)
 
     create_scene_material(scene, test_material)
 
@@ -747,7 +772,7 @@ def test_scene_material_sampler_batch(device_type: spy.DeviceType) -> None:
     """
 
     device = helpers.get_device(device_type)
-    scene = f2.Scene(device)
+    scene = f2.Scene.create(device)
 
     samples_per_material = 100
     active_scene_materials = _scene_materials_for_device(device_type)
@@ -875,7 +900,7 @@ def test_scene_material_sampler_batch(device_type: spy.DeviceType) -> None:
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_example_python_material(device_type: spy.DeviceType) -> None:
     device = helpers.get_device(device_type)
-    scene = f2.Scene(device)
+    scene = f2.Scene.create(device)
 
     props = f2.Properties()
 

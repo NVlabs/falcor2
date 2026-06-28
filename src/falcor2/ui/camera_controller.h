@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
@@ -9,7 +10,6 @@
 #include <sgl/core/input.h>
 
 #include <array>
-#include <functional>
 
 namespace falcor::ui {
 
@@ -76,9 +76,6 @@ public:
         }
     );
 
-    /// Callback invoked when the controller wants to capture or release the mouse cursor.
-    using CaptureCallback = std::function<void(bool capture)>;
-
     CameraController();
 
     /// Camera transform.
@@ -111,15 +108,8 @@ public:
     /// Enable or disable smoothing/inertia for orbit and scroll.
     void set_smoothing(bool enabled);
 
-    /// Capture callback.
-    const CaptureCallback& capture_callback() const { return m_capture_callback; }
-
-    /// Set the capture callback. Called with `true` when entering an active mode
-    /// (e.g. first-person, orbit) and `false` when returning to idle.
-    void set_capture_callback(CaptureCallback capture_callback);
-
-    /// Whether the controller currently has the mouse captured (i.e. is in an active mode).
-    bool is_captured() const { return m_captured; }
+    /// Whether the controller is currently in an active interaction mode.
+    bool is_interacting() const { return m_state != State::idle; }
 
     /// Current interaction mode state.
     State state() const { return m_state; }
@@ -132,10 +122,15 @@ public:
     void focus(const float3& target, float distance);
 
     /// Process a keyboard event. Updates modifier and movement key state.
-    void handle_keyboard_event(const sgl::KeyboardEvent& event);
+    /// @return True if the event is consumed by camera movement.
+    bool handle_keyboard_event(const sgl::KeyboardEvent& event);
 
     /// Process a mouse event. Manages mode transitions and accumulates mouse delta/scroll.
-    void handle_mouse_event(const sgl::MouseEvent& event);
+    /// @return True if the event affected or was owned by camera interaction.
+    bool handle_mouse_event(const sgl::MouseEvent& event);
+
+    /// Cancel any active interaction and clear transient input state.
+    void cancel_interaction();
 
     /// Advance the controller by `dt` seconds.
     /// Applies movement, rotation, orbit, etc. based on the current mode and accumulated input.
@@ -143,9 +138,6 @@ public:
     bool update(float dt);
 
 private:
-    /// Invoke the capture callback.
-    void set_capture(bool capture);
-
     /// Recompute the pivot point from the camera position and forward direction.
     void update_pivot_from_camera();
 
@@ -202,11 +194,6 @@ private:
 
     /// Camera transform (position, rotation, scale).
     Transform m_transform;
-    /// Callback for cursor capture/release.
-    CaptureCallback m_capture_callback;
-    /// Whether the controller currently has the mouse captured.
-    bool m_captured{false};
-
     /// Current interaction state.
     State m_state{State::idle};
     /// First-person movement speed in world units per second.

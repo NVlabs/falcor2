@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "falcor2/ui/property_editor.h"
@@ -10,6 +11,8 @@
 
 #include <imgui.h>
 
+#include <array>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -160,12 +163,24 @@ float get_drag_speed(const reflection::PropertyDescriptor& desc, float fallback 
 
 /// Helper: get min/max from ValueRange metadata.
 template<typename T>
+T range_cast(double value)
+{
+    double min_value = static_cast<double>(std::numeric_limits<T>::lowest());
+    double max_value = static_cast<double>(std::numeric_limits<T>::max());
+    if (value <= min_value)
+        return std::numeric_limits<T>::lowest();
+    if (value >= max_value)
+        return std::numeric_limits<T>::max();
+    return static_cast<T>(value);
+}
+
+template<typename T>
 void get_range(const reflection::PropertyDescriptor& desc, T& out_min, T& out_max)
 {
     const reflection::ValueRange* vr = desc.value_range();
     if (vr) {
-        out_min = static_cast<T>(vr->min);
-        out_max = static_cast<T>(vr->max);
+        out_min = range_cast<T>(vr->min);
+        out_max = range_cast<T>(vr->max);
     } else {
         out_min = T{};
         out_max = T{};
@@ -191,20 +206,49 @@ template<> struct ImGuiDataTypeMap<float> { static constexpr ImGuiDataType value
 template<> struct ImGuiDataTypeMap<double> { static constexpr ImGuiDataType value = ImGuiDataType_Double; };
 // clang-format on
 
+template<typename T>
+struct DragEditScalar {
+    using type = T;
+};
+
+template<>
+struct DragEditScalar<float16_t> {
+    using type = float;
+};
+
 /// Primary template: scalar types (int, float, double, int64_t, ...).
 template<typename T, typename = void>
 struct DragTraits {
     using scalar_type = T;
+    using edit_scalar_type = typename DragEditScalar<scalar_type>::type;
     static constexpr int count = 1;
-    static scalar_type* ptr(T& v) { return &v; }
+
+    static void load(const T& src, std::array<edit_scalar_type, count>& dst)
+    {
+        dst[0] = static_cast<edit_scalar_type>(src);
+    }
+
+    static void store(T& dst, const std::array<edit_scalar_type, count>& src) { dst = T(src[0]); }
 };
 
 /// Specialization for SGL vector types (have value_type and dimension).
 template<typename T>
 struct DragTraits<T, std::void_t<typename T::value_type, decltype(T::dimension)>> {
     using scalar_type = typename T::value_type;
+    using edit_scalar_type = typename DragEditScalar<scalar_type>::type;
     static constexpr int count = T::dimension;
-    static scalar_type* ptr(T& v) { return &v.x; }
+
+    static void load(const T& src, std::array<edit_scalar_type, count>& dst)
+    {
+        for (int i = 0; i < count; ++i)
+            dst[i] = static_cast<edit_scalar_type>(src[i]);
+    }
+
+    static void store(T& dst, const std::array<edit_scalar_type, count>& src)
+    {
+        for (int i = 0; i < count; ++i)
+            dst[i] = scalar_type(src[i]);
+    }
 };
 
 // ----------------------------------------------------------------------------
@@ -220,27 +264,32 @@ bool drag_editor(
     PropertyEditorContext& /*ctx*/
 )
 {
-    using Scalar = typename DragTraits<T>::scalar_type;
+    using Traits = DragTraits<T>;
+    using EditScalar = typename Traits::edit_scalar_type;
     T value = desc.get<T>(instance);
-    float speed = get_drag_speed(desc, std::is_floating_point_v<Scalar> ? 0.01f : 1.0f);
-    Scalar vmin, vmax;
-    get_range<Scalar>(desc, vmin, vmax);
+    std::array<EditScalar, Traits::count> edit_value;
+    Traits::load(value, edit_value);
+
+    float speed = get_drag_speed(desc, std::is_floating_point_v<EditScalar> ? 0.01f : 1.0f);
+    EditScalar vmin, vmax;
+    get_range<EditScalar>(desc, vmin, vmax);
     if (ImGui::DragScalarN(
             label,
-            ImGuiDataTypeMap<Scalar>::value,
-            DragTraits<T>::ptr(value),
-            DragTraits<T>::count,
+            ImGuiDataTypeMap<EditScalar>::value,
+            edit_value.data(),
+            Traits::count,
             speed,
             &vmin,
             &vmax
         )) {
+        Traits::store(value, edit_value);
         desc.set<T>(instance, value);
         return true;
     }
     return false;
 }
 
-/// Drag editor with color-edit support for float3/float4.
+/// Drag editor with color-edit support for float3/float4 and half3/half4.
 template<typename T>
 bool drag_or_color_editor(
     const char* label,
@@ -250,13 +299,23 @@ bool drag_or_color_editor(
 )
 {
     if ((desc.ui_flags() & reflection::UIFlags::display_as_color) != reflection::UIFlags::none) {
+        using Traits = DragTraits<T>;
+        using EditScalar = typename Traits::edit_scalar_type;
+        static_assert(std::is_same_v<EditScalar, float>);
+        static_assert(Traits::count == 3 || Traits::count == 4);
+
         T value = desc.get<T>(instance);
+        std::array<EditScalar, Traits::count> edit_value;
+        Traits::load(value, edit_value);
+
         bool changed = false;
-        if constexpr (std::is_same_v<T, float3>)
-            changed = ImGui::ColorEdit3(label, &value.x);
-        else
-            changed = ImGui::ColorEdit4(label, &value.x);
+        if constexpr (Traits::count == 3)
+            changed = ImGui::ColorEdit3(label, edit_value.data(), ImGuiColorEditFlags_Float);
+        else if constexpr (Traits::count == 4)
+            changed = ImGui::ColorEdit4(label, edit_value.data(), ImGuiColorEditFlags_Float);
+
         if (changed) {
+            Traits::store(value, edit_value);
             desc.set<T>(instance, value);
             return true;
         }
@@ -453,6 +512,7 @@ const DispatchTable& get_dispatch_table()
 
         t[std::type_index(typeid(float))] = drag_editor<float>;
         t[std::type_index(typeid(double))] = drag_editor<double>;
+        t[std::type_index(typeid(float16_t))] = drag_editor<float16_t>;
 
         t[std::type_index(typeid(int2))] = drag_editor<int2>;
         t[std::type_index(typeid(int3))] = drag_editor<int3>;
@@ -465,6 +525,10 @@ const DispatchTable& get_dispatch_table()
         t[std::type_index(typeid(float2))] = drag_editor<float2>;
         t[std::type_index(typeid(float3))] = drag_or_color_editor<float3>;
         t[std::type_index(typeid(float4))] = drag_or_color_editor<float4>;
+
+        t[std::type_index(typeid(float16_t2))] = drag_editor<float16_t2>;
+        t[std::type_index(typeid(float16_t3))] = drag_or_color_editor<float16_t3>;
+        t[std::type_index(typeid(float16_t4))] = drag_or_color_editor<float16_t4>;
 
         t[std::type_index(typeid(float3x3))] = matrix_editor<float3x3>;
         t[std::type_index(typeid(float4x4))] = matrix_editor<float4x4>;

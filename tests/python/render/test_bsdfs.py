@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 """Chi-square, eval/sample consistency, and reciprocity tests for BSDF implementations."""
@@ -204,7 +205,7 @@ BSDF_CONFIGS = [
                 "transmission": [1.0, 1.0, 1.0],
                 "diffuse_transmission": 0.0,
                 "specular_transmission": 0.0,
-                "thin_surface": False,
+                "thin_walled": False,
             }
         },
         [WI_NORMAL, WI_30DEG],
@@ -224,7 +225,7 @@ BSDF_CONFIGS = [
                 "transmission": [1.0, 1.0, 1.0],
                 "diffuse_transmission": 0.0,
                 "specular_transmission": 0.0,
-                "thin_surface": False,
+                "thin_walled": False,
             }
         },
         [WI_NORMAL],
@@ -244,7 +245,7 @@ BSDF_CONFIGS = [
                 "transmission": [0.8, 0.9, 1.0],
                 "diffuse_transmission": 0.5,
                 "specular_transmission": 0.0,
-                "thin_surface": True,
+                "thin_walled": True,
             }
         },
         [WI_NORMAL, WI_30DEG],
@@ -264,7 +265,7 @@ BSDF_CONFIGS = [
                 "transmission": [0.8, 0.9, 1.0],
                 "diffuse_transmission": 0.0,
                 "specular_transmission": 0.75,
-                "thin_surface": True,
+                "thin_walled": True,
             }
         },
         [WI_NORMAL],

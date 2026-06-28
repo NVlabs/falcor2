@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 
@@ -30,6 +31,8 @@
 #include <sgl/utils/texture_loader.h>
 
 #include <map>
+#include <utility>
+#include <vector>
 
 namespace falcor {
 
@@ -38,7 +41,8 @@ static constexpr bool USE_OPENPBR_MATERIAL = false;
 
 /// Helper function to create a texture from importer embedded texture data.
 /// Returns a ref<sgl::Texture> on success, or an empty ref if no embedded data.
-static ref<sgl::Texture> create_texture_from_embedded_data(sgl::Device* device, const ImporterTexture& importer_texture)
+static ref<sgl::Texture>
+create_texture_from_embedded_data(sgl::Device* device, const ImporterTexture& importer_texture, bool load_as_srgb)
 {
     if (importer_texture.texture_data.empty()) {
         return {};
@@ -53,7 +57,7 @@ static ref<sgl::Texture> create_texture_from_embedded_data(sgl::Device* device, 
         if (!bitmap->empty()) {
             sgl::ref<sgl::Device> device_ref(device);
             sgl::TextureLoader loader(device_ref);
-            return loader.load_texture(bitmap.get());
+            return loader.load_texture(bitmap.get(), sgl::TextureLoader::Options{.load_as_srgb = load_as_srgb});
         }
     } catch (const std::exception& e) {
         sgl::log_warn("Failed to load embedded texture data: {}", e.what());
@@ -70,11 +74,12 @@ static void set_texture_property(
     sgl::Device* device,
     const std::string& property_name,
     const std::string& property_name_path,
-    const ImporterTexture& importer_texture
+    const ImporterTexture& importer_texture,
+    bool load_as_srgb = true
 )
 {
     // Set texture reference if embedded data is available
-    if (auto texture = create_texture_from_embedded_data(device, importer_texture)) {
+    if (auto texture = create_texture_from_embedded_data(device, importer_texture, load_as_srgb)) {
         properties.set(property_name, texture);
     } else if (!importer_texture.texture_path.empty()) {
         // Only set path if no embedded data is available
@@ -136,7 +141,8 @@ static Material* load_importer_material(
                     scene->device(),
                     "base_metalness_texture",
                     "base_metalness_texture_path",
-                    importer_textures[property.value()]
+                    importer_textures[property.value()],
+                    false
                 );
                 // glTF metallic-roughness texture uses B channel for metallic
                 properties.set("base_metalness_texture_channel", 2u);
@@ -145,7 +151,8 @@ static Material* load_importer_material(
                     scene->device(),
                     "specular_roughness_texture",
                     "specular_roughness_texture_path",
-                    importer_textures[property.value()]
+                    importer_textures[property.value()],
+                    false
                 );
                 // glTF metallic-roughness texture uses G channel for roughness
                 properties.set("specular_roughness_texture_channel", 1);
@@ -156,7 +163,8 @@ static Material* load_importer_material(
                     scene->device(),
                     "normal_texture",
                     "normal_texture_path",
-                    importer_textures[property.value()]
+                    importer_textures[property.value()],
+                    false
                 );
             }
             if (auto property = params.get_optional<float>("normalTexture_strength")) {
@@ -216,7 +224,8 @@ static Material* load_importer_material(
                     scene->device(),
                     "metallic_roughness_texture",
                     "metallic_roughness_texture_path",
-                    importer_textures[property.value()]
+                    importer_textures[property.value()],
+                    false
                 );
                 // glTF metallic-roughness texture uses B channel for metallic
                 properties.set("metallic_texture_channel", 2u);
@@ -227,7 +236,8 @@ static Material* load_importer_material(
                     scene->device(),
                     "normal_texture",
                     "normal_texture_path",
-                    importer_textures[property.value()]
+                    importer_textures[property.value()],
+                    false
                 );
             }
             if (auto property = params.get_optional<float>("normalTexture_strength")) {
@@ -281,7 +291,8 @@ static Material* load_importer_material(
                     scene->device(),
                     "normal_texture",
                     "normal_texture_path",
-                    importer_textures[property.value()]
+                    importer_textures[property.value()],
+                    false
                 );
             }
             if (auto property = params.get_optional<float>("normalTexture_strength")) {
@@ -317,6 +328,18 @@ static Material* load_importer_material(
 static StaticMeshGeometry* load_importer_mesh(Scene* scene, const ImporterMesh& importer_mesh)
 {
     StaticMeshGeometryDataDesc desc = {};
+    std::vector<float2> converted_texcoords;
+    auto texcoord_stream = importer_mesh.texcoord_stream();
+    // SceneOptions define the target convention for loaded scene UVs.
+    // ImporterMesh::uv_origin describes the mesh's authored texcoords, so convert only when they differ.
+    if (importer_mesh.uv_origin != scene->options().uv_origin && texcoord_stream.valid()) {
+        converted_texcoords.resize(importer_mesh.vertex_count());
+        for (size_t i = 0; i < importer_mesh.vertex_count(); ++i) {
+            converted_texcoords[i] = texcoord_stream[i];
+            converted_texcoords[i].y = 1.f - converted_texcoords[i].y;
+        }
+    }
+
     desc.name = importer_mesh.name;
     desc.vertex_count = sgl::narrow_cast<uint32_t>(importer_mesh.vertex_count());
     desc.position_stream.data = reinterpret_cast<const float3*>(importer_mesh.position_stream().data);
@@ -327,8 +350,13 @@ static StaticMeshGeometry* load_importer_mesh(Scene* scene, const ImporterMesh& 
     desc.tangent_stream.stride = importer_mesh.tangent_stream().stride;
     desc.handedness_stream.data = reinterpret_cast<const float*>(importer_mesh.handedness_stream().data);
     desc.handedness_stream.stride = importer_mesh.handedness_stream().stride;
-    desc.texcoord_stream.data = reinterpret_cast<const float2*>(importer_mesh.texcoord_stream().data);
-    desc.texcoord_stream.stride = importer_mesh.texcoord_stream().stride;
+    if (converted_texcoords.empty()) {
+        desc.texcoord_stream.data = reinterpret_cast<const float2*>(texcoord_stream.data);
+        desc.texcoord_stream.stride = texcoord_stream.stride;
+    } else {
+        desc.texcoord_stream.data = converted_texcoords.data();
+        desc.texcoord_stream.stride = sizeof(float2);
+    }
     for (const ImporterMesh::Subgeometry& subgeo : importer_mesh.subgeometries) {
         StaticMeshGeometryDataDesc::SubMesh sub_mesh = {};
         sub_mesh.name = subgeo.name;
@@ -360,6 +388,20 @@ static StaticCurveGeometry* load_importer_curve(Scene* scene, const ImporterCurv
     StaticCurveGeometry* geometry = scene->create_geometry<StaticCurveGeometry>();
     geometry->set_curve_data(desc);
     return geometry;
+}
+
+static ref<ImporterScene> import_scene_for_create(const std::filesystem::path& path, bool recompute_normals)
+{
+    ImportOptions import_options{.recompute_normals = recompute_normals};
+
+    ref<ImporterScene> importer_scene = import_scene(path, import_options);
+    FALCOR_ASSERT(importer_scene);
+    return importer_scene;
+}
+
+static SceneOptions resolve_scene_options(std::optional<UVOrigin> uv_origin, const ImporterScene& importer_scene)
+{
+    return SceneOptions(uv_origin.value_or(importer_scene.uv_origin));
 }
 
 void load_importer_scene(Scene* scene, const ImporterScene& importer_scene)
@@ -536,5 +578,27 @@ void load_scene(Scene* scene, const std::filesystem::path& path, bool recompute_
     // importer_scene->make_clay_scene();
     return load_importer_scene(scene, *importer_scene);
 }
+
+namespace detail {
+
+ref<Scene> create_scene(
+    ref<sgl::Device> device,
+    const std::filesystem::path& path,
+    bool recompute_normals,
+    std::optional<UVOrigin> uv_origin
+)
+{
+    ref<ImporterScene> importer_scene = import_scene_for_create(path, recompute_normals);
+    return create_scene(std::move(device), *importer_scene, uv_origin);
+}
+
+ref<Scene> create_scene(ref<sgl::Device> device, const ImporterScene& importer_scene, std::optional<UVOrigin> uv_origin)
+{
+    auto scene = ref<Scene>{new Scene(std::move(device), resolve_scene_options(uv_origin, importer_scene))};
+    load_importer_scene(scene.get(), importer_scene);
+    return scene;
+}
+
+} // namespace detail
 
 } // namespace falcor

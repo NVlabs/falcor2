@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
@@ -103,15 +104,24 @@ def test_set_and_get_transform():
 def test_right_mouse_drag_rotates_after_first_move():
     controller = ui.CameraController()
 
-    controller.handle_mouse_event(
-        _mouse_event(
-            spy.MouseEventType.button_down,
-            button=spy.MouseButton.right,
-            pos=spy.float2(10.0, 20.0),
+    assert (
+        controller.handle_mouse_event(
+            _mouse_event(
+                spy.MouseEventType.button_down,
+                button=spy.MouseButton.right,
+                pos=spy.float2(10.0, 20.0),
+            )
         )
+        is True
     )
     assert controller.state == ui.CameraController.State.first_person
-    controller.handle_mouse_event(_mouse_event(spy.MouseEventType.move, pos=spy.float2(10.0, 20.0)))
+    assert controller.is_interacting() is True
+    assert (
+        controller.handle_mouse_event(
+            _mouse_event(spy.MouseEventType.move, pos=spy.float2(10.0, 20.0))
+        )
+        is True
+    )
 
     assert controller.update(DT) is False
     assert controller.transform.rotation == spy.quatf(0.0, 0.0, 0.0, 1.0)
@@ -122,14 +132,18 @@ def test_right_mouse_drag_rotates_after_first_move():
     assert controller.transform.rotation != spy.quatf(0.0, 0.0, 0.0, 1.0)
 
     # Release RMB -> idle.
-    controller.handle_mouse_event(
-        _mouse_event(
-            spy.MouseEventType.button_up,
-            button=spy.MouseButton.right,
-            pos=spy.float2(26.0, 12.0),
+    assert (
+        controller.handle_mouse_event(
+            _mouse_event(
+                spy.MouseEventType.button_up,
+                button=spy.MouseButton.right,
+                pos=spy.float2(26.0, 12.0),
+            )
         )
+        is True
     )
     assert controller.state == ui.CameraController.State.idle
+    assert controller.is_interacting() is False
 
 
 # --- Drag (MMB) ---
@@ -714,19 +728,16 @@ def test_scroll_adjusts_move_speed_in_first_person():
     assert controller.move_speed > initial_speed
 
 
-# --- Capturing ---
+# --- Interaction ownership ---
 
 
-def test_camera_controller_is_captured_starts_false():
+def test_camera_controller_is_interacting_starts_false():
     cc = ui.CameraController()
-    assert cc.is_captured() is False
+    assert cc.is_interacting() is False
 
 
-def test_camera_controller_is_captured_tracks_capture_state():
+def test_camera_controller_is_interacting_tracks_state():
     cc = ui.CameraController()
-
-    callback_values: list[bool] = []
-    cc.capture_callback = lambda c: callback_values.append(c)
 
     # Simulate right mouse button down to enter first-person mode.
     down = _mouse_event(
@@ -734,11 +745,10 @@ def test_camera_controller_is_captured_tracks_capture_state():
         button=spy.MouseButton.right,
         pos=spy.float2(100.0, 100.0),
     )
-    cc.handle_mouse_event(down)
+    assert cc.handle_mouse_event(down) is True
 
     assert cc.state == ui.CameraController.State.first_person
-    assert cc.is_captured() is True
-    assert callback_values[-1] is True
+    assert cc.is_interacting() is True
 
     # Simulate right mouse button up to return to idle.
     up = _mouse_event(
@@ -746,19 +756,20 @@ def test_camera_controller_is_captured_tracks_capture_state():
         button=spy.MouseButton.right,
         pos=spy.float2(110.0, 110.0),
     )
-    cc.handle_mouse_event(up)
+    assert cc.handle_mouse_event(up) is True
 
     assert cc.state == ui.CameraController.State.idle
-    assert cc.is_captured() is False
-    assert callback_values[-1] is False
+    assert cc.is_interacting() is False
 
 
-def test_capture_callback_called_on_mode_enter_and_exit():
+def test_camera_keyboard_consumption_is_selective():
     controller = ui.CameraController()
-    captures = []
-    controller.capture_callback = lambda capture: captures.append(capture)
 
-    # Enter first-person mode (RMB down) should invoke callback with True.
+    assert (
+        controller.handle_keyboard_event(_key_event(spy.KeyboardEventType.key_press, spy.KeyCode.w))
+        is False
+    )
+
     controller.handle_mouse_event(
         _mouse_event(
             spy.MouseEventType.button_down,
@@ -766,33 +777,62 @@ def test_capture_callback_called_on_mode_enter_and_exit():
             pos=spy.float2(0.0, 0.0),
         )
     )
-    assert captures == [True]
 
-    # Release RMB should invoke callback with False.
-    controller.handle_mouse_event(
-        _mouse_event(
-            spy.MouseEventType.button_up,
-            button=spy.MouseButton.right,
-            pos=spy.float2(0.0, 0.0),
-        )
+    assert (
+        controller.handle_keyboard_event(_key_event(spy.KeyboardEventType.key_press, spy.KeyCode.w))
+        is True
     )
-    assert captures == [True, False]
+    assert (
+        controller.handle_keyboard_event(
+            _key_event(spy.KeyboardEventType.key_release, spy.KeyCode.w)
+        )
+        is True
+    )
+    assert (
+        controller.handle_keyboard_event(
+            _key_event(spy.KeyboardEventType.key_press, spy.KeyCode.space)
+        )
+        is False
+    )
 
 
-def test_capture_callback_default_is_none():
+def test_idle_move_key_press_does_not_prime_first_person():
     controller = ui.CameraController()
-    assert controller.capture_callback is None
+    controller.smoothing = False
+    initial_position = controller.transform.translation
+
+    assert (
+        controller.handle_keyboard_event(_key_event(spy.KeyboardEventType.key_press, spy.KeyCode.w))
+        is False
+    )
+    assert (
+        controller.handle_mouse_event(
+            _mouse_event(
+                spy.MouseEventType.button_down,
+                button=spy.MouseButton.right,
+                pos=spy.float2(0.0, 0.0),
+            )
+        )
+        is True
+    )
+
+    assert controller.update(DT) is False
+    position = controller.transform.translation
+    assert position.x == pytest.approx(initial_position.x)
+    assert position.y == pytest.approx(initial_position.y)
+    assert position.z == pytest.approx(initial_position.z)
+
+    assert (
+        controller.handle_keyboard_event(_key_event(spy.KeyboardEventType.key_press, spy.KeyCode.w))
+        is True
+    )
+    assert controller.update(DT) is True
 
 
-def test_capture_callback_can_be_cleared():
+def test_cancel_interaction_returns_to_idle_and_clears_keys():
     controller = ui.CameraController()
-    captures = []
-    controller.capture_callback = lambda capture: captures.append(capture)
+    controller.smoothing = False
 
-    # Clear the callback.
-    controller.capture_callback = None
-
-    # Enter first-person mode should not invoke callback.
     controller.handle_mouse_event(
         _mouse_event(
             spy.MouseEventType.button_down,
@@ -800,7 +840,12 @@ def test_capture_callback_can_be_cleared():
             pos=spy.float2(0.0, 0.0),
         )
     )
-    assert captures == []
+    controller.handle_keyboard_event(_key_event(spy.KeyboardEventType.key_press, spy.KeyCode.w))
+    controller.cancel_interaction()
+
+    assert controller.state == ui.CameraController.State.idle
+    assert controller.is_interacting() is False
+    assert controller.update(DT) is False
 
 
 if __name__ == "__main__":

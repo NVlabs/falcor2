@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "codegen_wrapper_1_39.h"
@@ -15,7 +16,6 @@
 #include <MaterialXFormat/Util.h>
 #include <MaterialXGenShader/Util.h>
 
-#include <algorithm>
 #include <filesystem>
 #include <memory>
 #include <unordered_map>
@@ -289,15 +289,13 @@ mx::FileSearchPath make_string_search_path(const CodeGenDesc& desc)
     return search_path;
 }
 
-std::vector<std::string> discover_renderable_element_names(mx::DocumentPtr doc)
+std::vector<RenderableElement> discover_renderable_elements_impl(mx::DocumentPtr doc)
 {
-    std::vector<std::string> names;
+    std::vector<RenderableElement> elements;
     for (const mx::TypedElementPtr& element : mx::findRenderableElements(doc))
-        names.push_back(element->getNamePath());
+        elements.push_back(RenderableElement{element->getNamePath(), element->getType()});
 
-    std::sort(names.begin(), names.end());
-    names.erase(std::unique(names.begin(), names.end()), names.end());
-    return names;
+    return elements;
 }
 
 } // namespace
@@ -336,9 +334,9 @@ std::unique_ptr<CodeGenResult> CodeGen_1_39::generate(const CodeGenDesc& desc)
     return ::falcor::materialx::mx139::generate_code(doc, desc);
 }
 
-std::vector<std::string> CodeGen_1_39::discover_material_node_names(const CodeGenDesc& desc)
+std::vector<RenderableElement> CodeGen_1_39::discover_renderable_elements(const CodeGenDesc& desc)
 {
-    return discover_renderable_element_names(load_document(desc));
+    return discover_renderable_elements_impl(load_document(desc));
 }
 
 } // namespace materialx_1_39

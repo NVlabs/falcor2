@@ -1,4 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+
 //
 // Isolated helpers for mx139. This file intentionally does not import
 // falcor2 or sgl; formulas are ported from OSL/BSDL when noted locally.

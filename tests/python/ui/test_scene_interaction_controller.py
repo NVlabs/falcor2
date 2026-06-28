@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
@@ -36,6 +37,35 @@ def _key_event(
     return event
 
 
+def _camera_interaction_controller() -> tuple[
+    ui.CameraController,
+    ui.SceneEditor,
+    ui.SceneInteractionController,
+]:
+    cc = ui.CameraController()
+    editor = ui.SceneEditor()
+    editor.visible = False  # No editor gating.
+    ic = ui.SceneInteractionController(editor, None, None, cc)
+    return cc, editor, ic
+
+
+def _start_camera_capture(
+    ic: ui.SceneInteractionController,
+    *,
+    button: spy.MouseButton = spy.MouseButton.right,
+    pos: Optional[spy.float2] = None,
+    modifiers: spy.KeyModifierFlags = spy.KeyModifierFlags.none,
+) -> bool:
+    return ic.handle_mouse_event(
+        _mouse_event(
+            spy.MouseEventType.button_down,
+            button=button,
+            pos=pos if pos is not None else spy.float2(100.0, 100.0),
+            modifiers=modifiers,
+        )
+    )
+
+
 # ---------------------------------------------------------------------------
 # SceneInteractionController basics
 # ---------------------------------------------------------------------------
@@ -48,6 +78,8 @@ def test_default_state():
     assert ic.selection_overlay is None
     assert ic.camera_controller is None
     assert ic.scene is None
+    assert ic.pointer_owner == ui.SceneInteractionController.PointerOwner.none
+    assert ic.has_pointer_capture() is False
 
 
 def test_keyboard_not_consumed_without_camera_controller():
@@ -67,38 +99,104 @@ def test_mouse_not_consumed_without_camera_controller():
     assert ic.handle_mouse_event(event) is False
 
 
-def test_captures_mouse_during_camera_interaction():
-    cc = ui.CameraController()
-    editor = ui.SceneEditor()
-    editor.visible = False  # No editor gating.
-    ic = ui.SceneInteractionController(editor, None, None, cc)
+@pytest.mark.parametrize(
+    ("button", "modifiers"),
+    [
+        (spy.MouseButton.right, spy.KeyModifierFlags.none),
+        (spy.MouseButton.middle, spy.KeyModifierFlags.none),
+        (spy.MouseButton.left, spy.KeyModifierFlags.alt),
+    ],
+)
+def test_camera_gestures_capture_pointer(button: spy.MouseButton, modifiers: spy.KeyModifierFlags):
+    cc, _, ic = _camera_interaction_controller()
 
-    # Start right-click to enter first-person mode.
-    down = _mouse_event(
-        spy.MouseEventType.button_down,
-        button=spy.MouseButton.right,
-        pos=spy.float2(100.0, 100.0),
-    )
-    ic.handle_mouse_event(down)
+    assert _start_camera_capture(ic, button=button, modifiers=modifiers) is True
 
-    assert cc.is_captured() is True
+    assert cc.is_interacting() is True
+    assert ic.pointer_owner == ui.SceneInteractionController.PointerOwner.camera
+    assert ic.has_pointer_capture() is True
 
-    # Mouse move while captured should be consumed.
     move = _mouse_event(
         spy.MouseEventType.move,
         pos=spy.float2(110.0, 110.0),
+        modifiers=modifiers,
     )
     assert ic.handle_mouse_event(move) is True
 
-    # Release should uncapture.
     up = _mouse_event(
         spy.MouseEventType.button_up,
-        button=spy.MouseButton.right,
+        button=button,
         pos=spy.float2(110.0, 110.0),
     )
-    ic.handle_mouse_event(up)
+    assert ic.handle_mouse_event(up) is True
 
-    assert cc.is_captured() is False
+    assert cc.is_interacting() is False
+    assert ic.pointer_owner == ui.SceneInteractionController.PointerOwner.none
+    assert ic.has_pointer_capture() is False
+
+
+def test_camera_pointer_capture_callback_tracks_owner():
+    _, _, ic = _camera_interaction_controller()
+    captures: list[bool] = []
+    ic.pointer_capture_callback = lambda capture: captures.append(capture)
+
+    assert _start_camera_capture(ic) is True
+    assert captures == [True]
+
+    assert (
+        ic.handle_mouse_event(
+            _mouse_event(
+                spy.MouseEventType.button_up,
+                button=spy.MouseButton.right,
+                pos=spy.float2(100.0, 100.0),
+            )
+        )
+        is True
+    )
+    assert captures == [True, False]
+
+
+def test_direct_camera_cancel_reconciles_pointer_capture_before_routing():
+    cc, editor, ic = _camera_interaction_controller()
+    captures: list[bool] = []
+    ic.pointer_capture_callback = lambda capture: captures.append(capture)
+
+    assert _start_camera_capture(ic) is True
+    assert captures == [True]
+
+    editor.visible = True  # Default viewport state is invalid, so new captures should be gated.
+    cc.cancel_interaction()
+
+    assert (
+        ic.handle_mouse_event(
+            _mouse_event(
+                spy.MouseEventType.button_down,
+                button=spy.MouseButton.right,
+                pos=spy.float2(100.0, 100.0),
+            )
+        )
+        is False
+    )
+    assert ic.pointer_owner == ui.SceneInteractionController.PointerOwner.none
+    assert ic.has_pointer_capture() is False
+    assert captures == [True, False]
+
+
+def test_keyboard_consumption_during_camera_pointer_capture_is_selective():
+    _, _, ic = _camera_interaction_controller()
+
+    assert _start_camera_capture(ic) is True
+
+    assert (
+        ic.handle_keyboard_event(_key_event(spy.KeyboardEventType.key_press, spy.KeyCode.w)) is True
+    )
+    assert (
+        ic.handle_keyboard_event(_key_event(spy.KeyboardEventType.key_press, spy.KeyCode.e)) is True
+    )
+    assert (
+        ic.handle_keyboard_event(_key_event(spy.KeyboardEventType.key_press, spy.KeyCode.space))
+        is False
+    )
 
 
 def test_focus_on_selection_returns_false_without_editor():
@@ -149,7 +247,7 @@ def test_selection_version_increments_on_set_selected_object(
     device_type: spy.DeviceType,
 ):
     device = helpers.get_device(device_type)
-    scene = f2.Scene(device)
+    scene = f2.Scene.create(device)
     entity = scene.create_entity()
 
     editor = ui.SceneEditor()
@@ -181,6 +279,49 @@ def test_selection_version_increments_on_set_selected_object(
 def test_is_viewport_interactive_defaults_to_false():
     editor = ui.SceneEditor()
     assert editor.is_viewport_interactive() is False
+
+
+def test_scene_editor_keyboard_shortcuts_without_scene_are_not_consumed():
+    editor = ui.SceneEditor()
+
+    assert (
+        editor.handle_keyboard_shortcut(_key_event(spy.KeyboardEventType.key_press, spy.KeyCode.f1))
+        is False
+    )
+    assert (
+        editor.handle_keyboard_shortcut(_key_event(spy.KeyboardEventType.key_press, spy.KeyCode.w))
+        is False
+    )
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_scene_editor_keyboard_shortcuts(device_type: spy.DeviceType):
+    device = helpers.get_device(device_type)
+    scene = f2.Scene.create(device)
+    editor = ui.SceneEditor()
+    editor.scene = scene
+
+    assert editor.playing is False
+    assert (
+        editor.handle_keyboard_shortcut(
+            _key_event(spy.KeyboardEventType.key_press, spy.KeyCode.space)
+        )
+        is True
+    )
+    assert editor.playing is True
+
+    assert (
+        editor.handle_keyboard_shortcut(_key_event(spy.KeyboardEventType.key_press, spy.KeyCode.w))
+        is True
+    )
+    assert editor.tool_mode == ui.SceneEditor.ToolMode.move
+
+    assert editor.transform_space == ui.SceneEditor.TransformSpace.local
+    assert (
+        editor.handle_keyboard_shortcut(_key_event(spy.KeyboardEventType.key_press, spy.KeyCode.x))
+        is True
+    )
+    assert editor.transform_space == ui.SceneEditor.TransformSpace.world
 
 
 if __name__ == "__main__":

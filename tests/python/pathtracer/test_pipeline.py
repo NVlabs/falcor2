@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
@@ -112,7 +113,7 @@ def test_pipeline_can_output_torch_tensor() -> None:
     from falcor2.rendernodes import PathTracerPipeline
 
     device = helpers.get_torch_device(spy.DeviceType.cuda, use_cache=False)
-    scene = f2.Scene(device, "data/assets/kronos/DamagedHelmet/glTF/DamagedHelmet.gltf")
+    scene = f2.Scene.create(device, "data/assets/kronos/DamagedHelmet/glTF/DamagedHelmet.gltf")
     scene.update()
     cam = helpers.create_test_camera(scene, width=16, height=8, fov_y=45)
 
@@ -142,7 +143,7 @@ def test_pipeline_can_mix_torch_color_and_tensor_diffuse_albedo_guide() -> None:
     from falcor2.rendernodes import PathTracerPipeline
 
     device = helpers.get_torch_device(spy.DeviceType.cuda, use_cache=False)
-    scene = f2.Scene(device, "data/assets/kronos/DamagedHelmet/glTF/DamagedHelmet.gltf")
+    scene = f2.Scene.create(device, "data/assets/kronos/DamagedHelmet/glTF/DamagedHelmet.gltf")
     scene.update()
     cam = helpers.create_test_camera(scene, width=16, height=8, fov_y=45)
 

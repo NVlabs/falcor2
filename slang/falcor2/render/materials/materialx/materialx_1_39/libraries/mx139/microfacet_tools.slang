@@ -1,4 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+
 //
 // Shared microfacet helpers ported from OSL/BSDL. The core GGX distribution
 // uses Falcor's shared policy while bounded reflection helpers remain local.

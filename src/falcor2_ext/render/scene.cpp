@@ -1,14 +1,18 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "nanobind.h"
 #include "nanobind_reflector.h"
 #include "core/signal.h"
 #include <nanobind/make_iterator.h>
+#include <nanobind/stl/optional.h>
 #include <nanobind/stl/vector.h>
 
 #include <string>
 
 #include "falcor2/render/scene.h"
+#include "falcor2/render/scene_options.h"
+#include "falcor2/render/scene_import.h"
 #include "falcor2/render/scene_globals.h"
 #include "falcor2/render/scene_requirements.h"
 #include "falcor2/render/animation.h"
@@ -206,6 +210,7 @@ FALCOR_PY_EXPORT(render_scene)
 
     nb::enum_<shared::MaterialFlags>(m, "MaterialFlags", D_NA(MaterialFlags), nb::is_arithmetic(), nb::is_flag())
         .value("none", shared::MaterialFlags::none)
+        .value("double_sided", shared::MaterialFlags::double_sided)
         .value("thin_walled", shared::MaterialFlags::thin_walled);
 
     nb::enum_<shared::GeometryType>(m, "GeometryType", D_NA(GeometryType), nb::is_arithmetic())
@@ -382,18 +387,51 @@ FALCOR_PY_EXPORT(render_scene)
 
     bind_signal<SceneUpdatedSignal>(m, "SceneUpdatedSignal");
 
+    nb::class_<SceneOptions>(m, "SceneOptions", D(SceneOptions))
+        .def(nb::init<UVOrigin>(), "uv_origin"_a = UVOrigin::upper_left, D(SceneOptions, SceneOptions))
+        .DEF_RO(SceneOptions, uv_origin);
+
     nb::class_<Scene, Object>(m, "Scene", D(Scene))
-        .def(nb::init<ref<sgl::Device>>(), "device"_a, D(Scene, create))
-        .def(nb::init<ref<sgl::Device>, ref<ImporterScene>>(), "device"_a, "importer_scene"_a, D(Scene, create_2))
-        .def(
-            nb::init<ref<sgl::Device>, const std::filesystem::path&, bool>(),
+        .def(nb::init<ref<sgl::Device>, const SceneOptions&>(), "device"_a, "options"_a, D(Scene, Scene))
+        .def_static(
+            "create",
+            [](ref<sgl::Device> device, std::optional<UVOrigin> uv_origin)
+            {
+                return Scene::create(std::move(device), uv_origin);
+            },
+            "device"_a,
+            "uv_origin"_a.none() = nb::none(),
+            D(Scene, create)
+        )
+        .def_static(
+            "create",
+            [](ref<sgl::Device> device, const ImporterScene& importer_scene, std::optional<UVOrigin> uv_origin)
+            {
+                return Scene::create(std::move(device), importer_scene, uv_origin);
+            },
+            "device"_a,
+            "importer_scene"_a,
+            "uv_origin"_a.none() = nb::none(),
+            D(Scene, create_2)
+        )
+        .def_static(
+            "create",
+            [](ref<sgl::Device> device,
+               const std::filesystem::path& path,
+               bool recompute_normals,
+               std::optional<UVOrigin> uv_origin)
+            {
+                return Scene::create(std::move(device), path, recompute_normals, uv_origin);
+            },
             "device"_a,
             "path"_a,
             "recompute_normals"_a = false,
+            "uv_origin"_a.none() = nb::none(),
             D(Scene, create_3)
         )
         .DEF_PROP_RO(Scene, device)
         .DEF_PROP_RO(Scene, texture_manager)
+        .DEF_PROP_RO(Scene, options)
         .def("add_scene_globals", &Scene::add_scene_globals, "globals"_a, D(Scene, add_scene_globals))
         .def("remove_scene_globals", &Scene::remove_scene_globals, "globals"_a, D(Scene, remove_scene_globals))
         .def(
@@ -559,8 +597,6 @@ FALCOR_PY_EXPORT(render_scene)
             result["transmission_factor"] = self._transmission_factor();
             result["diffuse_transmission_factor"] = self._diffuse_transmission_factor();
             result["specular_transmission_factor"] = self._specular_transmission_factor();
-            result["thin_surface"] = self._thin_surface();
-            result["double_sided"] = self._double_sided();
             result["metallic_texture_channel"] = self._metallic_texture_channel();
             result["roughness_texture_channel"] = self._roughness_texture_channel();
             return result;
@@ -594,8 +630,6 @@ FALCOR_PY_EXPORT(render_scene)
             result["transmission_factor"] = self._transmission_factor();
             result["diffuse_transmission_factor"] = self._diffuse_transmission_factor();
             result["specular_transmission_factor"] = self._specular_transmission_factor();
-            result["thin_surface"] = self._thin_surface();
-            result["double_sided"] = self._double_sided();
             return result;
         },
         "Gets this material data as a dictionary matching write_to_cursor()."

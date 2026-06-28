@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "testing.h"
@@ -80,6 +81,32 @@ private:
 };
 
 FALCOR_STATIC_ONCE(register_type<SimpleReflected>());
+
+/// A reflected object with half-precision scalar/vector properties.
+class HalfReflected : public ReflectedObject {
+    FALCOR_REFLECTED_OBJECT(HalfReflected, ReflectedObject)
+public:
+    float16_t scalar() const { return m_scalar; }
+    void set_scalar(float16_t value) { m_scalar = value; }
+
+    float16_t3 color() const { return m_color; }
+    void set_color(float16_t3 value) { m_color = value; }
+
+    /// Reflect this class.
+    template<reflection::ClassReflector R>
+    static void reflect(R& r)
+    {
+        r //
+            .def_prop_rw("scalar", &HalfReflected::scalar, &HalfReflected::set_scalar, "A half scalar property.")
+            .def_prop_rw("color", &HalfReflected::color, &HalfReflected::set_color, "A half vector property.");
+    }
+
+private:
+    float16_t m_scalar{0.0f};
+    float16_t3 m_color{0.0f, 0.0f, 0.0f};
+};
+
+FALCOR_STATIC_ONCE(register_type<HalfReflected>());
 
 /// A non-reflected class for concept testing.
 class NotReflected : public Object {
@@ -262,6 +289,27 @@ TEST_CASE("Round-trip serialization through Properties")
     CHECK(obj2.bar() == doctest::Approx(45.6f));
     CHECK(obj2.label() == "test");
     CHECK(obj2.mode() == TestMode::quality);
+}
+
+TEST_CASE("Float16 reflected properties serialize through Properties")
+{
+    HalfReflected obj1;
+    obj1.set_scalar(float16_t(0.5f));
+    obj1.set_color(float16_t3{0.25f, 0.5f, 0.75f});
+
+    Properties props;
+    serialize_properties(obj1, props);
+
+    CHECK(props.type("scalar") == PropertyType::float_);
+    CHECK(props.type("color") == PropertyType::float3);
+    CHECK(static_cast<float>(props.get<float16_t>("scalar")) == doctest::Approx(0.5f));
+    CHECK(props.get<float3>("color") == float3{0.25f, 0.5f, 0.75f});
+
+    HalfReflected obj2;
+    deserialize_properties(obj2, props);
+
+    CHECK(static_cast<float>(obj2.scalar()) == doctest::Approx(0.5f));
+    CHECK(float3(obj2.color()) == float3{0.25f, 0.5f, 0.75f});
 }
 
 TEST_CASE("ReflectedObject::properties serialization")

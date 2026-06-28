@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ def load_scene_sampling_module(device: spy.Device, scene: f2.Scene) -> tuple[spy
 
 def test_checker_material_example() -> None:
     device = create_device(enable_debug_layers=True)
-    scene = f2.Scene(device)
+    scene = f2.Scene.create(device)
 
     props = f2.Properties()
     props["color_a"] = spy.float3(0.92, 0.62, 0.24)

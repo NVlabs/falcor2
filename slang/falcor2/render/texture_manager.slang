@@ -1,6 +1,9 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 implementing render;
+
+import falcor2.utils;
 
 /// DescriptorHandle cannot be used in a dynamic dispatch context for now.
 /// This wrapper is a workaround for that. Once Slang is fixed we can replace all the wrapped
@@ -56,9 +59,34 @@ public struct ExplicitLodSampler : ILodSampler
     }
 }
 
-__generic<T : ITexelElement = float4, int EnableUDIM = 1> public struct TextureHandle
+public extern static const bool FALCOR_TEXTURE_COORDINATE_ORIGIN_LOWER_LEFT = false;
+
+public enum class TextureHandleFlags : uint {
+    none = 0,
+    udim = 0x1,
+    uv_origin_correction = 0x2,
+    all = 0x3,
+};
+
+// TODO(TCO-FUT-001): Use TextureHandleFlags directly once SlangPy treats enum-valued
+// generic arguments as concrete value arguments rather than unknown type arguments.
+// `uint(TextureHandleFlags::all)` is the desired spelling, but it currently fails
+// in this generic default before SlangPy binding gets involved.
+__generic<T : ITexelElement = float4, uint FlagsAsUint = 0x3 /*TextureHandleFlags::all*/> public struct TextureHandle
 {
+    public static const TextureHandleFlags Flags = TextureHandleFlags(FlagsAsUint);
+
+    public static const bool ENABLE_UDIM = is_set(Flags, TextureHandleFlags::udim);
+    public static const bool FLIP_V_COORDINATE
+        = is_set(Flags, TextureHandleFlags::uv_origin_correction) && FALCOR_TEXTURE_COORDINATE_ORIGIN_LOWER_LEFT;
+
     public uint data = detail::INVALID_TEXTURE_HANDLE;
+
+    public __init() { }
+
+    public __init(uint data) { this.data = data; }
+
+    public __generic<uint OtherFlagsAsUint> __init(TextureHandle<T, OtherFlagsAsUint> other) { this.data = other.data; }
 
     public property uint sampler_index
     {
@@ -76,10 +104,7 @@ __generic<T : ITexelElement = float4, int EnableUDIM = 1> public struct TextureH
 
     public bool is_valid() { return data != detail::INVALID_TEXTURE_HANDLE; }
 
-    public bool is_udim()
-    {
-        return (EnableUDIM == 0) ? false : (detail::TextureHandleFields::udim::extract(data) != 0);
-    }
+    public bool is_udim() { return ENABLE_UDIM && (detail::TextureHandleFields::udim::extract(data) != 0); }
 
     public __generic<LodSampler : ILodSampler>
         T sample(LodSampler lod_sampler, float2 uv, const T default_value = T(T.Element(0)))
@@ -89,6 +114,8 @@ __generic<T : ITexelElement = float4, int EnableUDIM = 1> public struct TextureH
         This resolved_handle = resolve_udim(uv);
         if (!resolved_handle.is_valid())
             return default_value;
+        if (FLIP_V_COORDINATE)
+            uv.y = 1.0 - uv.y;
 #ifdef __TARGET_CUDA__
         Texture2D<T> texture = DescriptorHandle<Texture2D<T>>(uint64_t(resolved_handle.texture_index));
         SamplerState sampler;
@@ -193,7 +220,7 @@ __generic<T : ITexelElement = float4, int EnableUDIM = 1> public struct TextureH
 
     public This resolve_udim(inout float2 uv)
     {
-        if (EnableUDIM != 0 && is_udim()) {
+        if (ENABLE_UDIM && is_udim()) {
             int2 tile = int2(floor(uv));
 #ifdef __TARGET_CUDA__
             Texture2D<uint> indirection_texture = DescriptorHandle<Texture2D<uint>>(uint64_t(texture_index));

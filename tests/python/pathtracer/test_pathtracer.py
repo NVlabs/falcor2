@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
@@ -329,7 +330,7 @@ def test_background_color_used_when_env_map_hidden(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
     """Primary misses return the configured background color when the env map is hidden."""
-    scene = f2.Scene(device, "data/assets/kronos/DamagedHelmet/glTF/DamagedHelmet.gltf")
+    scene = f2.Scene.create(device, "data/assets/kronos/DamagedHelmet/glTF/DamagedHelmet.gltf")
     env_entity = scene.create_entity()
     env_map = env_entity.create_component(f2.EnvMapLight)
     env_map["env_map_path"] = "data/assets/envmaps/aerodynamics_workshop_512.hdr"

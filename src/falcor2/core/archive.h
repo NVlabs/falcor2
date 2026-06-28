@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
@@ -6,6 +7,7 @@
 #include "falcor2/core/error.h"
 #include "falcor2/core/types.h"
 
+#include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -831,6 +833,27 @@ struct ArchiveRawFixedCodec {
     }
 };
 
+template<typename T, ArchiveEncoding Encoding, size_t ByteCount>
+struct ArchiveRawFixedPaddedCodec {
+    static_assert(std::is_trivially_copyable_v<T>);
+    static_assert(sizeof(T) <= ByteCount);
+    static_assert(std::endian::native == std::endian::little, "archive raw payloads require little-endian hosts");
+    static constexpr ArchiveEncoding encoding = Encoding;
+    static void write_payload(ArchiveEncoder& encoder, const T& value)
+    {
+        std::array<uint8_t, ByteCount> bytes{};
+        std::memcpy(bytes.data(), &value, sizeof(T));
+        encoder.write_bytes(bytes.data(), ByteCount);
+    }
+    static T read_payload(ArchiveDecoder& decoder)
+    {
+        const uint8_t* bytes = decoder.read_bytes(ByteCount);
+        T value;
+        std::memcpy(&value, bytes, sizeof(T));
+        return value;
+    }
+};
+
 template<typename T, size_t ByteCount>
 struct ArchiveRawSizedCodec {
     static_assert(std::is_trivially_copyable_v<T>);
@@ -868,6 +891,11 @@ struct ArchivePathCodec {
     template<>                                                                                                         \
     struct ArchiveCodec<TYPE> : __VA_ARGS__ { }
 
+static_assert(sizeof(float16_t) == 2);
+static_assert(sizeof(float16_t2) == 4);
+static_assert(sizeof(float16_t3) == 6);
+static_assert(sizeof(float16_t4) == 8);
+
 // Built-in scalar codecs.
 FALCOR_DEFINE_ARCHIVE_CODEC(bool, detail::ArchiveBoolCodec);
 FALCOR_DEFINE_ARCHIVE_CODEC(uint8_t, detail::ArchiveByteCodec<uint8_t>);
@@ -880,6 +908,7 @@ FALCOR_DEFINE_ARCHIVE_CODEC(int32_t, detail::ArchiveVarsintCodec<int32_t>);
 FALCOR_DEFINE_ARCHIVE_CODEC(int64_t, detail::ArchiveVarsintCodec<int64_t>);
 FALCOR_DEFINE_ARCHIVE_CODEC(float, detail::ArchiveRawFixedCodec<float, ArchiveEncoding::fixed4, 4>);
 FALCOR_DEFINE_ARCHIVE_CODEC(double, detail::ArchiveRawFixedCodec<double, ArchiveEncoding::fixed8, 8>);
+FALCOR_DEFINE_ARCHIVE_CODEC(float16_t, detail::ArchiveRawFixedPaddedCodec<float16_t, ArchiveEncoding::fixed4, 4>);
 FALCOR_DEFINE_ARCHIVE_CODEC(std::string, detail::ArchiveStringCodec);
 FALCOR_DEFINE_ARCHIVE_CODEC(ArchiveBlobView, detail::ArchiveBlobViewCodec);
 FALCOR_DEFINE_ARCHIVE_CODEC(std::filesystem::path, detail::ArchivePathCodec);
@@ -894,6 +923,9 @@ FALCOR_DEFINE_ARCHIVE_CODEC(uint4, detail::ArchiveRawFixedCodec<uint4, ArchiveEn
 FALCOR_DEFINE_ARCHIVE_CODEC(float2, detail::ArchiveRawFixedCodec<float2, ArchiveEncoding::fixed8, 8>);
 FALCOR_DEFINE_ARCHIVE_CODEC(float3, detail::ArchiveRawFixedCodec<float3, ArchiveEncoding::fixed12, 12>);
 FALCOR_DEFINE_ARCHIVE_CODEC(float4, detail::ArchiveRawFixedCodec<float4, ArchiveEncoding::fixed16, 16>);
+FALCOR_DEFINE_ARCHIVE_CODEC(float16_t2, detail::ArchiveRawFixedPaddedCodec<float16_t2, ArchiveEncoding::fixed4, 4>);
+FALCOR_DEFINE_ARCHIVE_CODEC(float16_t3, detail::ArchiveRawFixedPaddedCodec<float16_t3, ArchiveEncoding::fixed8, 8>);
+FALCOR_DEFINE_ARCHIVE_CODEC(float16_t4, detail::ArchiveRawFixedPaddedCodec<float16_t4, ArchiveEncoding::fixed8, 8>);
 FALCOR_DEFINE_ARCHIVE_CODEC(float3x3, detail::ArchiveRawSizedCodec<float3x3, 36>);
 FALCOR_DEFINE_ARCHIVE_CODEC(float4x4, detail::ArchiveRawSizedCodec<float4x4, 64>);
 FALCOR_DEFINE_ARCHIVE_CODEC(quatf, detail::ArchiveRawFixedCodec<quatf, ArchiveEncoding::fixed16, 16>);

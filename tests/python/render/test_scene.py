@@ -1,9 +1,15 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+from pathlib import Path
+
+import numpy as np
 import pytest
 import slangpy as spy
 import falcor2 as f2
 import falcor2.testing.helpers as helpers
+
+DATA = Path(__file__).parent.parent.parent.parent / "data"
 
 
 @pytest.fixture
@@ -13,7 +19,86 @@ def device(device_type: spy.DeviceType) -> spy.Device:
 
 @pytest.fixture
 def scene(device: spy.Device) -> f2.Scene:
-    return f2.Scene(device)
+    return f2.Scene.create(device)
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
+def test_scene_uv_origin_api(device_type: spy.DeviceType):
+    device = helpers.get_device(device_type)
+    scene = f2.Scene.create(device)
+    assert scene.options.uv_origin == f2.UVOrigin.upper_left
+    assert scene.requirements_generation != 0
+    assert f2.SceneOptions().uv_origin == f2.UVOrigin.upper_left
+    assert not hasattr(f2, "create_scene")
+    with pytest.raises(TypeError):
+        f2.Scene(device)
+    with pytest.raises(AttributeError):
+        scene.uv_origin = f2.UVOrigin.lower_left
+    with pytest.raises(AttributeError):
+        scene.options.uv_origin = f2.UVOrigin.lower_left
+    scene.update()
+    assert "falcor2_scene_uv_origin_upper_left" in [
+        module.name for module in scene.requirements.modules
+    ]
+
+    lower_left_scene = f2.Scene(device, f2.SceneOptions(f2.UVOrigin.lower_left))
+    assert lower_left_scene.options.uv_origin == f2.UVOrigin.lower_left
+    lower_left_scene.update()
+    assert "falcor2_scene_uv_origin_lower_left" in [
+        module.name for module in lower_left_scene.requirements.modules
+    ]
+
+    module = spy.Module.load_from_file(
+        device, "render/test_texture_manager.slang", link=lower_left_scene.requirements.modules
+    )
+    texture_manager = f2.TextureManager(device)
+    point_sampler = device.create_sampler(
+        min_filter=spy.TextureFilteringMode.point,
+        mag_filter=spy.TextureFilteringMode.point,
+    )
+    red_top_green_bottom_texture = device.create_texture(
+        type=spy.TextureType.texture_2d,
+        format=spy.Format.rgba32_float,
+        width=1,
+        height=2,
+        usage=spy.TextureUsage.shader_resource,
+        data=np.array([[1, 0, 0, 1], [0, 1, 0, 1]], dtype=np.float32),
+    )
+    red_top_green_bottom_handle = texture_manager.register_texture(
+        red_top_green_bottom_texture, point_sampler
+    )
+    texture_manager.update()
+    assert module.test_2d(
+        handle={"data": red_top_green_bottom_handle.data},
+        uv=spy.float2(0.5, 0.25),
+        default_value=spy.float4(1, 0, 1, 1),
+    ) == spy.float4(0, 1, 0, 1)
+
+    path = DATA / "assets/cornell-box/usdpreviewsurface/cornell-box.usda"
+    importer_scene = f2.UsdImporter().load_scene(path)
+    assert importer_scene.uv_origin == f2.UVOrigin.lower_left
+
+    loaded_scenes = [
+        f2.Scene.create(device, importer_scene),
+        f2.Scene.create(device, path),
+    ]
+    for loaded_scene in loaded_scenes:
+        assert loaded_scene.options.uv_origin == f2.UVOrigin.lower_left
+        loaded_scene.update()
+        assert "falcor2_scene_uv_origin_lower_left" in [
+            module.name for module in loaded_scene.requirements.modules
+        ]
+
+    override_scenes = [
+        f2.Scene.create(device, importer_scene, f2.UVOrigin.upper_left),
+        f2.Scene.create(device, path, uv_origin=f2.UVOrigin.upper_left),
+    ]
+    for override_scene in override_scenes:
+        assert override_scene.options.uv_origin == f2.UVOrigin.upper_left
+        override_scene.update()
+        assert "falcor2_scene_uv_origin_upper_left" in [
+            module.name for module in override_scene.requirements.modules
+        ]
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)

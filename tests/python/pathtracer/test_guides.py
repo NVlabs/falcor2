@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
@@ -60,7 +61,7 @@ EXPECTED_GUIDE_OUTPUT_CLEAR_VALUES = {
 
 
 def load_linked_reference_module(device: spy.Device) -> spy.Module:
-    scene = f2.Scene(device)
+    scene = f2.Scene.create(device)
     scene.update()
     reqs = scene.requirements
     utils = spy.Module(device.load_module("falcor2.utils"))

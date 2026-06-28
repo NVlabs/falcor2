@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "falcor2/core/config.h"
@@ -196,6 +197,14 @@ std::unique_ptr<NGX::Impl> make_vulkan_ngx_impl(ref<sgl::Device> device)
 
 void query_vulkan_required_extensions(NGXInfo& info)
 {
+    auto skip_device_extension = [](const char* extension)
+    {
+        std::string_view sv = extension;
+        if (sv == "VK_EXT_buffer_device_address")
+            return true;
+        return false;
+    };
+
     unsigned int instance_extension_count = 0;
     const char** instance_extensions = nullptr;
     unsigned int device_extension_count = 0;
@@ -225,7 +234,7 @@ void query_vulkan_required_extensions(NGXInfo& info)
     }
 
     for (unsigned int i = 0; i < device_extension_count; ++i) {
-        if (device_extensions && device_extensions[i])
+        if (device_extensions && device_extensions[i] && !skip_device_extension(device_extensions[i]))
             info.required_vulkan_device_extensions.emplace_back(device_extensions[i]);
     }
 }

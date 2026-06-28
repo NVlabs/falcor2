@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 implementing render;
@@ -105,6 +106,9 @@ public extension Scene
 
         let world_from_object = get_world_from_object(geometry_instance.header.transform_id);
         let inverse_transpose = transpose(float3x3(get_object_from_world(geometry_instance.header.transform_id)));
+        // All handedness values should be the same for the three vertices of a triangle, so we can just use v0's here.
+        let transform_handedness = determinant(float3x3(world_from_object)) < 0.0 ? -1.0 : 1.0;
+        let shading_handedness = v0.handedness * transform_handedness;
 
         SurfaceInteraction si = {};
         si.wi_ws = wi_ws;
@@ -114,7 +118,8 @@ public extension Scene
         si.uv = uv;
         si.shading_frame_ws = Frame(
             normalize(transform_vector(inverse_transpose, shading_normal_os)),
-            normalize(transform_vector(world_from_object, shading_tangent_os))
+            normalize(transform_vector(world_from_object, shading_tangent_os)),
+            shading_handedness
         );
         return si;
     }

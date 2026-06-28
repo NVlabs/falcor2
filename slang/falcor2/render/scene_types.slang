@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #ifndef FALCOR_SHARED_HOST
@@ -13,7 +14,8 @@ public enum class MaterialID : uint { invalid = 0 };
 
 public enum class MaterialFlags : uint {
     none = 0,
-    thin_walled = 1 << 0,
+    double_sided = 1 << 0,
+    thin_walled = 1 << 1,
 };
 #ifdef FALCOR_SHARED_HOST
 FALCOR_ENUM_CLASS_OPERATORS(MaterialFlags);

@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
@@ -19,8 +20,6 @@
 #include <vector>
 
 namespace falcor {
-class SceneGlobals;
-
 namespace materialx {
 class MxParamList;
 struct CodeGenResult;
@@ -44,9 +43,6 @@ public:
 
     virtual reflection::DynamicPropertySet* dynamic_properties() override { return &m_material_properties; }
     virtual const reflection::DynamicPropertySet* dynamic_properties() const override { return &m_material_properties; }
-
-    // SceneObject interface
-    virtual void on_remove_from_scene() override;
 
     // Material interface
 
@@ -118,14 +114,6 @@ public:
                 reflection::UIFlags::advanced
             )
             .def_rw(
-                "mtlx_flip_v_texcoord",
-                &MaterialXMaterial::m_mtlx_flip_v_texcoord,
-                "Whether MaterialX should flip the fractional part of uv[1]. Mostly USD: true; GLTF: false.",
-                reflection::default_value(false),
-                reflection::on_change(&MaterialXMaterial::require_codegen),
-                reflection::UIFlags::advanced
-            )
-            .def_rw(
                 "mtlx_transmissive_bsdfs",
                 &MaterialXMaterial::m_mtlx_transmissive_bsdfs,
                 // TODO(@tdavidovic, @aweidlich): Investigate possibility to bake this back into the nodes.
@@ -160,6 +148,15 @@ public:
                 "Optional MaterialX shadergen target color space, for example lin_rec709. Empty uses the document "
                 "color space.",
                 reflection::default_value(std::string{}),
+                reflection::on_change(&MaterialXMaterial::require_codegen),
+                reflection::UIFlags::advanced
+            )
+            .def_rw(
+                "mtlx_use_slang_derivatives",
+                &MaterialXMaterial::m_mtlx_use_slang_derivatives,
+                "Use upstream Slang ddx/ddy derivative implementations where available. Keep disabled for path "
+                "tracing/ray-tracing materials.",
+                reflection::default_value(false),
                 reflection::on_change(&MaterialXMaterial::require_codegen),
                 reflection::UIFlags::advanced
             )
@@ -267,8 +264,6 @@ private:
     void require_codegen();
     void validate_device_support() const;
     void run_codegen();
-    void remove_lut_scene_globals();
-    void update_lut_scene_globals(SceneUpdateContext& ctx);
     detail::PropertyList mtlx_geomprop_names_property() const;
     void set_mtlx_geomprop_names_property(const detail::PropertyList& value);
     detail::PropertyList mtlx_geomprop_ids_property() const;
@@ -288,7 +283,6 @@ private:
     std::string m_mtlx_editable_params;
     std::string m_mtlx_node_name;
     std::string m_mtlx_layeringmethod;
-    bool m_mtlx_flip_v_texcoord{false};
     std::string m_mtlx_transmissive_bsdfs;
     bool m_mtlx_auto_transmission{true};
     materialx::OptimizeGraphFlags m_mtlx_optimize_graph{materialx::OptimizeGraphFlags::closure_pruning};
@@ -296,6 +290,7 @@ private:
     materialx::CompensationMode m_mtlx_compensation{materialx::CompensationMode::turquin_analytic};
     bool m_mtlx_autogamma{false};
     std::string m_mtlx_target_color_space_override;
+    bool m_mtlx_use_slang_derivatives{false};
     std::vector<std::string> m_mtlx_geomprop_names;
     std::vector<uint32_t> m_mtlx_geomprop_ids;
     std::string m_debug_write_shader_path;

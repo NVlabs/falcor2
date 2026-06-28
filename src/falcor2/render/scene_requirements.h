@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
@@ -18,7 +19,7 @@ struct FALCOR_API SceneRequirements {
     std::vector<sgl::TypeConformance> type_conformances;
 
     /// Required ray-tracing pipeline flags.
-    sgl::RayTracingPipelineFlags ray_tracing_pipeline_flags;
+    sgl::RayTracingPipelineFlags ray_tracing_pipeline_flags = sgl::RayTracingPipelineFlags::none;
 
     auto operator<=>(const SceneRequirements&) const = default;
 };

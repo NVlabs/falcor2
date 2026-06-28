@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 // This file is adapted from the DXR example in the MDL SDK:
@@ -280,6 +281,9 @@ tex_lookup_float4_2d(uint tex, float2 coord, int wrap_u, int wrap_v, float2 crop
     coord.y = apply_wrap_and_crop(coord.y, wrap_v, crop_v, height);
 
     coord = apply_smootherstep_filter(coord, uint2(width, height));
+
+    if (!FALCOR_TEXTURE_COORDINATE_ORIGIN_LOWER_LEFT)
+        coord.y = 1.0 - coord.y;
 
     // TODO: use the correct sampler
     return texture_handle.sample(ExplicitLodSampler(), coord, float4(0.f));

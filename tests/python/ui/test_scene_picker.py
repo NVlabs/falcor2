@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 from pathlib import Path
@@ -20,7 +21,7 @@ def device(device_type: spy.DeviceType) -> spy.Device:
 
 
 def _load_scene(device: spy.Device) -> f2.Scene:
-    scene = f2.Scene(device, str(SCENE_PATH))
+    scene = f2.Scene.create(device, str(SCENE_PATH))
     scene.update()
     return scene
 

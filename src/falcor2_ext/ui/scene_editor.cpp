@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "nanobind.h"
@@ -76,6 +77,12 @@ FALCOR_PY_EXPORT(ui_scene_editor)
         .def_prop_rw("visible", &ui::SceneEditor::visible, &ui::SceneEditor::set_visible, D(ui, SceneEditor, visible))
         .def_prop_ro("viewport_state", &ui::SceneEditor::viewport_state, D(ui, SceneEditor, viewport_state))
         .def_prop_ro("selection_version", &ui::SceneEditor::selection_version, D(ui, SceneEditor, selection_version))
+        .def(
+            "handle_keyboard_shortcut",
+            &ui::SceneEditor::handle_keyboard_shortcut,
+            "event"_a,
+            D(ui, SceneEditor, handle_keyboard_shortcut)
+        )
         .def("editor_ui", &ui::SceneEditor::editor_ui, D(ui, SceneEditor, editor_ui))
         .def(
             "viewport_ui",

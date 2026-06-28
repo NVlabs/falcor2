@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 void mx_layer_bsdf(ClosureData closure_data, BSDF top, BSDF base, out BSDF result)

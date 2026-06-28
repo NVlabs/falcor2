@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 """
@@ -23,6 +24,59 @@ class CommandError(RuntimeError):
         self.command = command
         self.returncode = returncode
         self.output = output
+
+
+INFO_ENV_VARS = (
+    "CI",
+    "CI_COMMIT_BRANCH",
+    "CI_COMMIT_REF_NAME",
+    "CI_COMMIT_SHA",
+    "CI_CONFIG",
+    "CI_DEFAULT_BRANCH",
+    "CI_FLAGS",
+    "CI_JOB_ID",
+    "CI_JOB_NAME",
+    "CI_JOB_STAGE",
+    "CI_OS",
+    "CI_PIPELINE_ID",
+    "CI_PLATFORM",
+    "CI_PROJECT_DIR",
+    "CI_PROJECT_PATH",
+    "CI_PYTHON",
+    "CI_RUNNER_DESCRIPTION",
+    "CI_RUNNER_ID",
+    "CI_RUNNER_TAGS",
+    "CI_USE_CUSTOM_SLANG",
+    "CONDA_DEFAULT_ENV",
+    "CONDA_ENVS_DIRS",
+    "CUDA_HOME",
+    "CUDA_PATH",
+    "KERNELVM_OS",
+    "LD_LIBRARY_PATH",
+    "PATH",
+    "PIP_CACHE_DIR",
+    "PM_PACKAGES_ROOT",
+    "PYTHONPATH",
+    "VCPKG_DEFAULT_BINARY_CACHE",
+    "VCPKG_DOWNLOADS",
+    "VULKAN_SDK",
+)
+
+SENSITIVE_ENV_FRAGMENTS = (
+    "AUTH",
+    "COOKIE",
+    "CREDENTIAL",
+    "KEY",
+    "PASSWORD",
+    "SECRET",
+    "TOKEN",
+)
+
+
+def format_env_value(key: str, value: str) -> str:
+    if any(fragment in key.upper() for fragment in SENSITIVE_ENV_FRAGMENTS):
+        return "<redacted>"
+    return value
 
 
 def get_os():
@@ -112,13 +166,17 @@ def info(args: argparse.Namespace):
         print(f"  {key}: {value}")
     print("")
 
-    print("Environment variables:")
-    for key, value in sorted(os.environ.items(), key=lambda x: x[0]):
+    print("Selected environment variables:")
+    for key in INFO_ENV_VARS:
+        if key not in os.environ:
+            continue
+        value = format_env_value(key, os.environ[key])
         try:
             print(f"  {key}: {value}")
         except UnicodeEncodeError:
             safe_value = value.encode("ascii", errors="replace").decode("ascii")
             print(f"  {key}: {safe_value}")
+    print("  (full environment omitted)")
     print("")
 
 

@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 implementing utils;
@@ -36,8 +37,14 @@ public struct Frame : IDifferentiable
     }
 
     // normal and tangent are both assumed to be normalized, but not necessarily orthonormal.
+    // handedness is with respect to the UV tangent space, not the geometry orientation.
     [Differentiable]
-    public __init(float3 normal, float3 tangent, Component preserved_component = Component::normal)
+    public __init(
+        float3 normal,
+        float3 tangent,
+        float handedness = 1.0,
+        Component preserved_component = Component::normal
+    )
     {
         // Only useful for extreme bump cases where tangent and normal can become almost colinear.
         // if (abs(dot(normal, tangent)) >= 0.999) {
@@ -55,8 +62,8 @@ public struct Frame : IDifferentiable
             this.bitangent = normalize(cross(normal, tangent));
             this.normal = cross(tangent, bitangent);
         }
+        this.bitangent *= handedness;
     }
-
 
     [Differentiable]
     public float3 to_local(float3 w) { return float3(dot(tangent, w), dot(bitangent, w), dot(normal, w)); }
@@ -108,6 +115,6 @@ public void adjust_shading_normal(inout Frame sf, const float3 geometric_normal,
     float cos_theta = dot(view_dir, Ns);
     if (cos_theta <= COS_THETA_THRESHOLD) {
         float t = saturate(cos_theta * (1.f / COS_THETA_THRESHOLD));
-        sf = Frame(normalize(sign_N * lerp(Ng, Ns, t)), sf.tangent);
+        sf = Frame(normalize(sign_N * lerp(Ng, Ns, t)), sf.tangent, sf.handedness_sign());
     }
 }

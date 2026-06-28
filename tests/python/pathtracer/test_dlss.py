@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
@@ -96,7 +97,7 @@ def test_dlss_rr_forward_rejects_missing_guides(
         mip_count=1,
         usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access,
     )
-    scene = f2.Scene(device)
+    scene = f2.Scene.create(device)
     camera = helpers.create_test_camera(scene, width=853, height=480)
 
     with pytest.raises(ValueError, match="Missing DLSSRR guide"):
@@ -117,7 +118,7 @@ def test_dlss_rr_forward_copies_texture_output_to_tensor(
 
     color = _make_tensor(device, width, height)
     guides = {name: _make_tensor(device, width, height) for name in DLSSRayReconNode.GUIDE_NAMES}
-    scene = f2.Scene(device)
+    scene = f2.Scene.create(device)
     camera = helpers.create_test_camera(scene, width=width, height=height)
 
     expected = _expected_rgba(height, width, (0.25, 0.50, 0.75, 1.00))
@@ -175,7 +176,7 @@ def test_dlss_rr_forward_copies_texture_output_to_torch(
         )
         for name in DLSSRayReconNode.GUIDE_NAMES
     }
-    scene = f2.Scene(device)
+    scene = f2.Scene.create(device)
     camera = helpers.create_test_camera(scene, width=width, height=height)
 
     expected = _expected_rgba(height, width, (0.75, 0.50, 0.25, 1.00))
@@ -315,7 +316,7 @@ def test_dlss_frame_generation_forward_rejects_missing_guides(
         mip_count=1,
         usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access,
     )
-    scene = f2.Scene(device)
+    scene = f2.Scene.create(device)
     camera = helpers.create_test_camera(scene, width=1280, height=720)
 
     with pytest.raises(ValueError, match="Missing DLSSG guide"):
@@ -337,7 +338,7 @@ def test_dlss_frame_generation_forward_copies_texture_output_to_tensor(
         "hardware_depth": _make_tensor(device, width, height),
         "motion_vectors": _make_tensor(device, width, height),
     }
-    scene = f2.Scene(device)
+    scene = f2.Scene.create(device)
     camera = helpers.create_test_camera(scene, width=width, height=height)
     expected = _expected_rgba(height, width, (0.60, 0.40, 0.20, 1.00))
 
@@ -387,7 +388,7 @@ def test_dlss_frame_generation_forward_copies_texture_output_to_torch(
         "hardware_depth": _make_texture(device, width, height),
         "motion_vectors": _make_texture(device, width, height),
     }
-    scene = f2.Scene(device)
+    scene = f2.Scene.create(device)
     camera = helpers.create_test_camera(scene, width=width, height=height)
     expected = _expected_rgba(height, width, (0.20, 0.40, 0.60, 1.00))
 

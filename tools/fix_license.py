@@ -1,7 +1,10 @@
 #!/usr/bin/env python
 
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """
-A utility for adding SPDX license identifer to source files.
+A utility for adding SPDX license headers to source files.
 """
 
 from __future__ import annotations
@@ -9,6 +12,7 @@ import sys
 import os
 import re
 import argparse
+from datetime import datetime
 from typing import Any, Sequence
 from pathlib import Path
 
@@ -28,11 +32,29 @@ EXCLUDE_PATHS = [
 
 EXTENSIONS = ["h", "cpp", "slang", "slangh", "py"]
 
-SPDX_REMOVE_REGEX = re.compile(r"^((// )|(# ))SPDX-License-Identifier: .*\n\n", re.MULTILINE)
+# Matches old single-line SPDX-License-Identifier header (with or without trailing blank line)
+OLD_SPDX_SINGLE_REGEX = re.compile(
+    r"^((// )|(# ))SPDX-License-Identifier: [^\n]*\n\n?", re.MULTILINE
+)
+# Matches the full 2-line SPDX header block (with or without trailing blank line)
+OLD_SPDX_FULL_REGEX = re.compile(
+    r"^((// )|(# ))SPDX-FileCopyrightText: [^\n]*\n((// )|(# ))SPDX-License-Identifier: [^\n]*\n\n?",
+    re.MULTILINE,
+)
 SHEBANG_REGEX = re.compile(r"^#!.*\n")
-SPDX_IDENTIFIER = "SPDX-License-Identifier: Apache-2.0"
-SPDX_IDENTIFIER_C_LIKE = f"// {SPDX_IDENTIFIER}\n"
-SPDX_IDENTIFIER_PYTHON = f"# {SPDX_IDENTIFIER}\n"
+
+CURRENT_YEAR = datetime.now().year
+
+SPDX_COPYRIGHT = (
+    f"SPDX-FileCopyrightText: Copyright (c) {CURRENT_YEAR} NVIDIA CORPORATION"
+    " & AFFILIATES. All rights reserved."
+)
+SPDX_LICENSE = "SPDX-License-Identifier: Apache-2.0"
+
+
+def make_header(is_python: bool) -> str:
+    prefix = "# " if is_python else "// "
+    return f"{prefix}{SPDX_COPYRIGHT}\n{prefix}{SPDX_LICENSE}\n"
 
 
 def list_files(
@@ -60,28 +82,44 @@ def list_files(
     return files
 
 
+def has_correct_header(text: str, header: str) -> bool:
+    """Check if the file already starts with (or has after shebang) the correct header."""
+    shebang_match = SHEBANG_REGEX.match(text)
+    if shebang_match:
+        after_shebang = text[shebang_match.end() :]
+        # skip one optional blank line after shebang
+        if after_shebang.startswith("\n"):
+            after_shebang = after_shebang[1:]
+        return after_shebang.startswith(header)
+    return text.startswith(header)
+
+
 def add_spdx_identifier(path: str, text: str):
-    if not SPDX_IDENTIFIER in text:
-        # remove lines containing SPDX identifer
-        text = SPDX_REMOVE_REGEX.sub("", text)
-        # determine the correct identifier line
-        identifier = SPDX_IDENTIFIER_PYTHON if path.endswith(".py") else SPDX_IDENTIFIER_C_LIKE
-        # check for shebang line
-        shebang_match = SHEBANG_REGEX.match(text)
-        if shebang_match:
-            shebang_line = shebang_match.group()
-            rest = text[shebang_match.end() :].lstrip("\n")
-            parts = [shebang_line, "\n", identifier]
-            if rest:
-                parts.append("\n")
-                parts.append(rest)
-            return "".join(parts)
-        else:
-            # add extra newline if file is not empty
-            if text != "":
-                identifier += "\n"
-            return identifier + text
-    return text
+    is_python = path.endswith(".py")
+    header = make_header(is_python)
+
+    if has_correct_header(text, header):
+        return text
+
+    # Remove any existing old-style SPDX headers (full 2-line or single-line)
+    text = OLD_SPDX_FULL_REGEX.sub("", text)
+    text = OLD_SPDX_SINGLE_REGEX.sub("", text)
+
+    # check for shebang line
+    shebang_match = SHEBANG_REGEX.match(text)
+    if shebang_match:
+        shebang_line = shebang_match.group()
+        rest = text[shebang_match.end() :].lstrip("\n")
+        parts = [shebang_line, "\n", header]
+        if rest:
+            parts.append("\n")
+            parts.append(rest)
+        return "".join(parts)
+    else:
+        # add extra newline if file is not empty
+        if text != "":
+            header += "\n"
+        return header + text
 
 
 def process_file(path: str, dry_run: bool = False):

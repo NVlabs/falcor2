@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
 #include "standard_material.h"
@@ -85,11 +86,22 @@ void StandardMaterial::update(SceneUpdateContext& ctx)
     FALCOR_UNUSED(ctx);
 }
 
+shared::MaterialFlags StandardMaterial::flags() const
+{
+    shared::MaterialFlags result = shared::MaterialFlags::none;
+    if (m_double_sided)
+        result |= shared::MaterialFlags::double_sided;
+    if (m_thin_walled)
+        result |= shared::MaterialFlags::thin_walled;
+    return result;
+}
+
 template<typename CursorT>
 void StandardMaterial::write_to_cursor_impl(CursorT cursor) const
 {
+    cursor["header"]["flags"] = uint(flags());
     cursor["base_color_texture"] = m_base_color_texture_handle;
-    cursor["base_color_factor"] = m_base_color_factor;
+    cursor["base_color_factor"] = float16_t4(m_base_color_factor, 0.f);
     cursor["metallic_roughness_texture"] = m_metallic_roughness_texture_handle;
     cursor["metallic_factor"] = m_metallic_factor;
     cursor["roughness_factor"] = m_roughness_factor;
@@ -99,11 +111,9 @@ void StandardMaterial::write_to_cursor_impl(CursorT cursor) const
     cursor["emissive_texture"] = m_emissive_texture_handle;
     cursor["transmission_texture"] = m_transmission_texture_handle;
     cursor["ior"] = m_ior;
-    cursor["transmission_factor"] = m_transmission_factor;
+    cursor["transmission_factor"] = float16_t4(m_transmission_factor, 0.f);
     cursor["diffuse_transmission_factor"] = m_diffuse_transmission_factor;
     cursor["specular_transmission_factor"] = m_specular_transmission_factor;
-    cursor["thin_surface"] = m_thin_surface;
-    cursor["double_sided"] = m_double_sided;
     cursor["metallic_texture_channel"] = m_metallic_texture_channel;
     cursor["roughness_texture_channel"] = m_roughness_texture_channel;
 }

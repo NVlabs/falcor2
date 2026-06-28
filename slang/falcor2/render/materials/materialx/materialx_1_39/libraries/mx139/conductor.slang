@@ -1,4 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+
 //
 // MaterialX conductor BSDF ported from OSL/BSDL MTX.
 // BSDL: external/dbg_OSL/src/libbsdl/include/BSDL/MTX/bsdf_conductor_impl.h
