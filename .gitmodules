@@ -1,6 +1,9 @@
 [submodule "external/slangpy"]
 	path = external/slangpy
 	url = https://github.com/shader-slang/slangpy.git
+[submodule "data"]
+	path = data
+	url = https://github.com/NVlabs/falcor2-data.git
 [submodule "external/openpbr-bsdf"]
 	path = external/openpbr-bsdf
 	url = https://github.com/adobe/openpbr-bsdf

@@ -89,12 +89,13 @@ public struct Scene
     public IMaterialInstance get_material_instance<LodSampler : ILodSampler>(
         const HitInfo hit,
         const SurfaceInteraction si,
-        LodSampler lod_sampler
+        LodSampler lod_sampler,
+        const MaterialInstanceHints hints = MaterialInstanceHints::none
     )
     {
         MaterialID material_id = get_geometry_instance_desc(hit.geometry_instance_id).header.material_id;
         let material = get_material(material_id);
-        return material.setup_material_instance(si, lod_sampler);
+        return material.setup_material_instance(si, lod_sampler, hints);
     }
 
     public IMaterial get_material(const HitInfo hit)

@@ -93,7 +93,7 @@ public struct $MxMaterialName : IMaterial
     )
     {
 #if MATERIALX_PAYLOAD_SIZE > MATERIAL_PAYLOAD_LIMIT
-        let data = data_buffer.load_aligned<$MxMaterialDataName>(0, 16);
+        let data = data_buffer.load_aligned<$MxMaterialDataName, 16>(0);
 #endif
         return setup_material_instance(data, si, lod_sampler, hints);
     }

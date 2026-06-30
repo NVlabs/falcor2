@@ -14,11 +14,11 @@ public struct MDLMaterialData
     /// Offset into `data` where the texture table starts.
     public uint texture_table_offset;
 
-    public T read_only_data_load<T>(uint offset) { return data.load_aligned<T>(offset, 4); }
+    public T read_only_data_load<T>(uint offset) { return data.load_aligned<T, 4>(offset); }
 
-    public T arg_block_load<T>(uint offset) { return data.load_aligned<T>(arg_block_offset + offset, 4); }
+    public T arg_block_load<T>(uint offset) { return data.load_aligned<T, 4>(arg_block_offset + offset); }
 
-    public T texture_table_load<T>(uint offset) { return data.load_aligned<T>(texture_table_offset + offset, 4); }
+    public T texture_table_load<T>(uint offset) { return data.load_aligned<T, 4>(texture_table_offset + offset); }
 
     /// Number of bsdf slots used by the material.
     public uint surface_scatter_bsdf_count = 0;

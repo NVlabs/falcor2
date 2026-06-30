@@ -80,6 +80,8 @@ public struct StandardSpecGlossMaterial : IMaterial
 
     public override bool is_emissive() { return any(emissive_factor > 0.0); }
 
+    public override MaterialFlags flags() { return header.flags; }
+
     public override uint2 compute_emission_sampling_grid(float2 uv[3]) { return uint2(100, 100); }
 
     public override float3 eval_emission<LodSampler : ILodSampler>(

@@ -140,6 +140,35 @@ openpbr_collect_properties(const OpenPBR_ResolvedInputs inputs, const float3 wi_
     return properties;
 }
 
+public LobeTypes openpbr_lobe_types_from_sampled_type(const OpenPBR_BsdfLobeType sampled_type)
+{
+    const bool has_reflection = (sampled_type & OpenPBR_BsdfLobeTypeReflection) != 0;
+    const bool has_transmission = (sampled_type & OpenPBR_BsdfLobeTypeTransmission) != 0;
+    const bool has_diffuse = (sampled_type & OpenPBR_BsdfLobeTypeDiffuse) != 0;
+    const bool has_glossy = (sampled_type & OpenPBR_BsdfLobeTypeGlossy) != 0;
+    const bool has_specular = (sampled_type & OpenPBR_BsdfLobeTypeSpecular) != 0;
+
+    uint lobe_types = uint(LobeTypes::none);
+    if (has_reflection) {
+        if (has_diffuse)
+            lobe_types |= uint(LobeTypes::diffuse_reflection);
+        if (has_glossy)
+            lobe_types |= uint(LobeTypes::glossy_reflection);
+        if (has_specular)
+            lobe_types |= uint(LobeTypes::delta_reflection);
+    }
+    if (has_transmission) {
+        if (has_diffuse)
+            lobe_types |= uint(LobeTypes::diffuse_transmission);
+        if (has_glossy)
+            lobe_types |= uint(LobeTypes::glossy_transmission);
+        if (has_specular)
+            lobe_types |= uint(LobeTypes::delta_transmission);
+    }
+    // TODO: figure out how to classify volume scattering lobes, if we want to support them in the future.
+    return LobeTypes(lobe_types);
+}
+
 public struct OpenPBRMaterialInstance : IMaterialInstance
 {
     OpenPBR_ResolvedInputs inputs = {};
@@ -169,21 +198,7 @@ public struct OpenPBRMaterialInstance : IMaterialInstance
             return false;
 
         result.weight = weight.diffuse + weight.specular;
-        uint lobe_types = 0;
-        if ((sampled_type & OpenPBR_BsdfLobeTypeReflection) != 0)
-            lobe_types |= uint(LobeTypes::reflection);
-        if ((sampled_type & OpenPBR_BsdfLobeTypeTransmission) != 0)
-            lobe_types |= uint(LobeTypes::transmission);
-        if ((sampled_type & OpenPBR_BsdfLobeTypeDiffuse) != 0)
-            lobe_types |= uint(LobeTypes::diffuse);
-        if ((sampled_type & OpenPBR_BsdfLobeTypeGlossy) != 0)
-            lobe_types |= uint(LobeTypes::glossy);
-        if ((sampled_type & OpenPBR_BsdfLobeTypeSpecular) != 0)
-            lobe_types |= uint(LobeTypes::delta);
-        // TODO: figure out how to classify volume scattering lobes, if we want to support them in the future
-        // if ((sampled_type & OpenPBR_BsdfLobeTypeVolume) != 0)
-        //     lobe_types |= 0;
-        result.lobe_types = LobeTypes(lobe_types);
+        result.lobe_types = openpbr_lobe_types_from_sampled_type(sampled_type);
 
         return true;
     }

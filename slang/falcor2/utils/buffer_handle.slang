@@ -16,7 +16,7 @@ public struct BufferHandle
         return *ptr;
     }
 
-    public T load_aligned<T>(uint location, uint alignment)
+    public T load_aligned<T, uint Alignment>(uint location)
     {
         return load<T>(location); // Alignment is not needed for these targets.
     }
@@ -27,10 +27,10 @@ public struct BufferHandle
         return handle.Load<T>(location);
     }
 
-    public T load_aligned<T>(uint location, uint alignment)
+    public T load_aligned<T, uint Alignment>(uint location)
     {
         DescriptorHandle<ByteAddressBuffer> handle = { uint2(uint(data), 0) };
-        return handle.LoadAligned<T>(location, alignment);
+        return handle.LoadAligned<T>(location, Alignment);
     }
 #endif
 

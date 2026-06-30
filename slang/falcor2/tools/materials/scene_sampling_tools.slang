@@ -58,11 +58,6 @@ public MaterialProperties material_collect_properties(IMaterial material, Surfac
     return material_instance.collect_properties(si);
 }
 
-public MaterialFlags material_flags(IMaterial material)
-{
-    return material.flags();
-}
-
 public MaterialProperties material_collect_properties_with_hints(IMaterial material, SurfaceInteraction si, uint hints)
 {
     let lod_sampler = ExplicitLodSampler(0);
@@ -80,13 +75,6 @@ public float3 material_eval_emissive_radiance(IMaterial material, SurfaceInterac
 {
     let lod_sampler = ExplicitLodSampler(0);
     return material.eval_emissive_radiance(si, lod_sampler, MaterialInstanceHints(hints));
-}
-
-public bool material_is_transmissive(IMaterial material, SurfaceInteraction si)
-{
-    let lod_sampler = ExplicitLodSampler(0);
-    let material_instance = material.setup_material_instance(si, lod_sampler, MaterialInstanceHints::none);
-    return material_instance.collect_properties(si).is_transmissive;
 }
 
 public ExtraBsdfProperties material_collect_extra_bsdf_properties(IMaterial material, SurfaceInteraction si, float3 wo)
@@ -141,11 +129,6 @@ public float3 material_eval_emissive_radiance_simple(IMaterial material, float2 
     return material_eval_emissive_radiance(material, setup_surface_interaction(uv, wi), hints);
 }
 
-public bool material_is_transmissive_simple(IMaterial material, float2 uv, float3 wi)
-{
-    return material_is_transmissive(material, setup_surface_interaction(uv, wi));
-}
-
 public ExtraBsdfProperties
 material_collect_extra_bsdf_properties_simple(IMaterial material, float2 uv, float3 wi, float3 wo)
 {
@@ -190,20 +173,6 @@ public MaterialProperties material_collect_properties_system(uint32_t material_i
     // material_id must be within buffer boundaries
     let material = g_scene.get_material(MaterialID(material_id));
     return material_collect_properties(material, setup_surface_interaction(uv, wi));
-}
-
-public MaterialFlags material_flags_system(uint32_t material_id)
-{
-    // material_id must be within buffer boundaries
-    let material_header = g_scene.material_system.get_material_data(MaterialID(material_id)).header;
-    return material_header.flags;
-}
-
-public bool material_is_transmissive_system(uint32_t material_id, float2 uv, float3 wi)
-{
-    // material_id must be within buffer boundaries
-    let material = g_scene.material_system.get_material(MaterialID(material_id));
-    return material_is_transmissive(material, setup_surface_interaction(uv, wi));
 }
 
 public ExtraBsdfProperties
