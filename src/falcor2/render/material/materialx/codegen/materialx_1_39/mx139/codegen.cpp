@@ -348,10 +348,10 @@ public:
         const ClosureRef layering_root = layering.main_layer;
         result.codegen_metadata.set("requested_layering_mode", user_data->inputs.desc->layering_mode);
         result.codegen_metadata.set("compensation_mode", user_data->inputs.desc->compensation_mode);
-        result.codegen_metadata.set(
-            "enable_complex_mix_osl_root_coverage",
-            user_data->inputs.desc->enable_complex_mix_osl_root_coverage
-        );
+        //result.codegen_metadata.set(
+        //    "enable_complex_mix_osl_root_coverage",
+        //    user_data->inputs.desc->enable_complex_mix_osl_root_coverage
+        //);
         result.codegen_metadata.set("layering_root_valid", !layering_root.is_none());
         result.codegen_metadata.set("layering_combiner_count", static_cast<int>(layering.combiners.size()));
         result.codegen_metadata.set("layering_bsdf_count", static_cast<int>(layering.bsdfs.size()));
