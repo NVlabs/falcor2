@@ -52,6 +52,20 @@ ref<Scene> create_scene(
 ref<Scene>
 create_scene(ref<sgl::Device> device, const ImporterScene& importer_scene, std::optional<UVOrigin> uv_origin = {});
 
+/// Create a scene from an importer and run its scene-created callbacks.
+/// @param device Device to use for rendering.
+/// @param importer Importer whose recorded edits and callbacks to apply.
+/// @param uv_origin Optional target scene texture coordinate origin. If unset, use importer scene convention.
+/// @param add_default_camera_best_view If true, add a best-view camera when the built importer scene has none.
+/// @param camera_aspect Aspect ratio used when adding the best-view camera.
+ref<Scene> create_scene(
+    ref<sgl::Device> device,
+    const Importer& importer,
+    std::optional<UVOrigin> uv_origin = {},
+    bool add_default_camera_best_view = false,
+    float camera_aspect = 16.f / 9.f
+);
+
 } // namespace detail
 
 } // namespace falcor

@@ -71,24 +71,13 @@ public struct SheenBSDF : IBSDF
         return Fr;
     }
 
-    public bool sample<S : ISampleGenerator>(
-        const float3 wi,
-        out float3 wo,
-        out float pdf,
-        out float3 weight,
-        out LobeTypes lobe_types,
-        inout S sg,
-        const BSDFContext bc
-    )
+    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
         // Default initialization to avoid divergence at returns.
-        wo = {};
-        weight = {};
-        pdf = {};
-        lobe_types = {};
+        sample = {};
 
         // Without a baselayer, this BSDF should be transparent. Until we can overwrite local importance sampling with
-        // the LobeTypess, we will pretend for sample() that there is no transparency. This is a performance
+        // the BSDF flags, we will pretend for sample() that there is no transparency. This is a performance
         // optimisation for the LayeredMaterialInstance.
         // TODO: restore transparent sampling once local importance sampling can account for lobe types.
         /*
@@ -96,25 +85,22 @@ public struct SheenBSDF : IBSDF
         const float selection_weight = luminance(albedo_t);
         if (next_float(sg) < selection_weight)
         {
-            wo = float3(-wi.x, -wi.y, -wi.z);
-            pdf = 0.0;
-            weight = 1.0;
-            lobe_types = LobeTypes::delta_transmission;
+            sample.wo = float3(-wi.x, -wi.y, -wi.z);
+            sample.pdf = 0.0;
+            sample.weight = 1.0;
+            sample.flags = BSDFFlags::delta_transmission;
             return true;
         }*/
 
         // The paper recommends cosine sampling.
-        wo = square_to_cosine_hemisphere_concentric(next_float2(sg));
-        pdf = square_to_cosine_hemisphere_concentric_pdf(wo);
+        sample.wo = square_to_cosine_hemisphere_concentric(next_float2(sg));
+        sample.pdf = square_to_cosine_hemisphere_concentric_pdf(sample.wo);
 
-        if (min(wi.z, wo.z) < BSDF_MIN_COS_THETA) {
-            weight = {};
+        if (min(wi.z, sample.wo.z) < BSDF_MIN_COS_THETA)
             return false;
-        }
 
-        lobe_types = LobeTypes::diffuse_reflection;
-
-        weight = (eval(wi, wo, sg, bc) / (float.INV_PI* wo.z));
+        sample.flags = BSDFFlags::diffuse_reflection;
+        sample.weight = (eval(wi, sample.wo, sg, bc) / (float.INV_PI* sample.wo.z));
         return true;
     }
 

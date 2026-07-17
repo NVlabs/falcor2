@@ -57,8 +57,7 @@ public struct LightSampler<
             sample.pdf *= selection_pdf;
             weight /= selection_pdf;
         } else if (ENABLE_ENVIRONMENT_LIGHT && sample.emitter_type == EmitterType::environment) {
-            let light = g_scene.light_system.get_light(g_scene.light_system.environment_light_id);
-            if (!light.sample_direction(ref, sg, sample, weight))
+            if (!sample_environment_direction(ref, sg, sample, weight))
                 return false;
         } else if (ENABLE_EMISSIVE_TRIANGLES && sample.emitter_type == EmitterType::emissive_triangle) {
             if (!emissive_triangle_sampler.sample_direction(ref, sg, sample, weight))
@@ -84,12 +83,58 @@ public struct LightSampler<
         if (ENABLE_ANALYTIC_LIGHTS && sample.emitter_type == EmitterType::analytic) {
             return 0.0;
         } else if (ENABLE_ENVIRONMENT_LIGHT && sample.emitter_type == EmitterType::environment) {
-            let light = g_scene.light_system.get_light(g_scene.light_system.environment_light_id);
-            return type_pdf * light.eval_direction_pdf(ref, sample);
+            return type_pdf * eval_environment_direction_pdf(ref, sample);
         } else if (ENABLE_EMISSIVE_TRIANGLES && sample.emitter_type == EmitterType::emissive_triangle) {
             return type_pdf * emissive_triangle_sampler.eval_direction_pdf(ref, sample);
         }
         return 0.0;
+    }
+
+    /// Sample one environment light from their power-weighted mixture.
+    /// The single-light path deliberately consumes no additional random number.
+    public bool sample_environment_direction<Interaction : IInteraction, SampleGenerator : ISampleGenerator>(
+        const Interaction ref,
+        inout SampleGenerator sg,
+        no_diff out DirectionSample sample,
+        out float3 weight
+    )
+    {
+        const uint count = g_scene.light_system.environment_light_count;
+        if (count == 0)
+            return false;
+        if (count == 1)
+            return g_scene.light_system.get_environment_light(0).sample_direction(ref, sg, sample, weight);
+
+        uint index = 0;
+        float selection_pdf = 0.0;
+        if (!g_scene.light_system.environment_light_selection_distribution.sample(next_float(sg), index, selection_pdf))
+            return false;
+
+        let light = g_scene.light_system.get_environment_light(index);
+        if (!light.sample_direction(ref, sg, sample, weight))
+            return false;
+
+        sample.pdf = eval_environment_direction_pdf(ref, sample);
+        weight = g_scene.light_system.eval_environment_direction(ref, sample) / sample.pdf;
+        return true;
+    }
+
+    /// Evaluate the PDF of the power-weighted mixture of all environment lights.
+    public float
+    eval_environment_direction_pdf<Interaction : IInteraction>(const Interaction ref, const DirectionSample sample)
+    {
+        const uint count = g_scene.light_system.environment_light_count;
+        if (count == 0)
+            return 0.0;
+        if (count == 1)
+            return g_scene.light_system.get_environment_light(0).eval_direction_pdf(ref, sample);
+
+        float pdf = 0.0;
+        for (uint index = 0; index < count; ++index) {
+            const float selection_pdf = g_scene.light_system.environment_light_selection_distribution.eval_pdf(index);
+            pdf += selection_pdf * g_scene.light_system.get_environment_light(index).eval_direction_pdf(ref, sample);
+        }
+        return pdf;
     }
 
     /// Computes the selection probabilities for each emitter type.
@@ -99,7 +144,7 @@ public struct LightSampler<
     public TypeProbabilities compute_type_probabilities()
     {
         const float analytic_lights = (ENABLE_ANALYTIC_LIGHTS && g_scene.has_analytic_lights()) ? 1.0 : 0.0;
-        const float environment_light = (ENABLE_ENVIRONMENT_LIGHT && g_scene.has_environment_light()) ? 1.0 : 0.0;
+        const float environment_light = (ENABLE_ENVIRONMENT_LIGHT && g_scene.has_environment_lights()) ? 1.0 : 0.0;
         const float emissive_triangles = (ENABLE_EMISSIVE_TRIANGLES && g_scene.has_emissive_triangles()) ? 1.0 : 0.0;
         const float total = analytic_lights + environment_light + emissive_triangles;
         const float inv_total = total > 0.0 ? 1.0 / total : 0.0;

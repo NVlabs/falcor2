@@ -5,14 +5,21 @@
 
 #include "falcor2/render/scene.h"
 #include "falcor2/render/scene_import.h"
+#include "falcor2/render/ray_tracing_setup.h"
 #include "falcor2/render/geometry/static_mesh_geometry.h"
 #include "falcor2/render/geometry/geometry_group.h"
 #include "falcor2/render/component/geometry_instance.h"
 #include "falcor2/render/component/camera.h"
 #include "falcor2/render/component/light.h"
+#include "falcor2/render/material/standard_material.h"
 #include "falcor2/importers/importer_types.h"
+#include "falcor2/core/python_interpreter.h"
 
 #include <sgl/math/vector.h>
+
+#include <array>
+
+#include <filesystem>
 
 using namespace falcor;
 
@@ -40,6 +47,44 @@ private:
 // ---------------------------------------------------------------------------
 
 TEST_SUITE_BEGIN("Scene");
+
+TEST_CASE_GPU("ray tracing setup pads three ray type slots")
+{
+    auto scene = Scene::create(ref(ctx.device));
+
+    SceneRayTracingSetup::RayDesc primary{
+        .name = "primary",
+        .has_miss = true,
+        .has_closest_hit = true,
+    };
+    SceneRayTracingSetup::RayDesc secondary{
+        .name = "secondary",
+        .has_miss = true,
+        .has_closest_hit = true,
+    };
+    SceneRayTracingSetup::Options options{.skip_unused_geometry_types = false};
+    SceneRayTracingSetup setup = SceneRayTracingSetup::create(scene.get(), {primary, secondary}, options);
+
+    CHECK_EQ(setup.sbt_miss_entry_points.size(), 3);
+    CHECK_EQ(setup.sbt_miss_entry_points[0], "_scene_primary_miss");
+    CHECK_EQ(setup.sbt_miss_entry_points[1], "_scene_secondary_miss");
+    CHECK(setup.sbt_miss_entry_points[2].empty());
+
+    REQUIRE_EQ(setup.sbt_hit_group_names.size(), 6);
+    CHECK_EQ(setup.sbt_hit_group_names[0], "_scene_primary_triangle_hit_group");
+    CHECK_EQ(setup.sbt_hit_group_names[1], "_scene_secondary_triangle_hit_group");
+    CHECK_EQ(setup.sbt_hit_group_names[2], "__dummy_hit_group");
+    CHECK_EQ(setup.sbt_hit_group_names[3], "_scene_primary_lss_hit_group");
+    CHECK_EQ(setup.sbt_hit_group_names[4], "_scene_secondary_lss_hit_group");
+    CHECK_EQ(setup.sbt_hit_group_names[5], "__dummy_hit_group");
+}
+
+TEST_CASE_GPU("ray tracing setup rejects more than three ray types")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    std::array<SceneRayTracingSetup::RayDesc, 4> ray_descs;
+    CHECK_THROWS(SceneRayTracingSetup::create(scene.get(), ray_descs));
+}
 
 TEST_CASE_GPU("named refcounted scene globals garbage collection")
 {
@@ -218,6 +263,254 @@ TEST_CASE_GPU("importer scene uv origin conversion and adoption")
         CHECK(scene->options().uv_origin == UVOrigin::upper_left);
         check_imported_uvs(scene.get(), float2(0.25f, 1.25f), float2(0.5f, 0.5f), float2(0.75f, -0.25f));
     }
+}
+
+TEST_CASE_GPU("importer scene dome light preserves environment map path")
+{
+    auto importer_scene = make_ref<ImporterScene>();
+
+    ImporterLight dome_light;
+    dome_light.name = "Test Dome Light";
+    dome_light.type = ImporterLight::Type::dome;
+    dome_light.env_map_path = "data/assets/envmaps/aerodynamics_workshop_512.hdr";
+    dome_light.exposure = 5.f;
+    importer_scene->lights.push_back(dome_light);
+
+    ImporterNode dome_node;
+    dome_node.name = "Test Dome Light";
+    dome_node.light_index = 0;
+    importer_scene->nodes.push_back(dome_node);
+    importer_scene->root_nodes.push_back(0);
+
+    auto scene = Scene::create(ref(ctx.device));
+    load_importer_scene(scene.get(), *importer_scene);
+
+    REQUIRE_EQ(scene->components().size(), 1);
+    const auto* env_map_light = dynamic_cast<const EnvMapLight*>(scene->components()[0]);
+    REQUIRE(env_map_light != nullptr);
+    CHECK_EQ(env_map_light->env_map_path(), std::filesystem::path(dome_light.env_map_path));
+    CHECK_EQ(env_map_light->exposure(), doctest::Approx(dome_light.exposure));
+}
+
+TEST_CASE_GPU("importer scene textureless dome light becomes constant environment")
+{
+    auto importer_scene = make_ref<ImporterScene>();
+
+    ImporterLight dome_light;
+    dome_light.name = "Textureless Dome Light";
+    dome_light.type = ImporterLight::Type::dome;
+    dome_light.intensity = float3(0.25f, 0.5f, 0.75f);
+    dome_light.exposure = 2.f;
+    importer_scene->lights.push_back(dome_light);
+
+    ImporterNode dome_node;
+    dome_node.name = dome_light.name;
+    dome_node.light_index = 0;
+    importer_scene->nodes.push_back(dome_node);
+    importer_scene->root_nodes.push_back(0);
+
+    auto scene = Scene::create(ref(ctx.device));
+    load_importer_scene(scene.get(), *importer_scene);
+
+    REQUIRE_EQ(scene->components().size(), 1);
+    const auto* constant_light = dynamic_cast<const ConstantLight*>(scene->components()[0]);
+    REQUIRE(constant_light != nullptr);
+    CHECK_EQ(constant_light->radiance(), dome_light.intensity);
+    CHECK_EQ(constant_light->exposure(), doctest::Approx(dome_light.exposure));
+}
+
+TEST_CASE_GPU("importer scene converts distant angular diameter to cone half angle")
+{
+    auto importer_scene = make_ref<ImporterScene>();
+
+    ImporterLight importer_light;
+    importer_light.name = "Distant Light";
+    importer_light.type = ImporterLight::Type::distant;
+    importer_light.intensity = float3(2.f, 3.f, 4.f);
+    importer_light.degree_angular_diameter = 12.f;
+    importer_scene->lights.push_back(importer_light);
+
+    ImporterNode light_node;
+    light_node.name = importer_light.name;
+    light_node.light_index = 0;
+    importer_scene->nodes.push_back(light_node);
+    importer_scene->root_nodes.push_back(0);
+
+    auto scene = Scene::create(ref(ctx.device));
+    load_importer_scene(scene.get(), *importer_scene);
+
+    REQUIRE_EQ(scene->components().size(), 1);
+    const auto* distant_light = dynamic_cast<const DistantLight*>(scene->components()[0]);
+    REQUIRE(distant_light != nullptr);
+    CHECK_EQ(distant_light->radiance(), importer_light.intensity);
+    CHECK_EQ(distant_light->cutoff_angle(), doctest::Approx(6.f));
+}
+
+TEST_CASE_GPU("importer scene uses default material for missing assignments")
+{
+    auto importer_scene = make_ref<ImporterScene>();
+
+    ImporterMesh mesh;
+    mesh.name = "materialless_mesh";
+    mesh.ensure_attributes({{ImporterSemantic::position}});
+    mesh.allocate_vertices(3, true);
+    auto positions = mesh.position_stream();
+    positions[0] = float3(-1.f, 0.f, 0.f);
+    positions[1] = float3(1.f, 0.f, 0.f);
+    positions[2] = float3(0.f, 1.f, 0.f);
+    mesh.subgeometries.push_back(
+        ImporterMesh::Subgeometry{
+            .name = "unbound_submesh",
+            .indices = {uint3(0, 1, 2)},
+        }
+    );
+    mesh.subgeometries.push_back(
+        ImporterMesh::Subgeometry{
+            .name = "missing_material_submesh",
+            .indices = {uint3(0, 1, 2)},
+            .material_name = "MissingMaterial",
+        }
+    );
+    mesh.calculate_local_aabb();
+    importer_scene->meshes.push_back(std::move(mesh));
+
+    ImporterNode node;
+    node.name = "materialless_mesh";
+    node.mesh_index = 0;
+    importer_scene->nodes.push_back(node);
+    importer_scene->root_nodes.push_back(0);
+
+    auto scene = Scene::create(ref(ctx.device), *importer_scene);
+
+    REQUIRE_EQ(scene->materials().size(), 1);
+    CHECK(dynamic_cast<StandardMaterial*>(scene->materials()[0]) != nullptr);
+    CHECK_EQ(scene->materials()[0]->name(), "DefaultMaterial");
+
+    REQUIRE_EQ(scene->components().size(), 1);
+    auto* instance = dynamic_cast<GeometryInstance*>(scene->components()[0]);
+    REQUIRE(instance != nullptr);
+    REQUIRE_EQ(instance->materials().size(), 2);
+    CHECK_EQ(instance->materials()[0], scene->materials()[0]);
+    CHECK_EQ(instance->materials()[1], scene->materials()[0]);
+}
+
+TEST_CASE_GPU("importer material constructor creates and names live material")
+{
+    auto importer_scene = make_ref<ImporterScene>();
+    bool constructor_called = false;
+
+    ImporterMaterial importer_material;
+    importer_material.name = "Constructed Material";
+    importer_material.params.set("roughness_factor", 0.25f);
+    importer_material.constructor = [&](Scene& destination, const ImporterMaterial& source)
+    {
+        constructor_called = true;
+        CHECK_EQ(source.name, "Constructed Material");
+        CHECK_EQ(source.params.get<float>("roughness_factor"), 0.25f);
+        return destination.create_material<StandardMaterial>(source.params);
+    };
+    importer_scene->materials.push_back(std::move(importer_material));
+
+    auto scene = Scene::create(ref(ctx.device), *importer_scene);
+
+    CHECK(constructor_called);
+    REQUIRE_EQ(scene->materials().size(), 1);
+    CHECK(dynamic_cast<StandardMaterial*>(scene->materials()[0]) != nullptr);
+    CHECK_EQ(scene->materials()[0]->name(), "Constructed Material");
+}
+
+TEST_CASE_GPU("importer material constructor rejects null material")
+{
+    auto importer_scene = make_ref<ImporterScene>();
+    ImporterMaterial importer_material;
+    importer_material.name = "Null Material";
+    importer_material.constructor = [](Scene&, const ImporterMaterial&) -> Material*
+    {
+        return nullptr;
+    };
+    importer_scene->materials.push_back(std::move(importer_material));
+
+    try {
+        Scene::create(ref(ctx.device), *importer_scene);
+        FAIL("Expected a null importer material constructor result to throw");
+    } catch (const std::exception& e) {
+        CHECK(
+            std::string(e.what()).find("Constructor for importer material 'Null Material' returned null")
+            != std::string::npos
+        );
+    }
+}
+
+TEST_CASE_GPU("python importer material constructor runs from native scene load")
+{
+    auto python = PythonInterpreter::get().create_context();
+    const std::string project_path = testing::project_directory().generic_string();
+    python.execute_string(fmt::format("import sys\nsys.path.insert(0, r'{}')", project_path));
+
+    const std::filesystem::path scene_path = testing::project_directory() / "data" / "scenes" / "checker-material.py";
+    auto scene = Scene::create(ref(ctx.device), scene_path);
+
+    Material* material = scene->materials().find("Material_MR");
+    REQUIRE(material != nullptr);
+    CHECK_EQ(material->slang_type_name(), "CheckerMaterial");
+}
+
+TEST_CASE_GPU("importer scene camera becomes active and preserves vertical fov")
+{
+    auto importer_scene = make_ref<ImporterScene>();
+
+    ImporterCamera importer_camera;
+    importer_camera.name = "Test Camera";
+    importer_camera.focus_distance = 1.f;
+    importer_camera.focal_length = 50.f;
+    importer_camera.fstop = 8.f;
+    importer_camera.depth_range = float2(0.01f, 10000.f);
+    importer_camera.projection = ImporterCamera::Projection::perspective;
+    importer_camera.fov_direction = ImporterCamera::FOVDirection::vertical;
+    importer_camera.sensor_size_mm = 24.f;
+    importer_camera.focal_length = ImporterCamera::focal_length_from_fov_degrees(42.f, importer_camera.sensor_size_mm);
+    importer_scene->cameras.push_back(importer_camera);
+
+    ImporterNode camera_node;
+    camera_node.name = "Test Camera Node";
+    camera_node.camera_index = 0;
+    importer_scene->nodes.push_back(camera_node);
+    importer_scene->root_nodes.push_back(0);
+
+    auto scene = Scene::create(ref(ctx.device));
+    load_importer_scene(scene.get(), *importer_scene);
+
+    Camera* active_camera = scene->active_camera();
+    REQUIRE(active_camera != nullptr);
+    CHECK_EQ(active_camera->fov_y(), doctest::Approx(42.f));
+}
+
+TEST_CASE_GPU("importer scene camera converts horizontal fov with four by three sensor assumption")
+{
+    auto importer_scene = make_ref<ImporterScene>();
+
+    ImporterCamera importer_camera;
+    importer_camera.name = "Horizontal FOV Camera";
+    importer_camera.fov_direction = ImporterCamera::FOVDirection::horizontal;
+    importer_camera.sensor_size_mm = 32.f;
+    importer_camera.focal_length = ImporterCamera::focal_length_from_fov_degrees(60.f, importer_camera.sensor_size_mm);
+    importer_scene->cameras.push_back(importer_camera);
+
+    ImporterNode camera_node;
+    camera_node.name = "Horizontal FOV Camera Node";
+    camera_node.camera_index = 0;
+    importer_scene->nodes.push_back(camera_node);
+    importer_scene->root_nodes.push_back(0);
+
+    auto scene = Scene::create(ref(ctx.device));
+    load_importer_scene(scene.get(), *importer_scene);
+
+    const float expected_vertical_fov
+        = ImporterCamera::fov_degrees_from_focal_length(24.f, importer_camera.focal_length);
+
+    Camera* active_camera = scene->active_camera();
+    REQUIRE(active_camera != nullptr);
+    CHECK_EQ(active_camera->fov_y(), doctest::Approx(expected_vertical_fov));
 }
 
 TEST_CASE_GPU("add remove compact materials")

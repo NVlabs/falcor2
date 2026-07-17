@@ -80,9 +80,11 @@ std::string emit_closure_tree_composition_value(
                   bsdf_index
               )
             : fmt::format("Frame({}.bsdf_n[{}], {}.bsdf_t[{}])", stack_name, bsdf_index, stack_name, bsdf_index);
+        const std::string material_transmission
+            = layering.bsdfs[bsdf_index].through_material_transmissive ? "1.0" : "0.0";
         shadergen.emitLine(
             fmt::format(
-                "let {} = {}({}.bsdf{}, {}.bsdf_weights[{}], {}.bsdf_transmission_scales[{}], {})",
+                "let {} = {}({}.bsdf{}, {}.bsdf_weights[{}], {}.bsdf_transmission_scales[{}], {}, {})",
                 value_name,
                 alias_reference(aliases, aliases.weighted_aliases.at(ref), use_local_aliases),
                 stack_name,
@@ -91,6 +93,7 @@ std::string emit_closure_tree_composition_value(
                 bsdf_index,
                 stack_name,
                 bsdf_index,
+                material_transmission,
                 frame_expr
             ),
             stage
@@ -223,9 +226,11 @@ std::string build_closure_tree_composition_value_text(
                   bsdf_index
               )
             : fmt::format("Frame({}.bsdf_n[{}], {}.bsdf_t[{}])", stack_name, bsdf_index, stack_name, bsdf_index);
+        const std::string material_transmission
+            = layering.bsdfs[bsdf_index].through_material_transmissive ? "1.0" : "0.0";
         append_line(
             fmt::format(
-                "let {} = {}({}.bsdf{}, {}.bsdf_weights[{}], {}.bsdf_transmission_scales[{}], {})",
+                "let {} = {}({}.bsdf{}, {}.bsdf_weights[{}], {}.bsdf_transmission_scales[{}], {}, {})",
                 value_name,
                 alias_reference(aliases, aliases.weighted_aliases.at(ref), use_local_aliases),
                 stack_name,
@@ -234,6 +239,7 @@ std::string build_closure_tree_composition_value_text(
                 bsdf_index,
                 stack_name,
                 bsdf_index,
+                material_transmission,
                 frame_expr
             )
         );
@@ -346,7 +352,7 @@ void emit_closure_tree_material_structs(
     const ClosureRef root = layering.main_layer;
     const std::string root_lobe_expr = root_lobes(layering, root);
     const std::string lobes
-        = root.is_none() ? "LobeTypes::none" : (root_lobe_expr.empty() ? "LobeTypes::all" : root_lobe_expr);
+        = root.is_none() ? "BSDFFlags::none" : (root_lobe_expr.empty() ? "BSDFFlags::all" : root_lobe_expr);
     const bool graph_can_emit = graph_has_emission && graph_output_can_emit(stage.getOutputBlock(k_outputs));
     const std::string graph_emission = graph_emission_expr(stage.getOutputBlock(k_outputs));
     const std::string graph_opacity = graph_opacity_expr(stage.getOutputBlock(k_outputs));
@@ -366,12 +372,8 @@ void emit_closure_tree_material_structs(
     const std::string stack_decl
         = use_synthetic_opacity_mix ? "var stack = mtlx_graph.mx_stack" : "let stack = mtlx_graph.mx_stack";
 
-    const std::string transmissive_flag_line = root_transmissive(layering, root)
-        ? body_indent + "result.flags = result.flags | MaterialProperties::Flags::is_transmissive;\n"
-        : std::string{};
-    const std::string curve_scattering_flag_line = root_curve_scattering(layering, root)
-        ? body_indent + "result.flags = result.flags | MaterialProperties::Flags::is_curve_scattering;\n"
-        : std::string{};
+    const bool is_transmissive = root_transmissive(layering, root);
+    const bool is_curve_scattering = root_curve_scattering(layering, root);
 
     const std::string synthetic_opacity_lines = build_synthetic_opacity_stack_setup_text(
         layering,
@@ -391,6 +393,8 @@ void emit_closure_tree_material_structs(
         body_indent
     );
     const std::string collect_extra_method = strategy->build_collect_extra_text(layering, "    ");
+    const std::string collect_properties_method
+        = strategy->build_collect_properties_text(layering, "    ", is_transmissive, is_curve_scattering);
 
     std::string source = stage.getSourceCode();
     source += codegen_support::render_snippet(
@@ -402,8 +406,6 @@ void emit_closure_tree_material_structs(
             {"$MxGraphName", graph_name},
             {"$MxAliasesName", composition_aliases.namespace_name},
             {"$MxLobes", lobes},
-            {"$MxTransmissiveFlagLine", transmissive_flag_line},
-            {"$MxCurveScatteringFlagLine", curve_scattering_flag_line},
             {"$MxGraphEmission", graph_emission},
             {"$MxGraphThinWalled", graph_thin_walled},
             {"$MxGraphCanEmit", graph_can_emit ? "true" : "false"},
@@ -411,6 +413,7 @@ void emit_closure_tree_material_structs(
             {"$MxSyntheticOpacityLines", synthetic_opacity_lines},
             {"$MxRootValueLines", root_block.lines},
             {"$MxRootValueExpr", root_block.root_expr},
+            {"$MxCollectPropertiesMethod", collect_properties_method},
             {"$MxCollectExtraBsdfPropertiesMethod", collect_extra_method},
         }
     );

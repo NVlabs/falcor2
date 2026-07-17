@@ -20,17 +20,9 @@ public struct MxBeerBSDF : ILayerableBSDF
         return inner.eval(wi, wo, sg, bc);
     }
 
-    public bool sample<S : ISampleGenerator>(
-        const float3 wi,
-        out float3 wo,
-        out float pdf,
-        out float3 weight,
-        out LobeTypes lobe_types,
-        inout S sg,
-        const BSDFContext bc
-    )
+    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
-        return inner.sample(wi, wo, pdf, weight, lobe_types, sg, bc);
+        return inner.sample(wi, sample, sg, bc);
     }
 
     public float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc) { return inner.eval_pdf(wi, wo, bc); }
@@ -47,7 +39,7 @@ public struct MxBeerBSDF : ILayerableBSDF
         // purposes, but its absorption must still reduce layer pass-through.
         // Reporting full pass-through here makes layer(layer(glaze, beer), base)
         // look transparent to the outer layer and leaks the base diffuse.
-        return layer_opacity_from_ibsdf(inner.eval_albedo(wi));
+        return saturate(float3(1.0) - inner.eval_albedo(wi).transmission);
     }
 
     public property float3 ior_as_reflectance

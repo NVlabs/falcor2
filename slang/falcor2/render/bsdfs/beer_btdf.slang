@@ -23,31 +23,19 @@ public struct BeerBTDF : IBSDF
         return float3(0.0);
     }
 
-    public bool sample<S : ISampleGenerator>(
-        const float3 wi,
-        out float3 wo,
-        out float pdf,
-        out float3 weight,
-        out LobeTypes lode_types,
-        inout S sg,
-        const BSDFContext bc
-    )
+    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
-        // Default initialization to avoid divergence at returns.
-        wo = {};
-        weight = {};
-        pdf = {};
-        lode_types = {};
+        sample = {};
 
         if (wi.z > BSDF_MIN_COS_THETA)
             return false;
 
-        wo = float3(-wi.x, -wi.y, -wi.z);
+        sample.wo = float3(-wi.x, -wi.y, -wi.z);
 
         float pathlength = 1.0 / (1.0 - pathshortening + wi.z * pathshortening);
         float3 transmittance = exp(-absorption * pathlength);
-        weight = transmittance;
-        lode_types = LobeTypes::delta_transmission;
+        sample.weight = transmittance;
+        sample.flags = BSDFFlags::delta_transmission;
         return true;
     }
 

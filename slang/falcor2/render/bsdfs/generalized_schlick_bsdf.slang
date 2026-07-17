@@ -50,39 +50,28 @@ public struct GeneralizedSchlickBSDF : IBSDF
         return D.G2(wo, wi) * D.eval_ndf(h) * F / (4.0 * abs(wi.z));
     }
 
-    public bool sample<S : ISampleGenerator>(
-        float3 wi,
-        out float3 wo,
-        out float pdf,
-        out float3 weight,
-        out LobeTypes lobe_types,
-        inout S sg,
-        const BSDFContext bc
-    )
+    public bool sample<S : ISampleGenerator>(float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
-        wo = {};
-        pdf = {};
-        weight = {};
-        lobe_types = {};
+        sample = {};
 
         if (wi.z < 0.0)
             return false;
 
         if (D.is_singular()) {
-            wo = float3(-wi.x, -wi.y, wi.z);
-            weight = eval_fresnel(wi.z);
-            lobe_types = LobeTypes::delta_reflection;
-            pdf = 1.0;
+            sample.wo = float3(-wi.x, -wi.y, wi.z);
+            sample.weight = eval_fresnel(wi.z);
+            sample.flags = BSDFFlags::delta_reflection;
+            sample.pdf = 1.0;
         } else {
             float3 h = D.sample(wi, sg);
-            wo = reflect(-wi, h);
-            if (wo.z < 0.0)
+            sample.wo = reflect(-wi, h);
+            if (sample.wo.z < 0.0)
                 return false;
 
             float3 F = eval_fresnel(abs(dot(h, wi)));
-            weight = F * D.G2(wo, wi) / D.G1(wi);
-            lobe_types = LobeTypes::glossy_reflection;
-            pdf = D.eval_pdf(wi, h) / (4.0 * abs(dot(wi, h)));
+            sample.weight = F * D.G2(sample.wo, wi) / D.G1(wi);
+            sample.flags = BSDFFlags::glossy_reflection;
+            sample.pdf = D.eval_pdf(wi, h) / (4.0 * abs(dot(wi, h)));
         }
         return true;
     }

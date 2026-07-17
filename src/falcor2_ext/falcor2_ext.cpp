@@ -29,6 +29,7 @@ FALCOR_PY_DECLARE(utils_algorithm_prefix_sum);
 
 FALCOR_PY_DECLARE(utils_sampling_distribution_1d);
 
+FALCOR_PY_DECLARE(importers_importer);
 FALCOR_PY_DECLARE(importers_importer_types);
 FALCOR_PY_DECLARE(importers_gltf_importer);
 FALCOR_PY_DECLARE(importers_usd_importer);
@@ -45,6 +46,10 @@ FALCOR_PY_DECLARE(ui_scene_interaction_controller);
 FALCOR_PY_DECLARE(ui_scene_picker);
 FALCOR_PY_DECLARE(ui_selection_overlay);
 FALCOR_PY_DECLARE(ui_widgets);
+
+#if FALCOR_BUILD_TESTS
+FALCOR_PY_DECLARE(testing_nanobind_reflector);
+#endif
 
 NB_MODULE(falcor2_ext, m_)
 {
@@ -70,6 +75,7 @@ NB_MODULE(falcor2_ext, m_)
     FALCOR_PY_IMPORT(utils_sampling_distribution_1d);
 
     FALCOR_PY_IMPORT(importers_importer_types);
+    FALCOR_PY_IMPORT(importers_importer);
     FALCOR_PY_IMPORT(importers_gltf_importer);
     FALCOR_PY_IMPORT(importers_usd_importer);
 
@@ -101,6 +107,10 @@ NB_MODULE(falcor2_ext, m_)
     FALCOR_PY_IMPORT(ui_scene_picker);
     FALCOR_PY_IMPORT(ui_selection_overlay);
     FALCOR_PY_IMPORT(ui_widgets);
+
+#if FALCOR_BUILD_TESTS
+    FALCOR_PY_IMPORT(testing_nanobind_reflector);
+#endif
 
     nanobind_falcor2_ext_module.m_free = [](void*)
     {

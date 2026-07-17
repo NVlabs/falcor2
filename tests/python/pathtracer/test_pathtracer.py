@@ -10,8 +10,108 @@ import falcor2.testing.helpers as helpers
 import numpy as np
 from falcor2.rendernodes import (
     ReferencePathTracerNode,
+    SchedulingMode,
+    VisibilityRayMode,
     WRITE_GUIDE_INTERFACE,
 )
+
+
+def _standard_props(values: dict[str, object]) -> f2.Properties:
+    return f2.Properties(values)
+
+
+def _add_quad(
+    scene: f2.Scene,
+    z: float,
+    normal_z: float,
+    material: f2.Material,
+    size: float = 1.4,
+) -> None:
+    geom = scene.create_geometry(f2.StaticMeshGeometry)
+    h = size * 0.5
+    positions = np.array(
+        [
+            [-h, -h, z],
+            [h, -h, z],
+            [-h, h, z],
+            [h, h, z],
+        ],
+        dtype=np.float32,
+    )
+    normals = np.tile(np.array([0.0, 0.0, normal_z], dtype=np.float32), (4, 1))
+    tangents = np.tile(np.array([1.0, 0.0, 0.0], dtype=np.float32), (4, 1))
+    handedness = np.ones((4,), dtype=np.float32)
+    texcoords = np.array([[0, 0], [1, 0], [0, 1], [1, 1]], dtype=np.float32)
+    indices = (
+        np.array([[0, 1, 2], [2, 1, 3]], dtype=np.uint32)
+        if normal_z > 0.0
+        else np.array([[0, 2, 1], [2, 3, 1]], dtype=np.uint32)
+    )
+    geom.set_mesh_data(
+        positions=positions,
+        sub_mesh_indices=[indices],
+        normals=normals,
+        tangents=tangents,
+        handedness=handedness,
+        texcoords=texcoords,
+        name="quad",
+    )
+    entity = scene.create_entity()
+    instance = entity.create_component(f2.GeometryInstance)
+    instance.geometry = geom
+    instance.materials = [material]
+
+
+def _make_quad_camera(scene: f2.Scene, width: int = 8, height: int = 8) -> f2.Camera:
+    return helpers.create_test_camera(
+        scene,
+        width=width,
+        height=height,
+        fov_y=35,
+        position=spy.float3(0.0, 0.0, -2.0),
+        rotation=spy.math.quat_from_look_at(spy.float3(0.0, 0.0, 1.0), spy.float3(0.0, 1.0, 0.0)),
+    )
+
+
+def _render_mean(
+    device: spy.Device,
+    scene: f2.Scene,
+    camera: f2.Camera,
+    *,
+    iterations: int = 1,
+    enable_nee: bool = False,
+    enable_mis: bool = True,
+    enable_environment_light: bool = False,
+    env_map_as_background: bool = False,
+    max_depth: int = 3,
+    visibility_ray_mode: VisibilityRayMode | None = None,
+) -> np.ndarray:
+    scene.update()
+    node = ReferencePathTracerNode.create(device)
+    node.output_spec = f2.ContainerSpec.texture2d(spy.Format.rgba32_float)
+    node.enable_nee = enable_nee
+    node.enable_mis = enable_mis
+    node.enable_analytic_lights = False
+    node.enable_environment_light = enable_environment_light
+    node.max_depth = max_depth
+    if visibility_ray_mode is not None:
+        node.visibility_ray_mode = visibility_ray_mode
+    node.env_map_as_background = env_map_as_background
+    node.background_color = spy.float3(0.0, 0.0, 0.0)
+
+    total = None
+    for iteration in range(iterations):
+        image, _ = node(
+            scene,
+            camera,
+            iteration=iteration,
+            subpixel_offset=spy.float2(0.0, 0.0),
+            subpixel_random_jitter=0.0,
+        )
+        data = image.to_numpy()[..., :3]
+        total = data if total is None else total + data
+    assert total is not None
+    return total / float(iterations)
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
@@ -30,6 +130,293 @@ def test_pathtracer_render_with_geometry(
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_pathtracer_trace_ray_visibility_render(
+    device_type: spy.DeviceType, device: spy.Device, helmet_scene: f2.Scene
+) -> None:
+    """The explicit visibility ray type links and renders on every RT backend."""
+    node = ReferencePathTracerNode.create(device)
+    node.visibility_ray_mode = VisibilityRayMode.trace_ray
+    node.enable_nee = True
+    camera = helpers.create_test_camera(helmet_scene, width=32, height=32, fov_y=45)
+
+    color, _ = node(helmet_scene, camera, subpixel_random_jitter=0.0)
+    data = color.to_numpy()
+
+    assert np.isfinite(data).all()
+    assert data.max() > 0.0
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_pathtracer_visibility_modes_match_when_ray_query_is_supported(
+    device_type: spy.DeviceType, device: spy.Device, helmet_scene: f2.Scene
+) -> None:
+    if not device.has_feature(spy.Feature.ray_query):
+        pytest.skip("Ray queries are not supported by this device")
+
+    camera = helpers.create_test_camera(helmet_scene, width=16, height=16, fov_y=45)
+    images = []
+    for mode in (VisibilityRayMode.ray_query, VisibilityRayMode.trace_ray):
+        node = ReferencePathTracerNode.create(device)
+        node.visibility_ray_mode = mode
+        node.enable_nee = True
+        color, _ = node(helmet_scene, camera, subpixel_random_jitter=0.0)
+        images.append(color.to_numpy())
+
+    np.testing.assert_allclose(images[0], images[1], rtol=1e-4, atol=1e-5)
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_pathtracer_ser_scheduler_render_when_supported(
+    device_type: spy.DeviceType, device: spy.Device, helmet_scene: f2.Scene
+) -> None:
+    """The SER scheduler links and renders when the device exposes SER."""
+    if not device.has_feature(spy.Feature.shader_execution_reordering):
+        pytest.skip("SER is not supported by this device")
+
+    camera = helpers.create_test_camera(helmet_scene, width=32, height=32, fov_y=45)
+    images = []
+    for mode in (SchedulingMode.simple, SchedulingMode.ser):
+        node = ReferencePathTracerNode.create(device)
+        node.scheduling_mode = mode
+        color, _ = node(helmet_scene, camera, subpixel_random_jitter=0.0)
+        images.append(color.to_numpy())
+
+    assert np.isfinite(images[1]).all()
+    assert images[1].max() > 0.0
+    np.testing.assert_allclose(images[0], images[1], rtol=1e-4, atol=1e-5)
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_pathtracer_double_sided_backfaces_render(
+    device_type: spy.DeviceType, device: spy.Device
+) -> None:
+    def render_backface(double_sided: bool) -> np.ndarray:
+        scene = f2.Scene.create(device)
+        material = scene.create_material(
+            f2.StandardMaterial,
+            _standard_props(
+                {
+                    "base_color_factor": spy.float3(0.0, 0.0, 0.0),
+                    "emissive_factor": spy.float3(1.0, 0.7, 0.4),
+                    "double_sided": double_sided,
+                }
+            ),
+        )
+        _add_quad(scene, z=0.0, normal_z=1.0, material=material)
+        camera = _make_quad_camera(scene)
+        return _render_mean(device, scene, camera, max_depth=1)
+
+    single_sided = render_backface(False)
+    double_sided = render_backface(True)
+
+    assert np.isfinite(single_sided).all()
+    assert np.isfinite(double_sided).all()
+    assert single_sided.max() < 1e-4
+    assert double_sided.max() > 0.1
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_pathtracer_transmission_nee_sees_lower_hemisphere_light(
+    device_type: spy.DeviceType, device: spy.Device
+) -> None:
+    def render_transmission(diffuse_transmission: float) -> np.ndarray:
+        scene = f2.Scene.create(device)
+        surface = scene.create_material(
+            f2.StandardMaterial,
+            _standard_props(
+                {
+                    "base_color_factor": spy.float3(1.0, 1.0, 1.0),
+                    "roughness_factor": 1.0,
+                    "transmission_factor": spy.float3(1.0, 1.0, 1.0),
+                    "diffuse_transmission_factor": diffuse_transmission,
+                    "thin_walled": True,
+                    "double_sided": True,
+                }
+            ),
+        )
+        emitter = scene.create_material(
+            f2.StandardMaterial,
+            _standard_props(
+                {
+                    "base_color_factor": spy.float3(0.0, 0.0, 0.0),
+                    "emissive_factor": spy.float3(4.0, 4.0, 4.0),
+                    "double_sided": True,
+                }
+            ),
+        )
+        _add_quad(scene, z=0.0, normal_z=-1.0, material=surface)
+        _add_quad(scene, z=0.8, normal_z=-1.0, material=emitter)
+        camera = _make_quad_camera(scene)
+        return _render_mean(device, scene, camera, iterations=4, enable_nee=True, max_depth=2)
+
+    opaque = render_transmission(0.0)
+    transmitted = render_transmission(1.0)
+
+    assert np.isfinite(opaque).all()
+    assert np.isfinite(transmitted).all()
+    assert transmitted.mean() > opaque.mean() + 1e-3
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_pathtracer_environment_direct_hit_mis_is_finite(
+    device_type: spy.DeviceType, device: spy.Device
+) -> None:
+    scene = f2.Scene.create(device)
+    material = scene.create_material(
+        f2.StandardMaterial,
+        _standard_props(
+            {
+                "base_color_factor": spy.float3(1.0, 1.0, 1.0),
+                "roughness_factor": 1.0,
+                "double_sided": True,
+            }
+        ),
+    )
+    _add_quad(scene, z=0.0, normal_z=-1.0, material=material)
+    env_entity = scene.create_entity()
+    env_map = env_entity.create_component(f2.EnvMapLight)
+    env_map["env_map_path"] = "data/assets/envmaps/aerodynamics_workshop_512.hdr"
+
+    camera = _make_quad_camera(scene)
+    image = _render_mean(
+        device,
+        scene,
+        camera,
+        iterations=8,
+        enable_nee=True,
+        enable_environment_light=True,
+        max_depth=2,
+    )
+
+    assert np.isfinite(image).all()
+    assert image.mean() > 1e-4
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_pathtracer_multiple_environment_lights_sum_background(
+    device_type: spy.DeviceType, device: spy.Device
+) -> None:
+    expected = np.array([0.25, 0.5, 0.75], dtype=np.float32)
+    scene = f2.Scene.create(device)
+
+    distant_entity = scene.create_entity()
+    distant_light = distant_entity.create_component(f2.DistantLight)
+    distant_light.radiance = spy.float3(0.25, 0.0, 0.0)
+    distant_light.cutoff_angle = 180.0
+
+    constant_entity = scene.create_entity()
+    constant_light = constant_entity.create_component(f2.ConstantLight)
+    constant_light.radiance = spy.float3(0.0, 0.5, 0.75)
+
+    camera = _make_quad_camera(scene)
+    image = _render_mean(
+        device,
+        scene,
+        camera,
+        enable_environment_light=True,
+        env_map_as_background=True,
+        max_depth=1,
+    )
+
+    np.testing.assert_allclose(image, np.broadcast_to(expected, image.shape), rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_pathtracer_multiple_environment_lights_nee_mis_matches_order_and_reference(
+    device_type: spy.DeviceType, device: spy.Device
+) -> None:
+    scene = f2.Scene.create(device)
+    material = scene.create_material(
+        f2.StandardMaterial,
+        _standard_props(
+            {
+                "base_color_factor": spy.float3(1.0, 1.0, 1.0),
+                "roughness_factor": 1.0,
+                "double_sided": True,
+            }
+        ),
+    )
+    _add_quad(scene, z=0.0, normal_z=-1.0, material=material)
+
+    lights = []
+    for radiance in (spy.float3(1.0, 0.0, 0.0), spy.float3(0.0, 1.0, 0.0)):
+        entity = scene.create_entity()
+        light = entity.create_component(f2.ConstantLight)
+        light.radiance = radiance
+        lights.append(light)
+
+    camera = _make_quad_camera(scene)
+
+    def render() -> np.ndarray:
+        return _render_mean(
+            device,
+            scene,
+            camera,
+            iterations=8,
+            enable_nee=True,
+            enable_mis=True,
+            enable_environment_light=True,
+            max_depth=2,
+        )
+
+    combined = render()
+    lights[0].radiance = spy.float3(0.0, 1.0, 0.0)
+    lights[1].radiance = spy.float3(1.0, 0.0, 0.0)
+    reordered = render()
+    lights[0].radiance = spy.float3(1.0, 1.0, 0.0)
+    lights[1].active = False
+    reference = render()
+
+    assert np.isfinite(combined).all()
+    assert np.isfinite(reordered).all()
+    assert np.isfinite(reference).all()
+    np.testing.assert_allclose(combined, reordered, rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(combined[..., 0], combined[..., 1], rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(
+        combined.mean(axis=(0, 1)),
+        reference.mean(axis=(0, 1)),
+        rtol=0.2,
+        atol=0.02,
+    )
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_pathtracer_delta_reflection_environment_with_nee_without_mis(
+    device_type: spy.DeviceType, device: spy.Device
+) -> None:
+    scene = f2.Scene.create(device)
+    material = scene.create_material(
+        f2.StandardMaterial,
+        _standard_props(
+            {
+                "base_color_factor": spy.float3(1.0, 1.0, 1.0),
+                "metallic_factor": 1.0,
+                "roughness_factor": 0.0,
+                "double_sided": True,
+            }
+        ),
+    )
+    _add_quad(scene, z=0.0, normal_z=-1.0, material=material)
+    env_entity = scene.create_entity()
+    env_map = env_entity.create_component(f2.EnvMapLight)
+    env_map["env_map_path"] = "data/assets/envmaps/aerodynamics_workshop_512.hdr"
+
+    camera = _make_quad_camera(scene)
+    image = _render_mean(
+        device,
+        scene,
+        camera,
+        enable_nee=True,
+        enable_mis=False,
+        enable_environment_light=True,
+        max_depth=2,
+    )
+
+    assert np.isfinite(image).all()
+    assert image.mean() > 1e-4
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pathtracer_settings_change(device_type: spy.DeviceType, device: spy.Device) -> None:
     """Changing settings updates constants dict."""
     pt = ReferencePathTracerNode.create(device)
@@ -37,6 +424,39 @@ def test_pathtracer_settings_change(device_type: spy.DeviceType, device: spy.Dev
     assert pt._constants["ENABLE_NEE"] == True
     pt.max_depth = 5
     assert pt._constants["MAX_DEPTH"] == 5
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_pathtracer_scheduler_and_visibility_modes(
+    device_type: spy.DeviceType, device: spy.Device
+) -> None:
+    node = ReferencePathTracerNode.create(device)
+
+    assert node.scheduling_mode == SchedulingMode.simple
+    expected_visibility_mode = (
+        VisibilityRayMode.ray_query
+        if device.has_feature(spy.Feature.ray_query)
+        else VisibilityRayMode.trace_ray
+    )
+    assert node.visibility_ray_mode == expected_visibility_mode
+    assert node._constants["VISIBILITY_RAY_MODE"] == int(expected_visibility_mode)
+
+    node.visibility_ray_mode = VisibilityRayMode.trace_ray
+    assert node._constants["VISIBILITY_RAY_MODE"] == 1
+
+    if device.has_feature(spy.Feature.ray_query):
+        node.visibility_ray_mode = VisibilityRayMode.ray_query
+        assert node._constants["VISIBILITY_RAY_MODE"] == 0
+    else:
+        with pytest.raises(RuntimeError, match="Ray-query visibility"):
+            node.visibility_ray_mode = VisibilityRayMode.ray_query
+
+    if device.has_feature(spy.Feature.shader_execution_reordering):
+        node.scheduling_mode = SchedulingMode.ser
+        assert node._constants["SCHEDULING_MODE"] == int(SchedulingMode.ser)
+    else:
+        with pytest.raises(RuntimeError, match="SER scheduling"):
+            node.scheduling_mode = SchedulingMode.ser
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
@@ -288,6 +708,7 @@ def test_pathtracer_dlss_rr_guides_with_geometry(
     assert roughness.max() <= 1.0
     assert depth.max() >= 0.0
     assert specular_hit_distance.min() >= 0.0
+    assert specular_hit_distance.max() > 0.0
     assert np.abs(motion_vectors).max() < 1e-3
 
     previous_camera_position = spy.float3(0.2, 0.0, 4.0)

@@ -24,12 +24,14 @@ set(falcor2_ext_sources
     denoisers/optix_denoiser.cpp
     denoisers/optix_types.cpp
     importers/gltf_importer.cpp
+    importers/importer.cpp
     importers/importer_types.cpp
     importers/usd_importer.cpp
     render/mesh.cpp
     render/ray_tracing_setup.cpp
     render/mdl_discovery.cpp
     render/materialx_codegen.cpp
+    render/python_scene_object.h
     render/scene.cpp
     render/texture_manager.cpp
     render/transform.cpp
@@ -46,6 +48,12 @@ set(falcor2_ext_sources
     utils/sampling/distribution_1d.cpp
 )
 
+if(FALCOR_BUILD_TESTS)
+    list(APPEND falcor2_ext_sources
+        testing/nanobind_reflector.cpp
+    )
+endif()
+
 if(FALCOR_ENABLE_PCH)
     target_precompile_headers(falcor2_ext
         PRIVATE
@@ -59,6 +67,7 @@ nanobind_add_module(falcor2_ext NB_STATIC LTO
 
 target_include_directories(falcor2_ext PRIVATE .)
 target_link_libraries(falcor2_ext PRIVATE falcor2)
+target_compile_definitions(falcor2_ext PRIVATE FALCOR_BUILD_TESTS=$<BOOL:${FALCOR_BUILD_TESTS}>)
 
 set_target_properties(falcor2_ext PROPERTIES
     OUTPUT_NAME falcor2_ext

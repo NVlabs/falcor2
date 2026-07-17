@@ -392,8 +392,7 @@ float3 eval_environment_miss(
     light_sample.distance = float.MAX;
     light_sample.emitter_type = EmitterType::environment;
 
-    let light = g_scene.light_system.get_light(g_scene.light_system.environment_light_id);
-    float3 env_radiance = light.eval_direction(previous_si, light_sample);
+    float3 env_radiance = g_scene.light_system.eval_environment_direction(previous_si, light_sample);
     float env_pdf = light_sampler.eval_direction_pdf(previous_si, light_sample);
     let use_sample_mis = direct_lighting_uses_mis(direct_lighting_mode) && !previous_delta && previous_pdf > 0.0;
     float w = use_sample_mis ? mis_heuristic(1, previous_pdf, 1, env_pdf) : 1.0;
@@ -569,7 +568,7 @@ void sphere_tracing_kernel(
             if (!use_direct_hits || bounce + 1 >= MAX_BOUNCES)
                 break;
 
-            BSDFSample sample = {};
+            MaterialSample sample = {};
             if (!material_instance.sample(si, sg, sample))
                 break;
             if (!is_nonzero_finite_float3(sample.weight) || !is_finite_float3(sample.wo_ws))
@@ -592,7 +591,7 @@ void sphere_tracing_kernel(
 
             previous_si = si;
             previous_pdf = sample.pdf;
-            previous_delta = sample.has_lobe(LobeTypes::delta);
+            previous_delta = sample.has_flag(BSDFFlags::delta);
             has_previous_scatter = true;
             ray = Ray(offset_sphere_scatter_origin(si, sample.wo_ws), normalize(sample.wo_ws));
         }
@@ -738,7 +737,7 @@ void material_visualizer_path_log_kernel(
     }
 
     if (use_direct_hits) {
-        BSDFSample sample = {};
+        MaterialSample sample = {};
         const bool sampled_bsdf = material_instance.sample(si, sg, sample);
         material_visualizer_store_path_log4(path_log, 18u, float4(sample.wo_ws, sampled_bsdf ? 1.0 : 0.0));
         material_visualizer_store_path_log4(path_log, 19u, float4(sample.weight, 0.0));
@@ -747,9 +746,9 @@ void material_visualizer_path_log_kernel(
             20u,
             float4(
                 sample.pdf,
-                sample.has_lobe(LobeTypes::delta) ? 1.0 : 0.0,
-                sample.has_lobe(LobeTypes::reflection) ? 1.0 : 0.0,
-                sample.has_lobe(LobeTypes::transmission) ? 1.0 : 0.0
+                sample.has_flag(BSDFFlags::delta) ? 1.0 : 0.0,
+                sample.has_flag(BSDFFlags::reflection) ? 1.0 : 0.0,
+                sample.has_flag(BSDFFlags::transmission) ? 1.0 : 0.0
             )
         );
         print(
@@ -758,9 +757,9 @@ void material_visualizer_path_log_kernel(
             sample.wo_ws,
             sample.weight,
             sample.pdf,
-            sample.has_lobe(LobeTypes::delta),
-            sample.has_lobe(LobeTypes::reflection),
-            sample.has_lobe(LobeTypes::transmission)
+            sample.has_flag(BSDFFlags::delta),
+            sample.has_flag(BSDFFlags::reflection),
+            sample.has_flag(BSDFFlags::transmission)
         );
 
         if (sampled_bsdf && is_nonzero_finite_float3(sample.weight) && is_finite_float3(sample.wo_ws)) {
@@ -775,7 +774,7 @@ void material_visualizer_path_log_kernel(
                         * eval_environment_miss(si,
                                                 next_ray.dir,
                                                 sample.pdf,
-                                                sample.has_lobe(LobeTypes::delta),
+                                                sample.has_flag(BSDFFlags::delta),
                                                 direct_lighting_mode);
                     if (is_finite_float3(miss_contribution))
                         radiance += miss_contribution;
@@ -909,7 +908,7 @@ void sphere_tracing_scene_material_kernel(
             if (!use_direct_hits || bounce + 1 >= MAX_BOUNCES)
                 break;
 
-            BSDFSample sample = {};
+            MaterialSample sample = {};
             if (!material_instance.sample(si, sg, sample))
                 break;
             if (!is_nonzero_finite_float3(sample.weight) || !is_finite_float3(sample.wo_ws))
@@ -932,7 +931,7 @@ void sphere_tracing_scene_material_kernel(
 
             previous_si = si;
             previous_pdf = sample.pdf;
-            previous_delta = sample.has_lobe(LobeTypes::delta);
+            previous_delta = sample.has_flag(BSDFFlags::delta);
             has_previous_scatter = true;
             ray = Ray(offset_sphere_scatter_origin(si, sample.wo_ws), normalize(sample.wo_ws));
         }
@@ -1109,7 +1108,7 @@ void sphere_tracing_first_hit_aov_kernel(
             if (!use_direct_hits || bounce + 1 >= MAX_BOUNCES)
                 break;
 
-            BSDFSample sample = {};
+            MaterialSample sample = {};
             if (!material_instance.sample(si, sg, sample))
                 break;
             if (!is_nonzero_finite_float3(sample.weight) || !is_finite_float3(sample.wo_ws))
@@ -1132,15 +1131,15 @@ void sphere_tracing_first_hit_aov_kernel(
 
             if (bounce == 0) {
                 first_sample_may_hit_ibl = true;
-                let sample_is_reflection = sample.has_lobe(LobeTypes::reflection);
-                let sample_is_transmission = sample.has_lobe(LobeTypes::transmission);
-                let sample_is_delta = sample.has_lobe(LobeTypes::delta);
+                let sample_is_reflection = sample.has_flag(BSDFFlags::reflection);
+                let sample_is_transmission = sample.has_flag(BSDFFlags::transmission);
+                let sample_is_delta = sample.has_flag(BSDFFlags::delta);
                 first_sample_non_delta_reflection = sample_is_reflection && !sample_is_delta && !sample_is_transmission;
             }
 
             previous_si = si;
             previous_pdf = sample.pdf;
-            previous_delta = sample.has_lobe(LobeTypes::delta);
+            previous_delta = sample.has_flag(BSDFFlags::delta);
             has_previous_scatter = true;
             ray = Ray(offset_sphere_scatter_origin(si, sample.wo_ws), normalize(sample.wo_ws));
         }
@@ -1318,8 +1317,7 @@ void dense_env_direct_kernel(
         if (use_env_importance) {
             DirectionSample light_sample = {};
             float3 light_weight = {};
-            let light = g_scene.light_system.get_light(g_scene.light_system.environment_light_id);
-            if (!light.sample_direction(si, sg, light_sample, light_weight))
+            if (!light_sampler.sample_environment_direction(si, sg, light_sample, light_weight))
                 continue;
             wo_ws = light_sample.dir_ws;
             weighted_env_radiance = light_weight / float(clamped_light_count);
@@ -1643,10 +1641,10 @@ void delta_only_kernel(
             }
             let material_instance = material.setup_material_instance(si, lod_sampler, MaterialInstanceHints::none);
 
-            BSDFSample sample = {};
+            MaterialSample sample = {};
             if (!material_instance.sample(si, sg, sample))
                 break;
-            if (!sample.has_lobe(LobeTypes::delta))
+            if (!sample.has_flag(BSDFFlags::delta))
                 break;
             if (!is_nonzero_finite_float3(sample.weight) || !is_finite_float3(sample.wo_ws))
                 break;
@@ -1736,13 +1734,13 @@ void material_instance_eval_sample_consistency_kernel(
         if (sample_index >= sample_count)
             break;
 
-        BSDFSample sample = {};
+        MaterialSample sample = {};
         if (!material_instance.sample(si, sg, sample)) {
             counters.add(1, 1);
             continue;
         }
 
-        if (sample.has_lobe(LobeTypes::delta)) {
+        if (sample.has_flag(BSDFFlags::delta)) {
             if (is_finite_float3(sample.weight)) {
                 let delta_luma = dot(max(sample.weight, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
                 sum_delta_weight_luma += delta_luma;
@@ -1898,13 +1896,13 @@ void material_instance_sample_histogram_kernel(
         if (sample_index >= sample_count)
             break;
 
-        BSDFSample sample = {};
+        MaterialSample sample = {};
         if (!material_instance.sample(si, sg, sample)) {
             counters.add(1, 1);
             continue;
         }
 
-        if (sample.has_lobe(LobeTypes::delta)) {
+        if (sample.has_flag(BSDFFlags::delta)) {
             counters.add(2, 1);
             continue;
         }
@@ -2110,7 +2108,7 @@ void full_sphere_sample_histogram_kernel(
         // MX139 histogram probes.
         var sg = SampleGenerator(block_cipher_tea(seed, sample_index, 8).x);
 
-        BSDFSample sample = {};
+        MaterialSample sample = {};
         if (!material_instance.sample(si, sg, sample)) {
             counters.add(1, 1);
             continue;
@@ -2126,7 +2124,7 @@ void full_sphere_sample_histogram_kernel(
             continue;
         }
 
-        if (sample.has_lobe(LobeTypes::delta)) {
+        if (sample.has_flag(BSDFFlags::delta)) {
             let delta_luma = dot(max(sample.weight, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
             delta_sum += delta_luma;
             delta_max = max(delta_max, delta_luma);

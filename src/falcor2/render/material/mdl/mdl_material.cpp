@@ -306,8 +306,7 @@ void MDLMaterial::run_codegen()
     /// We are rebuilding the material.
     mark_dirty(DirtyFlags::resources | DirtyFlags::properties);
     m_slang_module.reset();
-    m_library_path_resolver.reset(new AssetResolver());
-    m_library_path_resolver->add_search_path(m_mdl_library_path);
+    m_library_path_resolver = make_ref<AssetResolver>(m_mdl_library_path);
 
     FALCOR_CHECK(!m_mdl_library_path.empty(), "MDL library path must not be empty");
     FALCOR_CHECK(!m_mdl_material_name.empty(), "MDL material name must not be empty");
@@ -521,7 +520,7 @@ struct ${NAME}_Instance : IMaterialInstance
         return result;
     }
 
-    bool sample<S : ISampleGenerator>(const SurfaceInteraction si, inout S sg, out BSDFSample result)
+    bool sample<S : ISampleGenerator>(const SurfaceInteraction si, inout S sg, out MaterialSample sample)
     {
         ${NAME}_ns::Bsdf_sample_data sample_data = {};
         sample_data.ior1 = ior1;          // IOR current medium
@@ -532,23 +531,23 @@ struct ${NAME}_Instance : IMaterialInstance
         ${NAME}_ns::gMDLMaterialData = data;
         ${NAME}_ns::surface_scattering_sample(sample_data, state);
 
-        result = {};
-        result.wo_ws = sample_data.k2;
-        result.weight = sample_data.bsdf_over_pdf;
-        result.pdf = sample_data.pdf;
+        sample = {};
+        sample.wo_ws = sample_data.k2;
+        sample.weight = sample_data.bsdf_over_pdf;
+        sample.pdf = sample_data.pdf;
 
         if (sample_data.event_type == BSDF_EVENT_DIFFUSE_REFLECTION)
-            result.lobe_types = LobeTypes::diffuse_reflection;
+            sample.flags = BSDFFlags::diffuse_reflection;
         else if (sample_data.event_type == BSDF_EVENT_DIFFUSE_TRANSMISSION)
-            result.lobe_types = LobeTypes::diffuse_transmission;
+            sample.flags = BSDFFlags::diffuse_transmission;
         else if (sample_data.event_type == BSDF_EVENT_GLOSSY_REFLECTION)
-            result.lobe_types = LobeTypes::glossy_reflection;
+            sample.flags = BSDFFlags::glossy_reflection;
         else if (sample_data.event_type == BSDF_EVENT_GLOSSY_TRANSMISSION)
-            result.lobe_types = LobeTypes::glossy_transmission;
+            sample.flags = BSDFFlags::glossy_transmission;
         else if (sample_data.event_type == BSDF_EVENT_SPECULAR_REFLECTION)
-            result.lobe_types = LobeTypes::delta_reflection;
+            sample.flags = BSDFFlags::delta_reflection;
         else if (sample_data.event_type == BSDF_EVENT_SPECULAR_TRANSMISSION)
-            result.lobe_types = LobeTypes::delta_transmission;
+            sample.flags = BSDFFlags::delta_transmission;
 
         return sample_data.event_type != 0;
     }
@@ -573,25 +572,48 @@ struct ${NAME}_Instance : IMaterialInstance
 
         ${NAME}_ns::gMDLMaterialData = data;
         ${NAME}_ns::Bsdf_auxiliary_data aux = {};
-        ${NAME}_ns::surface_scattering_auxiliary(aux, state);
+
+        aux.ior1 = ior1; // IOR current medium
+        aux.ior2 = ior2; // IOR other side
+        aux.k1 = si.wi_ws; // outgoing direction
 
 #if MDL_DF_HANDLE_SLOT_MODE == 0
+        ${NAME}_ns::surface_scattering_auxiliary(aux, state);
         result.guide_normal = aux.normal;
         result.diffuse_reflection_albedo = aux.albedo_diffuse;
         result.specular_reflection_albedo = aux.albedo_glossy;
         result.roughness = aux.roughness.x * 0.5f + aux.roughness.y * 0.5f;
 #else
-        // TODO: Weighted average for the multi-lobe case.
-        result.guide_normal = aux.normal[0];
-        result.diffuse_reflection_albedo = aux.albedo_diffuse[0];
-        result.specular_reflection_albedo = aux.albedo_glossy[0];
-        result.roughness = aux.roughness[0].x * 0.5f + aux.roughness[0].y * 0.5f;
+        float2 roughness = float2(0.f);
+        float roughness_weight = 0.f;
+        uint surface_scatter_bsdf_count = ${NAME}_ns::gMDLMaterialData.surface_scatter_bsdf_count;
+        for (uint offset = 0; offset < surface_scatter_bsdf_count; offset += MDL_DF_HANDLE_SLOT_MODE) {
+            aux.handle_offset = offset;
+            ${NAME}_ns::surface_scattering_auxiliary(aux, state);
+            for (uint lobe = 0;
+                 (lobe < MDL_DF_HANDLE_SLOT_MODE) && ((offset + lobe) < surface_scatter_bsdf_count);
+                 ++lobe) {
+                result.guide_normal += aux.normal[lobe];
+                result.diffuse_reflection_albedo += aux.albedo_diffuse[lobe];
+                result.specular_reflection_albedo += aux.albedo_glossy[lobe];
+                roughness += aux.roughness[lobe].xy * aux.roughness[lobe].z;
+                roughness_weight += aux.roughness[lobe].z;
+            }
+        }
+        if (roughness_weight > 0.f)
+            result.roughness = dot(roughness / roughness_weight, float2(0.5f));
 #endif
 
-    return result;
+        if (any(isnan(result.guide_normal)) || any(isinf(result.guide_normal))
+            || dot(result.guide_normal, result.guide_normal) == 0.f)
+            result.guide_normal = si.shading_frame_ws.normal;
+        else
+            result.guide_normal = normalize(result.guide_normal);
+
+        return result;
     }
 
-    LobeTypes get_lobe_types(const SurfaceInteraction si) { return LobeTypes::all; }
+    BSDFFlags get_lobe_types(const SurfaceInteraction si) { return BSDFFlags::all; }
 
     override Optional<ExtraBsdfProperties> collect_extra_bsdf_properties(const SurfaceInteraction si, const float3 wo)
     {

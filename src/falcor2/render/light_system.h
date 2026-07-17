@@ -32,13 +32,21 @@ public:
     std::span<const sgl::TypeConformance> required_type_conformances() const { return m_type_conformances; }
 
 private:
+    void create_kernels();
+
     ComponentCollection& m_components;
+
+    ref<sgl::ComputeKernel> m_compute_environment_light_powers_kernel;
+    ref<sgl::Buffer> m_environment_light_power_buffer;
+
     std::vector<sgl::TypeConformance> m_type_conformances;
     ManagedVector<shared::LightData> m_light_data;
     uint32_t m_light_count{0};
     uint32_t m_analytic_light_count{0};
     shared::LightID m_environment_light_id{shared::LightID::invalid};
+    uint32_t m_environment_light_count{0};
     ref<AliasTable1D> m_analytic_light_selection_distribution;
+    ref<AliasTable1D> m_environment_light_selection_distribution;
 };
 
 } // namespace falcor

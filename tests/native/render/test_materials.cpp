@@ -18,7 +18,6 @@
 #include <sstream>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 using namespace falcor;
@@ -524,31 +523,6 @@ TEST_CASE_GPU("scene materialx 1.39 static closure pruning property is removed")
         CHECK(contains(e.what(), "mtlx_optimize_graph::closure_pruning"));
     }
     CHECK(rejected);
-}
-
-TEST_CASE_GPU("scene materialx 1.39 defaults to bsdf_mix layering")
-{
-    if (ctx.device->type() == sgl::DeviceType::cuda) {
-        MESSAGE("Skipping MaterialX CUDA test because MaterialXMaterial is disabled on CUDA.");
-        return;
-    }
-
-    auto scene = Scene::create(ref(ctx.device));
-    const std::filesystem::path shader_path
-        = testing::get_case_temp_directory() / "materialx139_default_bsdf_mix_layering.slang";
-
-    Properties props;
-    props.set("mtlx_buffer", mx139_layered_property_update_shader());
-    props.set("mtlx_node_name", std::string("M"));
-    props.set("debug_write_shader_path", shader_path.string());
-
-    scene->create_material("MaterialXMaterial", props);
-    scene->update();
-
-    const std::string shader_source = read_text_file(shader_path);
-    REQUIRE(!shader_source.empty());
-    CHECK(contains(shader_source, "FlatRootBSDF"));
-    CHECK_FALSE(contains(shader_source, "MaterialInstance_Layered"));
 }
 
 TEST_CASE_GPU("scene materialx 1.39 geomprop ID properties reject mismatched lists")

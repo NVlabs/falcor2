@@ -25,7 +25,10 @@
 #include "falcor2/render/component/camera.h"
 #include "falcor2/render/component/geometry_instance.h"
 #include "falcor2/render/component/light.h"
+#include "falcor2/importers/importer.h"
 #include "falcor2/importers/importer_types.h"
+
+#include "render/python_scene_object.h"
 
 #include "nbdictionary.h"
 
@@ -157,35 +160,6 @@ class PySceneGlobals : public SceneGlobals {
     NB_TRAMPOLINE(SceneGlobals, 1);
     virtual void bind(sgl::ShaderCursor globals) const override { NB_OVERRIDE_PURE(bind, globals); }
 };
-
-/// Check if any of the bases of a Python class inherits from T.
-template<typename T>
-inline bool python_class_inherits_from(nb::handle cls)
-{
-    if (cls.is_none() || !cls.is_type())
-        return false;
-    if (cls.ptr() == nb::type<T>().ptr())
-        return true;
-    for (const auto& base : cls.attr("__bases__")) {
-        bool result = python_class_inherits_from<T>(base);
-        if (result)
-            return true;
-    }
-    return false;
-}
-
-/// Create an instance of a Python scene object class and add it to the scene.
-template<typename T>
-nb::object create_python_scene_object(Scene* scene, nb::type_object cls, std::optional<Properties> props = {})
-{
-    nb::object obj = cls.attr("__new__")(cls);
-    cls.attr("__init__")(obj);
-    T* scene_object = nb::cast<T*>(obj);
-    scene->_add_object<T>(ref<T>(scene_object));
-    if (props.has_value())
-        scene_object->set_properties(props.value());
-    return obj;
-}
 
 } // namespace falcor
 
@@ -417,6 +391,29 @@ FALCOR_PY_EXPORT(render_scene)
         .def_static(
             "create",
             [](ref<sgl::Device> device,
+               const Importer& importer,
+               std::optional<UVOrigin> uv_origin,
+               bool add_default_camera_best_view,
+               float camera_aspect)
+            {
+                return Scene::create(
+                    std::move(device),
+                    importer,
+                    uv_origin,
+                    add_default_camera_best_view,
+                    camera_aspect
+                );
+            },
+            "device"_a,
+            "importer"_a,
+            "uv_origin"_a.none() = nb::none(),
+            "add_default_camera_best_view"_a = false,
+            "camera_aspect"_a = 16.f / 9.f,
+            D(Scene, create_3)
+        )
+        .def_static(
+            "create",
+            [](ref<sgl::Device> device,
                const std::filesystem::path& path,
                bool recompute_normals,
                std::optional<UVOrigin> uv_origin)
@@ -427,7 +424,7 @@ FALCOR_PY_EXPORT(render_scene)
             "path"_a,
             "recompute_normals"_a = false,
             "uv_origin"_a.none() = nb::none(),
-            D(Scene, create_3)
+            D(Scene, create_4)
         )
         .DEF_PROP_RO(Scene, device)
         .DEF_PROP_RO(Scene, texture_manager)

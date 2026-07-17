@@ -106,7 +106,7 @@ struct LayeringDesc {
         bool has_mx139_microfacet_selection = false;
         int fresnel_selection = 0;
         int scatter_selection = 0;
-        ClosureRef copy_source_index;
+        ClosureRef copy_source_ref;
     };
 
     struct CombinerDesc {
@@ -115,7 +115,7 @@ struct LayeringDesc {
         std::array<ClosureRef, 2> children = {ClosureRef::none(), ClosureRef::none()};
         std::string node_path;
         std::string node_impl;
-        ClosureRef copy_source_index;
+        ClosureRef copy_source_ref;
     };
 
     std::vector<BsdfDesc> bsdfs;

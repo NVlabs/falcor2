@@ -190,8 +190,8 @@ public:
                 "mtlx_layering_mode",
                 &MaterialXMaterial::m_mtlx_layering_mode,
                 "Mx139 layering mode: closure_tree or bsdf_mix. Performance guidance from the 2026-06 MX139 sweep: "
-                "use bsdf_mix for the balanced default.",
-                reflection::default_value(materialx::LayeringMode::bsdf_mix),
+                "use bsdf_mix for the balanced public default.",
+                reflection::default_value(materialx::default_layering_mode()),
                 reflection::on_change(&MaterialXMaterial::require_codegen),
                 reflection::UIFlags::advanced
             )
@@ -286,7 +286,7 @@ private:
     std::string m_mtlx_transmissive_bsdfs;
     bool m_mtlx_auto_transmission{true};
     materialx::OptimizeGraphFlags m_mtlx_optimize_graph{materialx::OptimizeGraphFlags::closure_pruning};
-    materialx::LayeringMode m_mtlx_layering_mode{materialx::LayeringMode::bsdf_mix};
+    materialx::LayeringMode m_mtlx_layering_mode{materialx::default_layering_mode()};
     materialx::CompensationMode m_mtlx_compensation{materialx::CompensationMode::turquin_analytic};
     bool m_mtlx_autogamma{false};
     std::string m_mtlx_target_color_space_override;

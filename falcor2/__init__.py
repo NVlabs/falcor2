@@ -7,6 +7,7 @@ import os
 import sys
 from importlib import import_module as _import
 
+
 _import("slangpy")
 
 if os.name == "nt":
@@ -24,11 +25,8 @@ if os.name == "nt":
         print("Cannot locate falcor2.dll.")
         sys.exit(1)
 
-del os, sys
-
 _import("falcor2.falcor2_ext")
 _import("falcor2.extensions")
-del _import
 
 from falcor2.rendergraph import Container, ContainerSpec, RenderNode  # noqa: E402,F401
 
@@ -44,3 +42,6 @@ from falcor2.editor import (  # noqa: E402,F401
     load_scene,
     save_image,
 )
+
+
+del os, sys, _import

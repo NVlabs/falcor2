@@ -524,30 +524,30 @@ std::unordered_map<std::string, BsdfNodeInfo> make_bsdf_node_map(const ProfileDe
 {
     return {
         {"IM_oren_nayar_diffuse_bsdf_genslangpt",
-         {profile.bsdf_type("OrenNayarDiffuse"), "LobeTypes::diffuse_reflection", false}},
+         {profile.bsdf_type("OrenNayarDiffuse"), "BSDFFlags::diffuse_reflection", false}},
         {"IM_burley_diffuse_bsdf_genslangpt",
-         {profile.bsdf_type("BurleyDiffuse"), "LobeTypes::diffuse_reflection", false}},
-        {"IM_translucent_bsdf_genslangpt", {profile.bsdf_type("Translucent"), "LobeTypes::diffuse_transmission", true}},
+         {profile.bsdf_type("BurleyDiffuse"), "BSDFFlags::diffuse_reflection", false}},
+        {"IM_translucent_bsdf_genslangpt", {profile.bsdf_type("Translucent"), "BSDFFlags::diffuse_transmission", true}},
         {"IM_subsurface_bsdf_genslangpt",
-         {profile.bsdf_type("SubsurfaceDiffuseFallback"), "LobeTypes::diffuse_reflection", false}},
-        {"IM_beer_bsdf_genslangpt", {profile.bsdf_type("Beer"), "LobeTypes::delta_transmission", false}},
+         {profile.bsdf_type("SubsurfaceDiffuseFallback"), "BSDFFlags::diffuse_reflection", false}},
+        {"IM_beer_bsdf_genslangpt", {profile.bsdf_type("Beer"), "BSDFFlags::delta_transmission", false}},
         {"IM_scratchconductor_brdf_genslangpt",
-         {profile.bsdf_type("ScratchConductor"), "LobeTypes::glossy_reflection", false}},
+         {profile.bsdf_type("ScratchConductor"), "BSDFFlags::glossy_reflection", false}},
         {"IM_dielectric_bsdf_genslangpt",
          {fresnel_bsdf_type(profile, desc, "Dielectric"),
-          "(LobeTypes::glossy_reflection | LobeTypes::glossy_transmission)",
+          "(BSDFFlags::glossy_reflection | BSDFFlags::glossy_transmission)",
           true}},
         {"IM_conductor_bsdf_genslangpt",
-         {fresnel_bsdf_type(profile, desc, "Conductor"), "LobeTypes::glossy_reflection", false}},
+         {fresnel_bsdf_type(profile, desc, "Conductor"), "BSDFFlags::glossy_reflection", false}},
         {"IM_generalized_schlick_bsdf_genslangpt",
          {fresnel_bsdf_type(profile, desc, "GeneralizedSchlick"),
-          "(LobeTypes::glossy_reflection | LobeTypes::glossy_transmission)",
+          "(BSDFFlags::glossy_reflection | BSDFFlags::glossy_transmission)",
           true}},
-        {"IM_sheen_bsdf_genslangpt", {profile.bsdf_type("Sheen"), "LobeTypes::glossy_reflection", false}},
+        {"IM_sheen_bsdf_genslangpt", {profile.bsdf_type("Sheen"), "BSDFFlags::glossy_reflection", false}},
         {"IM_chiang_hair_bsdf_genslangpt",
-         {profile.bsdf_type("ChiangHair"), "LobeTypes::glossy_curve", false, true, true}},
-        {k_surface_unlit_transparent_impl, {"MxSurfaceUnlitTransparentBSDF", "LobeTypes::delta_transmission", true}},
-        {k_mx139_simple_btdf_impl, {"MxSimpleBTDF", "LobeTypes::delta_transmission", true}},
+         {profile.bsdf_type("ChiangHair"), "BSDFFlags::glossy_curve", false, true, true}},
+        {k_surface_unlit_transparent_impl, {"MxSurfaceUnlitTransparentBSDF", "BSDFFlags::delta_transmission", true}},
+        {k_mx139_simple_btdf_impl, {"MxSimpleBTDF", "BSDFFlags::delta_transmission", true}},
     };
 }
 
@@ -663,7 +663,7 @@ void append_synthetic_opacity_mix(LayeringDesc& desc)
     transparent.node_path = "synthetic_opacity_transparent";
     transparent.node_impl = k_mx139_simple_btdf_impl;
     transparent.bsdf_type = "MxSimpleBTDF";
-    transparent.lobe_types = "LobeTypes::delta_transmission";
+    transparent.lobe_types = "BSDFFlags::delta_transmission";
     transparent.transmissive = true;
     transparent.through_material_transmissive = true;
     desc.bsdfs.push_back(std::move(transparent));

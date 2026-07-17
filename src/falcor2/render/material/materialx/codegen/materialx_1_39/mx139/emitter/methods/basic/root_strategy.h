@@ -95,6 +95,16 @@ struct RootStrategy {
     // for the selected basic-family root representation.
     virtual std::string build_collect_extra_text(const LayeringDesc& layering, const std::string& line_prefix) const
         = 0;
+
+    // Returns the material-instance collect_properties implementation for the
+    // selected basic-family root representation.
+    virtual std::string build_collect_properties_text(
+        const LayeringDesc& layering,
+        const std::string& line_prefix,
+        bool is_transmissive,
+        bool is_curve_scattering
+    ) const
+        = 0;
 };
 
 // Factory: the single dispatch point that selects a basic-family strategy.

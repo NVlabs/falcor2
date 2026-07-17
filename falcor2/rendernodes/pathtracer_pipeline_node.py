@@ -94,6 +94,18 @@ class PathTracerPipeline(RenderNode):
         """Request a history reset on the next rendered frame."""
         self._pending_reset = True
 
+    def reset(self, cmd: spy.CommandEncoder | None = None) -> None:
+        """Immediately clear accumulation and all camera-dependent temporal history."""
+        self._iteration = 0
+        self.accumulator.reset(cmd=cmd)
+        self.path_tracer.reset()
+        self.dlss_rr.reset()
+        self._last_scene_update_generation = None
+        self._last_camera_uniforms = None
+        self._last_dlss_key = None
+        self._last_enable_dlss_rr = self.enable_dlss_rr
+        self._pending_reset = False
+
     def _reset_accumulation(self, cmd: spy.CommandEncoder | None = None):
         """Reset accumulated color history for the normal path."""
         # TODO: We don't want to reset path tracer necessarily (as it is tracking prec camera - need to figure this out)

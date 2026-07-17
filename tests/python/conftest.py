@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from pathlib import Path
 import re
 import uuid
+import argparse
 from typing import Any
 
 import pytest
@@ -24,7 +25,7 @@ CRASHPAD_SUPPORT = spy.crashpad.is_supported()
 
 
 def pytest_addoption(parser: pytest.Parser):
-    """Add command line options for image testing."""
+    """Add command line options for testing."""
     parser.addoption(
         "--image-tests-generate",
         action="store_true",
@@ -55,10 +56,33 @@ def pytest_addoption(parser: pytest.Parser):
         default=False,
         help="Run all tests, including slow and image tests (equivalent to --slow --image-tests)",
     )
+    parser.addoption(
+        "--module-cache",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable the persistent module cache for test devices",
+    )
+    parser.addoption(
+        "--shader-cache",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable the persistent shader cache for test devices",
+    )
+    parser.addoption(
+        "--module-and-shader-cache-dir",
+        type=Path,
+        default=None,
+        help="Root directory for persistent test caches",
+    )
 
 
 def pytest_configure(config: pytest.Config):
     """Configure the image test plugin."""
+    helpers.configure_module_and_shader_cache(
+        module_cache_enabled=config.getoption("--module-cache"),
+        shader_cache_enabled=config.getoption("--shader-cache"),
+        cache_dir=config.getoption("--module-and-shader-cache-dir"),
+    )
     config.pluginmanager.register(ImageTestPlugin(config), "image_test_plugin")
     if CRASHPAD_SUPPORT and not os.environ.get("PYTEST_XDIST_WORKER"):
         crashpad.setup(CRASHPAD_KIND)

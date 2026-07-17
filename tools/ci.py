@@ -10,12 +10,15 @@ import sys
 import platform
 import argparse
 import subprocess
-from typing import Any, Optional
+from collections.abc import Sequence
+from typing import Any, Optional, Union
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 import tools.build as bt
 import tools.build_slang as bts
 from tools import crashpad
+
+Command = Union[str, Sequence[str]]
 
 
 class CommandError(RuntimeError):
@@ -37,6 +40,8 @@ INFO_ENV_VARS = (
     "CI_JOB_ID",
     "CI_JOB_NAME",
     "CI_JOB_STAGE",
+    "CI_MODULE_AND_SHADER_CACHE_DIR",
+    "CI_MODULE_CACHE",
     "CI_OS",
     "CI_PIPELINE_ID",
     "CI_PLATFORM",
@@ -46,6 +51,7 @@ INFO_ENV_VARS = (
     "CI_RUNNER_DESCRIPTION",
     "CI_RUNNER_ID",
     "CI_RUNNER_TAGS",
+    "CI_SHADER_CACHE",
     "CI_USE_CUSTOM_SLANG",
     "CONDA_DEFAULT_ENV",
     "CONDA_ENVS_DIRS",
@@ -57,6 +63,7 @@ INFO_ENV_VARS = (
     "PIP_CACHE_DIR",
     "PM_PACKAGES_ROOT",
     "PYTHONPATH",
+    "UPDATE_SLANGPY",
     "VCPKG_DEFAULT_BINARY_CACHE",
     "VCPKG_DOWNLOADS",
     "VULKAN_SDK",
@@ -77,6 +84,20 @@ def format_env_value(key: str, value: str) -> str:
     if any(fragment in key.upper() for fragment in SENSITIVE_ENV_FRAGMENTS):
         return "<redacted>"
     return value
+
+
+def parse_bool(value: Union[bool, str], env_var: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = value.strip().lower()
+    if normalized in ("1", "true", "on", "yes"):
+        return True
+    if normalized in ("0", "false", "off", "no"):
+        return False
+    raise ValueError(
+        f"Invalid value for {env_var}: {value!r}. "
+        "Expected one of: 1, 0, true, false, on, off, yes, no"
+    )
 
 
 def get_os():
@@ -122,15 +143,24 @@ def get_default_compiler():
 
 
 def run_command(
-    command: str, shell: bool = True, env: Optional[dict[str, str]] = None, fix_paths: bool = True
+    command: Command,
+    shell: bool = True,
+    env: Optional[dict[str, str]] = None,
+    fix_paths: bool = True,
 ) -> str:
     if fix_paths and get_os() == "windows":
-        command = command.replace("/", "\\")
+        if isinstance(command, str):
+            command = command.replace("/", "\\")
+        else:
+            command = [argument.replace("/", "\\") for argument in command]
+    display_command = (
+        command if isinstance(command, str) else subprocess.list2cmdline(list(command))
+    )
     if env != None:
         new_env = os.environ.copy()
         new_env.update(env)
         env = new_env
-    print(f'Running "{command}" ...')
+    print(f'Running "{display_command}" ...')
     sys.stdout.flush()
 
     process = subprocess.Popen(
@@ -155,7 +185,7 @@ def run_command(
 
     process.communicate()
     if process.returncode != 0:
-        raise CommandError(command, process.returncode, out)
+        raise CommandError(display_command, process.returncode, out)
 
     return out
 
@@ -239,13 +269,45 @@ def build(args: Any):
     bt.build(args.preset, args.config)
 
 
+def cpp_test_command(args: Any) -> list[str]:
+    command = [
+        f"{args.bin_dir}/falcor2_tests",
+        "-r=console,junit",
+        "-module-cache" if args.module_cache else "-no-module-cache",
+        "-shader-cache" if args.shader_cache else "-no-shader-cache",
+    ]
+    if args.module_and_shader_cache_dir is not None:
+        command.append(f"-module-and-shader-cache-dir={args.module_and_shader_cache_dir}")
+    return command
+
+
+def python_test_command(args: Any) -> list[str]:
+    command = [
+        "pytest",
+        "./tests/python",
+        "-vra",
+        "-n",
+        "4",
+        "--maxprocesses=4",
+        "--junit-xml=reports/pytest-junit.xml",
+        "--slow",
+        "--module-cache" if args.module_cache else "--no-module-cache",
+        "--shader-cache" if args.shader_cache else "--no-shader-cache",
+    ]
+    if args.module_and_shader_cache_dir is not None:
+        command.append(f"--module-and-shader-cache-dir={args.module_and_shader_cache_dir}")
+    if args.config.lower() == "release":
+        command.append("--image-tests")
+    return command
+
+
 def unit_test_cpp(args: Any):
     if "crashpad" in args.flags:
         crashpad.setup("native")
 
     error: Optional[CommandError] = None
     try:
-        out = run_command(f"{args.bin_dir}/falcor2_tests -r=console,junit")
+        out = run_command(cpp_test_command(args), shell=False)
     except CommandError as exc:
         out = exc.output
         error = exc
@@ -266,8 +328,8 @@ def unit_test_cpp(args: Any):
 
 def update_slangpy(args: Any):
     print("Updating slangpy submodule to top-of-tree ...")
-    run_command("git -C external/slangpy fetch origin", fix_paths=False)
-    run_command("git -C external/slangpy checkout origin/main", fix_paths=False)
+    run_command("git -C external/slangpy fetch origin main", fix_paths=False)
+    run_command("git -C external/slangpy checkout --detach FETCH_HEAD", fix_paths=False)
     run_command("git -C external/slangpy submodule update --init --recursive", fix_paths=False)
     print("SlangPy updated to:")
     run_command("git -C external/slangpy log -1 --oneline", fix_paths=False)
@@ -282,14 +344,11 @@ def unit_test_python(args: Any):
     if "crashpad" in args.flags:
         crashpad.setup("python")
 
-    extra_args = "--slow"
-    if args.config.lower() == "release":
-        extra_args += " --image-tests"
-
     error: Optional[CommandError] = None
     try:
         run_command(
-            f"pytest ./tests/python -vra -n 1 --maxprocesses=1 {extra_args} --junit-xml=reports/pytest-junit.xml",
+            python_test_command(args),
+            shell=False,
             env={"FALCOR_CRASHPAD_DEFER_REPORT": "1"} if "crashpad" in args.flags else None,
         )
     except CommandError as exc:
@@ -309,7 +368,7 @@ def unit_test_python(args: Any):
 #    run_command(f"gcovr -r . -f src/sgl --html reports/coverage.html")
 
 
-def main():
+def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--os", type=str, action="store", help="OS (windows, linux, macos)")
     parser.add_argument("--platform", type=str, action="store", help="Platform (x86_64, aarch64)")
@@ -318,9 +377,26 @@ def main():
     parser.add_argument("--python", type=str, action="store", help="Python version")
     parser.add_argument("--flags", type=str, action="store", help="Additional flags")
     parser.add_argument(
+        "--module-cache",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable or disable the persistent module cache for unit tests",
+    )
+    parser.add_argument(
+        "--shader-cache",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable or disable the persistent shader cache for unit tests",
+    )
+    parser.add_argument(
+        "--module-and-shader-cache-dir",
+        type=str,
+        help="Root directory for persistent unit-test caches",
+    )
+    parser.add_argument(
         "--use-custom-slang",
-        type=bool,
-        action="store",
+        action="store_true",
+        default=None,
         help="Use custom slang. If not set, use slangpy's slang. If set, defaults to Slang's top of tree.",
     )
     parser.add_argument(
@@ -366,7 +442,12 @@ def main():
 
     # parser_coverage_report = commands.add_parser("coverage-report", help="generate coverage report")
 
-    args = parser.parse_args()
+    return parser
+
+
+def main(argv: Optional[Sequence[str]] = None):
+    parser = create_parser()
+    args = parser.parse_args(argv)
 
     print("-----------------------------------------------------")
     print(args.command)
@@ -380,6 +461,9 @@ def main():
         ("config", "CI_CONFIG", "Debug"),
         ("python", "CI_PYTHON", "3.9"),
         ("flags", "CI_FLAGS", ""),
+        ("module_cache", "CI_MODULE_CACHE", False),
+        ("shader_cache", "CI_SHADER_CACHE", True),
+        ("module_and_shader_cache_dir", "CI_MODULE_AND_SHADER_CACHE_DIR", None),
         ("use_custom_slang", "CI_USE_CUSTOM_SLANG", False),
         ("slang_repository", "CI_SLANG_REPOSITORY", "https://github.com/shader-slang/slang.git"),
         ("slang_branch", "CI_SLANG_BRANCH", "master"),
@@ -390,8 +474,13 @@ def main():
         if not var in args or args[var] == None:
             args[var] = os.environ[env_var] if env_var in os.environ else default_value
 
-    # Convert to proper type (any value set in CI_USE_CUSTOM_SLANG must become True)
-    args["use_custom_slang"] = bool(args["use_custom_slang"])
+    # Convert boolean environment variable values to bool.
+    args["use_custom_slang"] = parse_bool(args["use_custom_slang"], "CI_USE_CUSTOM_SLANG")
+    args["module_cache"] = parse_bool(args["module_cache"], "CI_MODULE_CACHE")
+    args["shader_cache"] = parse_bool(args["shader_cache"], "CI_SHADER_CACHE")
+    cache_dir = args["module_and_shader_cache_dir"]
+    if isinstance(cache_dir, str) and not cache_dir.strip():
+        args["module_and_shader_cache_dir"] = None
 
     # Split flags.
     args["flags"] = args["flags"].split(",") if args["flags"] != "" else []

@@ -9,6 +9,7 @@
 #include "falcor2/core/properties.h"
 #include "falcor2/utils/aabb.h"
 #include "falcor2/importers/fwd.h"
+#include "falcor2/render/fwd.h"
 
 #include "sgl/core/data_type.h"
 
@@ -652,6 +653,11 @@ struct FALCOR_API ImporterNode {
 };
 
 struct FALCOR_API ImporterMaterial {
+    /// Callback that constructs a live material during importer scene loading.
+    ///
+    /// The returned material must already be owned by the supplied scene.
+    using Constructor = std::function<Material*(Scene&, const ImporterMaterial&)>;
+
     /// Material name.
     std::string name;
 
@@ -660,6 +666,8 @@ struct FALCOR_API ImporterMaterial {
     /// Material parameters.
     /// For Usd, if UsdPreviewSurface is available, it is flattened here. For MDL, nodes must be used.
     Properties params;
+    /// Optional live material constructor. When set, this takes precedence over parameter-driven conversion.
+    Constructor constructor;
     /// Maps a named material output (e.g. "surface", "displacement") to the material network
     /// that drives it. Each network is represented as an ordered list of nodes, where each node's
     /// properties (type, parameter values, input connections) are captured in a Properties object.
@@ -689,19 +697,35 @@ struct FALCOR_API ImporterCamera {
     /// Camera name.
     std::string name;
     /// Focus distance.
-    float focus_distance;
+    float focus_distance = 1.f;
     /// Focal length (millimeters).
-    float focal_length;
+    float focal_length = 50.f;
     /// F-stop value.
-    float fstop;
+    float fstop = 8.f;
     /// Depth range (near, far).
-    float2 depth_range;
+    float2 depth_range = float2(0.01f, 10000.f);
     /// Projection type.
-    Projection projection;
+    Projection projection = Projection::perspective;
     /// Field of view direction.
-    FOVDirection fov_direction;
-    /// Aperture size.
-    float aperture;
+    FOVDirection fov_direction = FOVDirection::vertical;
+    /// Sensor size (millimeters) in fov_direction.
+    float sensor_size_mm = 24.f;
+
+    /// Calculate focal length from a field of view and sensor size.
+    static float focal_length_from_fov_degrees(float fov_degrees, float sensor_size_mm);
+
+    /// Calculate the field of view represented by a sensor size and focal length.
+    static float fov_degrees_from_focal_length(float sensor_size_mm, float focal_length_mm);
+
+    /// Calculate this camera's field of view along fov_direction.
+    float fov_degrees() const;
+
+    /// Calculate this camera's vertical field of view.
+    ///
+    /// If this camera stores a horizontal FOV, the vertical sensor size is derived
+    /// from the supplied horizontal-to-vertical sensor ratio. The default ratio
+    /// is the 4:3 sensor assumption used by pyscene scene conversion.
+    float vertical_fov_degrees(float horizontal_to_vertical_sensor_ratio = 4.f / 3.f) const;
 };
 SGL_ENUM_REGISTER(ImporterCamera::Projection);
 SGL_ENUM_REGISTER(ImporterCamera::FOVDirection);
@@ -746,6 +770,8 @@ struct FALCOR_API ImporterLight {
     Type type;
     /// Light intensity.
     float3 intensity;
+    /// Light exposure in stops.
+    float exposure = 0.f;
 
     /// Angular diameter in degrees (for distant lights).
     float degree_angular_diameter = 0.53f;

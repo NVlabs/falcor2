@@ -477,6 +477,43 @@ TEST_CASE("DynamicPropertySet with new metadata types")
     CHECK(desc->ui_flags() == UIFlags::advanced);
 }
 
+TEST_CASE("DynamicPropertySet integral enum access requires enum metadata")
+{
+    int callback_count = 0;
+    DynamicPropertySet dyn;
+    dyn.add_property<int>(
+        "mode",
+        20,
+        false,
+        enum_descriptor({{10, "Ten"}, {20, "Twenty"}}),
+        on_change<int>(
+            [](int& count)
+            {
+                ++count;
+            }
+        )
+    );
+    dyn.add_property<int>("count", 20);
+
+    const PropertyDescriptor* enum_prop = dyn.get_property("mode");
+    CHECK(enum_prop->get_enum_as_int64(&callback_count) == 20);
+
+    enum_prop->set_enum_from_int64(&callback_count, 10);
+    CHECK(dyn.get<int>("mode") == 10);
+    CHECK(callback_count == 1);
+
+    const PropertyDescriptor* plain_prop = dyn.get_property("count");
+    CHECK_THROWS_WITH(
+        plain_prop->get_enum_as_int64(&callback_count),
+        doctest::Contains("integral type has no enum metadata")
+    );
+    CHECK_THROWS_WITH(
+        plain_prop->set_enum_from_int64(&callback_count, 10),
+        doctest::Contains("integral type has no enum metadata")
+    );
+    CHECK(dyn.get<int>("count") == 20);
+}
+
 TEST_CASE("DynamicPropertySet read_from_properties skips read-only properties")
 {
     DynamicPropertySet dps;

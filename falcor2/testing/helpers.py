@@ -45,10 +45,23 @@ else:
     raise RuntimeError("Unsupported platform")
 
 DEVICE_CACHE: dict[
-    tuple[DeviceType, bool, SlangFloatingPointMode, tuple[NativeHandle, ...]], Device
+    tuple[
+        DeviceType,
+        bool,
+        SlangFloatingPointMode,
+        tuple[NativeHandle, ...],
+        bool,
+        Path | None,
+        Path | None,
+    ],
+    Device,
 ] = {}
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
+DEFAULT_MODULE_AND_SHADER_CACHE_DIR = PROJECT_ROOT / ".shader-cache" / "tests"
+MODULE_CACHE_ENABLED = False
+SHADER_CACHE_ENABLED = False
+MODULE_AND_SHADER_CACHE_ROOT = DEFAULT_MODULE_AND_SHADER_CACHE_DIR.resolve()
 CONFIG: dict[str, Any] = {}
 DRIVER_VERSION: Optional[Sequence[int]] = None
 USED_TORCH_DEVICES: bool = False
@@ -58,6 +71,33 @@ USED_TORCH_DEVICES: bool = False
 
 # Always dump stuff when testing
 slangpy.set_dump_generated_shaders(True)
+
+
+def configure_module_and_shader_cache(
+    *,
+    module_cache_enabled: bool = False,
+    shader_cache_enabled: bool = False,
+    cache_dir: str | Path | None = None,
+) -> None:
+    """Configure persistent module and shader caches used by test devices."""
+    global MODULE_CACHE_ENABLED
+    global SHADER_CACHE_ENABLED
+    global MODULE_AND_SHADER_CACHE_ROOT
+
+    root = Path(cache_dir) if cache_dir is not None else DEFAULT_MODULE_AND_SHADER_CACHE_DIR
+    if not root.is_absolute():
+        root = PROJECT_ROOT / root
+
+    MODULE_CACHE_ENABLED = module_cache_enabled
+    SHADER_CACHE_ENABLED = shader_cache_enabled
+    MODULE_AND_SHADER_CACHE_ROOT = root.resolve()
+
+
+def get_module_and_shader_cache_path() -> tuple[Path | None, Path | None]:
+    root = MODULE_AND_SHADER_CACHE_ROOT / "python"
+    module_cache_path = root / "module" if MODULE_CACHE_ENABLED else None
+    shader_cache_path = root / "shader" if SHADER_CACHE_ENABLED else None
+    return module_cache_path, shader_cache_path
 
 
 def get_ngx_vulkan_pre_device_info() -> Optional[Any]:
@@ -154,12 +194,15 @@ def get_device(
     existing_device_handles: Optional[Sequence[NativeHandle]] = None,
     enable_print: bool = False,
 ) -> Device:
+    module_cache_path, shader_cache_path = get_module_and_shader_cache_path()
     cache_key = (
         type,
         cuda_interop,
         floating_point_mode,
         tuple(existing_device_handles) if existing_device_handles else (),
         enable_print,
+        module_cache_path,
+        shader_cache_path,
     )
     if use_cache and cache_key in DEVICE_CACHE:
         return DEVICE_CACHE[cache_key]
@@ -204,6 +247,8 @@ def get_device(
         ),
         enable_cuda_interop=cuda_interop,
         existing_device_handles=existing_device_handles,
+        module_cache_path=module_cache_path,
+        shader_cache_path=shader_cache_path,
         additional_vulkan_instance_extensions=additional_vulkan_instance_extensions,
         additional_vulkan_device_extensions=additional_vulkan_device_extensions,
         label=label,

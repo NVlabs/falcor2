@@ -17,17 +17,7 @@ TEST_SUITE_BEGIN("denoisers");
 // Helper function to create a CUDA device for denoiser tests
 ref<sgl::Device> create_cuda_device()
 {
-    sgl::DeviceDesc desc{
-        .type = sgl::DeviceType::cuda,
-        .enable_debug_layers = true,
-        .compiler_options = {
-            .include_paths = {
-                falcor::testing::project_directory() / "slang",
-                falcor::testing::project_directory() / "tests" / "native",
-                falcor::testing::project_directory() / "external" / "slangpy" / "slangpy" / "slang",
-            },
-        }
-    };
+    sgl::DeviceDesc desc = falcor::testing::make_test_device_desc(sgl::DeviceType::cuda);
     return sgl::Device::create(desc);
 }
 

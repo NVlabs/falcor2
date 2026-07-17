@@ -40,7 +40,7 @@ public struct StandardBSDF : IBSDF, IDifferentiable
     float spec_trans = {};
     float roughness = {};
     float metallic = {};
-    LobeTypes lobe_types = LobeTypes::none;
+    BSDFFlags lobe_types = BSDFFlags::none;
 
     float p_diffuse_reflection = {};
     float p_diffuse_transmission = {};
@@ -69,20 +69,20 @@ public struct StandardBSDF : IBSDF, IDifferentiable
         // Build the four physical lobes represented by the standard material.
         diffuse_reflection = DisneyDiffuseBRDF(data.diffuse, roughness);
         diffuse_transmission = LambertDiffuseBTDF(transmission_albedo);
-        specular_reflection = SpecularMicrofacetBRDF(data.specular, alpha, LobeTypes::all);
+        specular_reflection = SpecularMicrofacetBRDF(data.specular, alpha, BSDFFlags::all);
         specular_transmission
-            = SpecularMicrofacetBSDF(transmission_albedo, data.eta == 1.0 ? 0.0 : alpha, data.eta, LobeTypes::all);
+            = SpecularMicrofacetBSDF(transmission_albedo, data.eta == 1.0 ? 0.0 : alpha, data.eta, BSDFFlags::all);
 
-        lobe_types = is_delta ? LobeTypes::delta_reflection : LobeTypes::glossy_reflection;
+        lobe_types = is_delta ? BSDFFlags::delta_reflection : BSDFFlags::glossy_reflection;
         if (any(data.diffuse > 0.0) && spec_trans < 1.0) {
             if (diff_trans < 1.0)
-                lobe_types = LobeTypes(uint(lobe_types) | uint(LobeTypes::diffuse_reflection));
+                lobe_types = BSDFFlags(uint(lobe_types) | uint(BSDFFlags::diffuse_reflection));
             if (diff_trans > 0.0)
-                lobe_types = LobeTypes(uint(lobe_types) | uint(LobeTypes::diffuse_transmission));
+                lobe_types = BSDFFlags(uint(lobe_types) | uint(BSDFFlags::diffuse_transmission));
         }
         if (spec_trans > 0.0)
-            lobe_types = LobeTypes(
-                uint(lobe_types) | uint(is_delta ? LobeTypes::delta_transmission : LobeTypes::glossy_transmission)
+            lobe_types = BSDFFlags(
+                uint(lobe_types) | uint(is_delta ? BSDFFlags::delta_transmission : BSDFFlags::glossy_transmission)
             );
 
         // Split selection probability between diffuse dielectric, metallic/specular reflection,
@@ -110,7 +110,7 @@ public struct StandardBSDF : IBSDF, IDifferentiable
         }
     }
 
-    public LobeTypes get_lobe_types() { return lobe_types; }
+    public BSDFFlags get_lobe_types() { return lobe_types; }
 
     [Differentiable]
     public float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
@@ -127,69 +127,58 @@ public struct StandardBSDF : IBSDF, IDifferentiable
         return result;
     }
 
-    public bool sample<S : ISampleGenerator>(
-        const float3 wi,
-        out float3 wo,
-        out float pdf,
-        out float3 weight,
-        out LobeTypes sampled_lobe_types,
-        inout S sg,
-        const BSDFContext bc
-    )
+    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
-        wo = {};
-        pdf = {};
-        weight = {};
-        sampled_lobe_types = LobeTypes::none;
+        sample = {};
 
         float u_select = next_float(sg);
 
         // Sample one lobe using the prepared probabilities, then fold in the other
         // compatible lobe PDFs so the returned PDF matches eval_pdf().
         if (u_select < p_diffuse_reflection) {
-            if (!diffuse_reflection.sample(wi, wo, pdf, weight, sampled_lobe_types, sg, bc))
+            if (!diffuse_reflection.sample(wi, sample, sg, bc))
                 return false;
 
-            weight *= (1.0 - spec_trans) * (1.0 - diff_trans) / p_diffuse_reflection;
-            pdf *= p_diffuse_reflection;
+            sample.weight *= (1.0 - spec_trans) * (1.0 - diff_trans) / p_diffuse_reflection;
+            sample.pdf *= p_diffuse_reflection;
 
             if (p_specular_reflection > 0.0)
-                pdf += p_specular_reflection * specular_reflection.eval_pdf(wi, wo, bc);
+                sample.pdf += p_specular_reflection * specular_reflection.eval_pdf(wi, sample.wo, bc);
             if (p_specular_transmission > 0.0)
-                pdf += p_specular_transmission * specular_transmission.eval_pdf(wi, wo, bc);
+                sample.pdf += p_specular_transmission * specular_transmission.eval_pdf(wi, sample.wo, bc);
         } else if (u_select < p_diffuse_reflection + p_diffuse_transmission) {
-            if (!diffuse_transmission.sample(wi, wo, pdf, weight, sampled_lobe_types, sg, bc))
+            if (!diffuse_transmission.sample(wi, sample, sg, bc))
                 return false;
 
-            weight *= (1.0 - spec_trans) * diff_trans / p_diffuse_transmission;
-            pdf *= p_diffuse_transmission;
+            sample.weight *= (1.0 - spec_trans) * diff_trans / p_diffuse_transmission;
+            sample.pdf *= p_diffuse_transmission;
 
             if (p_specular_transmission > 0.0)
-                pdf += p_specular_transmission * specular_transmission.eval_pdf(wi, wo, bc);
+                sample.pdf += p_specular_transmission * specular_transmission.eval_pdf(wi, sample.wo, bc);
         } else if (u_select < p_diffuse_reflection + p_diffuse_transmission + p_specular_reflection) {
-            if (!specular_reflection.sample(wi, wo, pdf, weight, sampled_lobe_types, sg, bc))
+            if (!specular_reflection.sample(wi, sample, sg, bc))
                 return false;
 
-            weight *= (1.0 - spec_trans) / p_specular_reflection;
-            pdf *= p_specular_reflection;
+            sample.weight *= (1.0 - spec_trans) / p_specular_reflection;
+            sample.pdf *= p_specular_reflection;
 
             if (p_diffuse_reflection > 0.0)
-                pdf += p_diffuse_reflection * diffuse_reflection.eval_pdf(wi, wo, bc);
+                sample.pdf += p_diffuse_reflection * diffuse_reflection.eval_pdf(wi, sample.wo, bc);
             if (p_specular_transmission > 0.0)
-                pdf += p_specular_transmission * specular_transmission.eval_pdf(wi, wo, bc);
+                sample.pdf += p_specular_transmission * specular_transmission.eval_pdf(wi, sample.wo, bc);
         } else if (p_specular_transmission > 0.0) {
-            if (!specular_transmission.sample(wi, wo, pdf, weight, sampled_lobe_types, sg, bc))
+            if (!specular_transmission.sample(wi, sample, sg, bc))
                 return false;
 
-            weight *= spec_trans / p_specular_transmission;
-            pdf *= p_specular_transmission;
+            sample.weight *= spec_trans / p_specular_transmission;
+            sample.pdf *= p_specular_transmission;
 
             if (p_diffuse_reflection > 0.0)
-                pdf += p_diffuse_reflection * diffuse_reflection.eval_pdf(wi, wo, bc);
+                sample.pdf += p_diffuse_reflection * diffuse_reflection.eval_pdf(wi, sample.wo, bc);
             if (p_diffuse_transmission > 0.0)
-                pdf += p_diffuse_transmission * diffuse_transmission.eval_pdf(wi, wo, bc);
+                sample.pdf += p_diffuse_transmission * diffuse_transmission.eval_pdf(wi, sample.wo, bc);
             if (p_specular_reflection > 0.0)
-                pdf += p_specular_reflection * specular_reflection.eval_pdf(wi, wo, bc);
+                sample.pdf += p_specular_reflection * specular_reflection.eval_pdf(wi, sample.wo, bc);
         } else {
             return false;
         }
@@ -250,18 +239,10 @@ public struct TestStandardBSDF : IBSDF
         return bsdf.eval(wi, wo, sg, bc);
     }
 
-    public bool sample<S : ISampleGenerator>(
-        const float3 wi,
-        out float3 wo,
-        out float pdf,
-        out float3 weight,
-        out LobeTypes lobe_types,
-        inout S sg,
-        const BSDFContext bc
-    )
+    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
         StandardBSDF bsdf = StandardBSDF(wi, data);
-        return bsdf.sample(wi, wo, pdf, weight, lobe_types, sg, bc);
+        return bsdf.sample(wi, sample, sg, bc);
     }
 
     public float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)

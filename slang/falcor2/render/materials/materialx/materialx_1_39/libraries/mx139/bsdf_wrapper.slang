@@ -78,31 +78,10 @@ public MxBranchChoice mx_choose_branch<S : ISampleGenerator>(inout S sg, float p
     return MxBranchChoice(first, choice_pdf);
 }
 
-AlbedoContributions from_scattering_albedo(float3 reflection, float3 transmission)
+public AlbedoContributions from_scattering_albedo(float3 reflection, float3 transmission)
 {
     float3 absorption = max(float3(0.0), float3(1.0) - reflection - transmission);
     return AlbedoContributions(reflection, absorption, transmission, float3(0.0));
-}
-
-float3 scattering_albedo_from_ibsdf(AlbedoContributions albedo)
-{
-    return albedo.reflection + albedo.transmission;
-}
-
-float3 layer_opacity_from_ibsdf(AlbedoContributions albedo)
-{
-    return saturate(float3(1.0) - albedo.transmission);
-}
-
-AlbedoContributions from_layerable_albedo(float3 sample_albedo, float3 layer_opacity)
-{
-    const float3 layer_transmission = saturate(float3(1.0) - layer_opacity);
-    return AlbedoContributions(
-        sample_albedo,
-        max(float3(0.0), float3(1.0) - sample_albedo - layer_transmission),
-        layer_transmission,
-        float3(0.0)
-    );
 }
 
 public float schlick_refraction_ior_from_color0(float3 color0)
@@ -120,20 +99,9 @@ public struct MxNullBSDF : ILayerableBSDF
     {
         return float3(0.0);
     }
-    public bool sample<S : ISampleGenerator>(
-        const float3 wi,
-        out float3 wo,
-        out float pdf,
-        out float3 weight,
-        out LobeTypes lobe_types,
-        inout S sg,
-        const BSDFContext bc
-    )
+    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
-        wo = float3(0.0);
-        pdf = 0.0;
-        weight = float3(0.0);
-        lobe_types = LobeTypes::none;
+        sample = {};
         return false;
     }
     public float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc) { return 0.0; }
@@ -165,20 +133,13 @@ public struct MxSimpleBTDF : ILayerableBSDF
     {
         return float3(0.0);
     }
-    public bool sample<S : ISampleGenerator>(
-        const float3 wi,
-        out float3 wo,
-        out float pdf,
-        out float3 weight,
-        out LobeTypes lobe_types,
-        inout S sg,
-        const BSDFContext bc
-    )
+    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
-        wo = -wi;
-        pdf = float.MAX;
-        weight = OSLE_SIMPLE_BTDF_TRANSMITTANCE;
-        lobe_types = LobeTypes::delta_transmission;
+        sample = {};
+        sample.wo = -wi;
+        sample.pdf = float.MAX;
+        sample.weight = OSLE_SIMPLE_BTDF_TRANSMITTANCE;
+        sample.flags = BSDFFlags::delta_transmission;
         return true;
     }
     public float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc) { return 0.0; }
@@ -207,23 +168,19 @@ public struct MxLayerableBSDF<Inner : IBSDF> : ILayerableBSDF
 
     // ILayerableBSDF
 
-    public float3 directional_albedo(const float3 wi) { return scattering_albedo_from_ibsdf(inner.eval_albedo(wi)); }
-    public float3 layer_opacity(const float3 wi) { return layer_opacity_from_ibsdf(inner.eval_albedo(wi)); }
+    public float3 directional_albedo(const float3 wi)
+    {
+        AlbedoContributions albedo = inner.eval_albedo(wi);
+        return albedo.reflection + albedo.transmission;
+    }
+    public float3 layer_opacity(const float3 wi) { return saturate(float3(1.0) - inner.eval_albedo(wi).transmission); }
     public float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
     {
         return inner.eval(wi, wo, sg, bc);
     }
-    public bool sample<S : ISampleGenerator>(
-        const float3 wi,
-        out float3 wo,
-        out float pdf,
-        out float3 weight,
-        out LobeTypes lobe_types,
-        inout S sg,
-        const BSDFContext bc
-    )
+    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
-        return inner.sample(wi, wo, pdf, weight, lobe_types, sg, bc);
+        return inner.sample(wi, sample, sg, bc);
     }
     public float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc) { return inner.eval_pdf(wi, wo, bc); }
     public AlbedoContributions eval_albedo(const float3 wi) { return inner.eval_albedo(wi); }
@@ -279,33 +236,16 @@ public struct MxWeightedBSDF<Inner : ILayerableBSDF> : ILayerableBSDF
             return float3(0.0);
         return weight * inner.eval(wi, wo, sg, bc);
     }
-    public bool sample<S : ISampleGenerator>(
-        const float3 wi,
-        out float3 wo,
-        out float pdf,
-        out float3 sample_weight,
-        out LobeTypes lobe_types,
-        inout S sg,
-        const BSDFContext bc
-    )
+    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
-        wo = float3(0.0);
-        pdf = 0.0;
-        sample_weight = float3(0.0);
-        lobe_types = LobeTypes::none;
+        sample = {};
 
-        if (scalar_weight() <= 0.0) {
+        if (scalar_weight() <= 0.0)
             return false;
-        }
-        bool valid = inner.sample(wi, wo, pdf, sample_weight, lobe_types, sg, bc);
-        if (!valid) {
-            wo = float3(0.0);
-            pdf = 0.0;
-            sample_weight = float3(0.0);
-            lobe_types = LobeTypes::none;
+        bool valid = inner.sample(wi, sample, sg, bc);
+        if (!valid)
             return false;
-        }
-        sample_weight *= weight;
+        sample.weight *= weight;
         return true;
     }
     public float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
@@ -315,8 +255,9 @@ public struct MxWeightedBSDF<Inner : ILayerableBSDF> : ILayerableBSDF
     public AlbedoContributions eval_albedo(const float3 wi)
     {
         if (scalar_weight() <= 0.0)
-            return from_layerable_albedo(float3(0.0), float3(0.0));
-        return from_layerable_albedo(weight * inner.directional_albedo(wi), saturate(weight * inner.layer_opacity(wi)));
+            return from_scattering_albedo(float3(0.0), float3(0.0));
+        AlbedoContributions albedo = inner.eval_albedo(wi);
+        return from_scattering_albedo(weight * albedo.reflection, weight * albedo.transmission);
     }
     public RoughnessInformation eval_roughness(const float3 wi)
     {
@@ -341,6 +282,7 @@ public struct MxFramedWeightedBSDF<Inner : ILayerableBSDF> : ILayerableBSDF
     // TODO(mx139-vdf): See MxWeightedBSDF. This field is
     // accepted from generated VDF layering code but ignored for OSL parity.
     public float3 transmission_scale = float3(1.0);
+    public float material_transmission = 0.0;
     public Frame frame = Frame::identity();
 
     public __init() { frame = Frame::identity(); }
@@ -361,6 +303,14 @@ public struct MxFramedWeightedBSDF<Inner : ILayerableBSDF> : ILayerableBSDF
         this.inner = inner;
         this.weight = weight;
         this.transmission_scale = transmission_scale;
+        this.frame = frame;
+    }
+    public __init(Inner inner, float3 weight, float3 transmission_scale, float material_transmission, Frame frame)
+    {
+        this.inner = inner;
+        this.weight = weight;
+        this.transmission_scale = transmission_scale;
+        this.material_transmission = material_transmission;
         this.frame = frame;
     }
 
@@ -388,50 +338,24 @@ public struct MxFramedWeightedBSDF<Inner : ILayerableBSDF> : ILayerableBSDF
             return float3(0.0);
         return weight * inner.eval(local_wi, local_wo, sg, bc);
     }
-    public bool sample<S : ISampleGenerator>(
-        const float3 wi,
-        out float3 wo,
-        out float pdf,
-        out float3 sample_weight,
-        out LobeTypes lobe_types,
-        inout S sg,
-        const BSDFContext bc
-    )
+    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
-        wo = float3(0.0);
-        pdf = 0.0;
-        sample_weight = float3(0.0);
-        lobe_types = LobeTypes::none;
+        sample = {};
 
-        if (scalar_weight() <= 0.0) {
+        if (scalar_weight() <= 0.0)
             return false;
-        }
         const float3 local_wi = frame.to_local(wi);
-        if (!validate_bump_frame_hemisphere(wi, local_wi)) {
-            wo = float3(0.0);
-            pdf = 0.0;
-            sample_weight = float3(0.0);
-            lobe_types = LobeTypes::none;
+        if (!validate_bump_frame_hemisphere(wi, local_wi))
             return false;
-        }
-        float3 local_wo = float3(0.0);
-        bool valid = inner.sample(local_wi, local_wo, pdf, sample_weight, lobe_types, sg, bc);
-        if (!valid) {
-            wo = float3(0.0);
-            pdf = 0.0;
-            sample_weight = float3(0.0);
-            lobe_types = LobeTypes::none;
+        BSDFSample local_sample;
+        bool valid = inner.sample(local_wi, local_sample, sg, bc);
+        if (!valid)
             return false;
-        }
-        wo = frame.to_global(local_wo);
-        if (!validate_bump_frame_hemisphere(wo, local_wo)) {
-            wo = float3(0.0);
-            pdf = 0.0;
-            sample_weight = float3(0.0);
-            lobe_types = LobeTypes::none;
+        sample = local_sample;
+        sample.wo = frame.to_global(local_sample.wo);
+        if (!validate_bump_frame_hemisphere(sample.wo, local_sample.wo))
             return false;
-        }
-        sample_weight *= weight;
+        sample.weight *= weight;
         return true;
     }
     public float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
@@ -447,12 +371,10 @@ public struct MxFramedWeightedBSDF<Inner : ILayerableBSDF> : ILayerableBSDF
     public AlbedoContributions eval_albedo(const float3 wi)
     {
         if (scalar_weight() <= 0.0)
-            return from_layerable_albedo(float3(0.0), float3(0.0));
+            return from_scattering_albedo(float3(0.0), float3(0.0));
         const float3 local_wi = frame.to_local(wi);
-        return from_layerable_albedo(
-            weight * inner.directional_albedo(local_wi),
-            saturate(weight * inner.layer_opacity(local_wi))
-        );
+        AlbedoContributions albedo = inner.eval_albedo(local_wi);
+        return from_scattering_albedo(weight * albedo.reflection, weight * albedo.transmission);
     }
     public RoughnessInformation eval_roughness(const float3 wi)
     {
@@ -503,50 +425,26 @@ public struct MxLayerBSDF<Top : ILayerableBSDF, Base : ILayerableBSDF> : ILayera
     {
         return top.eval(wi, wo, sg, bc) + base_scale(wi) * base.eval(wi, wo, sg, bc);
     }
-    public bool sample<S : ISampleGenerator>(
-        const float3 wi,
-        out float3 wo,
-        out float pdf,
-        out float3 weight,
-        out LobeTypes lobe_types,
-        inout S sg,
-        const BSDFContext bc
-    )
+    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
-        wo = float3(0.0);
-        pdf = 0.0;
-        weight = float3(0.0);
-        lobe_types = LobeTypes::none;
+        sample = {};
 
         float p_top = top_sample_probability(wi);
         MxBranchChoice choice = mx_choose_branch(sg, p_top);
         if (choice.pdf <= 0.0)
             return false;
-        float branch_pdf = 0.0;
-        float3 branch_weight = float3(0.0);
-        bool valid = choice.first ? top.sample(wi, wo, branch_pdf, branch_weight, lobe_types, sg, bc)
-                                  : base.sample(wi, wo, branch_pdf, branch_weight, lobe_types, sg, bc);
-        if (!valid) {
-            wo = float3(0.0);
-            pdf = 0.0;
-            weight = float3(0.0);
-            lobe_types = LobeTypes::none;
+        bool valid = choice.first ? top.sample(wi, sample, sg, bc) : base.sample(wi, sample, sg, bc);
+        if (!valid)
             return false;
-        }
-        if ((uint(lobe_types) & uint(LobeTypes::delta)) != 0) {
-            pdf = choice.pdf * branch_pdf;
-            weight = choice.first ? branch_weight / choice.pdf : base_scale(wi) * branch_weight / choice.pdf;
+        if (sample.has_flag(BSDFFlags::delta)) {
+            sample.pdf = choice.pdf * sample.pdf;
+            sample.weight = choice.first ? sample.weight / choice.pdf : base_scale(wi) * sample.weight / choice.pdf;
             return true;
         }
-        pdf = eval_pdf(wi, wo, bc);
-        if (pdf <= 0.0) {
-            wo = float3(0.0);
-            pdf = 0.0;
-            weight = float3(0.0);
-            lobe_types = LobeTypes::none;
+        sample.pdf = eval_pdf(wi, sample.wo, bc);
+        if (sample.pdf <= 0.0)
             return false;
-        }
-        weight = eval(wi, wo, sg, bc) / pdf;
+        sample.weight = eval(wi, sample.wo, sg, bc) / sample.pdf;
         return true;
     }
     public float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
@@ -557,9 +455,11 @@ public struct MxLayerBSDF<Top : ILayerableBSDF, Base : ILayerableBSDF> : ILayera
     public AlbedoContributions eval_albedo(const float3 wi)
     {
         const float3 base_weight = base_scale(wi);
-        return from_layerable_albedo(
-            top.directional_albedo(wi) + base_weight * base.directional_albedo(wi),
-            base.layer_opacity(wi)
+        AlbedoContributions top_albedo = top.eval_albedo(wi);
+        AlbedoContributions base_albedo = base.eval_albedo(wi);
+        return from_scattering_albedo(
+            top_albedo.reflection + base_weight * base_albedo.reflection,
+            top_albedo.transmission + base_weight * base_albedo.transmission
         );
     }
     public RoughnessInformation eval_roughness(const float3 wi)
@@ -616,20 +516,9 @@ public struct MxMixBSDF<FG : ILayerableBSDF, BG : ILayerableBSDF> : ILayerableBS
     {
         return (float3(1.0) - mix_value) * bg.eval(wi, wo, sg, bc) + mix_value * fg.eval(wi, wo, sg, bc);
     }
-    public bool sample<S : ISampleGenerator>(
-        const float3 wi,
-        out float3 wo,
-        out float pdf,
-        out float3 weight,
-        out LobeTypes lobe_types,
-        inout S sg,
-        const BSDFContext bc
-    )
+    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
-        wo = float3(0.0);
-        pdf = 0.0;
-        weight = float3(0.0);
-        lobe_types = LobeTypes::none;
+        sample = {};
 
         // OSL closure mix(a, b, amount) flattens into a*(1-amount) first,
         // followed by b*amount. Keep that CDF order so the OSL-style replay
@@ -637,31 +526,18 @@ public struct MxMixBSDF<FG : ILayerableBSDF, BG : ILayerableBSDF> : ILayerableBS
         MxBranchChoice choice = mx_choose_branch(sg, bg_sample_probability(wi));
         if (choice.pdf <= 0.0)
             return false;
-        float branch_pdf = 0.0;
-        float3 branch_weight = float3(0.0);
-        bool valid = choice.first ? bg.sample(wi, wo, branch_pdf, branch_weight, lobe_types, sg, bc)
-                                  : fg.sample(wi, wo, branch_pdf, branch_weight, lobe_types, sg, bc);
-        if (!valid) {
-            wo = float3(0.0);
-            pdf = 0.0;
-            weight = float3(0.0);
-            lobe_types = LobeTypes::none;
+        bool valid = choice.first ? bg.sample(wi, sample, sg, bc) : fg.sample(wi, sample, sg, bc);
+        if (!valid)
             return false;
-        }
-        if ((uint(lobe_types) & uint(LobeTypes::delta)) != 0) {
-            pdf = choice.pdf * branch_pdf;
-            weight = (choice.first ? float3(1.0) - mix_value : mix_value) * branch_weight / choice.pdf;
+        if (sample.has_flag(BSDFFlags::delta)) {
+            sample.pdf = choice.pdf * sample.pdf;
+            sample.weight = (choice.first ? float3(1.0) - mix_value : mix_value) * sample.weight / choice.pdf;
             return true;
         }
-        pdf = eval_pdf(wi, wo, bc);
-        if (pdf <= 0.0) {
-            wo = float3(0.0);
-            pdf = 0.0;
-            weight = float3(0.0);
-            lobe_types = LobeTypes::none;
+        sample.pdf = eval_pdf(wi, sample.wo, bc);
+        if (sample.pdf <= 0.0)
             return false;
-        }
-        weight = eval(wi, wo, sg, bc) / pdf;
+        sample.weight = eval(wi, sample.wo, sg, bc) / sample.pdf;
         return true;
     }
     public float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
@@ -672,9 +548,11 @@ public struct MxMixBSDF<FG : ILayerableBSDF, BG : ILayerableBSDF> : ILayerableBS
     public AlbedoContributions eval_albedo(const float3 wi)
     {
         const float3 bg_mix = float3(1.0) - mix_value;
-        return from_layerable_albedo(
-            bg_mix * bg.directional_albedo(wi) + mix_value * fg.directional_albedo(wi),
-            saturate(bg_mix * bg.layer_opacity(wi) + mix_value * fg.layer_opacity(wi))
+        AlbedoContributions bg_albedo = bg.eval_albedo(wi);
+        AlbedoContributions fg_albedo = fg.eval_albedo(wi);
+        return from_scattering_albedo(
+            bg_mix * bg_albedo.reflection + mix_value * fg_albedo.reflection,
+            bg_mix * bg_albedo.transmission + mix_value * fg_albedo.transmission
         );
     }
     public RoughnessInformation eval_roughness(const float3 wi)
@@ -731,50 +609,26 @@ public struct MxAddBSDF<In1 : ILayerableBSDF, In2 : ILayerableBSDF> : ILayerable
     {
         return in1.eval(wi, wo, sg, bc) + in2.eval(wi, wo, sg, bc);
     }
-    public bool sample<S : ISampleGenerator>(
-        const float3 wi,
-        out float3 wo,
-        out float pdf,
-        out float3 weight,
-        out LobeTypes lobe_types,
-        inout S sg,
-        const BSDFContext bc
-    )
+    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
-        wo = float3(0.0);
-        pdf = 0.0;
-        weight = float3(0.0);
-        lobe_types = LobeTypes::none;
+        sample = {};
 
         float p = p_in1(wi);
         MxBranchChoice choice = mx_choose_branch(sg, p);
         if (choice.pdf <= 0.0)
             return false;
-        float branch_pdf = 0.0;
-        float3 branch_weight = float3(0.0);
-        bool valid = choice.first ? in1.sample(wi, wo, branch_pdf, branch_weight, lobe_types, sg, bc)
-                                  : in2.sample(wi, wo, branch_pdf, branch_weight, lobe_types, sg, bc);
-        if (!valid) {
-            wo = float3(0.0);
-            pdf = 0.0;
-            weight = float3(0.0);
-            lobe_types = LobeTypes::none;
+        bool valid = choice.first ? in1.sample(wi, sample, sg, bc) : in2.sample(wi, sample, sg, bc);
+        if (!valid)
             return false;
-        }
-        if ((uint(lobe_types) & uint(LobeTypes::delta)) != 0) {
-            pdf = choice.pdf * branch_pdf;
-            weight = branch_weight / choice.pdf;
+        if (sample.has_flag(BSDFFlags::delta)) {
+            sample.pdf = choice.pdf * sample.pdf;
+            sample.weight = sample.weight / choice.pdf;
             return true;
         }
-        pdf = eval_pdf(wi, wo, bc);
-        if (pdf <= 0.0) {
-            wo = float3(0.0);
-            pdf = 0.0;
-            weight = float3(0.0);
-            lobe_types = LobeTypes::none;
+        sample.pdf = eval_pdf(wi, sample.wo, bc);
+        if (sample.pdf <= 0.0)
             return false;
-        }
-        weight = eval(wi, wo, sg, bc) / pdf;
+        sample.weight = eval(wi, sample.wo, sg, bc) / sample.pdf;
         return true;
     }
     public float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
@@ -784,9 +638,11 @@ public struct MxAddBSDF<In1 : ILayerableBSDF, In2 : ILayerableBSDF> : ILayerable
     }
     public AlbedoContributions eval_albedo(const float3 wi)
     {
-        return from_layerable_albedo(
-            in1.directional_albedo(wi) + in2.directional_albedo(wi),
-            saturate(in1.layer_opacity(wi) + in2.layer_opacity(wi))
+        AlbedoContributions albedo1 = in1.eval_albedo(wi);
+        AlbedoContributions albedo2 = in2.eval_albedo(wi);
+        return from_scattering_albedo(
+            albedo1.reflection + albedo2.reflection,
+            albedo1.transmission + albedo2.transmission
         );
     }
     public RoughnessInformation eval_roughness(const float3 wi)

@@ -14,10 +14,22 @@
 
 #include <doctest/doctest.h>
 #include <filesystem>
-#include <sgl/device/fwd.h>
-
+#include <sgl/device/device.h>
+#include <string>
 
 namespace falcor::testing {
+
+struct Options {
+    bool module_cache_enabled{false};
+    bool shader_cache_enabled{false};
+    std::filesystem::path module_and_shader_cache_dir = ".shader-cache/tests";
+};
+
+inline Options& options()
+{
+    static Options opts;
+    return opts;
+}
 
 /// Get name of running test suite (note: defined in sgl_tests.cpp).
 std::string get_current_test_suite_name();
@@ -48,6 +60,11 @@ struct GpuTestContext {
 };
 
 void run_gpu_test(void (*func)(GpuTestContext&));
+
+/// Make a device descriptor for a testing device.
+/// This sets up the device descriptor with default settings for testing, including
+/// enabling debug layers and setting up the slang include paths and cache paths.
+sgl::DeviceDesc make_test_device_desc(sgl::DeviceType device_type);
 
 void release_cached_devices();
 

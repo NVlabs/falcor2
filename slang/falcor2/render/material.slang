@@ -5,11 +5,8 @@ implementing render;
 
 import falcor2.utils;
 
-/// This is actually a sample from the MaterialInstance and would be more fittingly called
-/// MaterialSample, but that name heavily clashes with the NeuralAppearance MaterialSample name
-/// and we cannot currently use namespaces to really resolve the name collision, because the
-/// namespace difference does not propagate to TypeReflection on the CPU.
-public struct BSDFSample
+/// Result of a material sample. Contains the sampled direction, pdf, weight, and BSDF flags.
+public struct MaterialSample
 {
     /// Sampled direction in world-space (normalized).
     public float3 wo_ws = {};
@@ -17,11 +14,11 @@ public struct BSDFSample
     public float pdf = {};
     /// Sample weight eval(wi, wo) / pdf(wo). Surface BSDF eval includes outgoing foreshortening.
     public float3 weight = {};
-    /// Sampled lobe types.
-    public LobeTypes lobe_types = LobeTypes::none;
+    /// Flags describing the sampled scattering event.
+    public BSDFFlags flags = BSDFFlags::none;
 
-    /// Return true if sample contains the specified lobe_type.
-    public bool has_lobe(const LobeTypes lobe_type) { return is_set(lobe_types, lobe_type); }
+    /// Return true if the sample contains any of the specified flags.
+    public bool has_flag(const BSDFFlags flags) { return is_set(this.flags, flags); }
 }
 
 public enum MaterialInstanceHints : uint {
@@ -36,7 +33,7 @@ public interface IMaterialInstance
 {
     public float3 eval<S : ISampleGenerator>(const SurfaceInteraction si, const float3 wo_ws, inout S sg);
 
-    public bool sample<S : ISampleGenerator>(const SurfaceInteraction si, inout S sg, out BSDFSample result);
+    public bool sample<S : ISampleGenerator>(const SurfaceInteraction si, inout S sg, out MaterialSample sample);
 
     public float eval_pdf(const SurfaceInteraction si, const float3 wo_ws);
 
@@ -66,7 +63,7 @@ public interface IMaterialInstance
         return {};
     }
 
-    public LobeTypes get_lobe_types(const SurfaceInteraction si);
+    public BSDFFlags get_lobe_types(const SurfaceInteraction si);
 
     // public bool has_volume_properties() { return false; }
     // public VolumeProperties volume_properties() { return {}; }
@@ -208,16 +205,19 @@ public struct MaterialProperties
 
 public struct ExtraBsdfProperties
 {
+    public static const int max_bsdf_count = 16;
+
     public __init() { }
 
-    public float3 bsdf_N[16] = {};         ///< Normal used by each BSDF
-    public float3 bsdf_T[16] = {};         ///< Tangent used by each BSDF
-    public float3 bsdf_B[16] = {};         ///< Bitangent used by each BSDF
-    public float3 bsdf_albedo[16] = {};    ///< Albedo of individual BSDFs
-    public float3 bsdf_weight[16] = {};    ///< Weight for the given BSDF
-    public float2 bsdf_roughness[16] = {}; ///< Anisotropic roughness
-    public float3 bsdf_scratch[16] = {};   ///< Scratch direction and depth
-    public float bsdf_index[16] = {};      ///< A BSDF index, e.g. to differentiate between different MERL materials.
+    public float3 bsdf_N[max_bsdf_count] = {};         ///< Normal used by each BSDF
+    public float3 bsdf_T[max_bsdf_count] = {};         ///< Tangent used by each BSDF
+    public float3 bsdf_B[max_bsdf_count] = {};         ///< Bitangent used by each BSDF
+    public float3 bsdf_albedo[max_bsdf_count] = {};    ///< Albedo of individual BSDFs
+    public float3 bsdf_weight[max_bsdf_count] = {};    ///< Weight for the given BSDF
+    public float2 bsdf_roughness[max_bsdf_count] = {}; ///< Anisotropic roughness
+    public float3 bsdf_scratch[max_bsdf_count] = {};   ///< Scratch direction and depth
+    public float bsdf_index[max_bsdf_count] = {};      ///< A BSDF index, e.g. to differentiate between different MERL
+                                                       ///< materials.
 
     public uint bsdf_count = 0; ///< Number of actually active BSDFs (0 == invalid)
 }

@@ -12,6 +12,7 @@
 #include <map>
 #include <ctime>
 #include <fstream>
+#include <string>
 
 using namespace sgl;
 
@@ -72,6 +73,34 @@ const std::filesystem::path& project_directory()
     }();
     return path;
 };
+
+sgl::DeviceDesc make_test_device_desc(sgl::DeviceType device_type)
+{
+    DeviceDesc desc{
+        .type = device_type,
+        .enable_debug_layers = true,
+        .compiler_options = {
+            .include_paths = {
+                // The slang code, so we can import things from falcor2
+                project_directory() / "slang",
+                // tests, so we can import test-specific .slang files
+                project_directory() / "tests" / "native",
+                // slangpy module
+                project_directory() / "external" / "slangpy" / "slangpy" / "slang",
+            },
+        }
+    };
+
+    std::filesystem::path cache_root = options().module_and_shader_cache_dir / "native";
+    if (cache_root.is_relative())
+        cache_root = falcor::testing::project_directory() / cache_root;
+    if (options().module_cache_enabled)
+        desc.module_cache_path = cache_root / "module";
+    if (options().shader_cache_enabled)
+        desc.shader_cache_path = cache_root / "shader";
+
+    return desc;
+}
 
 static std::filesystem::path g_crashpad_database;
 static bool g_crashpad_enabled = false;
@@ -182,20 +211,7 @@ void run_gpu_test(void (*func)(GpuTestContext&))
             }
 
             if (!device) {
-                DeviceDesc desc{
-                    .type = device_type,
-                    .enable_debug_layers = true,
-                    .compiler_options = {
-                        .include_paths = {
-                            // The slang code, so we can import things from falcor2
-                            project_directory() / "slang",
-                            // tests, so we can import test-specific .slang files
-                            project_directory() / "tests" / "native",
-                            // slangpy module
-                            project_directory() / "external" / "slangpy" / "slangpy" / "slang",
-                        },
-                    }
-                };
+                DeviceDesc desc = make_test_device_desc(device_type);
                 device = Device::create(desc);
                 if (use_cached_device)
                     g_cached_devices[device_type] = device;

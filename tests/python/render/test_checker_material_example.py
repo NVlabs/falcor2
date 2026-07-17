@@ -14,11 +14,11 @@ import slangpy as spy
 from falcor2.editor import create_device
 
 
-EXAMPLE_DIR = Path(__file__).resolve().parents[3] / "examples" / "pathtracer"
-if str(EXAMPLE_DIR) not in sys.path:
-    sys.path.insert(0, str(EXAMPLE_DIR))
+DATA_SCENES_DIR = Path(__file__).resolve().parents[3] / "data" / "scenes"
+if str(DATA_SCENES_DIR) not in sys.path:
+    sys.path.insert(0, str(DATA_SCENES_DIR))
 
-from checker_material import CheckerMaterial  # noqa: E402
+from checker_material_support import CheckerMaterial  # noqa: E402
 
 
 def load_scene_sampling_module(device: spy.Device, scene: f2.Scene) -> tuple[spy.Module, object]:

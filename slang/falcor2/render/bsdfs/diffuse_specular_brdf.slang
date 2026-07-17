@@ -39,20 +39,9 @@ public struct DiffuseSpecularBRDF : IBSDF, IDifferentiable
     }
 
     [Differentiable]
-    public bool sample<S : ISampleGenerator>(
-        float3 wi,
-        out float3 wo,
-        out float pdf,
-        out float3 weight,
-        out LobeTypes lobe_types,
-        inout S sg,
-        const BSDFContext bc
-    )
+    public bool sample<S : ISampleGenerator>(float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
-        wo = {};
-        pdf = {};
-        weight = {};
-        lobe_types = {};
+        sample = {};
 
         float diffuse_weight = luminance(diffuse);
         float specular_weight = max(0.001, luminance(specular));
@@ -65,19 +54,19 @@ public struct DiffuseSpecularBRDF : IBSDF, IDifferentiable
         float2 u = no_diff next_float2(sg);
 
         if (u_select < diffuse_weight) {
-            wo = square_to_cosine_hemisphere_concentric(u);
-            pdf = square_to_cosine_hemisphere_concentric_pdf(wo);
-            pdf = pdf * diffuse_weight + specular_weight * specular_microfacet_pdf(wi, wo, alpha);
+            sample.wo = square_to_cosine_hemisphere_concentric(u);
+            sample.pdf = square_to_cosine_hemisphere_concentric_pdf(sample.wo);
+            sample.pdf = sample.pdf * diffuse_weight + specular_weight * specular_microfacet_pdf(wi, sample.wo, alpha);
         } else {
-            if (!specular_microfacet_sample(wi, alpha, u, wo, pdf))
+            if (!specular_microfacet_sample(wi, alpha, u, sample.wo, sample.pdf))
                 return false;
-            pdf = pdf * specular_weight + diffuse_weight * diffuse_pdf(wo);
+            sample.pdf = sample.pdf * specular_weight + diffuse_weight * diffuse_pdf(sample.wo);
         }
 
-        if (min(wi.z, wo.z) < MIN_COS_THETA || pdf == 0.0)
+        if (min(wi.z, sample.wo.z) < MIN_COS_THETA || sample.pdf == 0.0)
             return false;
 
-        weight = eval(wi, wo, sg, bc) / pdf;
+        sample.weight = eval(wi, sample.wo, sg, bc) / sample.pdf;
         return true;
     }
 

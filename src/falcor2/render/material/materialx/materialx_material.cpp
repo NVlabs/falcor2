@@ -68,13 +68,18 @@ std::string_view trim_ascii_space(std::string_view value)
     return value;
 }
 
-void add_materialx_search_paths(falcor::AssetResolver& resolver, const std::string& search_paths)
+std::vector<std::filesystem::path>
+get_materialx_search_paths(const std::filesystem::path& base_path, const std::string& search_paths)
 {
+    std::vector<std::filesystem::path> result;
+    if (!base_path.empty())
+        result.push_back(base_path);
     for (std::string_view path : sgl::string::split(search_paths, ";")) {
         path = trim_ascii_space(path);
         if (!path.empty())
-            resolver.add_search_path(std::filesystem::path(std::string(path)));
+            result.emplace_back(path);
     }
+    return result;
 }
 
 sgl::TextureAddressingMode materialx_address_mode_to_sgl(std::string_view address_mode)
@@ -406,9 +411,8 @@ void MaterialXMaterial::run_codegen()
     mark_dirty(DirtyFlags::resources | DirtyFlags::properties);
     m_slang_module.reset();
     m_codegen_result = {};
-    m_mtlx_path_resolver.reset(new AssetResolver());
-    m_mtlx_path_resolver->add_search_path(m_mtlx_basepath);
-    add_materialx_search_paths(*m_mtlx_path_resolver, m_mtlx_search_paths);
+    const auto search_paths = get_materialx_search_paths(m_mtlx_basepath, m_mtlx_search_paths);
+    m_mtlx_path_resolver = make_ref<AssetResolver>(std::span<const std::filesystem::path>(search_paths));
 
     std::variant<std::string, std::filesystem::path> document_desc;
     if (m_mtlx_buffer.size() > 0) {
@@ -423,7 +427,7 @@ void MaterialXMaterial::run_codegen()
             m_mtlx_path,
             m_mtlx_basepath
         );
-        m_mtlx_path_resolver->add_search_path(resolved_mtlx_path.parent_path());
+        m_mtlx_path_resolver = m_mtlx_path_resolver->push(resolved_mtlx_path.parent_path());
         document_desc = std::move(resolved_mtlx_path);
     }
 

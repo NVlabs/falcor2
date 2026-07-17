@@ -16,6 +16,8 @@ namespace emitter {
 
 namespace {
 
+constexpr std::size_t k_extra_bsdf_properties_max_bsdf_count = 16;
+
 std::string build_collect_extra_method_text(
     const LayeringDesc& layering,
     const std::string& line_prefix,
@@ -39,20 +41,115 @@ std::string build_collect_extra_method_text(
     append("    ExtraBsdfProperties result = {};");
     append("    int reported_count = 0;");
     append("    MxExtraBsdfPropertiesContext ctx = {};");
-    append("    ctx.wi_node = shading_frame_ws.to_local(si.wi_ws);");
-    append("    ctx.eval_scale = float3(1.0);");
-    append("    ctx.node_frame_ws = shading_frame_ws;");
-    append("    ctx.diagnostic_frame_ws = si.shading_frame_ws;");
+    append("    ctx.wi_adjusted = shading_frame_ws.to_local(si.wi_ws);");
+    append("    ctx.closure_weight = float3(1.0);");
     out += report_lines;
+    append("    Frame shading_from_adjusted_shading = {};");
+    append("    shading_from_adjusted_shading.normal = si.shading_frame_ws.to_local(shading_frame_ws.normal);");
+    append("    shading_from_adjusted_shading.tangent = si.shading_frame_ws.to_local(shading_frame_ws.tangent);");
+    append("    shading_from_adjusted_shading.bitangent = si.shading_frame_ws.to_local(shading_frame_ws.bitangent);");
+    append("    // Internal collectors write BSDF frames in adjusted-shading-frame space.");
+    append("    // Keep this fixed bound so [ForceUnroll] flattens the reporting-space conversion.");
+    append("    [ForceUnroll]");
+    append("    for (int i = 0; i < ExtraBsdfProperties::max_bsdf_count; ++i)");
+    append("    {");
+    append("        if (i < reported_count)");
+    append("        {");
+    append("            result.bsdf_N[i] = shading_from_adjusted_shading.to_global(result.bsdf_N[i]);");
+    append("            result.bsdf_T[i] = shading_from_adjusted_shading.to_global(result.bsdf_T[i]);");
+    append("            result.bsdf_B[i] = shading_from_adjusted_shading.to_global(result.bsdf_B[i]);");
+    append("        }");
+    append("    }");
     append("    result.bsdf_count = uint(reported_count);");
     append("    return result;");
     append("}");
     return out;
 }
 
-class ClosureTreeExtraStableIndexBuilder {
+std::string build_collect_properties_method_text(
+    const LayeringDesc& layering,
+    const std::string& line_prefix,
+    bool is_transmissive,
+    bool is_curve_scattering,
+    const std::string& report_lines
+)
+{
+    std::string out;
+    auto append = [&](const std::string& line)
+    {
+        out += line_prefix;
+        out += line;
+        out += '\n';
+    };
+
+    append("public MaterialProperties collect_properties(const SurfaceInteraction si)");
+    append("{");
+    append("    float3 wi_ls = shading_frame_ws.to_local(si.wi_ws);");
+    append("    MaterialProperties result = {};");
+    append("    result.emission = emissive_radiance;");
+    append("    if (thin_walled)");
+    append("        result.flags = result.flags | MaterialProperties::Flags::is_thin_walled;");
+    if (is_transmissive)
+        append("    result.flags = result.flags | MaterialProperties::Flags::is_transmissive;");
+    if (is_curve_scattering)
+        append("    result.flags = result.flags | MaterialProperties::Flags::is_curve_scattering;");
+
+    if (layering.main_layer.is_none()) {
+        append("    return result;");
+        append("}");
+        return out;
+    }
+
+    if (report_lines.empty()) {
+        append("    AlbedoContributions albedo = bsdf.eval_albedo(wi_ls);");
+        append("    RoughnessInformation roughness = bsdf.eval_roughness(wi_ls);");
+        append("    result.roughness = roughness.roughness.x;");
+        append("    result.guide_normal = shading_frame_ws.normal;");
+        append("    result.specular_reflection_albedo = albedo.reflection;");
+        if (is_transmissive)
+            append("    result.specular_transmission_albedo = albedo.transmission;");
+        append("    result.specular_reflectance = bsdf.ior_as_reflectance;");
+        append("    return result;");
+        append("}");
+        return out;
+    }
+
+    append("");
+    append("    float roughness_norm = 0.0;");
+    append("    float3 guide_normal = float3(0.0);");
+    append("    MxExtraBsdfPropertiesContext ctx = {};");
+    append("    ctx.wi_adjusted = wi_ls;");
+    append("    ctx.closure_weight = float3(1.0);");
+    out += report_lines;
+    append("");
+    append("    AlbedoContributions albedo = bsdf.eval_albedo(wi_ls);");
+    append("    RoughnessInformation root_roughness = bsdf.eval_roughness(wi_ls);");
+    append(
+        "    float root_roughness_guide = clamp((root_roughness.roughness.x + root_roughness.roughness.y) * 0.5, 0.0, "
+        "1.0);"
+    );
+    append("    result.roughness = roughness_norm > 0.0 ? clamp(result.roughness / roughness_norm, 0.0, 1.0)");
+    append("                                            : root_roughness_guide;");
+    append(
+        "    result.guide_normal = dot(guide_normal, guide_normal) > 0.0 ? "
+        "normalize(shading_frame_ws.to_global(guide_normal)) : "
+        "shading_frame_ws.normal;"
+    );
+    append("");
+    if (is_transmissive) {
+        append("    float transmission_split = min(root_roughness.roughness.x + root_roughness.roughness.y, 1.0);");
+        append("    result.diffuse_transmission_albedo = albedo.transmission * transmission_split;");
+        append("    result.specular_transmission_albedo = albedo.transmission * (1.0 - transmission_split);");
+    }
+    append("    result.specular_reflectance = result.specular_reflection_albedo;");
+    append("    return result;");
+    append("}");
+    return out;
+}
+
+class ClosureTreeExtraLeafIndexBuilder {
 public:
-    explicit ClosureTreeExtraStableIndexBuilder(const LayeringDesc& layering)
+    explicit ClosureTreeExtraLeafIndexBuilder(const LayeringDesc& layering)
         : m_layering(layering)
     {
     }
@@ -60,7 +157,7 @@ public:
     std::vector<std::size_t> build()
     {
         append_ref(m_layering.main_layer);
-        return m_stable_indices;
+        return m_leaf_visit_to_bsdf_index;
     }
 
 private:
@@ -70,7 +167,7 @@ private:
             return;
 
         if (ref.is_bsdf()) {
-            m_stable_indices.push_back(ref.bsdf_index());
+            m_leaf_visit_to_bsdf_index.push_back(ref.bsdf_index());
             return;
         }
 
@@ -103,7 +200,7 @@ private:
     }
 
     const LayeringDesc& m_layering;
-    std::vector<std::size_t> m_stable_indices;
+    std::vector<std::size_t> m_leaf_visit_to_bsdf_index;
 };
 
 std::string build_closure_tree_collect_extra_text(const LayeringDesc& layering, const std::string& line_prefix)
@@ -111,7 +208,7 @@ std::string build_closure_tree_collect_extra_text(const LayeringDesc& layering, 
     if (layering.main_layer.is_none())
         return {};
 
-    const std::vector<std::size_t> stable_indices = ClosureTreeExtraStableIndexBuilder(layering).build();
+    const std::vector<std::size_t> leaf_visit_to_bsdf_index = ClosureTreeExtraLeafIndexBuilder(layering).build();
 
     std::string body_lines;
     auto append = [&](const std::string& line)
@@ -122,12 +219,17 @@ std::string build_closure_tree_collect_extra_text(const LayeringDesc& layering, 
         body_lines += ";\n";
     };
 
-    append("ctx.visit_index = 0");
-    for (std::size_t encounter_index = 0; encounter_index < stable_indices.size(); ++encounter_index)
+    append("ctx.leaf_visit_index = 0");
+    for (std::size_t leaf_visit_index = 0; leaf_visit_index < leaf_visit_to_bsdf_index.size(); ++leaf_visit_index) {
+        if (leaf_visit_index >= k_extra_bsdf_properties_max_bsdf_count)
+            break;
+        const std::size_t bsdf_index = leaf_visit_to_bsdf_index.size() > k_extra_bsdf_properties_max_bsdf_count
+            ? leaf_visit_index
+            : leaf_visit_to_bsdf_index[leaf_visit_index];
         append(
-            "ctx.stable_indices[" + std::to_string(encounter_index)
-            + "] = " + std::to_string(stable_indices[encounter_index])
+            "ctx.leaf_visit_to_bsdf_index[" + std::to_string(leaf_visit_index) + "] = " + std::to_string(bsdf_index)
         );
+    }
     append("bsdf.collect_extra_bsdf_properties(result, reported_count, ctx)");
     return body_lines;
 }
@@ -213,6 +315,22 @@ public:
             build_closure_tree_collect_extra_text(layering, line_prefix)
         );
     }
+
+    std::string build_collect_properties_text(
+        const LayeringDesc& layering,
+        const std::string& line_prefix,
+        bool is_transmissive,
+        bool is_curve_scattering
+    ) const override
+    {
+        return build_collect_properties_method_text(
+            layering,
+            line_prefix,
+            is_transmissive,
+            is_curve_scattering,
+            line_prefix + "    bsdf.collect_material_properties(result, roughness_norm, guide_normal, ctx);\n"
+        );
+    }
 };
 
 class BsdfMixRootStrategy : public RootStrategy {
@@ -284,6 +402,22 @@ public:
             layering,
             line_prefix,
             line_prefix + "    bsdf.collect_extra_bsdf_properties(result, reported_count, ctx);\n"
+        );
+    }
+
+    std::string build_collect_properties_text(
+        const LayeringDesc& layering,
+        const std::string& line_prefix,
+        bool is_transmissive,
+        bool is_curve_scattering
+    ) const override
+    {
+        return build_collect_properties_method_text(
+            layering,
+            line_prefix,
+            is_transmissive,
+            is_curve_scattering,
+            line_prefix + "    bsdf.collect_material_properties(result, roughness_norm, guide_normal, ctx);\n"
         );
     }
 };

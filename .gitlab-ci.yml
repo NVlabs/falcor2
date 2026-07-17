@@ -1,13 +1,26 @@
 # -----------------------------------------------------------------------------
+# Defaults
+# -----------------------------------------------------------------------------
+
+default:
+  timeout: 2h
+  before_script:
+    # Update top-level submodules without recursing into stale nested checkouts,
+    # then synchronize and update nested submodules from the checked-out revisions.
+    - git submodule init
+    - git submodule sync
+    - git -c fetch.recurseSubmodules=false submodule update --init --force
+    - git submodule foreach --quiet git submodule init
+    - git submodule sync --recursive
+    - git -c fetch.recurseSubmodules=false submodule update --init --recursive --force
+
+# -----------------------------------------------------------------------------
 # Global variables
 # -----------------------------------------------------------------------------
 
 variables:
-  GIT_SUBMODULE_STRATEGY: recursive
-  GIT_SUBMODULE_FORCE_HTTPS: "true"
-  GIT_SUBMODULE_DEPTH: 0
+  GIT_SUBMODULE_STRATEGY: none
   GIT_STRATEGY: fetch
-  GIT_SUBMODULE_UPDATE_FLAGS: --force
 
 # -----------------------------------------------------------------------------
 # Rule templates
@@ -39,7 +52,9 @@ pre-commit:
     - .default-rules
   stage: build
   tags:
-    - linux
+    - kernelvm
+  variables:
+    KERNELVM_OS: ubuntu24
   script:
     # Setup conda environment
     - source /opt/ci/miniconda3/bin/activate
@@ -61,9 +76,10 @@ pre-commit:
   stage: build
   tags:
     - kernelvm
+    - gpu/5090
   variables:
     KERNELVM_OS: windows11
-    KERNELVM_DRIVER: "610.62"
+    KERNELVM_DRIVER: "581.80"
     VS_PATH: C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools
     CONDA_ENV: falcor2
   hooks:
@@ -116,13 +132,14 @@ pre-commit:
   stage: build
   tags:
     - kernelvm
+    - gpu/5090
   variables:
     KERNELVM_OS: ubuntu24
-    KERNELVM_DRIVER: "610.43.02"
+    KERNELVM_DRIVER: "580.173.02"
   hooks:
     pre_get_sources_script:
       # Remove build folder
-      rm -rf ${CI_PROJECT_DIR}/build
+      - rm -rf ${CI_PROJECT_DIR}/build
   script:
     # Setup conda environment
     - source /opt/ci/miniconda3/bin/activate # Initialize conda for the shell
@@ -177,6 +194,18 @@ windows-release:
   variables:
     CI_CONFIG: Release
 
+# Temporarily disabled as parallel builds not working with 4090
+#windows-release-4090:
+#  extends:
+#    - .default-rules
+#    - .windows-base
+#    - .unit-test
+#  tags:
+#    - kernelvm
+#    - gpu/4090
+#  variables:
+#    CI_CONFIG: Release
+
 windows-debug:
   extends:
     - .default-rules
@@ -189,13 +218,38 @@ windows-debug:
 # Linux build jobs
 # -----------------------------------------------------------------------------
 
-linux-gcc-release:
+linux-release:
   extends:
     - .default-rules
     - .linux-base
     - .unit-test
   variables:
     CI_CONFIG: Release
+
+# Temporarily disabled as parallel builds not working with 4090
+#linux-release-4090:
+#  extends:
+#    - .default-rules
+#    - .linux-base
+#    - .unit-test
+#  tags:
+#    - kernelvm
+#    - gpu/4090
+#  variables:
+#    CI_CONFIG: Release
+
+# Doesn't work yet :(
+#linux-release-4090-d535:
+#  extends:
+#    - .default-rules
+#    - .linux-base
+#    - .unit-test
+#  tags:
+#    - kernelvm
+#    - gpu/4090
+#  variables:
+#    CI_CONFIG: Release
+#    KERNELVM_DRIVER: "535.309.01"
 
 linux-gcc-debug:
   extends:

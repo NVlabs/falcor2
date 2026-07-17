@@ -9,6 +9,8 @@ public struct PointLight : ILight
     public float3 position_ws;
     public float3 intensity;
 
+    public float emitted_power() { return float.FOUR_PI * luminance(intensity); }
+
     public float3 eval_direction<Interaction : IInteraction>(const Interaction ref, const DirectionSample sample)
     {
         return float3(0.0);

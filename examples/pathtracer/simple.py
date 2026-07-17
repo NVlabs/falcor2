@@ -13,7 +13,7 @@ from falcor2.rendernodes import PathTracerPipeline
 
 DESCRIPTION = "Example PathTracer"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_SCENE_PATH = PROJECT_ROOT / "data/assets/cornell-box/usdpreviewsurface/cornell-box.usda"
+DEFAULT_SCENE_PATH = PROJECT_ROOT / "data/scenes/cornell-box.py"
 DEFAULT_WIDTH = 1920
 DEFAULT_HEIGHT = 1080
 
@@ -49,9 +49,9 @@ def main() -> None:
     pipeline.path_tracer.enable_nee = True
     pipeline.path_tracer.enable_mis = True
     pipeline.path_tracer.enable_analytic_lights = True
-    pipeline.path_tracer.enable_environment_light = False
+    pipeline.path_tracer.enable_environment_light = True
     pipeline.path_tracer.enable_emissive_triangles = True
-    pipeline.path_tracer.env_map_as_background = False
+    pipeline.path_tracer.env_map_as_background = True
     pipeline.tone_map = True
 
     editor = Editor.create(

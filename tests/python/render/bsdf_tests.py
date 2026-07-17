@@ -18,7 +18,7 @@ from falcor2.utils.chi2 import ChiSquareTest
 
 SAMPLES_PER_THREAD: int = 1024
 
-# Keep in sync with Slang LobeTypes::all. SlangPy zero-fills omitted struct
+# Keep in sync with Slang BSDFFlags::all. SlangPy zero-fills omitted struct
 # fields in Python dict bindings, so tests must supply this nonzero default.
 LOBE_TYPES_ALL: int = 0xF7
 

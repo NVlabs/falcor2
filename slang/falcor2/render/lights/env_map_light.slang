@@ -12,6 +12,19 @@ public struct EnvMapLight : ILight
     public TextureHandle<float4, uint(TextureHandleFlags::none)> env_map_texture_handle;
     public DescriptorHandleWAR<Texture2D<float>> importance_map_texture;
 
+    public float emitted_power()
+    {
+        Texture2D<float> importance_map = importance_map_texture.unwrap();
+        uint3 dims;
+        importance_map.GetDimensions(0, dims.x, dims.y, dims.z);
+#ifdef __TARGET_CUDA__
+        // TODO(scene) GetDimensions doesn't report mip level count on CUDA.
+        dims.z = firstbithigh(dims.x) + 1;
+#endif
+        const float average_luminance = importance_map.Load(int3(0, 0, dims.z - 1));
+        return float.FOUR_PI * average_luminance * luminance(scale);
+    }
+
     public float3 eval_direction<Interaction : IInteraction>(const Interaction ref, const DirectionSample sample)
     {
         float3 dir_os = normalize(mul(transpose(world_from_object), sample.dir_ws));

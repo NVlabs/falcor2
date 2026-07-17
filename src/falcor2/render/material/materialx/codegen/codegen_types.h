@@ -111,6 +111,12 @@ SGL_ENUM_INFO(
 );
 SGL_ENUM_REGISTER(LayeringMode);
 
+inline constexpr LayeringMode default_layering_mode()
+{
+    LayeringMode mode = LayeringMode::bsdf_mix;
+    return mode;
+}
+
 enum class CompensationMode {
     turquin_lut,
     turquin_analytic,
@@ -160,7 +166,7 @@ struct CodeGenDesc {
     ///
     /// closure_tree emits the closure tree directly, and bsdf_mix emits a generated
     /// BSDF-mixture root.
-    LayeringMode layering_mode = LayeringMode::bsdf_mix;
+    LayeringMode layering_mode = default_layering_mode();
 
     /// Mx139 microfacet energy-compensation policy used by the MaterialX 1.39 genslangpt backend.
     CompensationMode compensation_mode = CompensationMode::turquin_analytic;

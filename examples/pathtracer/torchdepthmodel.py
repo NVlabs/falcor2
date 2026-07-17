@@ -17,8 +17,7 @@ from falcor2.rendergraph import ContainerSpec
 from falcor2.rendernodes import PathTracerPipeline
 
 
-SCENE_PATH = Path("data/assets/cornell-box/usdpreviewsurface/cornell-box.usda")
-ENV_MAP_PATH = Path("data/assets/envmaps/aerodynamics_workshop_512.hdr")
+SCENE_PATH = Path("data/scenes/cornell-box-env.py")
 MODEL_ID = "depth-anything/Depth-Anything-V2-Small-hf"
 MODEL_INPUT_HEIGHT = 448
 VIEWPORT_WIDTH = 1280
@@ -171,24 +170,11 @@ class DepthAnythingViewer:
 def create_scene_and_camera(
     device: spy.Device,
     scene_path: Path,
-    env_map_path: Path,
-    width: int,
-    height: int,
 ) -> tuple[falcor2.Scene, falcor2.Camera]:
     scene = load_scene(device, scene_path)
-
-    env_entity = scene.create_entity()
-    env_map = env_entity.create_component(falcor2.EnvMapLight)
-    env_map.exposure = 5
-    env_map["env_map_path"] = str(env_map_path)
-
-    scene.update()
     camera = scene.active_camera
     if camera is None:
-        raise RuntimeError(f"Scene file does not contain a camera: {scene_path}")
-    camera.width = width
-    camera.height = height
-    camera.recompute()
+        raise RuntimeError(f"Scene file does not contain an active camera: {scene_path}")
 
     return scene, camera
 
@@ -198,9 +184,6 @@ def main() -> None:
     scene, camera = create_scene_and_camera(
         device=device,
         scene_path=SCENE_PATH,
-        env_map_path=ENV_MAP_PATH,
-        width=VIEWPORT_WIDTH,
-        height=VIEWPORT_HEIGHT,
     )
 
     pipeline = PathTracerPipeline.create(device)

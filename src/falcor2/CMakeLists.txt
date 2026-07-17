@@ -5,6 +5,7 @@ target_sources(falcor2 PRIVATE
     falcor2.cpp
     falcor2.h
 
+    core/asset_resolver.cpp
     core/asset_resolver.h
     core/archive.cpp
     core/archive.h
@@ -102,6 +103,10 @@ target_sources(falcor2 PRIVATE
     importers/importer_types.cpp
     importers/importer.h
     importers/importer.cpp
+    importers/importer_collections.h
+    importers/importer_collections.cpp
+    importers/importer_edits.h
+    importers/importer_edits.cpp
     importers/mikkt.h
     importers/mikkt.cpp
 

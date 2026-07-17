@@ -11,25 +11,25 @@ public struct SpecularMicrofacetBRDF : IBSDF, IDifferentiable
     /// GGX width parameter.
     public float alpha = {};
     /// Active lobes for sampling and evaluation.
-    public uint active_lobes = uint(LobeTypes::none);
+    public uint active_lobes = uint(BSDFFlags::none);
 
     public __init() { }
 
-    public __init(float3 albedo, float alpha, LobeTypes active_lobes = LobeTypes::none)
+    public __init(float3 albedo, float alpha, BSDFFlags active_lobes = BSDFFlags::none)
     {
         this.albedo = albedo;
         this.alpha = alpha;
         this.active_lobes = uint(active_lobes);
     }
 
-    public bool has_lobe(const LobeTypes lobe_type) { return (active_lobes & uint(lobe_type)) != 0; }
+    public bool has_lobe(const BSDFFlags lobe_type) { return (active_lobes & uint(lobe_type)) != 0; }
 
     [Differentiable]
     public float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
     {
         if (min(wi.z, wo.z) < BSDF_MIN_COS_THETA)
             return float3(0.0);
-        if (alpha == 0.0 || !has_lobe(LobeTypes::glossy_reflection))
+        if (alpha == 0.0 || !has_lobe(BSDFFlags::glossy_reflection))
             return float3(0.0);
 
         float3 h = normalize(wi + wo);
@@ -43,36 +43,25 @@ public struct SpecularMicrofacetBRDF : IBSDF, IDifferentiable
         return F * D * G * 0.25 / wi.z;
     }
 
-    public bool sample<S : ISampleGenerator>(
-        const float3 wi,
-        out float3 wo,
-        out float pdf,
-        out float3 weight,
-        out LobeTypes lobe_types,
-        inout S sg,
-        const BSDFContext bc
-    )
+    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
-        wo = {};
-        pdf = {};
-        weight = {};
-        lobe_types = LobeTypes::none;
+        sample = {};
 
         if (wi.z < BSDF_MIN_COS_THETA)
             return false;
 
         if (alpha == 0.0) {
-            if (!has_lobe(LobeTypes::delta_reflection))
+            if (!has_lobe(BSDFFlags::delta_reflection))
                 return false;
 
-            wo = float3(-wi.x, -wi.y, wi.z);
-            pdf = 0.0;
-            weight = eval_fresnel_schlick(albedo, float3(1.0), wi.z);
-            lobe_types = LobeTypes::delta_reflection;
+            sample.wo = float3(-wi.x, -wi.y, wi.z);
+            sample.pdf = 0.0;
+            sample.weight = eval_fresnel_schlick(albedo, float3(1.0), wi.z);
+            sample.flags = BSDFFlags::delta_reflection;
             return true;
         }
 
-        if (!has_lobe(LobeTypes::glossy_reflection))
+        if (!has_lobe(BSDFFlags::glossy_reflection))
             return false;
 
         float half_pdf = {};
@@ -81,19 +70,19 @@ public struct SpecularMicrofacetBRDF : IBSDF, IDifferentiable
         if (wi_dot_h <= 0.0)
             return false;
 
-        wo = 2.0 * wi_dot_h * h - wi;
-        if (wo.z < BSDF_MIN_COS_THETA)
+        sample.wo = 2.0 * wi_dot_h * h - wi;
+        if (sample.wo.z < BSDF_MIN_COS_THETA)
             return false;
 
-        pdf = half_pdf / (4.0 * wi_dot_h);
-        if (pdf <= 0.0)
+        sample.pdf = half_pdf / (4.0 * wi_dot_h);
+        if (sample.pdf <= 0.0)
             return false;
 
-        float G = evalMaskingSmithGGXCorrelated(alpha, wi.z, wo.z);
+        float G = evalMaskingSmithGGXCorrelated(alpha, wi.z, sample.wo.z);
         float g_over_g1_wi = G * (1.0 + evalLambdaGGX(alpha * alpha, wi.z));
         float3 F = eval_fresnel_schlick(albedo, float3(1.0), wi_dot_h);
-        weight = F * g_over_g1_wi;
-        lobe_types = LobeTypes::glossy_reflection;
+        sample.weight = F * g_over_g1_wi;
+        sample.flags = BSDFFlags::glossy_reflection;
         return true;
     }
 
@@ -101,7 +90,7 @@ public struct SpecularMicrofacetBRDF : IBSDF, IDifferentiable
     {
         if (min(wi.z, wo.z) < BSDF_MIN_COS_THETA)
             return 0.0;
-        if (alpha == 0.0 || !has_lobe(LobeTypes::glossy_reflection))
+        if (alpha == 0.0 || !has_lobe(BSDFFlags::glossy_reflection))
             return 0.0;
 
         float3 h = normalize(wi + wo);
@@ -143,11 +132,11 @@ public struct SpecularMicrofacetBSDF : IBSDF, IDifferentiable
     /// Relative index of refraction (eta_i / eta_t).
     public float eta = {};
     /// Active lobes for sampling and evaluation.
-    public uint active_lobes = uint(LobeTypes::none);
+    public uint active_lobes = uint(BSDFFlags::none);
 
     public __init() { }
 
-    public __init(float3 transmission_albedo, float alpha, float eta, LobeTypes active_lobes = LobeTypes::none)
+    public __init(float3 transmission_albedo, float alpha, float eta, BSDFFlags active_lobes = BSDFFlags::none)
     {
         this.transmission_albedo = transmission_albedo;
         this.alpha = alpha;
@@ -155,7 +144,7 @@ public struct SpecularMicrofacetBSDF : IBSDF, IDifferentiable
         this.active_lobes = uint(active_lobes);
     }
 
-    public bool has_lobe(const LobeTypes lobe_type) { return (active_lobes & uint(lobe_type)) != 0; }
+    public bool has_lobe(const BSDFFlags lobe_type) { return (active_lobes & uint(lobe_type)) != 0; }
 
     [Differentiable]
     public float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
@@ -166,8 +155,8 @@ public struct SpecularMicrofacetBSDF : IBSDF, IDifferentiable
             return float3(0.0);
 
         bool is_reflection = wo.z > 0.0;
-        bool has_reflection = has_lobe(LobeTypes::glossy_reflection);
-        bool has_transmission = has_lobe(LobeTypes::glossy_transmission);
+        bool has_reflection = has_lobe(BSDFFlags::glossy_reflection);
+        bool has_transmission = has_lobe(BSDFFlags::glossy_transmission);
         if ((is_reflection && !has_reflection) || (!is_reflection && !has_transmission))
             return float3(0.0);
 
@@ -199,20 +188,9 @@ public struct SpecularMicrofacetBSDF : IBSDF, IDifferentiable
         return transmission_albedo * (1.0 - F) * D * G * abs(t);
     }
 
-    public bool sample<S : ISampleGenerator>(
-        const float3 wi,
-        out float3 wo,
-        out float pdf,
-        out float3 weight,
-        out LobeTypes lobe_types,
-        inout S sg,
-        const BSDFContext bc
-    )
+    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
-        wo = {};
-        pdf = {};
-        weight = {};
-        lobe_types = LobeTypes::none;
+        sample = {};
 
         if (wi.z < BSDF_MIN_COS_THETA)
             return false;
@@ -220,8 +198,8 @@ public struct SpecularMicrofacetBSDF : IBSDF, IDifferentiable
         float lobe_sample = next_float(sg);
 
         if (alpha == 0.0) {
-            bool has_reflection = has_lobe(LobeTypes::delta_reflection);
-            bool has_transmission = has_lobe(LobeTypes::delta_transmission);
+            bool has_reflection = has_lobe(BSDFFlags::delta_reflection);
+            bool has_transmission = has_lobe(BSDFFlags::delta_transmission);
             if (!(has_reflection || has_transmission))
                 return false;
 
@@ -234,20 +212,20 @@ public struct SpecularMicrofacetBSDF : IBSDF, IDifferentiable
             else if (has_transmission && F == 1.0)
                 return false;
 
-            wo = is_reflection ? float3(-wi.x, -wi.y, wi.z) : float3(-wi.x * eta, -wi.y * eta, -cos_theta_t);
-            if (abs(wo.z) < BSDF_MIN_COS_THETA || ((wo.z > 0.0) != is_reflection))
+            sample.wo = is_reflection ? float3(-wi.x, -wi.y, wi.z) : float3(-wi.x * eta, -wi.y * eta, -cos_theta_t);
+            if (abs(sample.wo.z) < BSDF_MIN_COS_THETA || ((sample.wo.z > 0.0) != is_reflection))
                 return false;
 
-            pdf = 0.0;
-            weight = is_reflection ? float3(1.0) : transmission_albedo;
+            sample.pdf = 0.0;
+            sample.weight = is_reflection ? float3(1.0) : transmission_albedo;
             if (!(has_reflection && has_transmission))
-                weight *= is_reflection ? F : (1.0 - F);
-            lobe_types = is_reflection ? LobeTypes::delta_reflection : LobeTypes::delta_transmission;
+                sample.weight *= is_reflection ? F : (1.0 - F);
+            sample.flags = is_reflection ? BSDFFlags::delta_reflection : BSDFFlags::delta_transmission;
             return true;
         }
 
-        bool has_reflection = has_lobe(LobeTypes::glossy_reflection);
-        bool has_transmission = has_lobe(LobeTypes::glossy_transmission);
+        bool has_reflection = has_lobe(BSDFFlags::glossy_reflection);
+        bool has_transmission = has_lobe(BSDFFlags::glossy_transmission);
         if (!(has_reflection || has_transmission))
             return false;
 
@@ -266,39 +244,39 @@ public struct SpecularMicrofacetBSDF : IBSDF, IDifferentiable
         else if (has_transmission && F == 1.0)
             return false;
 
-        wo = is_reflection ? (2.0 * wi_dot_h * h - wi) : ((eta * wi_dot_h - cos_theta_t) * h - eta * wi);
-        if (abs(wo.z) < BSDF_MIN_COS_THETA || ((wo.z > 0.0) != is_reflection))
+        sample.wo = is_reflection ? (2.0 * wi_dot_h * h - wi) : ((eta * wi_dot_h - cos_theta_t) * h - eta * wi);
+        if (abs(sample.wo.z) < BSDF_MIN_COS_THETA || ((sample.wo.z > 0.0) != is_reflection))
             return false;
 
-        float wo_dot_h = dot(wo, h);
+        float wo_dot_h = dot(sample.wo, h);
         if (is_reflection && wo_dot_h <= 0.0)
             return false;
         if (!is_reflection && wo_dot_h >= 0.0)
             return false;
 
-        float G = evalMaskingSmithGGXCorrelated(alpha, wi.z, abs(wo.z));
-        weight = float3(G * (1.0 + evalLambdaGGX(alpha * alpha, wi.z)));
+        float G = evalMaskingSmithGGXCorrelated(alpha, wi.z, abs(sample.wo.z));
+        sample.weight = float3(G * (1.0 + evalLambdaGGX(alpha * alpha, wi.z)));
 
         if (is_reflection) {
-            pdf = half_pdf / (4.0 * wo_dot_h);
+            sample.pdf = half_pdf / (4.0 * wo_dot_h);
         } else {
             float sqrt_denom = wo_dot_h + eta * wi_dot_h;
             float denom = sqrt_denom * sqrt_denom;
             if (denom <= 0.0)
                 return false;
-            pdf = half_pdf * abs(wo_dot_h) / denom;
-            weight *= transmission_albedo * eta * eta;
+            sample.pdf = half_pdf * abs(wo_dot_h) / denom;
+            sample.weight *= transmission_albedo * eta * eta;
         }
 
         if (has_reflection && has_transmission)
-            pdf *= is_reflection ? F : (1.0 - F);
+            sample.pdf *= is_reflection ? F : (1.0 - F);
         else
-            weight *= is_reflection ? F : (1.0 - F);
+            sample.weight *= is_reflection ? F : (1.0 - F);
 
-        if (pdf <= 0.0)
+        if (sample.pdf <= 0.0)
             return false;
 
-        lobe_types = is_reflection ? LobeTypes::glossy_reflection : LobeTypes::glossy_transmission;
+        sample.flags = is_reflection ? BSDFFlags::glossy_reflection : BSDFFlags::glossy_transmission;
         return true;
     }
 
@@ -310,8 +288,8 @@ public struct SpecularMicrofacetBSDF : IBSDF, IDifferentiable
             return 0.0;
 
         bool is_reflection = wo.z > 0.0;
-        bool has_reflection = has_lobe(LobeTypes::glossy_reflection);
-        bool has_transmission = has_lobe(LobeTypes::glossy_transmission);
+        bool has_reflection = has_lobe(BSDFFlags::glossy_reflection);
+        bool has_transmission = has_lobe(BSDFFlags::glossy_transmission);
         if ((is_reflection && !has_reflection) || (!is_reflection && !has_transmission))
             return 0.0;
 

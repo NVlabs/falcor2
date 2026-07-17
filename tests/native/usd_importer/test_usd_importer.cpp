@@ -21,6 +21,7 @@ END_DISABLE_USD_WARNINGS
 #include <sgl/core/platform.h>
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <iostream>
 
@@ -318,6 +319,232 @@ static void validate_cornell_box_geometry(const ref<falcor::ImporterScene>& scen
     if (scene->cameras.size() > 0) {
         CHECK_EQ(scene->cameras[0].name, "camera");
     }
+}
+
+TEST_CASE("UsdImporter - camera optics and node association")
+{
+    const std::filesystem::path camera_path
+        = testing::project_directory() / "data" / "assets" / "test_usd_importer" / "test_camera.usda";
+    REQUIRE(std::filesystem::exists(camera_path));
+
+    auto importer = make_ref<UsdImporter>();
+    ref<ImporterScene> scene = importer->load_scene(camera_path);
+    REQUIRE(scene);
+    REQUIRE_EQ(scene->cameras.size(), 2);
+
+    auto find_camera_index = [&](std::string_view name) -> int
+    {
+        for (size_t index = 0; index < scene->cameras.size(); ++index) {
+            if (scene->cameras[index].name == name)
+                return static_cast<int>(index);
+        }
+        return -1;
+    };
+
+    const int camera_index = find_camera_index("CameraComponent");
+    REQUIRE_GE(camera_index, 0);
+    const ImporterCamera& camera = scene->cameras[camera_index];
+    CHECK_EQ(camera.name, "CameraComponent");
+    CHECK_EQ(camera.projection, ImporterCamera::Projection::perspective);
+    CHECK_EQ(camera.fov_direction, ImporterCamera::FOVDirection::vertical);
+    CHECK_EQ(camera.sensor_size_mm, doctest::Approx(19.f));
+    CHECK_EQ(camera.focal_length, doctest::Approx(100.f));
+    CHECK_EQ(camera.focus_distance, doctest::Approx(2.5f));
+    CHECK_EQ(camera.fstop, doctest::Approx(2.8f));
+    CHECK_EQ(camera.depth_range.x, doctest::Approx(0.1f));
+    CHECK_EQ(camera.depth_range.y, doctest::Approx(1000.f));
+    CHECK_EQ(
+        camera.vertical_fov_degrees(),
+        doctest::Approx(ImporterCamera::fov_degrees_from_focal_length(19.f, 100.f))
+    );
+
+    int camera_node_index = -1;
+    for (size_t index = 0; index < scene->nodes.size(); ++index) {
+        if (scene->nodes[index].camera_index == camera_index) {
+            camera_node_index = static_cast<int>(index);
+            break;
+        }
+    }
+    REQUIRE_GE(camera_node_index, 0);
+
+    const ImporterNode& camera_node = scene->nodes[camera_node_index];
+    REQUIRE_GE(camera_node.parent, 0);
+    const ImporterNode& camera_transform_node = scene->nodes[camera_node.parent];
+    CHECK_EQ(camera_node.name, "/CameraActor/CameraComponent");
+    CHECK_EQ(camera_transform_node.name, "/CameraActor/CameraComponent");
+    CHECK_EQ(camera_transform_node.transform.get_col(3).xyz(), float3(4.f, 5.f, 6.f));
+    CHECK(
+        std::find(camera_transform_node.children.begin(), camera_transform_node.children.end(), camera_node_index)
+        != camera_transform_node.children.end()
+    );
+    REQUIRE_GE(camera_transform_node.parent, 0);
+    CHECK_EQ(scene->nodes[camera_transform_node.parent].name, "/CameraActor");
+
+    const int fallback_camera_index = find_camera_index("HorizontalFallbackCamera");
+    REQUIRE_GE(fallback_camera_index, 0);
+    const ImporterCamera& fallback_camera = scene->cameras[fallback_camera_index];
+    CHECK_EQ(fallback_camera.fov_direction, ImporterCamera::FOVDirection::horizontal);
+    CHECK_EQ(fallback_camera.sensor_size_mm, doctest::Approx(32.f));
+}
+
+TEST_CASE("UsdImporter - light radiance attributes")
+{
+    const std::filesystem::path lights_path
+        = testing::project_directory() / "data" / "assets" / "test_usd_importer" / "test_lights.usda";
+    REQUIRE(std::filesystem::exists(lights_path));
+
+    auto importer = make_ref<UsdImporter>();
+    ref<ImporterScene> scene = importer->load_scene(lights_path);
+    REQUIRE(scene);
+    REQUIRE_EQ(scene->lights.size(), 3);
+
+    auto find_light = [&](std::string_view name) -> const ImporterLight*
+    {
+        auto it = std::find_if(
+            scene->lights.begin(),
+            scene->lights.end(),
+            [&](const ImporterLight& light)
+            {
+                return light.name == name;
+            }
+        );
+        return it != scene->lights.end() ? &(*it) : nullptr;
+    };
+
+    const ImporterLight* sun = find_light("/Sun");
+    REQUIRE(sun);
+    CHECK_EQ(sun->type, ImporterLight::Type::distant);
+    CHECK_EQ(sun->degree_angular_diameter, doctest::Approx(0.5357f));
+    CHECK_EQ(sun->intensity.x, doctest::Approx(3.f));
+    CHECK_EQ(sun->intensity.y, doctest::Approx(6.f));
+    CHECK_EQ(sun->intensity.z, doctest::Approx(9.f));
+
+    const ImporterLight* normalized_sun = find_light("/NormalizedSun");
+    REQUIRE(normalized_sun);
+    CHECK_EQ(normalized_sun->type, ImporterLight::Type::distant);
+    CHECK_EQ(normalized_sun->degree_angular_diameter, doctest::Approx(60.f));
+    const float normalized_size_factor = 0.25f * std::acos(-1.f);
+    CHECK_EQ(normalized_sun->intensity.x, doctest::Approx(3.f / normalized_size_factor));
+    CHECK_EQ(normalized_sun->intensity.y, doctest::Approx(6.f / normalized_size_factor));
+    CHECK_EQ(normalized_sun->intensity.z, doctest::Approx(9.f / normalized_size_factor));
+
+    const ImporterLight* sky = find_light("/TexturelessSky");
+    REQUIRE(sky);
+    CHECK_EQ(sky->type, ImporterLight::Type::dome);
+    CHECK(sky->env_map_path.empty());
+    CHECK_EQ(sky->intensity.x, doctest::Approx(4.f));
+    CHECK_EQ(sky->intensity.y, doctest::Approx(2.f));
+    CHECK_EQ(sky->intensity.z, doctest::Approx(1.f));
+}
+
+TEST_CASE("UsdImporter - normalized area light radiance")
+{
+    const std::filesystem::path lights_path = testing::get_case_temp_directory() / "normalized_area_lights.usda";
+    {
+        std::ofstream file(lights_path);
+        REQUIRE(file);
+        file << R"usd(#usda 1.0
+
+def Xform "ScaledPlanarLights"
+{
+    double3 xformOp:scale = (2, 3, 4)
+    uniform token[] xformOpOrder = ["xformOp:scale"]
+
+    def RectLight "Rect"
+    {
+        float inputs:width = 2
+        float inputs:height = 5
+        float inputs:intensity = 60
+        bool inputs:normalize = 1
+    }
+
+    def DiskLight "Disk"
+    {
+        float inputs:radius = 2
+        float inputs:intensity = 24
+        bool inputs:normalize = 1
+    }
+}
+
+def Xform "ScaledSphereLight"
+{
+    double3 xformOp:scale = (2, 2, 2)
+    uniform token[] xformOpOrder = ["xformOp:scale"]
+
+    def SphereLight "Sphere"
+    {
+        float inputs:radius = 0.5
+        float inputs:intensity = 8
+        bool inputs:normalize = 1
+    }
+}
+
+def Xform "NonUniformSphereLight"
+{
+    double3 xformOp:scale = (2, 1, 1)
+    uniform token[] xformOpOrder = ["xformOp:scale"]
+
+    def SphereLight "Sphere"
+    {
+        float inputs:radius = 1
+        float inputs:intensity = 1
+        bool inputs:normalize = 1
+    }
+}
+
+def DomeLight "Dome"
+{
+    float inputs:intensity = 7
+    bool inputs:normalize = 1
+}
+)usd";
+    }
+
+    auto importer = make_ref<UsdImporter>();
+    ref<ImporterScene> scene = importer->load_scene(lights_path);
+    REQUIRE(scene);
+    REQUIRE_EQ(scene->lights.size(), 5);
+
+    auto find_light = [&](std::string_view name) -> const ImporterLight*
+    {
+        auto it = std::find_if(
+            scene->lights.begin(),
+            scene->lights.end(),
+            [&](const ImporterLight& light)
+            {
+                return light.name == name;
+            }
+        );
+        return it != scene->lights.end() ? &(*it) : nullptr;
+    };
+
+    const float pi = std::acos(-1.f);
+
+    const ImporterLight* rect = find_light("/ScaledPlanarLights/Rect");
+    REQUIRE(rect);
+    CHECK_EQ(rect->type, ImporterLight::Type::rectangular);
+    CHECK_EQ(rect->intensity.x, doctest::Approx(1.f));
+
+    const ImporterLight* disk = find_light("/ScaledPlanarLights/Disk");
+    REQUIRE(disk);
+    CHECK_EQ(disk->type, ImporterLight::Type::disk);
+    CHECK_EQ(disk->intensity.x, doctest::Approx(1.f / pi));
+
+    const ImporterLight* sphere = find_light("/ScaledSphereLight/Sphere");
+    REQUIRE(sphere);
+    CHECK_EQ(sphere->type, ImporterLight::Type::sphere);
+    CHECK_EQ(sphere->intensity.x, doctest::Approx(2.f / pi));
+
+    const ImporterLight* non_uniform_sphere = find_light("/NonUniformSphereLight/Sphere");
+    REQUIRE(non_uniform_sphere);
+    CHECK_EQ(non_uniform_sphere->type, ImporterLight::Type::sphere);
+    // Non-uniform sphere transforms are unsupported and fall back to the area specified by the radius attribute.
+    CHECK_EQ(non_uniform_sphere->intensity.x, doctest::Approx(1.f / (4.f * pi)));
+
+    const ImporterLight* dome = find_light("/Dome");
+    REQUIRE(dome);
+    CHECK_EQ(dome->type, ImporterLight::Type::dome);
+    CHECK_EQ(dome->intensity.x, doctest::Approx(7.f));
 }
 
 // Helper function to print all materials in a scene

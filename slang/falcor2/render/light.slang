@@ -8,6 +8,10 @@ implementing render;
 /// and provide methods for evaluating radiance, sampling directions, and computing PDFs.
 public interface ILight
 {
+    /// Returns a scalar estimate of the light's total emitted power.
+    /// Environment lights use the integral of luminance over solid angle.
+    public float emitted_power();
+
     /// Evaluates the incident radiance arriving at the interaction point from the sampled direction.
     /// @param ref The interaction (shading point) being illuminated.
     /// @param sample The direction sample describing the light direction and hit point.

@@ -12,6 +12,8 @@
 #include "sgl/core/logger.h"
 #include "sgl/core/error.h"
 
+#include <cstdio>
+
 SGL_EXPORT_AGILITY_SDK
 
 using namespace sgl;
@@ -34,6 +36,24 @@ std::string get_current_test_case_name()
 
 int main(int argc, char** argv)
 {
+    // Parse extra command line options.
+    {
+        auto& options = falcor::testing::options();
+        if (doctest::parseFlag(argc, argv, "module-cache"))
+            options.module_cache_enabled = true;
+        if (doctest::parseFlag(argc, argv, "no-module-cache"))
+            options.module_cache_enabled = false;
+
+        if (doctest::parseFlag(argc, argv, "shader-cache"))
+            options.shader_cache_enabled = true;
+        if (doctest::parseFlag(argc, argv, "no-shader-cache"))
+            options.shader_cache_enabled = false;
+
+        doctest::String cache_dir;
+        if (doctest::parseOption(argc, argv, "module-and-shader-cache-dir=", &cache_dir))
+            options.module_and_shader_cache_dir = cache_dir.c_str();
+    }
+
 #if SGL_HAS_CRASHPAD
     if (!falcor::testing::start_crashpad_handler()) {
         return 1;
@@ -62,6 +82,18 @@ int main(int argc, char** argv)
         // context.setOption("success", true);
 
         result = context.run();
+
+        if (doctest::parseFlag(argc, argv, "help") || doctest::parseFlag(argc, argv, "h")
+            || doctest::parseFlag(argc, argv, "?")) {
+            std::printf(
+                "\nAdditional options:\n"
+                " -module-cache                       Enable the persistent module cache\n"
+                " -no-module-cache                    Disable the persistent module cache\n"
+                " -shader-cache                       Enable the persistent shader cache\n"
+                " -no-shader-cache                    Disable the persistent shader cache\n"
+                " -module-and-shader-cache-dir=<path> Set the persistent module and shader cache root\n"
+            );
+        }
 
         falcor::testing::static_shutdown();
     }

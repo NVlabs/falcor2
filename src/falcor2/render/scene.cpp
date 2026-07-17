@@ -97,6 +97,17 @@ Scene::create(ref<sgl::Device> device, const ImporterScene& importer_scene, std:
 
 ref<Scene> Scene::create(
     ref<sgl::Device> device,
+    const Importer& importer,
+    std::optional<UVOrigin> uv_origin,
+    bool add_default_camera_best_view,
+    float camera_aspect
+)
+{
+    return detail::create_scene(std::move(device), importer, uv_origin, add_default_camera_best_view, camera_aspect);
+}
+
+ref<Scene> Scene::create(
+    ref<sgl::Device> device,
     const std::filesystem::path& path,
     bool recompute_normals,
     std::optional<UVOrigin> uv_origin

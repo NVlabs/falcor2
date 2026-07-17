@@ -612,37 +612,60 @@ static const char *__doc_falcor_ArrayView_operator_array_2 = R"doc()doc";
 
 static const char *__doc_falcor_ArrayView_size = R"doc()doc";
 
-static const char *__doc_falcor_AssetResolver = R"doc()doc";
+static const char *__doc_falcor_AssetResolver = R"doc(Immutable ordered search roots used to resolve asset paths.)doc";
 
-static const char *__doc_falcor_AssetResolver_2 = R"doc()doc";
+static const char *__doc_falcor_AssetResolver_2 = R"doc(Immutable ordered search roots used to resolve asset paths.)doc";
 
 static const char *__doc_falcor_AssetResolver_AssetResolver = R"doc()doc";
 
-static const char *__doc_falcor_AssetResolver_add_search_path = R"doc()doc";
+static const char *__doc_falcor_AssetResolver_AssetResolver_2 = R"doc()doc";
 
-static const char *__doc_falcor_AssetResolver_add_search_paths = R"doc()doc";
+static const char *__doc_falcor_AssetResolver_AssetResolver_3 = R"doc(Create a resolver without explicit search roots.)doc";
+
+static const char *__doc_falcor_AssetResolver_AssetResolver_4 = R"doc(Create a resolver from one literal path.)doc";
+
+static const char *__doc_falcor_AssetResolver_AssetResolver_5 = R"doc(Create a resolver from a semicolon-separated path list.)doc";
+
+static const char *__doc_falcor_AssetResolver_AssetResolver_6 = R"doc(Create a resolver from a semicolon-separated path list.)doc";
+
+static const char *__doc_falcor_AssetResolver_AssetResolver_7 = R"doc(Create a resolver from literal paths in the supplied order.)doc";
 
 static const char *__doc_falcor_AssetResolver_class_name = R"doc()doc";
 
-static const char *__doc_falcor_AssetResolver_clone = R"doc(Clones the whole AssetResolver, including the stack.)doc";
+static const char *__doc_falcor_AssetResolver_get_search_paths = R"doc(Return explicit search roots in effective priority order.)doc";
 
-static const char *__doc_falcor_AssetResolver_get_search_paths = R"doc()doc";
+static const char *__doc_falcor_AssetResolver_m_search_paths = R"doc()doc";
 
-static const char *__doc_falcor_AssetResolver_glob_files = R"doc(TODO: This probably should be a more global utility)doc";
+static const char *__doc_falcor_AssetResolver_operator_assign = R"doc()doc";
 
-static const char *__doc_falcor_AssetResolver_m_search_paths_stack = R"doc()doc";
+static const char *__doc_falcor_AssetResolver_operator_assign_2 = R"doc()doc";
 
-static const char *__doc_falcor_AssetResolver_pop_scope = R"doc()doc";
+static const char *__doc_falcor_AssetResolver_push = R"doc(Return a resolver with one literal path at highest priority.)doc";
 
-static const char *__doc_falcor_AssetResolver_push_scope = R"doc()doc";
+static const char *__doc_falcor_AssetResolver_push_2 =
+R"doc(Return a resolver with a semicolon-separated path list at highest
+priority.)doc";
 
-static const char *__doc_falcor_AssetResolver_resolve_path = R"doc()doc";
+static const char *__doc_falcor_AssetResolver_push_3 =
+R"doc(Return a resolver with a semicolon-separated path list at highest
+priority.)doc";
 
-static const char *__doc_falcor_AssetResolver_resolve_path_pattern = R"doc()doc";
+static const char *__doc_falcor_AssetResolver_push_4 =
+R"doc(Return a resolver with the literal paths at highest priority in the
+supplied order.)doc";
 
-static const char *__doc_falcor_AssetResolver_shallow_clone =
-R"doc(Clones only the current level of AssetResolver, it can no longer be
-popped.)doc";
+static const char *__doc_falcor_AssetResolver_resolve_path =
+R"doc(Resolve one asset path, returning an empty path when it cannot be
+found. If required is true, throw a runtime error when the asset
+cannot be resolved.)doc";
+
+static const char *__doc_falcor_AssetResolver_resolve_path_pattern =
+R"doc(Resolve a filename regular expression in the first candidate directory
+containing matches.)doc";
+
+static const char *__doc_falcor_AssetResolver_to_string =
+R"doc(Return a human-readable description of explicit roots and the working-
+directory fallback.)doc";
 
 static const char *__doc_falcor_BitField =
 R"doc(Utility for packing and unpacking bitfields within an unsigned integer
@@ -1221,6 +1244,36 @@ static const char *__doc_falcor_ConstantLight_write_to_cursor = R"doc()doc";
 static const char *__doc_falcor_ConstantLight_write_to_cursor_2 = R"doc()doc";
 
 static const char *__doc_falcor_ConstantLight_write_to_cursor_impl = R"doc()doc";
+
+static const char *__doc_falcor_CreateCameraEdit = R"doc(Deferred edit that appends a camera to the ImporterScene.)doc";
+
+static const char *__doc_falcor_CreateCameraEdit_CreateCameraEdit = R"doc(Create an edit that satisfies the given camera selector id.)doc";
+
+static const char *__doc_falcor_CreateCameraEdit_apply = R"doc()doc";
+
+static const char *__doc_falcor_CreateCameraEdit_m_camera = R"doc()doc";
+
+static const char *__doc_falcor_CreateCameraEdit_m_selector_id = R"doc()doc";
+
+static const char *__doc_falcor_CreateNodeEdit = R"doc(Deferred edit that appends a node to the ImporterScene.)doc";
+
+static const char *__doc_falcor_CreateNodeEdit_CreateNodeEdit =
+R"doc(Create an edit that satisfies the given node selector id.
+
+Optional camera and parent selectors are resolved against earlier
+edits when apply is called.)doc";
+
+static const char *__doc_falcor_CreateNodeEdit_apply = R"doc()doc";
+
+static const char *__doc_falcor_CreateNodeEdit_m_camera = R"doc()doc";
+
+static const char *__doc_falcor_CreateNodeEdit_m_name = R"doc()doc";
+
+static const char *__doc_falcor_CreateNodeEdit_m_parent = R"doc()doc";
+
+static const char *__doc_falcor_CreateNodeEdit_m_selector_id = R"doc()doc";
+
+static const char *__doc_falcor_CreateNodeEdit_m_transform = R"doc()doc";
 
 static const char *__doc_falcor_CurveIndexingMode = R"doc(Indexing mode for curve line segments.)doc";
 
@@ -1916,9 +1969,31 @@ static const char *__doc_falcor_IDictionary_set_59 = R"doc()doc";
 
 static const char *__doc_falcor_IDictionary_set_60 = R"doc()doc";
 
-static const char *__doc_falcor_ImportOptions = R"doc()doc";
+static const char *__doc_falcor_ImportAssetEdit =
+R"doc(Deferred edit that imports an external scene asset during build.
 
-static const char *__doc_falcor_ImportOptions_recompute_normals = R"doc()doc";
+ImportAssetEdit records the requested path and import options but does
+not load the asset until apply is called.)doc";
+
+static const char *__doc_falcor_ImportAssetEdit_ImportAssetEdit = R"doc(Create an asset import edit for the given source path and options.)doc";
+
+static const char *__doc_falcor_ImportAssetEdit_apply = R"doc()doc";
+
+static const char *__doc_falcor_ImportAssetEdit_m_import_options = R"doc()doc";
+
+static const char *__doc_falcor_ImportAssetEdit_m_path = R"doc()doc";
+
+static const char *__doc_falcor_ImportOptions = R"doc(Options used when importing source scene assets.)doc";
+
+static const char *__doc_falcor_ImportOptions_recompute_normals = R"doc(Recompute mesh normals and tangents after asset import.)doc";
+
+static const char *__doc_falcor_Importer =
+R"doc(Native importer edit stream used to build ImporterScene instances.
+
+Importer owns contextual collections and a list of deferred edits. The
+collections append edits; they do not store created importer objects.
+Calling build_importer_scene creates a fresh ImporterScene and applies
+the recorded edits in order.)doc";
 
 static const char *__doc_falcor_ImporterAnimation = R"doc(A collection of animation channels.)doc";
 
@@ -1952,7 +2027,53 @@ static const char *__doc_falcor_ImporterAnimation_duration = R"doc(The duration 
 
 static const char *__doc_falcor_ImporterAnimation_name = R"doc(Animation name.)doc";
 
+static const char *__doc_falcor_ImporterBuildContext =
+R"doc(Transient state used while applying an Importer edit list into a new
+ImporterScene.)doc";
+
+static const char *__doc_falcor_ImporterBuildContext_asset_resolver = R"doc(Immutable resolver shared by all path-bearing edits in this build.)doc";
+
+static const char *__doc_falcor_ImporterBuildContext_cameras =
+R"doc(Mapping from ImporterCameraSelector ids to ImporterScene::cameras
+indices.)doc";
+
+static const char *__doc_falcor_ImporterBuildContext_nodes = R"doc(Mapping from ImporterNodeSelector ids to ImporterScene::nodes indices.)doc";
+
+static const char *__doc_falcor_ImporterBuildContext_resolve_required_asset = R"doc(Resolve one required edit path or throw a build-time diagnostic.)doc";
+
+static const char *__doc_falcor_ImporterBuildContext_scene = R"doc(Scene currently being built by applying importer edits.)doc";
+
+static const char *__doc_falcor_ImporterBuildContext_source_directory =
+R"doc(Normalized source directory, or an empty path when source context is
+unset.)doc";
+
 static const char *__doc_falcor_ImporterCamera = R"doc()doc";
+
+static const char *__doc_falcor_ImporterCameraCollection =
+R"doc(Contextual interface for recording camera creation edits on an
+Importer.
+
+This collection does not store cameras. Each create call appends a
+deferred edit to the owning Importer and returns a selector for the
+future camera.)doc";
+
+static const char *__doc_falcor_ImporterCameraCollection_ImporterCameraCollection = R"doc(Create a camera collection bound to the specified importer.)doc";
+
+static const char *__doc_falcor_ImporterCameraCollection_create =
+R"doc(Record an edit that creates a camera from the supplied properties.
+
+The returned selector can be used by later edits, such as creating a
+node that references this camera.)doc";
+
+static const char *__doc_falcor_ImporterCameraCollection_create_fov =
+R"doc(Record an edit that creates a camera from a field of view.
+
+This is a convenience wrapper around create(). It stores the derived
+focal length and sensor size in the deferred camera edit.)doc";
+
+static const char *__doc_falcor_ImporterCameraCollection_m_importer = R"doc()doc";
+
+static const char *__doc_falcor_ImporterCameraSelector = R"doc(Selector for a camera created by ImporterCameraCollection.)doc";
 
 static const char *__doc_falcor_ImporterCamera_FOVDirection = R"doc()doc";
 
@@ -1970,13 +2091,19 @@ static const char *__doc_falcor_ImporterCamera_Projection_orthographic = R"doc()
 
 static const char *__doc_falcor_ImporterCamera_Projection_perspective = R"doc()doc";
 
-static const char *__doc_falcor_ImporterCamera_aperture = R"doc(Aperture size.)doc";
-
 static const char *__doc_falcor_ImporterCamera_depth_range = R"doc(Depth range (near, far).)doc";
 
 static const char *__doc_falcor_ImporterCamera_focal_length = R"doc(Focal length (millimeters).)doc";
 
+static const char *__doc_falcor_ImporterCamera_focal_length_from_fov_degrees = R"doc(Calculate focal length from a field of view and sensor size.)doc";
+
 static const char *__doc_falcor_ImporterCamera_focus_distance = R"doc(Focus distance.)doc";
+
+static const char *__doc_falcor_ImporterCamera_fov_degrees = R"doc(Calculate this camera's field of view along fov_direction.)doc";
+
+static const char *__doc_falcor_ImporterCamera_fov_degrees_from_focal_length =
+R"doc(Calculate the field of view represented by a sensor size and focal
+length.)doc";
 
 static const char *__doc_falcor_ImporterCamera_fov_direction = R"doc(Field of view direction.)doc";
 
@@ -1985,6 +2112,16 @@ static const char *__doc_falcor_ImporterCamera_fstop = R"doc(F-stop value.)doc";
 static const char *__doc_falcor_ImporterCamera_name = R"doc(Camera name.)doc";
 
 static const char *__doc_falcor_ImporterCamera_projection = R"doc(Projection type.)doc";
+
+static const char *__doc_falcor_ImporterCamera_sensor_size_mm = R"doc(Sensor size (millimeters) in fov_direction.)doc";
+
+static const char *__doc_falcor_ImporterCamera_vertical_fov_degrees =
+R"doc(Calculate this camera's vertical field of view.
+
+If this camera stores a horizontal FOV, the vertical sensor size is
+derived from the supplied horizontal-to-vertical sensor ratio. The
+default ratio is the 4:3 sensor assumption used by pyscene scene
+conversion.)doc";
 
 static const char *__doc_falcor_ImporterCurve = R"doc(Imported curve data.)doc";
 
@@ -2003,6 +2140,32 @@ static const char *__doc_falcor_ImporterCurve_name = R"doc(Curve name.)doc";
 static const char *__doc_falcor_ImporterCurve_positions = R"doc(Curve vertex positions.)doc";
 
 static const char *__doc_falcor_ImporterCurve_radii = R"doc(Radius at each vertex.)doc";
+
+static const char *__doc_falcor_ImporterEdit =
+R"doc(Base class for deferred importer edits.
+
+Edits are recorded by contextual collections and applied later, in
+order, to construct a fresh ImporterScene.)doc";
+
+static const char *__doc_falcor_ImporterEdit_apply = R"doc(Apply this edit to the importer build context.)doc";
+
+static const char *__doc_falcor_ImporterEnvCollection =
+R"doc(Contextual interface for recording environment setup edits on an
+Importer.
+
+This collection does not store lights. Each set call appends a
+deferred edit to the owning Importer that updates the first dome light
+or creates one if none exists.)doc";
+
+static const char *__doc_falcor_ImporterEnvCollection_ImporterEnvCollection = R"doc(Create an environment collection bound to the specified importer.)doc";
+
+static const char *__doc_falcor_ImporterEnvCollection_m_importer = R"doc()doc";
+
+static const char *__doc_falcor_ImporterEnvCollection_set =
+R"doc(Record an edit that configures the environment map.
+
+Applying the edit overwrites the first existing dome light, or creates
+a new dome light and root node if the scene does not contain one.)doc";
 
 static const char *__doc_falcor_ImporterLight = R"doc()doc";
 
@@ -2033,6 +2196,8 @@ static const char *__doc_falcor_ImporterLight_degree_angular_diameter = R"doc(An
 
 static const char *__doc_falcor_ImporterLight_env_map_path = R"doc(Environment map path (for dome lights).)doc";
 
+static const char *__doc_falcor_ImporterLight_exposure = R"doc(Light exposure in stops.)doc";
+
 static const char *__doc_falcor_ImporterLight_height = R"doc(Height (for rectangular lights).)doc";
 
 static const char *__doc_falcor_ImporterLight_intensity = R"doc(Light intensity.)doc";
@@ -2054,6 +2219,51 @@ static const char *__doc_falcor_ImporterMaterial_3 = R"doc()doc";
 static const char *__doc_falcor_ImporterMaterial_4 = R"doc()doc";
 
 static const char *__doc_falcor_ImporterMaterial_5 = R"doc()doc";
+
+static const char *__doc_falcor_ImporterMaterialCollection =
+R"doc(Contextual interface for selecting and editing materials on an
+Importer.
+
+This collection does not store materials. Name selectors are resolved
+later against the ImporterScene produced by preceding edits.)doc";
+
+static const char *__doc_falcor_ImporterMaterialCollection_ImporterMaterialCollection = R"doc(Create a material collection bound to the specified importer.)doc";
+
+static const char *__doc_falcor_ImporterMaterialCollection_find = R"doc(Return a deferred selector for every material with the exact name.)doc";
+
+static const char *__doc_falcor_ImporterMaterialCollection_m_importer = R"doc()doc";
+
+static const char *__doc_falcor_ImporterMaterialCollection_operator_array = R"doc(Return the same deferred exact-name selector as find().)doc";
+
+static const char *__doc_falcor_ImporterMaterialSelector =
+R"doc(Deferred exact-name selection over materials in an ImporterScene.
+
+The selector does not resolve materials while edits are recorded.
+Operations resolve the name when their edit is applied and affect
+every matching material. The selector is valid only while its owning
+Importer is alive.)doc";
+
+static const char *__doc_falcor_ImporterMaterialSelector_ImporterMaterialSelector = R"doc()doc";
+
+static const char *__doc_falcor_ImporterMaterialSelector_m_importer = R"doc()doc";
+
+static const char *__doc_falcor_ImporterMaterialSelector_m_name = R"doc()doc";
+
+static const char *__doc_falcor_ImporterMaterialSelector_replace =
+R"doc(Record an edit that replaces the type and properties of all selected
+materials.
+
+Material names are preserved. A selector with no matches is a no-op.)doc";
+
+static const char *__doc_falcor_ImporterMaterialSelector_replace_2 =
+R"doc(Record an edit that replaces all selected materials using a live
+constructor.
+
+Material names are preserved. A selector with no matches is a no-op.)doc";
+
+static const char *__doc_falcor_ImporterMaterial_constructor =
+R"doc(Optional live material constructor. When set, this takes precedence
+over parameter-driven conversion.)doc";
 
 static const char *__doc_falcor_ImporterMaterial_name = R"doc(Material name.)doc";
 
@@ -2274,6 +2484,38 @@ static const char *__doc_falcor_ImporterMesh_vertex_count = R"doc(Current vertex
 
 static const char *__doc_falcor_ImporterNode = R"doc()doc";
 
+static const char *__doc_falcor_ImporterNodeCollection =
+R"doc(Contextual interface for recording node creation edits on an Importer.
+
+This collection does not store nodes. Each create call appends a
+deferred edit to the owning Importer and returns a selector for the
+future node.)doc";
+
+static const char *__doc_falcor_ImporterNodeCollection_ImporterNodeCollection = R"doc(Create a node collection bound to the specified importer.)doc";
+
+static const char *__doc_falcor_ImporterNodeCollection_create =
+R"doc(Record an edit that creates a node.
+
+Optional camera and parent selectors are resolved when the importer
+edit list is built into an ImporterScene.)doc";
+
+static const char *__doc_falcor_ImporterNodeCollection_create_camera =
+R"doc(Record edits that create a camera and its node from the supplied
+properties.
+
+The camera and node use the same name. The returned selector
+references the node rather than the camera.)doc";
+
+static const char *__doc_falcor_ImporterNodeCollection_create_camera_fov =
+R"doc(Record edits that create a field-of-view camera and its node.
+
+The camera and node use the same name. The returned selector
+references the node rather than the camera.)doc";
+
+static const char *__doc_falcor_ImporterNodeCollection_m_importer = R"doc()doc";
+
+static const char *__doc_falcor_ImporterNodeSelector = R"doc(Selector for a node created by ImporterNodeCollection.)doc";
+
 static const char *__doc_falcor_ImporterNode_animation_rotation =
 R"doc(Index into ImporterScene::animation.channels for rotation (expects
 quatf), -1 if not animated.)doc";
@@ -2381,6 +2623,12 @@ ImporterMesh instances still describe their own authored texcoord
 convention via ImporterMesh::uv_origin and are converted on load if it
 differs from this scene convention.)doc";
 
+static const char *__doc_falcor_ImporterSelector =
+R"doc(Opaque reference to an object that will be created when importer edits
+are applied.)doc";
+
+static const char *__doc_falcor_ImporterSelector_id = R"doc(Importer-local selector id assigned when the edit is recorded.)doc";
+
 static const char *__doc_falcor_ImporterSemantic =
 R"doc(Semantic meaning that importer assigns to a vertex attribute. For some
 formats this may be explicitly specified, for others it may be
@@ -2472,6 +2720,85 @@ static const char *__doc_falcor_ImporterVertexStream_stride = R"doc()doc";
 
 static const char *__doc_falcor_ImporterVertexStream_valid = R"doc()doc";
 
+static const char *__doc_falcor_Importer_Importer = R"doc(Create an empty importer with the specified default import options.)doc";
+
+static const char *__doc_falcor_Importer_Importer_2 = R"doc()doc";
+
+static const char *__doc_falcor_Importer_Importer_3 = R"doc()doc";
+
+static const char *__doc_falcor_Importer_add_edit = R"doc()doc";
+
+static const char *__doc_falcor_Importer_add_search_path =
+R"doc(Record one additional build-time asset search root without accessing
+the filesystem.)doc";
+
+static const char *__doc_falcor_Importer_add_search_paths =
+R"doc(Record additional build-time asset search roots without accessing the
+filesystem.)doc";
+
+static const char *__doc_falcor_Importer_build_importer_scene = R"doc(Build a fresh ImporterScene by applying all recorded edits in order.)doc";
+
+static const char *__doc_falcor_Importer_cameras = R"doc(Camera edit-recording collection.)doc";
+
+static const char *__doc_falcor_Importer_clear_current = R"doc(Clear the current importer for this thread.)doc";
+
+static const char *__doc_falcor_Importer_create = R"doc(Create a reference-counted importer.)doc";
+
+static const char *__doc_falcor_Importer_env = R"doc(Environment edit-recording collection.)doc";
+
+static const char *__doc_falcor_Importer_get = R"doc(Return the current importer for this thread, creating one if needed.)doc";
+
+static const char *__doc_falcor_Importer_import_asset =
+R"doc(Record a deferred asset import edit.
+
+The asset is not loaded until build_importer_scene applies the edit.)doc";
+
+static const char *__doc_falcor_Importer_m_cameras = R"doc()doc";
+
+static const char *__doc_falcor_Importer_m_default_import_options = R"doc()doc";
+
+static const char *__doc_falcor_Importer_m_edits = R"doc()doc";
+
+static const char *__doc_falcor_Importer_m_env = R"doc()doc";
+
+static const char *__doc_falcor_Importer_m_materials = R"doc()doc";
+
+static const char *__doc_falcor_Importer_m_next_selector_id = R"doc()doc";
+
+static const char *__doc_falcor_Importer_m_nodes = R"doc()doc";
+
+static const char *__doc_falcor_Importer_m_scene_created_callbacks = R"doc()doc";
+
+static const char *__doc_falcor_Importer_m_search_paths = R"doc()doc";
+
+static const char *__doc_falcor_Importer_m_source_path = R"doc()doc";
+
+static const char *__doc_falcor_Importer_materials = R"doc(Material edit-recording collection.)doc";
+
+static const char *__doc_falcor_Importer_next_selector_id = R"doc()doc";
+
+static const char *__doc_falcor_Importer_nodes = R"doc(Node edit-recording collection.)doc";
+
+static const char *__doc_falcor_Importer_on_scene_created =
+R"doc(Register a callback to run after a Python scene has created the live
+render Scene.)doc";
+
+static const char *__doc_falcor_Importer_operator_assign = R"doc()doc";
+
+static const char *__doc_falcor_Importer_operator_assign_2 = R"doc()doc";
+
+static const char *__doc_falcor_Importer_run_scene_created_callbacks = R"doc(Run scene-created callbacks in registration order.)doc";
+
+static const char *__doc_falcor_Importer_set_current = R"doc(Set the current importer for this thread.)doc";
+
+static const char *__doc_falcor_Importer_set_source_path =
+R"doc(Set the source Python file, normalizing non-empty paths to absolute
+lexical form immediately.)doc";
+
+static const char *__doc_falcor_Importer_source_path =
+R"doc(Source Python file used to resolve scene-relative paths, or an empty
+path when unset.)doc";
+
 static const char *__doc_falcor_IndexedVector =
 R"doc(Turns array of values into a set of values, and an array of indices to
 them. Effectively deduplicating the values.)doc";
@@ -2508,13 +2835,23 @@ static const char *__doc_falcor_LightSystem_bind_to_scene = R"doc()doc";
 
 static const char *__doc_falcor_LightSystem_class_name = R"doc()doc";
 
+static const char *__doc_falcor_LightSystem_create_kernels = R"doc()doc";
+
 static const char *__doc_falcor_LightSystem_m_analytic_light_count = R"doc()doc";
 
 static const char *__doc_falcor_LightSystem_m_analytic_light_selection_distribution = R"doc()doc";
 
 static const char *__doc_falcor_LightSystem_m_components = R"doc()doc";
 
+static const char *__doc_falcor_LightSystem_m_compute_environment_light_powers_kernel = R"doc()doc";
+
+static const char *__doc_falcor_LightSystem_m_environment_light_count = R"doc()doc";
+
 static const char *__doc_falcor_LightSystem_m_environment_light_id = R"doc()doc";
+
+static const char *__doc_falcor_LightSystem_m_environment_light_power_buffer = R"doc()doc";
+
+static const char *__doc_falcor_LightSystem_m_environment_light_selection_distribution = R"doc()doc";
 
 static const char *__doc_falcor_LightSystem_m_light_count = R"doc()doc";
 
@@ -4130,6 +4467,9 @@ R"doc(Execute a Python file in this context.
 Parameter ``path``:
     Path to the .py file to execute.
 
+Parameter ``module_name``:
+    Value assigned to __name__ before executing the file.
+
 Throws:
     PythonException on failure with the full Python traceback.)doc";
 
@@ -4768,7 +5108,31 @@ static const char *__doc_falcor_RenderTriangleGeometry_vertex_count = R"doc()doc
 
 static const char *__doc_falcor_RenderTriangleGeometry_vertex_offset = R"doc()doc";
 
-static const char *__doc_falcor_Scene =
+static const char *__doc_falcor_ReplaceMaterialEdit =
+R"doc(Deferred edit that replaces every material matching an exact name.
+
+Replacement preserves each material name, overwrites its parameters,
+and clears any imported material network. No matches is a valid no-op.)doc";
+
+static const char *__doc_falcor_ReplaceMaterialEdit_ReplaceMaterialEdit = R"doc(Create an exact-name material replacement edit.)doc";
+
+static const char *__doc_falcor_ReplaceMaterialEdit_ReplaceMaterialEdit_2 =
+R"doc(Create an exact-name material replacement edit backed by a live
+constructor.)doc";
+
+static const char *__doc_falcor_ReplaceMaterialEdit_apply = R"doc()doc";
+
+static const char *__doc_falcor_ReplaceMaterialEdit_m_constructor = R"doc()doc";
+
+static const char *__doc_falcor_ReplaceMaterialEdit_m_material_type = R"doc()doc";
+
+static const char *__doc_falcor_ReplaceMaterialEdit_m_name = R"doc()doc";
+
+static const char *__doc_falcor_ReplaceMaterialEdit_m_props = R"doc()doc";
+
+static const char *__doc_falcor_Scene = R"doc()doc";
+
+static const char *__doc_falcor_Scene_2 =
 R"doc(Scene container.
 
 The Scene is the top-level container for all renderable content and
@@ -4793,7 +5157,7 @@ The scene can be loaded from various file formats (glTF, USD, etc.)
 via importers, or constructed programmatically using the create_*
 methods.)doc";
 
-static const char *__doc_falcor_Scene_2 = R"doc()doc";
+static const char *__doc_falcor_Scene_3 = R"doc()doc";
 
 static const char *__doc_falcor_SceneBindFlags = R"doc(Flags to determine which parts of the scene to bind to a shader.)doc";
 
@@ -5543,6 +5907,30 @@ Returns:
     The created scene.)doc";
 
 static const char *__doc_falcor_Scene_create_3 =
+R"doc(Create a scene from the edits recorded by an importer.
+
+Parameter ``device``:
+    The device to use for rendering.
+
+Parameter ``importer``:
+    The importer whose recorded edits and scene-created callbacks to
+    apply.
+
+Parameter ``uv_origin``:
+    Optional target scene texture coordinate origin. If unset, uses
+    importer scene convention.
+
+Parameter ``add_default_camera_best_view``:
+    If true, add a best-view camera when the built importer scene has
+    none.
+
+Parameter ``camera_aspect``:
+    Aspect ratio used when adding the best-view camera.
+
+Returns:
+    The created scene.)doc";
+
+static const char *__doc_falcor_Scene_create_4 =
 R"doc(Create a scene by loading from a file.
 
 Parameter ``device``:
@@ -5938,6 +6326,43 @@ has changed since a certain point in time.)doc";
 static const char *__doc_falcor_Scene_updated =
 R"doc(Signal emitted when the scene is updated. The signal parameter
 indicates what changed.)doc";
+
+static const char *__doc_falcor_ScopedCurrentImporter =
+R"doc(Scoped helper that temporarily installs a current importer for this
+thread.
+
+The previous current importer is restored when the scope exits.)doc";
+
+static const char *__doc_falcor_ScopedCurrentImporter_ScopedCurrentImporter =
+R"doc(Install importer as the current importer until this object is
+destroyed.)doc";
+
+static const char *__doc_falcor_ScopedCurrentImporter_ScopedCurrentImporter_2 = R"doc()doc";
+
+static const char *__doc_falcor_ScopedCurrentImporter_ScopedCurrentImporter_3 = R"doc()doc";
+
+static const char *__doc_falcor_ScopedCurrentImporter_m_previous = R"doc()doc";
+
+static const char *__doc_falcor_ScopedCurrentImporter_operator_assign = R"doc()doc";
+
+static const char *__doc_falcor_ScopedCurrentImporter_operator_assign_2 = R"doc()doc";
+
+static const char *__doc_falcor_SetEnvironmentEdit =
+R"doc(Deferred edit that sets the scene environment map.
+
+The edit overwrites the first existing dome light when applied. If the
+scene has no dome light, it creates a dome light and a root node for
+it.)doc";
+
+static const char *__doc_falcor_SetEnvironmentEdit_SetEnvironmentEdit = R"doc(Create an environment setup edit.)doc";
+
+static const char *__doc_falcor_SetEnvironmentEdit_apply = R"doc()doc";
+
+static const char *__doc_falcor_SetEnvironmentEdit_m_exposure = R"doc()doc";
+
+static const char *__doc_falcor_SetEnvironmentEdit_m_name = R"doc()doc";
+
+static const char *__doc_falcor_SetEnvironmentEdit_m_path = R"doc()doc";
 
 static const char *__doc_falcor_Signal = R"doc(Primary template (undefined). Use Signal<void(Args...)>.)doc";
 
@@ -7452,6 +7877,26 @@ Parameter ``uv_origin``:
     Optional target scene texture coordinate origin. If unset, use
     importer_scene.uv_origin.)doc";
 
+static const char *__doc_falcor_detail_create_scene_3 =
+R"doc(Create a scene from an importer and run its scene-created callbacks.
+
+Parameter ``device``:
+    Device to use for rendering.
+
+Parameter ``importer``:
+    Importer whose recorded edits and callbacks to apply.
+
+Parameter ``uv_origin``:
+    Optional target scene texture coordinate origin. If unset, use
+    importer scene convention.
+
+Parameter ``add_default_camera_best_view``:
+    If true, add a best-view camera when the built importer scene has
+    none.
+
+Parameter ``camera_aspect``:
+    Aspect ratio used when adding the best-view camera.)doc";
+
 static const char *__doc_falcor_detail_dispatch =
 R"doc(Dispatch a callable on the typed vector. The callable receives a const
 reference to std::vector<T> where T is the element type. Returns the
@@ -8103,6 +8548,8 @@ static const char *__doc_falcor_materialx_RenderableElement_name = R"doc()doc";
 
 static const char *__doc_falcor_materialx_RenderableElement_type = R"doc()doc";
 
+static const char *__doc_falcor_materialx_default_layering_mode = R"doc()doc";
+
 static const char *__doc_falcor_materialx_find_enum_info_adl = R"doc()doc";
 
 static const char *__doc_falcor_materialx_find_enum_info_adl_2 = R"doc()doc";
@@ -8253,7 +8700,7 @@ static const char *__doc_falcor_materialx_mx139_LayeringDesc_BsdfDesc = R"doc()d
 
 static const char *__doc_falcor_materialx_mx139_LayeringDesc_BsdfDesc_bsdf_type = R"doc()doc";
 
-static const char *__doc_falcor_materialx_mx139_LayeringDesc_BsdfDesc_copy_source_index = R"doc()doc";
+static const char *__doc_falcor_materialx_mx139_LayeringDesc_BsdfDesc_copy_source_ref = R"doc()doc";
 
 static const char *__doc_falcor_materialx_mx139_LayeringDesc_BsdfDesc_curve_scattering = R"doc()doc";
 
@@ -8285,7 +8732,7 @@ static const char *__doc_falcor_materialx_mx139_LayeringDesc_CombinerDesc = R"do
 
 static const char *__doc_falcor_materialx_mx139_LayeringDesc_CombinerDesc_children = R"doc()doc";
 
-static const char *__doc_falcor_materialx_mx139_LayeringDesc_CombinerDesc_copy_source_index = R"doc()doc";
+static const char *__doc_falcor_materialx_mx139_LayeringDesc_CombinerDesc_copy_source_ref = R"doc()doc";
 
 static const char *__doc_falcor_materialx_mx139_LayeringDesc_CombinerDesc_index = R"doc()doc";
 
@@ -8709,6 +9156,8 @@ static const char *__doc_falcor_materialx_mx139_emitter_RootStrategy_build_alias
 
 static const char *__doc_falcor_materialx_mx139_emitter_RootStrategy_build_collect_extra_text = R"doc()doc";
 
+static const char *__doc_falcor_materialx_mx139_emitter_RootStrategy_build_collect_properties_text = R"doc()doc";
+
 static const char *__doc_falcor_materialx_mx139_emitter_RootStrategy_build_root_value_text = R"doc()doc";
 
 static const char *__doc_falcor_materialx_mx139_emitter_RootStrategy_emit_root_types = R"doc()doc";
@@ -8748,8 +9197,6 @@ static const char *__doc_falcor_materialx_mx139_emitter_emit_material_data = R"d
 static const char *__doc_falcor_materialx_mx139_emitter_emit_material_structs = R"doc()doc";
 
 static const char *__doc_falcor_materialx_mx139_emitter_emit_module_header = R"doc()doc";
-
-static const char *__doc_falcor_materialx_mx139_emitter_emit_synthetic_opacity_stack_setup = R"doc()doc";
 
 static const char *__doc_falcor_materialx_mx139_emitter_graph_emission_expr = R"doc()doc";
 
@@ -10802,8 +11249,9 @@ property holds a different type.)doc";
 static const char *__doc_falcor_reflection_PropertyDescriptor_get_any = R"doc(Type-erased read: returns the current value wrapped in Any.)doc";
 
 static const char *__doc_falcor_reflection_PropertyDescriptor_get_enum_as_int64 =
-R"doc(Read an enum property as int64_t. Throws if the property is not an
-enum.)doc";
+R"doc(Read an enum property as int64_t. Integral properties are also
+supported when they carry EnumDescriptor metadata. Throws if the
+property cannot represent enum values.)doc";
 
 static const char *__doc_falcor_reflection_PropertyDescriptor_get_value =
 R"doc(Copy the current value into caller-provided storage. The caller must
@@ -10847,8 +11295,9 @@ R"doc(Type-erased write: sets the property value from an Any. Throws if
 read-only or if Any holds wrong type.)doc";
 
 static const char *__doc_falcor_reflection_PropertyDescriptor_set_enum_from_int64 =
-R"doc(Set an enum property from int64_t. Throws if read-only or if the
-property is not an enum.)doc";
+R"doc(Set an enum property from int64_t. Integral properties are also
+supported when they carry EnumDescriptor metadata. Throws if read-only
+or if the property cannot represent enum values.)doc";
 
 static const char *__doc_falcor_reflection_PropertyDescriptor_set_value =
 R"doc(Set the property value from caller-provided storage. The caller must

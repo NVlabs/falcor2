@@ -53,20 +53,9 @@ public struct DielectricPlateBSDF : IBSDF
                 * abs(wi_dot_h * wo_dot_h / (sqr(wo_dot_h + wi_dot_h / eta_refract) * abs(wi.z)));
     }
 
-    public bool sample<S : ISampleGenerator>(
-        float3 wi,
-        out float3 wo,
-        out float pdf,
-        out float3 weight,
-        out LobeTypes lobe_types,
-        inout S sg,
-        const BSDFContext bc
-    )
+    public bool sample<S : ISampleGenerator>(float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
-        wo = {};
-        pdf = {};
-        weight = {};
-        lobe_types = {};
+        sample = {};
 
         float rel_eta = eta;
         const float eta_refract = 1.005;
@@ -81,15 +70,15 @@ public struct DielectricPlateBSDF : IBSDF
             float F = r1 + t1 * t1 * r2 / (1.0 - r1 * r2);
 
             if (next_float(sg) < F) {
-                wo = float3(-wi.x, -wi.y, wi.z);
-                weight = float3(1.0);
-                lobe_types = LobeTypes::delta_reflection;
-                pdf = 1.0;
+                sample.wo = float3(-wi.x, -wi.y, wi.z);
+                sample.weight = float3(1.0);
+                sample.flags = BSDFFlags::delta_reflection;
+                sample.pdf = 1.0;
             } else {
-                wo = refract(-wi, float3(0.0, 0.0, sign(wi.z)), 1.0 / eta_refract);
-                weight = float3(1.0);
-                lobe_types = LobeTypes::delta_transmission;
-                pdf = 1.0;
+                sample.wo = refract(-wi, float3(0.0, 0.0, sign(wi.z)), 1.0 / eta_refract);
+                sample.weight = float3(1.0);
+                sample.flags = BSDFFlags::delta_transmission;
+                sample.pdf = 1.0;
             }
         } else {
             float3 h = D.sample(wi, sg);
@@ -104,25 +93,26 @@ public struct DielectricPlateBSDF : IBSDF
             float F = r1 + t1 * t1 * r2 / (1.0 - r1 * r2);
 
             if (next_float(sg) < F) {
-                wo = reflect(-wi, h);
-                if (wi.z * wo.z < 0.0)
+                sample.wo = reflect(-wi, h);
+                if (wi.z * sample.wo.z < 0.0)
                     return false;
 
-                weight = D.G2(wo, wi) / D.G1(wi);
-                lobe_types = LobeTypes::glossy_reflection;
-                pdf = F * D.eval_pdf(wi, h) / (4.0 * abs(wi_dot_h));
+                sample.weight = D.G2(sample.wo, wi) / D.G1(wi);
+                sample.flags = BSDFFlags::glossy_reflection;
+                sample.pdf = F * D.eval_pdf(wi, h) / (4.0 * abs(wi_dot_h));
             } else {
                 float3 h = D_inside.sample(wi, sg);
                 float wi_dot_h = dot(h, wi);
 
-                wo = refract(-wi, sign(wi.z) * h, 1.0 / eta_refract);
-                float wo_dot_h = dot(h, wo);
-                if (wi.z * wo.z > 0.0)
+                sample.wo = refract(-wi, sign(wi.z) * h, 1.0 / eta_refract);
+                float wo_dot_h = dot(h, sample.wo);
+                if (wi.z * sample.wo.z > 0.0)
                     return false;
 
-                weight = D_inside.G2(wo, wi) / D_inside.G1(wi);
-                lobe_types = LobeTypes::glossy_transmission;
-                pdf = (1.0 - F) * D_inside.eval_pdf(wi, h) * abs(wo_dot_h) / sqr(wo_dot_h + wi_dot_h / eta_refract);
+                sample.weight = D_inside.G2(sample.wo, wi) / D_inside.G1(wi);
+                sample.flags = BSDFFlags::glossy_transmission;
+                sample.pdf
+                    = (1.0 - F) * D_inside.eval_pdf(wi, h) * abs(wo_dot_h) / sqr(wo_dot_h + wi_dot_h / eta_refract);
             }
         }
         return true;

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import sys
+import shutil
 from dataclasses import dataclass
 from enum import IntFlag
 from pathlib import Path
@@ -20,18 +21,42 @@ else:
     from .python_material_sample import PythonMaterialSample
 
 
-EXAMPLE_DIR = Path(__file__).resolve().parents[3] / "examples" / "pathtracer"
-if str(EXAMPLE_DIR) not in sys.path:
-    sys.path.insert(0, str(EXAMPLE_DIR))
+DATA_SCENES_DIR = Path(__file__).resolve().parents[3] / "data" / "scenes"
+if str(DATA_SCENES_DIR) not in sys.path:
+    sys.path.insert(0, str(DATA_SCENES_DIR))
 
-from checker_material import CheckerMaterial
+from checker_material_support import CheckerMaterial
 
 
 DATA_DIR = Path(__file__).parent.parent.parent.parent / "data"
 
 
-class LobeTypes(IntFlag):
-    """Python enum matching Slang's LobeTypes definition."""
+def test_materialx_discovery_uses_highest_priority_resolver_root(tmp_path: Path) -> None:
+    high_root = tmp_path / "high"
+    low_root = tmp_path / "low"
+    high_root.mkdir()
+    low_root.mkdir()
+    shutil.copyfile(
+        DATA_DIR / "assets/cornell-box/mtlx-ref/cornell-box.mtlx",
+        high_root / "material.mtlx",
+    )
+    shutil.copyfile(
+        DATA_DIR / "internal/materialx/double_sided_checker.mtlx",
+        low_root / "material.mtlx",
+    )
+
+    resolver = f2.AssetResolver([high_root, low_root])
+    records = f2.discover_materialx_renderable_elements("material.mtlx", asset_resolver=resolver)
+    names = {str(record["name"]) for record in records}
+
+    assert "light" in names
+    assert "white" in names
+    assert "green" in names
+    assert "red" in names
+
+
+class BSDFFlags(IntFlag):
+    """Python enum matching Slang's BSDFFlags definition."""
 
     none = 0x00
     diffuse_reflection = 0x01
@@ -60,6 +85,83 @@ class SceneMaterialTestDesc:
     expected_results: dict[str, Any]
 
 
+MATERIALX_TILED_BRASS_PROPERTIES = {
+    "mtlx_path": str(
+        DATA_DIR.parent
+        / "external/MaterialX/resources/Materials/Examples/StandardSurface/standard_surface_brass_tiled.mtlx"
+    ),
+    "mtlx_node_name": "Tiled_Brass",
+    "mtlx_basepath": str(
+        DATA_DIR.parent / "external/MaterialX/resources/Materials/Examples/StandardSurface"
+    ),
+}
+
+
+MATERIALX_TILED_BRASS_BSDF_MIX_EXPECTED_RESULTS = {
+    "sample": {
+        "wo_ws": spy.float3(-0.022421893, 0.9994462, 0.024587013),
+        "pdf": 52.19148254394531,
+        "weight": spy.float3(0.5868579, 0.3289865, 0.10662885),
+        "flags": 2,
+    },
+    "eval": spy.float3(52.730022, 29.559902, 9.580754),
+    "collect_properties": {
+        "emission": spy.float3(0, 0, 0),
+        "roughness": 0.02977316826581955,
+        "guide_normal": spy.float3(0, 1, 0),
+        "flags": 0,
+        "diffuse_reflection_albedo": spy.float3(0.03386597, 0.01901918, 0.00621708),
+        "diffuse_transmission_albedo": spy.float3(0, 0, 0),
+        "specular_reflection_albedo": spy.float3(0.53486705, 0.3003822, 0.09819043),
+        "specular_transmission_albedo": spy.float3(0, 0, 0),
+        "specular_reflectance": spy.float3(0.53486705, 0.3003822, 0.09819043),
+    },
+    "get_lobe_types": BSDFFlags.glossy_reflection,
+    "collect_extra_bsdf_properties": {
+        "bsdf_count": 2,
+        "bsdf_N": [spy.float3(0, 0, 1)] * 2,
+        "bsdf_T": [spy.float3(1, 0, 0)] * 2,
+        "bsdf_B": [spy.float3(0, 1, 0)] * 2,
+        "bsdf_albedo": [
+            spy.float3(0.040000003, 0.040000003, 0.040000003),
+            spy.float3(0.98642945, 0.98642945, 0.98642945),
+        ],
+        "bsdf_weight": [
+            spy.float3(1, 1, 1),
+            spy.float3(0.5360069, 0.28324518, 0.06529358),
+        ],
+        "bsdf_roughness": [spy.float2(0.029773166, 0.029773166)] * 2,
+    },
+}
+
+
+def _merge_expected_results(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+    result = dict(base)
+    for key, value in overrides.items():
+        base_value = result.get(key)
+        if isinstance(base_value, dict) and isinstance(value, dict):
+            result[key] = _merge_expected_results(base_value, value)
+        else:
+            result[key] = value
+    return result
+
+
+def _materialx_tiled_brass_test_desc(
+    layering_mode: f2.MaterialXLayeringMode,
+    expected_overrides: dict[str, Any] | None = None,
+) -> SceneMaterialTestDesc:
+    properties = dict(MATERIALX_TILED_BRASS_PROPERTIES)
+    properties["mtlx_layering_mode"] = layering_mode
+    return SceneMaterialTestDesc(
+        f2.MaterialXMaterial,
+        properties,
+        _merge_expected_results(
+            MATERIALX_TILED_BRASS_BSDF_MIX_EXPECTED_RESULTS,
+            expected_overrides or {},
+        ),
+    )
+
+
 # Scene-based materials (Material) - excludes Python material which is not supported
 SCENE_MATERIALS = [
     SceneMaterialTestDesc(
@@ -74,7 +176,7 @@ SCENE_MATERIALS = [
                 "wo_ws": spy.float3(-0.19386107, 0.9628616, -0.1879241),
                 "pdf": 0.30648836493492126,
                 "weight": spy.float3(0.92, 0.62, 0.24),
-                "lobe_types": 1,
+                "flags": 1,
             },
             "eval": spy.float3(0.2928450, 0.19735223, 0.07639437),
             "collect_properties": {
@@ -83,7 +185,7 @@ SCENE_MATERIALS = [
                 "diffuse_reflection_albedo": spy.float3(0.92, 0.62, 0.24),
                 "specular_reflection_albedo": spy.float3(0, 0, 0),
             },
-            "get_lobe_types": LobeTypes.diffuse_reflection,
+            "get_lobe_types": BSDFFlags.diffuse_reflection,
             "collect_extra_bsdf_properties": {
                 "bsdf_count": 0,
             },
@@ -97,7 +199,7 @@ SCENE_MATERIALS = [
                 "wo_ws": spy.float3(-0.19386107, 0.9628616, -0.1879241),
                 "pdf": 0.30648836493492126,
                 "weight": spy.float3(1, 0, 1),
-                "lobe_types": 1,
+                "flags": 1,
             },
             "eval": spy.float3(0.31830987, 0, 0.31830987),
             "collect_properties": {
@@ -106,7 +208,7 @@ SCENE_MATERIALS = [
                 "diffuse_reflection_albedo": spy.float3(1, 0, 1),
                 "specular_reflection_albedo": spy.float3(0, 0, 0),
             },
-            "get_lobe_types": LobeTypes.diffuse_reflection,
+            "get_lobe_types": BSDFFlags.diffuse_reflection,
             "collect_extra_bsdf_properties": {
                 "bsdf_count": 1,
                 "bsdf_N": [spy.float3(0, 0, 1)],
@@ -137,7 +239,7 @@ SCENE_MATERIALS = [
                 "specular_transmission_albedo": spy.float3(0, 0, 0),
                 "specular_reflectance": spy.float3(0.04, 0.04, 0.04),
             },
-            "get_lobe_types": LobeTypes.diffuse_reflection | LobeTypes.glossy_reflection,
+            "get_lobe_types": BSDFFlags.diffuse_reflection | BSDFFlags.glossy_reflection,
             "collect_extra_bsdf_properties": {
                 "bsdf_count": 4,
                 "bsdf_albedo": [
@@ -184,9 +286,9 @@ SCENE_MATERIALS = [
                 "specular_reflectance": spy.float3(0.04, 0.04, 0.04),
             },
             "get_lobe_types": (
-                LobeTypes.diffuse_reflection
-                | LobeTypes.glossy_reflection
-                | LobeTypes.glossy_transmission
+                BSDFFlags.diffuse_reflection
+                | BSDFFlags.glossy_reflection
+                | BSDFFlags.glossy_transmission
             ),
             "collect_extra_bsdf_properties": {
                 "bsdf_count": 4,
@@ -230,7 +332,7 @@ SCENE_MATERIALS = [
                 "specular_transmission_albedo": spy.float3(0, 0, 0),
                 "specular_reflectance": spy.float3(0.2, 0.1, 0.05),
             },
-            "get_lobe_types": LobeTypes.diffuse_reflection | LobeTypes.glossy_reflection,
+            "get_lobe_types": BSDFFlags.diffuse_reflection | BSDFFlags.glossy_reflection,
             "collect_extra_bsdf_properties": {
                 "bsdf_count": 4,
                 "bsdf_albedo": [
@@ -254,50 +356,8 @@ SCENE_MATERIALS = [
             },
         },
     ),
-    SceneMaterialTestDesc(
-        f2.MaterialXMaterial,
-        {
-            "mtlx_path": str(
-                DATA_DIR.parent
-                / "external/MaterialX/resources/Materials/Examples/StandardSurface/standard_surface_brass_tiled.mtlx"
-            ),
-            "mtlx_node_name": "Tiled_Brass",
-            "mtlx_basepath": str(
-                DATA_DIR.parent / "external/MaterialX/resources/Materials/Examples/StandardSurface"
-            ),
-        },
-        {
-            "sample": {
-                "wo_ws": spy.float3(-0.022421893, 0.9994462, 0.024587013),
-                "pdf": 52.19148254394531,
-                "weight": spy.float3(0.5868579, 0.3289865, 0.10662885),
-                "lobe_types": 2,
-            },
-            "eval": spy.float3(51.228004, 28.764034, 9.393779),
-            "collect_properties": {
-                "roughness": 0.02977316826581955,
-                "guide_normal": spy.float3(0, 0.99999994, 0),
-                "diffuse_reflection_albedo": spy.float3(0, 0, 0),
-                "specular_reflection_albedo": spy.float3(0.568733, 0.3194014, 0.104407504),
-            },
-            "get_lobe_types": LobeTypes.glossy_reflection,
-            "collect_extra_bsdf_properties": {
-                "bsdf_count": 2,
-                "bsdf_N": [spy.float3(0, 0, 1)] * 2,
-                "bsdf_T": [spy.float3(1, 0, 0)] * 2,
-                "bsdf_B": [spy.float3(0, 1, 0)] * 2,
-                "bsdf_albedo": [
-                    spy.float3(0.040000003, 0.040000003, 0.040000003),
-                    spy.float3(0.98642945, 0.98642945, 0.98642945),
-                ],
-                "bsdf_weight": [
-                    spy.float3(1, 1, 1),
-                    spy.float3(0.5360069, 0.28324518, 0.06529358),
-                ],
-                "bsdf_roughness": [spy.float2(0.029773166, 0.029773166)] * 2,
-            },
-        },
-    ),
+    _materialx_tiled_brass_test_desc(f2.MaterialXLayeringMode.bsdf_mix),
+    _materialx_tiled_brass_test_desc(f2.MaterialXLayeringMode.closure_tree),
     SceneMaterialTestDesc(
         f2.MDLMaterial,
         {
@@ -310,21 +370,44 @@ SCENE_MATERIALS = [
                 "wo_ws": spy.float3(0.04189388, 0.90362144, -0.42627868),
                 "pdf": 2.1251282691955566,
                 "weight": spy.float3(0.0005833827, 0.0005833827, 0.0005833827),
-                "lobe_types": 2,
+                "flags": 2,
             },
             "eval": spy.float3(0.0028125402, 0.0028125402, 0.0028125402),
             "collect_properties": {
-                "roughness": 0.0,
+                "roughness": 0.21119996905326843,
+                "guide_normal": spy.float3(-7.437747e-05, 1, 0.000107270644),
                 "diffuse_reflection_albedo": spy.float3(0, 0, 0),
-                "specular_reflection_albedo": spy.float3(1, 1, 1),
+                "specular_reflection_albedo": spy.float3(0.040565446, 0.040565446, 0.040565446),
             },
-            "get_lobe_types": LobeTypes.all,
+            "get_lobe_types": BSDFFlags.all,
             "collect_extra_bsdf_properties": {
                 "bsdf_count": 1,
                 "bsdf_N": [spy.float3(-7.437747e-05, 1, 0.000107270644)],
                 "bsdf_albedo": [spy.float3(0.040565446, 0.040565446, 0.040565446)],
                 "bsdf_weight": [spy.float3(1, 1, 1)],
                 "bsdf_roughness": [spy.float2(0.0384, 0.38399994)],
+            },
+        },
+    ),
+    SceneMaterialTestDesc(
+        f2.MDLMaterial,
+        {
+            "mdl_library_path": str(DATA_DIR / "assets/mdl_sdk_examples"),
+            "mdl_material_name": "carbon_composite::carbon_composite",
+            "mdl_class_compilation": False,
+            "learnable": True,
+        },
+        {
+            "eval": spy.float3(26.002197, 26.002197, 26.002197),
+            "collect_properties": {
+                "roughness": 0.21159996092319489,
+                "guide_normal": spy.float3(-0.00092971936, 0.9999986, 0.0013408844),
+                "diffuse_reflection_albedo": spy.float3(0, 0, 0),
+                "specular_reflection_albedo": spy.float3(0.040565446, 0.040565446, 0.040565446),
+            },
+            "get_lobe_types": BSDFFlags.all,
+            "collect_extra_bsdf_properties": {
+                "bsdf_count": 2,
             },
         },
     ),
@@ -372,8 +455,7 @@ def test_discover_materialx_renderable_elements_defaults_to_mx139() -> None:
         materialx_root
         / "resources/Materials/Examples/StandardSurface/standard_surface_brass_tiled.mtlx"
     )
-    asset_resolver = f2.AssetResolver()
-    asset_resolver.add_search_path(materialx_root)
+    asset_resolver = f2.AssetResolver().push(materialx_root)
 
     elements = f2.discover_materialx_renderable_elements(
         material_path,
@@ -386,8 +468,7 @@ def test_discover_materialx_renderable_elements_defaults_to_mx139() -> None:
 def test_discover_materialx_renderable_elements_includes_output_types() -> None:
     materialx_root = DATA_DIR.parent / "external/MaterialX"
     material_path = materialx_root / "resources/Materials/TestSuite/pbrlib/bsdf/dielectric.mtlx"
-    asset_resolver = f2.AssetResolver()
-    asset_resolver.add_search_path(materialx_root)
+    asset_resolver = f2.AssetResolver().push(materialx_root)
 
     elements = f2.discover_materialx_renderable_elements(
         material_path,
@@ -501,7 +582,7 @@ def test_materialx_mx139_tiled_brass_scene_material_successor(
     lobe_types_cursor.load()
     has_lobes = False
     for sample_index in range(sample_count):
-        has_lobes = has_lobes or lobe_types_cursor[sample_index].read() != LobeTypes.none
+        has_lobes = has_lobes or lobe_types_cursor[sample_index].read() != BSDFFlags.none
     assert has_lobes
 
     extra_func = (
@@ -562,6 +643,81 @@ def load_scene_sampling_module(device: spy.Device, scene: f2.Scene) -> tuple[spy
     helper = SceneShaderHelper(device)
     module = helper.get_module(scene, "falcor2.tools.materials.scene_sampling_tools")
     return module, helper
+
+
+def _single_bsdf_materialx(bsdf_name: str, weight: float) -> str:
+    bsdf_color = "1.0, 1.0, 1.0"
+    return f"""<?xml version="1.0"?>
+<materialx version="1.39" colorspace="lin_rec709">
+  <{bsdf_name} name="root_bsdf" type="BSDF">
+    <input name="weight" type="float" value="{weight}" />
+    <input name="color" type="color3" value="{bsdf_color}" />
+  </{bsdf_name}>
+  <surface name="surface1" type="surfaceshader">
+    <input name="bsdf" type="BSDF" nodename="root_bsdf" />
+  </surface>
+  <surfacematerial name="M" type="material">
+    <input name="surfaceshader" type="surfaceshader" nodename="surface1" />
+  </surfacematerial>
+</materialx>"""
+
+
+def _assert_float3_scaled(value: Any, reference: Any, scale: float) -> None:
+    assert _float3_array(value) == pytest.approx(
+        _float3_array(reference) * scale, rel=0.08, abs=1e-4
+    )
+
+
+def _read_single_material_outputs(
+    module: spy.Module,
+    helper: Any,
+    material: f2.Material,
+    wi_tuple: tuple[float, float, float],
+    wo_tuple: tuple[float, float, float],
+) -> dict[str, Any]:
+    seed = np.array([(7, 0, 7)], dtype=np.uint32)
+    uvs = np.array([(0.5, 0.5)], dtype=np.float32)
+    wi = np.array([wi_tuple], dtype=np.float32)
+    wo = np.array([wo_tuple], dtype=np.float32)
+
+    sample_func = (
+        module["material_sample_simple<TinyUniformSampleGenerator>"]
+        .as_func()
+        .write(helper.bind_scene)
+    )
+    sample_results = cast(spy.Tensor, sample_func(seed, material, uvs, wi))
+    sample_cursor = sample_results.cursor()
+    sample_cursor.load()
+
+    eval_func = (
+        module["material_eval_simple<TinyUniformSampleGenerator>"]
+        .as_func()
+        .write(helper.bind_scene)
+    )
+    eval_results = cast(spy.Tensor, eval_func(seed, material, uvs, wi, wo))
+    eval_cursor = eval_results.cursor()
+    eval_cursor.load()
+
+    properties_func = (
+        module["material_collect_properties_simple"].as_func().write(helper.bind_scene)
+    )
+    properties_results = cast(spy.Tensor, properties_func(material, uvs, wi))
+    properties_cursor = properties_results.cursor()
+    properties_cursor.load()
+
+    extra_func = (
+        module["material_collect_extra_bsdf_properties_simple"].as_func().write(helper.bind_scene)
+    )
+    extra_results = cast(spy.Tensor, extra_func(material, uvs, wi, wo))
+    extra_cursor = extra_results.cursor()
+    extra_cursor.load()
+
+    return {
+        "sample": sample_cursor[0].read(),
+        "eval": eval_cursor[0].read(),
+        "properties": properties_cursor[0].read(),
+        "extra": extra_cursor[0].read(),
+    }
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)

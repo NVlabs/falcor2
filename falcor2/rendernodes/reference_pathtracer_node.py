@@ -3,6 +3,7 @@
 
 """Reference path-tracer render node and guide-output management."""
 
+from enum import IntEnum
 from typing import Any, Optional
 
 import slangpy as spy
@@ -20,6 +21,20 @@ from falcor2.editor.scene_shader import SceneShaderHelper
 
 REFERENCE_MODULE_PATH = "falcor2/rendernodes/reference_pathtracer.slang"
 WRITE_GUIDE_INTERFACE = "IWriteGuide"
+
+
+class SchedulingMode(IntEnum):
+    """Path scheduling implementation."""
+
+    simple = 0
+    ser = 1
+
+
+class VisibilityRayMode(IntEnum):
+    """Visibility-ray traversal implementation."""
+
+    ray_query = 0
+    trace_ray = 1
 
 
 class ReferencePathTracerNode(RenderNode):
@@ -50,6 +65,12 @@ class ReferencePathTracerNode(RenderNode):
         self._enable_emissive_triangles = True
         self._env_map_as_background = True
         self._background_color = float3(0.0, 0.0, 0.0)
+        self._scheduling_mode = SchedulingMode.simple
+        self._visibility_ray_mode = (
+            VisibilityRayMode.ray_query
+            if self._device.has_feature(spy.Feature.ray_query)
+            else VisibilityRayMode.trace_ray
+        )
         self._constants = {}
         self.settings_changed()
 
@@ -74,6 +95,8 @@ class ReferencePathTracerNode(RenderNode):
             "ENABLE_EMISSIVE_TRIANGLES": self._enable_emissive_triangles,
             "ENV_MAP_AS_BACKGROUND": self._env_map_as_background,
             "BACKGROUND_COLOR": self._background_color,
+            "SCHEDULING_MODE": int(self._scheduling_mode),
+            "VISIBILITY_RAY_MODE": int(self._visibility_ray_mode),
         }
         self._render_func = None
         self._render_func_constants = None
@@ -186,6 +209,38 @@ class ReferencePathTracerNode(RenderNode):
         self._background_color = value
         self.settings_changed()
 
+    @property
+    def scheduling_mode(self) -> SchedulingMode:
+        """Selected path scheduling implementation."""
+        return self._scheduling_mode
+
+    @scheduling_mode.setter
+    def scheduling_mode(self, value: SchedulingMode):
+        """Select the path scheduling implementation."""
+        mode = SchedulingMode(value)
+        if mode == SchedulingMode.ser and not self._device.has_feature(
+            spy.Feature.shader_execution_reordering
+        ):
+            raise RuntimeError("SER scheduling is not supported by this device.")
+        self._scheduling_mode = mode
+        self.settings_changed()
+
+    @property
+    def visibility_ray_mode(self) -> VisibilityRayMode:
+        """Selected visibility-ray traversal implementation."""
+        return self._visibility_ray_mode
+
+    @visibility_ray_mode.setter
+    def visibility_ray_mode(self, value: VisibilityRayMode):
+        """Select the visibility-ray traversal implementation."""
+        mode = VisibilityRayMode(value)
+        if mode == VisibilityRayMode.ray_query and not self._device.has_feature(
+            spy.Feature.ray_query
+        ):
+            raise RuntimeError("Ray-query visibility is not supported by this device.")
+        self._visibility_ray_mode = mode
+        self.settings_changed()
+
     def _bind_scene(self, cursor: Any):
         """Bind scene resources into the render call cursor."""
         self._scene_shader.bind_scene(cursor)
@@ -224,16 +279,22 @@ class ReferencePathTracerNode(RenderNode):
         if self._render_func is None or self._render_func_constants != render_func_constants:
             assert self._scene
 
-            intersect_ray_desc = f2.SceneRayTracingSetup.RayDesc()
-            intersect_ray_desc.name = "intersect"
-            intersect_ray_desc.has_miss = True
-            intersect_ray_desc.has_closest_hit = True
-            visibility_ray_desc = f2.SceneRayTracingSetup.RayDesc()
-            visibility_ray_desc.name = "visibility"
-            visibility_ray_desc.has_miss = True
+            scatter_ray_desc = f2.SceneRayTracingSetup.RayDesc()
+            scatter_ray_desc.name = "scatter"
+            scatter_ray_desc.has_miss = True
+            scatter_ray_desc.has_closest_hit = True
+            ray_descs = [scatter_ray_desc]
+
+            if self._visibility_ray_mode == VisibilityRayMode.trace_ray:
+                visibility_ray_desc = f2.SceneRayTracingSetup.RayDesc()
+                visibility_ray_desc.name = "visibility"
+                visibility_ray_desc.has_miss = True
+                visibility_ray_desc.has_any_hit = True
+                ray_descs.append(visibility_ray_desc)
+
             rt_setup = f2.SceneRayTracingSetup.create(
                 self._scene,
-                [intersect_ray_desc, visibility_ray_desc],
+                ray_descs,
             )
 
             # Generate a prelude that implements IWriteGuide for the requested guide
@@ -249,7 +310,9 @@ class ReferencePathTracerNode(RenderNode):
                     hit_groups=rt_setup.hit_groups,
                     hit_group_names=rt_setup.sbt_hit_group_names,
                     miss_entry_points=rt_setup.sbt_miss_entry_points,
-                    max_recursion=3,
+                    max_recursion=(
+                        2 if self._visibility_ray_mode == VisibilityRayMode.trace_ray else 1
+                    ),
                     max_ray_payload_size=128,
                     flags=rt_setup.pipeline_flags,
                 )
@@ -375,7 +438,13 @@ class ReferencePathTracerNode(RenderNode):
 
         # Guide resources are bound per call rather than cached on the render
         # function, because the target containers are frame-local and can change.
-        func.write(lambda cursor: self._prelude.bind(cursor, write_guide)).call(
+        def bind_dispatch(cursor: Any) -> None:
+            self._prelude.bind(cursor, write_guide)
+            trace_context = cursor["g_trace_path_context"]
+            trace_context["current_camera"] = current_camera_uniforms
+            trace_context["previous_camera"] = previous_camera
+
+        func.write(bind_dispatch).call(
             ray_sampler=render_camera,
             previous_camera=previous_camera,
             output=Container.to_render_layout(color),

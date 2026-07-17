@@ -77,11 +77,13 @@ public:
     }
 
     /// Read an enum property as int64_t.
-    /// Throws if the property is not an enum.
+    /// Integral properties are also supported when they carry EnumDescriptor metadata.
+    /// Throws if the property cannot represent enum values.
     virtual int64_t get_enum_as_int64(const void* instance) const = 0;
 
     /// Set an enum property from int64_t.
-    /// Throws if read-only or if the property is not an enum.
+    /// Integral properties are also supported when they carry EnumDescriptor metadata.
+    /// Throws if read-only or if the property cannot represent enum values.
     virtual void set_enum_from_int64(void* instance, int64_t value) const = 0;
 
     /// True if the property's value type can be written to / read from Properties.
@@ -342,8 +344,13 @@ public:
     {
         if constexpr (std::is_enum_v<T>) {
             return static_cast<int64_t>(m_getter(cast_instance(instance)));
+        } else if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>) {
+            // Runtime schemas such as MaterialX define enums dynamically, so their values use integral storage
+            // accompanied by EnumDescriptor metadata instead of a compile-time C++ enum type.
+            FALCOR_CHECK(enum_descriptor() != nullptr, "Property \"{}\": integral type has no enum metadata.", m_name);
+            return static_cast<int64_t>(m_getter(cast_instance(instance)));
         } else {
-            FALCOR_THROW("Property \"{}\": type is not an enum.", m_name);
+            FALCOR_THROW("Property \"{}\": type cannot represent enum values.", m_name);
         }
     }
 
@@ -352,8 +359,11 @@ public:
         FALCOR_CHECK(!m_read_only, "Property \"{}\" is read-only.", m_name);
         if constexpr (std::is_enum_v<T>) {
             m_setter(cast_mutable_instance(instance), static_cast<T>(value));
+        } else if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>) {
+            FALCOR_CHECK(enum_descriptor() != nullptr, "Property \"{}\": integral type has no enum metadata.", m_name);
+            m_setter(cast_mutable_instance(instance), static_cast<T>(value));
         } else {
-            FALCOR_THROW("Property \"{}\": type is not an enum.", m_name);
+            FALCOR_THROW("Property \"{}\": type cannot represent enum values.", m_name);
         }
     }
 
@@ -494,8 +504,13 @@ public:
         FALCOR_UNUSED(instance);
         if constexpr (std::is_enum_v<T>) {
             return static_cast<int64_t>(m_value);
+        } else if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>) {
+            // Runtime schemas such as MaterialX define enums dynamically, so their values use integral storage
+            // accompanied by EnumDescriptor metadata instead of a compile-time C++ enum type.
+            FALCOR_CHECK(enum_descriptor() != nullptr, "Property \"{}\": integral type has no enum metadata.", m_name);
+            return static_cast<int64_t>(m_value);
         } else {
-            FALCOR_THROW("Property \"{}\": type is not an enum.", m_name);
+            FALCOR_THROW("Property \"{}\": type cannot represent enum values.", m_name);
         }
     }
 
@@ -507,8 +522,13 @@ public:
             m_value = static_cast<T>(value);
             if (m_on_change)
                 m_on_change->callback(instance);
+        } else if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>) {
+            FALCOR_CHECK(enum_descriptor() != nullptr, "Property \"{}\": integral type has no enum metadata.", m_name);
+            m_value = static_cast<T>(value);
+            if (m_on_change)
+                m_on_change->callback(instance);
         } else {
-            FALCOR_THROW("Property \"{}\": type is not an enum.", m_name);
+            FALCOR_THROW("Property \"{}\": type cannot represent enum values.", m_name);
         }
     }
 

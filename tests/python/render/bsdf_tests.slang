@@ -26,18 +26,20 @@ public float4 test_anisotropic_ggx_policy()
 public float4 test_mx139_beer_delta_transmission(mx139::MxBeerBSDF bsdf, float3 wi)
 {
     UniformSampleGenerator sg = UniformSampleGenerator(1);
-    float3 wo = {};
-    float pdf = {};
-    float3 weight = {};
-    LobeTypes lobe_types = {};
+    BSDFSample sample = {};
     BSDFContext bc = {};
 
-    bool valid = bsdf.sample(wi, wo, pdf, weight, lobe_types, sg, bc);
-    bool delta_transmission = is_set(lobe_types, LobeTypes::delta_transmission);
+    bool valid = bsdf.sample(wi, sample, sg, bc);
+    bool delta_transmission = sample.has_flag(BSDFFlags::delta_transmission);
     AlbedoContributions albedo = bsdf.eval_albedo(wi);
-    float wo_error = length(wo - float3(-wi.x, -wi.y, -wi.z));
+    float wo_error = length(sample.wo - float3(-wi.x, -wi.y, -wi.z));
 
-    return float4(valid && delta_transmission ? 1.0 : 0.0, wo_error + abs(pdf), weight.x, albedo.transmission.z);
+    return float4(
+        valid && delta_transmission ? 1.0 : 0.0,
+        wo_error + abs(sample.pdf),
+        sample.weight.x,
+        albedo.transmission.z
+    );
 }
 
 // ============================================================================
@@ -69,12 +71,10 @@ public struct BSDFTarget<B : IBSDF> : chi2::ITarget
 
     public bool sample<SG : ISampleGenerator>(inout SG sg, out float3 p)
     {
-        float3 wo;
-        float pdf;
-        float3 weight;
-        LobeTypes lobe_types;
-
-        return bsdf.sample(wi, p, pdf, weight, lobe_types, sg, bc);
+        BSDFSample sample;
+        bool valid = bsdf.sample(wi, sample, sg, bc);
+        p = sample.wo;
+        return valid;
     }
 
     public float pdf(float3 wo) { return bsdf.eval_pdf(wi, wo, bc); }
@@ -118,18 +118,15 @@ public void test_eval_sample_consistency<B : IBSDF>(
         if (sample_index >= sample_count)
             break;
 
-        float3 wo = {};
-        float sample_pdf = {};
-        float3 weight = {};
-        LobeTypes lobe_types = {};
+        BSDFSample sample = {};
 
-        if (!bsdf.sample(wi, wo, sample_pdf, weight, lobe_types, sg, bc)) {
+        if (!bsdf.sample(wi, sample, sg, bc)) {
             counters.add(1, 1); // failed
             continue;
         }
 
         // Skip delta lobes (pdf=0 by convention, can't verify eval/pdf ratio).
-        if (is_set(lobe_types, LobeTypes::delta)) {
+        if (sample.has_flag(BSDFFlags::delta)) {
             counters.add(2, 1); // delta
             continue;
         }
@@ -137,26 +134,26 @@ public void test_eval_sample_consistency<B : IBSDF>(
         counters.add(0, 1); // valid
 
         // Sanity: check for negative values.
-        if (sample_pdf < 0 || any(weight < 0)) {
+        if (sample.pdf < 0 || any(sample.weight < 0)) {
             counters.add(3, 1); // negative
             continue;
         }
 
         // Verify pdf consistency: eval_pdf(wi, wo) should match pdf from sample().
-        float eval_pdf_value = bsdf.eval_pdf(wi, wo, bc);
-        float pdf_denom = max(abs(sample_pdf), 1e-8);
-        float pdf_err = abs(eval_pdf_value - sample_pdf) / pdf_denom;
+        float eval_pdf_value = bsdf.eval_pdf(wi, sample.wo, bc);
+        float pdf_denom = max(abs(sample.pdf), 1e-8);
+        float pdf_err = abs(eval_pdf_value - sample.pdf) / pdf_denom;
         max_pdf_err = max(max_pdf_err, pdf_err);
 
         // Verify weight consistency: eval(wi, wo) / eval_pdf(wi, wo) ~= weight.
         if (eval_pdf_value > 1e-8) {
-            float3 eval_value = bsdf.eval(wi, wo, sg, bc);
+            float3 eval_value = bsdf.eval(wi, sample.wo, sg, bc);
             float3 computed_weight = eval_value / eval_pdf_value;
 
             // Per-channel relative error.
             for (int c = 0; c < 3; c++) {
-                float denom = max(abs(weight[c]), 1e-8);
-                float err = abs(computed_weight[c] - weight[c]) / denom;
+                float denom = max(abs(sample.weight[c]), 1e-8);
+                float err = abs(computed_weight[c] - sample.weight[c]) / denom;
                 max_weight_err = max(max_weight_err, err);
             }
         }
@@ -204,16 +201,13 @@ public void test_reciprocity<B : IBSDF>(
         if (sample_index >= sample_count)
             break;
 
-        float3 wo = {};
-        float pdf = {};
-        float3 weight = {};
-        LobeTypes lobe_types = {};
+        BSDFSample sample = {};
 
-        if (!bsdf.sample(wi, wo, pdf, weight, lobe_types, sg, bc))
+        if (!bsdf.sample(wi, sample, sg, bc))
             continue;
 
         // Only test non-delta reflection (both directions in upper hemisphere).
-        if (is_set(lobe_types, LobeTypes::delta) || wo.z <= BSDF_MIN_COS_THETA) {
+        if (sample.has_flag(BSDFFlags::delta) || sample.wo.z <= BSDF_MIN_COS_THETA) {
             counters.add(1, 1); // skipped
             continue;
         }
@@ -224,11 +218,11 @@ public void test_reciprocity<B : IBSDF>(
         // eval(wo, wi) = f(wo, wi) * |wi.z|
         // Reciprocity: f(wi, wo) = f(wo, wi)
         // => eval(wi, wo) * |wi.z| = eval(wo, wi) * |wo.z|
-        float3 eval_fwd = bsdf.eval(wi, wo, sg, bc);
-        float3 eval_rev = bsdf.eval(wo, wi, sg, bc);
+        float3 eval_fwd = bsdf.eval(wi, sample.wo, sg, bc);
+        float3 eval_rev = bsdf.eval(sample.wo, wi, sg, bc);
 
         float3 lhs = eval_fwd * abs(wi.z);
-        float3 rhs = eval_rev * abs(wo.z);
+        float3 rhs = eval_rev * abs(sample.wo.z);
 
         for (int c = 0; c < 3; c++) {
             float denom = max(max(abs(lhs[c]), abs(rhs[c])), 1e-8);

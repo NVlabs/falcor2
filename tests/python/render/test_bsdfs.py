@@ -46,8 +46,8 @@ class SkipFlags(enum.Flag):
     RECIPROCITY = enum.auto()
 
 
-class LobeTypes(enum.IntFlag):
-    """Python enum matching Slang's LobeTypes definition."""
+class BSDFFlags(enum.IntFlag):
+    """Python enum matching Slang's BSDFFlags definition."""
 
     none = 0x00
     diffuse_reflection = 0x01
@@ -145,7 +145,7 @@ BSDF_CONFIGS = [
         {
             "albedo": [0.04, 0.04, 0.04],
             "alpha": 0.35,
-            "active_lobes": int(LobeTypes.glossy_reflection),
+            "active_lobes": int(BSDFFlags.glossy_reflection),
         },
         [WI_NORMAL, WI_30DEG],
         None,
@@ -157,7 +157,7 @@ BSDF_CONFIGS = [
         {
             "albedo": [0.9, 0.6, 0.2],
             "alpha": 0.25,
-            "active_lobes": int(LobeTypes.glossy_reflection),
+            "active_lobes": int(BSDFFlags.glossy_reflection),
         },
         [WI_NORMAL],
         None,
@@ -170,7 +170,7 @@ BSDF_CONFIGS = [
             "transmission_albedo": [0.9, 0.8, 0.7],
             "alpha": 0.4,
             "eta": 1.0 / 1.5,
-            "active_lobes": int(LobeTypes.glossy_reflection | LobeTypes.glossy_transmission),
+            "active_lobes": int(BSDFFlags.glossy_reflection | BSDFFlags.glossy_transmission),
         },
         [WI_NORMAL, WI_30DEG],
         None,
@@ -183,7 +183,7 @@ BSDF_CONFIGS = [
             "transmission_albedo": [0.7, 0.9, 1.0],
             "alpha": 0.4,
             "eta": 1.5,
-            "active_lobes": int(LobeTypes.glossy_reflection | LobeTypes.glossy_transmission),
+            "active_lobes": int(BSDFFlags.glossy_reflection | BSDFFlags.glossy_transmission),
         },
         [WI_NORMAL],
         None,
@@ -762,13 +762,13 @@ def test_pbrt_dielectric_near_smooth_eval_sample_consistency(
 @pytest.mark.parametrize(
     "sample_lobe_types_hint",
     [
-        LobeTypes.reflection,
-        LobeTypes.transmission,
+        BSDFFlags.reflection,
+        BSDFFlags.transmission,
     ],
 )
 def test_pbrt_dielectric_lobe_sampling_hint_eval_sample_consistency(
     device_type: spy.DeviceType,
-    sample_lobe_types_hint: LobeTypes,
+    sample_lobe_types_hint: BSDFFlags,
 ) -> None:
     """Restricted sampling hints must report coherent hint-conditioned PDFs."""
     device = helpers.get_device(device_type)

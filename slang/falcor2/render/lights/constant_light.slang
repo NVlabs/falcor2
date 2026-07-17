@@ -8,6 +8,8 @@ public struct ConstantLight : ILight
     public LightHeader header;
     public float3 radiance;
 
+    public float emitted_power() { return float.FOUR_PI * luminance(radiance); }
+
     public float3 eval_direction<Interaction : IInteraction>(const Interaction ref, const DirectionSample sample)
     {
         return radiance;

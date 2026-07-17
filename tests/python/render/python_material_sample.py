@@ -39,8 +39,7 @@ class PythonMaterialSample(f2.Material):
         super().__init__()
         self.slang_type_name = "PythonMaterialSample"
 
-        self._asset_resolver = f2.AssetResolver()
-        self._asset_resolver.add_search_path(DATA_DIR)
+        self._asset_resolver = f2.AssetResolver().push(DATA_DIR)
 
         self._module: spy.SlangModule | None = None
         self._texture_handles = [f2.TextureHandle(), f2.TextureHandle()]

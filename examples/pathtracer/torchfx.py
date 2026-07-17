@@ -4,11 +4,14 @@
 import torch
 import torch.nn.functional as F
 
-import falcor2
 import slangpy as spy
 from falcor2.editor import Editor, EditorConfig, create_torch_device, load_scene
-from falcor2.rendernodes import PathTracerPipeline
 from falcor2.rendergraph import ContainerSpec
+from falcor2.rendernodes import PathTracerPipeline
+
+SCENE_PATH = "data/scenes/cornell-box-env.py"
+VIEWPORT_WIDTH = 1280
+VIEWPORT_HEIGHT = 720
 
 
 def gaussian_kernel_1d(device: torch.device, dtype: torch.dtype) -> torch.Tensor:
@@ -103,21 +106,10 @@ class NeonPostFx:
 
 
 device = create_torch_device()
-scene = load_scene(device, "data/assets/cornell-box/usdpreviewsurface/cornell-box.usda")
-
-# Add env map via C++ scene entity/component API.
-env_entity = scene.create_entity()
-env_map = env_entity.create_component(falcor2.EnvMapLight)
-env_map.exposure = 5
-env_map["env_map_path"] = "data/assets/envmaps/aerodynamics_workshop_512.hdr"
-
-scene.update()
+scene = load_scene(device, SCENE_PATH)
 camera = scene.active_camera
 if camera is None:
-    raise RuntimeError("Cornell box scene does not contain a camera.")
-camera.width = 1280
-camera.height = 720
-camera.recompute()
+    raise RuntimeError(f"Scene file does not contain an active camera: {SCENE_PATH}")
 
 pipeline = PathTracerPipeline.create(device)
 pipeline.path_tracer.max_depth = 3
@@ -132,8 +124,8 @@ post_fx = NeonPostFx()
 editor = Editor.create(
     device,
     config=EditorConfig(
-        width=1280,
-        height=720,
+        width=VIEWPORT_WIDTH,
+        height=VIEWPORT_HEIGHT,
         title="Falcor2 Cornell Box Path Tracer Viewer",
         vsync=False,
     ),

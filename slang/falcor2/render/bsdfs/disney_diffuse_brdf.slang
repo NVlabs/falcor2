@@ -29,27 +29,18 @@ public struct DisneyDiffuseBRDF : IBSDF, IDifferentiable
         return eval_weight(wi, wo) * float.INV_PI * wo.z;
     }
 
-    public bool sample<S : ISampleGenerator>(
-        const float3 wi,
-        out float3 wo,
-        out float pdf,
-        out float3 weight,
-        out LobeTypes lobe_types,
-        inout S sg,
-        const BSDFContext bc
-    )
+    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
-        wo = square_to_cosine_hemisphere_concentric(next_float2(sg));
-        pdf = square_to_cosine_hemisphere_concentric_pdf(wo);
+        sample = {};
 
-        lobe_types = LobeTypes::diffuse_reflection;
+        sample.wo = square_to_cosine_hemisphere_concentric(next_float2(sg));
+        sample.pdf = square_to_cosine_hemisphere_concentric_pdf(sample.wo);
+        sample.flags = BSDFFlags::diffuse_reflection;
 
-        if (min(wi.z, wo.z) < BSDF_MIN_COS_THETA) {
-            weight = {};
+        if (min(wi.z, sample.wo.z) < BSDF_MIN_COS_THETA)
             return false;
-        }
 
-        weight = eval_weight(wi, wo);
+        sample.weight = eval_weight(wi, sample.wo);
         return true;
     }
 

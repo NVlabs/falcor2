@@ -23,7 +23,7 @@ public struct AcceptAllHitsEvaluator : IOpacityEvaluator
     public static bool is_valid_hit(Ray ray, HitInfo hit) { return true; }
 };
 
-extern struct OpacityEvaluator : IOpacityEvaluator = AcceptAllHitsEvaluator;
+public extern struct OpacityEvaluator : IOpacityEvaluator = AcceptAllHitsEvaluator;
 
 
 public struct RayQuerySceneIntersector : ISceneIntersector

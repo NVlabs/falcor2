@@ -4,6 +4,7 @@
 
 #include "scene_import.h"
 
+#include "falcor2/core/python_interpreter.h"
 #include "falcor2/render/scene.h"
 #include "falcor2/render/material/standard_material.h"
 #include "falcor2/render/material/standard_specgloss_material.h"
@@ -94,6 +95,15 @@ static Material* load_importer_material(
 )
 {
     const Properties& params = importer_material.params;
+    if (importer_material.constructor) {
+        Material* material = importer_material.constructor(*scene, importer_material);
+        if (!material) {
+            FALCOR_THROW("Constructor for importer material '{}' returned null", importer_material.name);
+        }
+        material->set_name(importer_material.name);
+        return material;
+    }
+
     if (auto scene_material_type = params.get_optional<std::string_view>("_scene_material_type")) {
         auto material = scene->create_material(*scene_material_type, params);
         material->set_name(importer_material.name);
@@ -413,6 +423,22 @@ void load_importer_scene(Scene* scene, const ImporterScene& importer_scene)
             = load_importer_material(scene, importer_material, importer_scene.textures);
     }
 
+    Material* default_material = nullptr;
+    auto resolve_material = [&](const std::string& material_name) -> Material*
+    {
+        if (auto it = name_to_material.find(material_name); it != name_to_material.end())
+            return it->second;
+
+        if (!material_name.empty())
+            sgl::log_warn("Importer geometry references missing material '{}'; using default material", material_name);
+
+        if (!default_material) {
+            default_material = scene->create_material<StandardMaterial>();
+            default_material->set_name("DefaultMaterial");
+        }
+        return default_material;
+    };
+
     // Create a StaticMeshGeometry for each importer mesh.
     std::vector<StaticMeshGeometry*> mesh_geometries;
     std::map<StaticMeshGeometry*, std::vector<Material*>> mesh_geometry_to_materials;
@@ -421,9 +447,7 @@ void load_importer_scene(Scene* scene, const ImporterScene& importer_scene)
         mesh_geometries.push_back(mesh_geometry);
         std::vector<Material*> materials;
         for (const ImporterMesh::Subgeometry& subgeo : importer_mesh.subgeometries) {
-            auto it = name_to_material.find(subgeo.material_name);
-            FALCOR_ASSERT(it != name_to_material.end());
-            materials.push_back(it->second);
+            materials.push_back(resolve_material(subgeo.material_name));
         }
         mesh_geometry_to_materials[mesh_geometry] = std::move(materials);
     }
@@ -434,11 +458,7 @@ void load_importer_scene(Scene* scene, const ImporterScene& importer_scene)
     for (const ImporterCurve& importer_curve : importer_scene.curves) {
         StaticCurveGeometry* curve_geometry = load_importer_curve(scene, importer_curve);
         curve_geometries.push_back(curve_geometry);
-        if (!importer_curve.material_name.empty()) {
-            auto it = name_to_material.find(importer_curve.material_name);
-            FALCOR_ASSERT(it != name_to_material.end());
-            curve_geometry_to_material[curve_geometry] = it->second;
-        }
+        curve_geometry_to_material[curve_geometry] = resolve_material(importer_curve.material_name);
     }
 
     // Create Animation object from importer scene (before entities, so TransformAnimation can reference it).
@@ -509,7 +529,8 @@ void load_importer_scene(Scene* scene, const ImporterScene& importer_scene)
             case ImporterLight::Type::distant: {
                 DistantLight* distant_light = entity->create_component<DistantLight>();
                 distant_light->set_radiance(importer_light.intensity);
-                distant_light->set_cutoff_angle(importer_light.degree_angular_diameter);
+                // Scene distant light expects a half angle
+                distant_light->set_cutoff_angle(0.5f * importer_light.degree_angular_diameter);
                 break;
             }
             case ImporterLight::Type::rectangular:
@@ -527,7 +548,15 @@ void load_importer_scene(Scene* scene, const ImporterScene& importer_scene)
                 // TODO(scene): handle (create geometry and emissive material)
                 break;
             case ImporterLight::Type::dome: {
-                EnvMapLight* env_map_light = entity->create_component<EnvMapLight>();
+                if (importer_light.env_map_path.empty()) {
+                    ConstantLight* constant_light = entity->create_component<ConstantLight>();
+                    constant_light->set_radiance(importer_light.intensity);
+                    constant_light->set_exposure(importer_light.exposure);
+                } else {
+                    EnvMapLight* env_map_light = entity->create_component<EnvMapLight>();
+                    env_map_light->set_env_map_path(importer_light.env_map_path);
+                    env_map_light->set_exposure(importer_light.exposure);
+                }
                 break;
             }
             case ImporterLight::Type::constant: {
@@ -541,9 +570,14 @@ void load_importer_scene(Scene* scene, const ImporterScene& importer_scene)
             FALCOR_ASSERT_LT(importer_node.camera_index, importer_scene.cameras.size());
             const ImporterCamera& importer_camera = importer_scene.cameras[importer_node.camera_index];
             Camera* camera = entity->create_component<Camera>();
+            camera->set_name(importer_camera.name);
             camera->set_focal_length(importer_camera.focal_length);
             camera->set_focus_distance(importer_camera.focus_distance);
             camera->set_fstop(importer_camera.fstop);
+            camera->set_fov_y(importer_camera.vertical_fov_degrees());
+            if (scene->active_camera() == nullptr) {
+                scene->set_active_camera(camera);
+            }
         }
 
         // Recursively process children
@@ -588,6 +622,19 @@ ref<Scene> create_scene(
     std::optional<UVOrigin> uv_origin
 )
 {
+    const std::string extension = sgl::string::to_lower(path.extension().string());
+
+    if (extension == ".py") {
+        ImportOptions import_options{.recompute_normals = recompute_normals};
+        ref<Importer> importer = Importer::create(import_options);
+        importer->set_source_path(path);
+        ScopedCurrentImporter current_importer(importer);
+
+        PythonInterpreter::get().create_context().execute_file(path, "__falcor2_scene__");
+
+        return create_scene(std::move(device), *importer, uv_origin);
+    }
+
     ref<ImporterScene> importer_scene = import_scene_for_create(path, recompute_normals);
     return create_scene(std::move(device), *importer_scene, uv_origin);
 }
@@ -596,6 +643,24 @@ ref<Scene> create_scene(ref<sgl::Device> device, const ImporterScene& importer_s
 {
     auto scene = ref<Scene>{new Scene(std::move(device), resolve_scene_options(uv_origin, importer_scene))};
     load_importer_scene(scene.get(), importer_scene);
+    return scene;
+}
+
+ref<Scene> create_scene(
+    ref<sgl::Device> device,
+    const Importer& importer,
+    std::optional<UVOrigin> uv_origin,
+    bool add_default_camera_best_view,
+    float camera_aspect
+)
+{
+    ref<ImporterScene> importer_scene = importer.build_importer_scene();
+    FALCOR_ASSERT(importer_scene);
+    if (add_default_camera_best_view && importer_scene->cameras.empty())
+        importer_scene->add_default_camera_best_view(50.f, camera_aspect);
+
+    ref<Scene> scene = create_scene(std::move(device), *importer_scene, uv_origin);
+    importer.run_scene_created_callbacks(scene);
     return scene;
 }
 

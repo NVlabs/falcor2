@@ -23,6 +23,7 @@ BEGIN_DISABLE_USD_WARNINGS
 #include <pxr/usd/usdGeom/tokens.h>
 #include <pxr/usd/usdGeom/primvarsAPI.h>
 #include <pxr/usd/usdGeom/xformCommonAPI.h>
+#include <pxr/usd/usdGeom/xformable.h>
 #include <pxr/usd/usdGeom/camera.h>
 #include <pxr/usd/usdGeom/pointInstancer.h>
 #include <pxr/usd/usdGeom/scope.h>
@@ -40,9 +41,10 @@ BEGIN_DISABLE_USD_WARNINGS
 #include <pxr/usd/usdSkel/animation.h>
 END_DISABLE_USD_WARNINGS
 
-#include <stdexcept>
+#include <algorithm>
 #include <cmath>
 #include <mutex>
+#include <stdexcept>
 
 namespace falcor {
 namespace usd_importer {
@@ -71,6 +73,85 @@ float3 get_light_intensity(const TUsdLuxLightType& light, const pxr::UsdPrim& pr
     GfVec3f color
         = get_authored_attribute(light.GetColorAttr(), prim.GetAttribute(TfToken("color")), GfVec3f(1.f, 1.f, 1.f));
     return std::exp2(exposure) * intensity * to_falcor(blackbody_RGB) * to_falcor(color);
+}
+
+float distant_light_size_factor(float degree_angular_diameter)
+{
+    // UsdLux normalization divides emitted radiance by this projected solid-angle factor.
+    // See https://openusd.org/release/user_guides/schemas/usdLux/LightAPI.html#inputs-normalize
+    // Distance lights normalization.
+    const float pi = static_cast<float>(M_PI);
+    const float half_angle = std::clamp(sgl::math::radians(degree_angular_diameter) * 0.5f, 0.f, pi);
+    if (half_angle == 0.f)
+        return 1.f;
+
+    const float sin_half_angle = std::sin(half_angle);
+    const float sin_squared = sin_half_angle * sin_half_angle;
+    return pi * (half_angle <= 0.5f * pi ? sin_squared : 2.f - sin_squared);
+}
+
+struct LightWorldAxes {
+    float3 x;
+    float3 y;
+    float3 z;
+};
+
+LightWorldAxes get_light_world_axes(const pxr::UsdPrim& prim)
+{
+    const float4x4 world_from_light
+        = to_falcor(pxr::UsdGeomXformable(prim).ComputeLocalToWorldTransform(pxr::UsdTimeCode::Default()));
+    return {
+        sgl::math::transform_vector(world_from_light, float3(1.f, 0.f, 0.f)),
+        sgl::math::transform_vector(world_from_light, float3(0.f, 1.f, 0.f)),
+        sgl::math::transform_vector(world_from_light, float3(0.f, 0.f, 1.f)),
+    };
+}
+
+float planar_light_size_factor(const pxr::UsdPrim& prim, float local_area)
+{
+    const LightWorldAxes axes = get_light_world_axes(prim);
+    const float world_area_scale = sgl::math::length(sgl::math::cross(axes.x, axes.y));
+    const float world_area = sgl::math::abs(local_area) * world_area_scale;
+    return world_area > 0.f && sgl::math::isfinite(world_area) ? world_area : 1.f;
+}
+
+float sphere_light_size_factor(const pxr::UsdPrim& prim, float radius)
+{
+    const LightWorldAxes axes = get_light_world_axes(prim);
+    const float x_scale_squared = sgl::math::dot(axes.x, axes.x);
+    const float y_scale_squared = sgl::math::dot(axes.y, axes.y);
+    const float z_scale_squared = sgl::math::dot(axes.z, axes.z);
+    const float max_scale_squared = sgl::math::max(x_scale_squared, sgl::math::max(y_scale_squared, z_scale_squared));
+    const float tolerance = max_scale_squared * 1e-6f;
+    const bool is_uniform_scale = max_scale_squared > 0.f && sgl::math::isfinite(max_scale_squared)
+        && sgl::math::abs(x_scale_squared - y_scale_squared) <= tolerance
+        && sgl::math::abs(x_scale_squared - z_scale_squared) <= tolerance
+        && sgl::math::abs(sgl::math::dot(axes.x, axes.y)) <= tolerance
+        && sgl::math::abs(sgl::math::dot(axes.x, axes.z)) <= tolerance
+        && sgl::math::abs(sgl::math::dot(axes.y, axes.z)) <= tolerance;
+
+    float world_area_scale = 1.f;
+    if (is_uniform_scale) {
+        world_area_scale = (x_scale_squared + y_scale_squared + z_scale_squared) / 3.f;
+    } else {
+        // OpenUSD recommends using light size attributes instead of non-uniform transforms because the latter
+        // complicate light sampling and integration. Preserve the authored spherical area in that case.
+        sgl::log_warn(
+            "SphereLight '{}' has a non-uniform scale or shear; ignoring transform scaling for light "
+            "normalization. Use the radius attribute to size the light.",
+            prim.GetPath().GetString()
+        );
+    }
+
+    const float pi = static_cast<float>(M_PI);
+    const float world_area = 4.f * pi * radius * radius * world_area_scale;
+    return world_area > 0.f && sgl::math::isfinite(world_area) ? world_area : 1.f;
+}
+
+template<typename TUsdLuxLightType>
+bool is_light_normalized(const TUsdLuxLightType& light, const pxr::UsdPrim& prim)
+{
+    return get_authored_attribute(light.GetNormalizeAttr(), prim.GetAttribute(pxr::TfToken("normalize")), false);
 }
 
 quatf euler_to_quat(const pxr::GfVec3f& degrees, pxr::UsdGeomXformCommonAPI::RotationOrder order)
@@ -737,6 +818,14 @@ ImporterLight UsdImporterContext::create_light(pxr::UsdPrim prim)
 {
     /// We do not scale any of the dimensions with get_meters_per_unit(),
     /// because that is already baked into the Scene's root transform.
+    ///
+    /// Light intensities are adjusted for lights marked as normalize, as per
+    /// https://openusd.org/release/user_guides/schemas/usdLux/LightAPI.html#inputs-normalize
+    ///
+    /// Scaling is applied during normalize, however none-uniform scaling of sphere lights results
+    /// in a warning, and scaling is general is not recommended by the spec:
+    /// https://openusd.org/release/api/usd_lux_page_front.html#usdLux_Geometry
+
     using namespace pxr;
 
     ImporterLight result;
@@ -744,28 +833,37 @@ ImporterLight UsdImporterContext::create_light(pxr::UsdPrim prim)
 
     if (auto light = UsdLuxDistantLight(prim)) {
         result.type = ImporterLight::Type::distant;
+        result.intensity = get_light_intensity(light, prim);
         result.degree_angular_diameter = get_authored_attribute(
             light.GetAngleAttr(),
             prim.GetAttribute(TfToken("angle")),
             result.degree_angular_diameter
         );
+        if (is_light_normalized(light, prim))
+            result.intensity /= distant_light_size_factor(result.degree_angular_diameter);
 
         return result;
     }
 
     if (auto light = UsdLuxRectLight(prim)) {
         result.type = ImporterLight::Type::rectangular;
+        result.intensity = get_light_intensity(light, prim);
         result.width = get_authored_attribute(light.GetWidthAttr(), prim.GetAttribute(TfToken("width")), result.width);
         result.height
             = get_authored_attribute(light.GetHeightAttr(), prim.GetAttribute(TfToken("height")), result.height);
+        if (is_light_normalized(light, prim))
+            result.intensity /= planar_light_size_factor(prim, result.width * result.height);
 
         return result;
     }
 
     if (auto light = UsdLuxSphereLight(prim)) {
         result.type = ImporterLight::Type::sphere;
+        result.intensity = get_light_intensity(light, prim);
         result.radius
             = get_authored_attribute(light.GetRadiusAttr(), prim.GetAttribute(TfToken("radius")), result.radius);
+        if (is_light_normalized(light, prim))
+            result.intensity /= sphere_light_size_factor(prim, result.radius);
 
         if (get_authored_attribute(light.GetTreatAsPointAttr(), prim.GetAttribute(TfToken("treatAsPoint")), false)) {
             result.radius = 0;
@@ -778,14 +876,20 @@ ImporterLight UsdImporterContext::create_light(pxr::UsdPrim prim)
 
     if (auto light = UsdLuxDiskLight(prim)) {
         result.type = ImporterLight::Type::disk;
+        result.intensity = get_light_intensity(light, prim);
         result.radius
             = get_authored_attribute(light.GetRadiusAttr(), prim.GetAttribute(TfToken("radius")), result.radius);
+        if (is_light_normalized(light, prim)) {
+            const float pi = static_cast<float>(M_PI);
+            result.intensity /= planar_light_size_factor(prim, pi * result.radius * result.radius);
+        }
 
         return result;
     }
 
     if (auto light = UsdLuxDomeLight(prim)) {
         result.type = ImporterLight::Type::dome;
+        result.intensity = get_light_intensity(light, prim);
 
         SdfAssetPath texture_path = get_authored_attribute(
             light.GetTextureFileAttr(),
@@ -794,8 +898,9 @@ ImporterLight UsdImporterContext::create_light(pxr::UsdPrim prim)
         );
         result.env_map_path = texture_path.GetResolvedPath();
         if (result.env_map_path.empty()) {
-            sgl::log_error("Cannot find texture on dome light: " + result.name);
             result.env_map_path = texture_path.GetAssetPath();
+            if (!result.env_map_path.empty())
+                sgl::log_error("Cannot find texture on dome light: " + result.name);
         }
 
         return result;
@@ -838,12 +943,24 @@ void UsdImporterContext::add_camera(
         break;
     }
 
-    if (prim.GetAttribute(UsdGeomTokens->horizontalAperture).IsAuthored()) {
-        result.fov_direction = ImporterCamera::FOVDirection::horizontal;
-        result.aperture = usd_camera.GetHorizontalAperture();
-    } else {
+    const float vertical_aperture = usd_camera.GetVerticalAperture();
+    const float horizontal_aperture = usd_camera.GetHorizontalAperture();
+    const bool has_valid_vertical_aperture = prim.GetAttribute(UsdGeomTokens->verticalAperture).IsAuthored()
+        && std::isfinite(vertical_aperture) && vertical_aperture > 0.f;
+    const bool has_valid_horizontal_aperture = prim.GetAttribute(UsdGeomTokens->horizontalAperture).IsAuthored()
+        && std::isfinite(horizontal_aperture) && horizontal_aperture > 0.f;
+
+    if (has_valid_vertical_aperture) {
         result.fov_direction = ImporterCamera::FOVDirection::vertical;
-        result.aperture = usd_camera.GetVerticalAperture();
+        result.sensor_size_mm = vertical_aperture;
+    } else if (has_valid_horizontal_aperture) {
+        result.fov_direction = ImporterCamera::FOVDirection::horizontal;
+        result.sensor_size_mm = horizontal_aperture;
+    } else if (std::isfinite(vertical_aperture) && vertical_aperture > 0.f) {
+        // Neither aperture is authored. Preserve the composed USD vertical aperture,
+        // including the schema fallback, rather than inventing an aspect ratio.
+        result.fov_direction = ImporterCamera::FOVDirection::vertical;
+        result.sensor_size_mm = vertical_aperture;
     }
 
     std::scoped_lock l(scene_mutexes.nodes, scene_mutexes.camera);

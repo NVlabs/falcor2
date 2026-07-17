@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <limits>
 
 namespace falcor {
@@ -27,12 +28,6 @@ float3 branchlessONB(float3 normal)
 }
 
 constexpr float DEFAULT_SENSOR_HEIGHT_MM = 24.f;
-
-float compute_focal_length_from_fov_y(float fov_degrees, float sensor_height_mm)
-{
-    const float fov_rad = sgl::math::radians(fov_degrees);
-    return sensor_height_mm / (2.f * sgl::math::tan(fov_rad * 0.5f));
-}
 
 float compute_percentile(std::vector<float>& values, float percentile)
 {
@@ -195,12 +190,12 @@ int append_camera_and_node(
     ImporterCamera camera;
     camera.name = std::string(camera_name);
     camera.focus_distance = std::max(focus_distance, 0.01f);
-    camera.focal_length = compute_focal_length_from_fov_y(fov_degrees, DEFAULT_SENSOR_HEIGHT_MM);
+    camera.focal_length = ImporterCamera::focal_length_from_fov_degrees(fov_degrees, DEFAULT_SENSOR_HEIGHT_MM);
     camera.fstop = 8.f;
     camera.depth_range = float2(std::max(near_plane, 0.001f), std::max(far_plane, near_plane + 0.1f));
     camera.projection = ImporterCamera::Projection::perspective;
     camera.fov_direction = ImporterCamera::FOVDirection::vertical;
-    camera.aperture = DEFAULT_SENSOR_HEIGHT_MM;
+    camera.sensor_size_mm = DEFAULT_SENSOR_HEIGHT_MM;
 
     const int camera_index = static_cast<int>(scene.cameras.size());
     scene.cameras.push_back(std::move(camera));
@@ -246,6 +241,40 @@ float ImporterAnimation::duration() const
         }
     }
     return max_time;
+}
+
+float ImporterCamera::focal_length_from_fov_degrees(float fov_degrees, float sensor_size_mm)
+{
+    SGL_CHECK(fov_degrees > 0.f && fov_degrees < 180.f, "Camera field of view must be between 0 and 180 degrees");
+    SGL_CHECK(sensor_size_mm > 0.f, "Camera sensor size must be positive");
+
+    const float fov_rad = sgl::math::radians(fov_degrees);
+    return sensor_size_mm / (2.f * sgl::math::tan(fov_rad * 0.5f));
+}
+
+float ImporterCamera::fov_degrees_from_focal_length(float sensor_size_mm, float focal_length_mm)
+{
+    SGL_CHECK(sensor_size_mm > 0.f, "Camera sensor size must be positive");
+    SGL_CHECK(focal_length_mm > 0.f, "Camera focal length must be positive");
+
+    return sgl::math::degrees(2.f * std::atan(sensor_size_mm / (2.f * focal_length_mm)));
+}
+
+float ImporterCamera::fov_degrees() const
+{
+    return fov_degrees_from_focal_length(sensor_size_mm, focal_length);
+}
+
+float ImporterCamera::vertical_fov_degrees(float horizontal_to_vertical_sensor_ratio) const
+{
+    SGL_CHECK(horizontal_to_vertical_sensor_ratio > 0.f, "Camera sensor ratio must be positive");
+
+    float vertical_sensor_size_mm = sensor_size_mm;
+    if (fov_direction == FOVDirection::horizontal) {
+        vertical_sensor_size_mm = sensor_size_mm / horizontal_to_vertical_sensor_ratio;
+    }
+
+    return fov_degrees_from_focal_length(vertical_sensor_size_mm, focal_length);
 }
 
 void ImporterCurve::calculate_local_aabb()

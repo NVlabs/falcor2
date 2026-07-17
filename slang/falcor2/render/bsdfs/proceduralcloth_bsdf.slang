@@ -294,16 +294,10 @@ public struct ProceduralClothBSDF : IBSDF
         return contribution_eval;
     }
 
-    public bool sample<S : ISampleGenerator>(
-        const float3 wi,
-        out float3 wo,
-        out float pdf,
-        out float3 weight,
-        out LobeTypes lobe_type,
-        inout S sg,
-        BSDFContext bc
-    )
+    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, BSDFContext bc)
     {
+        sample = {};
+
         float2 closest_hit;
         bool hit_top;
         Intersection intersections[C_MAX_PLIES];
@@ -312,14 +306,15 @@ public struct ProceduralClothBSDF : IBSDF
 
         // We tested top and bottom and didn't hit anything
         if (hit_id == -1) {
-            wo = float3(-wi.x, -wi.y, -wi.z);
-            pdf = 0.f;
-            weight = 1.f;
-            lobe_type = LobeTypes::delta_transmission;
+            sample.wo = float3(-wi.x, -wi.y, -wi.z);
+            sample.pdf = 0.f;
+            sample.weight = 1.f;
+            sample.flags = BSDFFlags::delta_transmission;
             return true;
         }
 
-        int selected_lobe = sample_lobe(wi, closest_hit, hit_top, intersections, hit_counter, hit_id, wo, weight, sg);
+        int selected_lobe
+            = sample_lobe(wi, closest_hit, hit_top, intersections, hit_counter, hit_id, sample.wo, sample.weight, sg);
 
         // We sampled a ray which travels into te lower hemisphere. Re-evaluate the bottom fiber if (and only if)  we
         // hit a top fiber. The incoming ray will be the outgoing ray.
@@ -329,15 +324,24 @@ public struct ProceduralClothBSDF : IBSDF
 
             if (hit_id != -1) {
                 float3 bottom_weight;
-                int selected_lobe
-                    = sample_lobe(wi, closest_hit, hit_top, intersections, hit_counter, hit_id, wo, bottom_weight, sg);
+                int selected_lobe = sample_lobe(
+                    wi,
+                    closest_hit,
+                    hit_top,
+                    intersections,
+                    hit_counter,
+                    hit_id,
+                    sample.wo,
+                    bottom_weight,
+                    sg
+                );
 
-                weight *= bottom_weight;
+                sample.weight *= bottom_weight;
             }
         }
 
-        pdf = eval_pdf(wi, wo, bc);
-        lobe_type = (wo.z >= 0.f ? LobeTypes::glossy_reflection : LobeTypes::glossy_transmission);
+        sample.pdf = eval_pdf(wi, sample.wo, bc);
+        sample.flags = (sample.wo.z >= 0.f ? BSDFFlags::glossy_reflection : BSDFFlags::glossy_transmission);
 
         return true;
     }

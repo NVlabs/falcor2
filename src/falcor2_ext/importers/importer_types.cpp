@@ -414,7 +414,7 @@ FALCOR_PY_EXPORT(importers_importer_types)
         .DEF_RW(ImporterCamera, depth_range)
         .DEF_RW(ImporterCamera, projection)
         .DEF_RW(ImporterCamera, fov_direction)
-        .DEF_RW(ImporterCamera, aperture);
+        .DEF_RW(ImporterCamera, sensor_size_mm);
 
     nb::sgl_enum<ImporterCamera::Projection>(importer_camera, "Projection", D(ImporterCamera, Projection));
     nb::sgl_enum<ImporterCamera::FOVDirection>(importer_camera, "FOVDirection", D(ImporterCamera, FOVDirection));
@@ -424,6 +424,7 @@ FALCOR_PY_EXPORT(importers_importer_types)
         .DEF_RW(ImporterLight, name)
         .DEF_RW(ImporterLight, type)
         .DEF_RW(ImporterLight, intensity)
+        .DEF_RW(ImporterLight, exposure)
         .DEF_RW(ImporterLight, degree_angular_diameter)
         .DEF_RW(ImporterLight, width)
         .DEF_RW(ImporterLight, height)

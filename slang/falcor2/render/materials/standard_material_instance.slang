@@ -26,23 +26,25 @@ public struct StandardMaterialInstance : IMaterialInstance
         return bsdf.eval(wi_ls, wo_ls, sg, BSDFContext());
     }
 
-    public bool sample<S : ISampleGenerator>(const SurfaceInteraction si, inout S sg, out BSDFSample result)
+    public bool sample<S : ISampleGenerator>(const SurfaceInteraction si, inout S sg, out MaterialSample sample)
     {
+        sample = {};
         float3 wi_ls = shading_frame_ws.to_local(si.wi_ws);
-        float3 wo_ls;
+        BSDFSample bsdf_sample;
         StandardBSDF bsdf = StandardBSDF(wi_ls, bsdf_data);
-        result = {};
-        bool valid = bsdf.sample(wi_ls, wo_ls, result.pdf, result.weight, result.lobe_types, sg, BSDFContext());
-        if (!valid)
+        if (!bsdf.sample(wi_ls, bsdf_sample, sg, BSDFContext()))
             return false;
-
-        result.wo_ws = shading_frame_ws.to_global(wo_ls);
-        if (!stdmat::is_valid_hemisphere_reflection_or_transmission(si, shading_frame_ws, wi_ls, wo_ls, result.wo_ws)) {
-            result = {};
-            return false;
-        }
-
-        return true;
+        sample.pdf = bsdf_sample.pdf;
+        sample.weight = bsdf_sample.weight;
+        sample.flags = bsdf_sample.flags;
+        sample.wo_ws = shading_frame_ws.to_global(bsdf_sample.wo);
+        return stdmat::is_valid_hemisphere_reflection_or_transmission(
+            si,
+            shading_frame_ws,
+            wi_ls,
+            bsdf_sample.wo,
+            sample.wo_ws
+        );
     }
 
     public float eval_pdf(const SurfaceInteraction si, const float3 wo_ws)
@@ -139,7 +141,7 @@ public struct StandardMaterialInstance : IMaterialInstance
         return result;
     }
 
-    public LobeTypes get_lobe_types(const SurfaceInteraction si)
+    public BSDFFlags get_lobe_types(const SurfaceInteraction si)
     {
         StandardBSDF bsdf = make_bsdf(si);
         return bsdf.get_lobe_types();
@@ -148,4 +150,6 @@ public struct StandardMaterialInstance : IMaterialInstance
     public override bool is_emissive() { return any(emissive_radiance > 0.0); }
 
     public override float3 eval_emissive_radiance() { return emissive_radiance; }
+
+    public override bool is_thin_walled() { return bsdf_data.thin_walled; }
 };

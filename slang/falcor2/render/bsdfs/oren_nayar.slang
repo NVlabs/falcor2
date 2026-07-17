@@ -52,27 +52,19 @@ public struct OrenNayarBRDF : IBSDF
         return albedo * float.INV_PI * (A + B * cos_diff * sin_alpha * tan_beta) * wo.z;
     }
 
-    public bool sample<S : ISampleGenerator>(
-        const float3 wi,
-        out float3 wo,
-        out float pdf,
-        out float3 weight,
-        out LobeTypes lobe_types,
-        inout S sg,
-        const BSDFContext bc
-    )
+    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
+        sample = {};
+
         // Note that cosine sampling can become rather inefficient if we have high retro-reflectivity
-        wo = square_to_cosine_hemisphere_concentric(next_float2(sg));
-        pdf = square_to_cosine_hemisphere_concentric_pdf(wo);
-        lobe_types = LobeTypes::diffuse_reflection;
+        sample.wo = square_to_cosine_hemisphere_concentric(next_float2(sg));
+        sample.pdf = square_to_cosine_hemisphere_concentric_pdf(sample.wo);
+        sample.flags = BSDFFlags::diffuse_reflection;
 
-        if (min(wi.z, wo.z) < BSDF_MIN_COS_THETA) {
-            weight = {};
+        if (min(wi.z, sample.wo.z) < BSDF_MIN_COS_THETA)
             return false;
-        }
 
-        weight = eval(wi, wo, sg, bc) / eval_pdf(wi, wo, bc);
+        sample.weight = eval(wi, sample.wo, sg, bc) / eval_pdf(wi, sample.wo, bc);
         return true;
     }
 

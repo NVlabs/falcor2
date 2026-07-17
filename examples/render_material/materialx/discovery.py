@@ -42,8 +42,7 @@ def discover_renderable_elements(
 
     import falcor2 as f2
 
-    resolver = f2.AssetResolver()
-    resolver.add_search_path(materialx_root)
+    resolver = f2.AssetResolver(materialx_root)
     return tuple(
         MaterialXRenderableElement(
             name=str(record["name"]),

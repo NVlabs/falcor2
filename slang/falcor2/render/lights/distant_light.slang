@@ -10,6 +10,12 @@ public struct DistantLight : ILight
     public float3 radiance;
     public float cos_cutoff_angle;
 
+    public float emitted_power()
+    {
+        const float solid_angle = float.TWO_PI * (1.0 - cos_cutoff_angle);
+        return solid_angle * luminance(radiance);
+    }
+
     public float3 eval_direction<Interaction : IInteraction>(const Interaction ref, const DirectionSample sample)
     {
         float3 dir_os = normalize(mul(transpose(world_from_object), sample.dir_ws));

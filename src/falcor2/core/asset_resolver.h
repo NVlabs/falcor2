@@ -3,127 +3,68 @@
 
 #pragma once
 
-#include "falcor2/core/error.h"
 #include "falcor2/core/macros.h"
 #include "falcor2/core/object.h"
 
-#include <sgl/core/string.h>
-
 #include <filesystem>
-#include <regex>
 #include <span>
 #include <string>
-#include <string_view>
+#include <vector>
 
 namespace falcor {
 
+/// Immutable ordered search roots used to resolve asset paths.
 class FALCOR_API AssetResolver : public Object {
     FALCOR_OBJECT(AssetResolver)
+    FALCOR_NON_COPYABLE_AND_MOVABLE(AssetResolver);
+
 public:
-    AssetResolver()
-        : m_search_paths_stack(1)
-    {
-    }
+    /// Create a resolver without explicit search roots.
+    AssetResolver();
 
-    /// Clones the whole AssetResolver, including the stack.
-    ref<AssetResolver> clone() const { return make_ref<AssetResolver>(*this); }
+    /// Create a resolver from one literal path.
+    explicit AssetResolver(const std::filesystem::path& path);
 
-    /// Clones only the current level of AssetResolver, it can no longer be popped.
-    ref<AssetResolver> shallow_clone() const
-    {
-        auto result = make_ref<AssetResolver>();
-        result->m_search_paths_stack.back() = m_search_paths_stack.back();
-        return result;
-    }
+    /// Create a resolver from a semicolon-separated path list.
+    explicit AssetResolver(const std::string& paths);
 
-    void add_search_path(const std::filesystem::path& path) { m_search_paths_stack.back().push_back(path); }
-    void add_search_paths(std::string_view paths)
-    {
-        for (std::string path : sgl::string::split(paths, ";")) {
-            path = sgl::string::remove_leading_trailing_whitespace(path);
-            if (!path.empty())
-                add_search_path(path);
-        }
-    }
-    void push_scope() { m_search_paths_stack.push_back(m_search_paths_stack.back()); }
-    void pop_scope()
-    {
-        m_search_paths_stack.pop_back();
-        FALCOR_CHECK(!m_search_paths_stack.empty(), "AssetResolver scope empty.");
-    }
+    /// Create a resolver from a semicolon-separated path list.
+    explicit AssetResolver(const char* paths);
 
-    std::span<const std::filesystem::path> get_search_paths() const { return m_search_paths_stack.back(); }
+    /// Create a resolver from literal paths in the supplied order.
+    explicit AssetResolver(std::span<const std::filesystem::path> paths);
 
-    std::filesystem::path resolve_path(const std::filesystem::path& asset_path) const
-    {
-        {
-            std::filesystem::path absolute = std::filesystem::absolute(asset_path);
-            if (std::filesystem::exists(absolute))
-                return std::filesystem::canonical(absolute);
-        }
+    /// Return a resolver with one literal path at highest priority.
+    [[nodiscard]] ref<AssetResolver> push(const std::filesystem::path& path) const;
 
-        for (auto& search_path : m_search_paths_stack.back()) {
-            auto absolute = search_path / asset_path;
-            if (std::filesystem::exists(absolute))
-                return std::filesystem::canonical(absolute);
-        }
+    /// Return a resolver with a semicolon-separated path list at highest priority.
+    [[nodiscard]] ref<AssetResolver> push(const std::string& paths) const;
 
-        return {};
-    }
+    /// Return a resolver with a semicolon-separated path list at highest priority.
+    [[nodiscard]] ref<AssetResolver> push(const char* paths) const;
 
+    /// Return a resolver with the literal paths at highest priority in the supplied order.
+    [[nodiscard]] ref<AssetResolver> push(std::span<const std::filesystem::path> paths) const;
+
+    /// Return explicit search roots in effective priority order.
+    std::span<const std::filesystem::path> get_search_paths() const { return m_search_paths; }
+
+    /// Return a human-readable description of explicit roots and the working-directory fallback.
+    std::string to_string() const override;
+
+    /// Resolve one asset path, returning an empty path when it cannot be found.
+    /// If required is true, throw a runtime error when the asset cannot be resolved.
+    std::filesystem::path resolve_path(const std::filesystem::path& asset_path, bool required = false) const;
+
+    /// Resolve a filename regular expression in the first candidate directory containing matches.
     std::vector<std::filesystem::path> resolve_path_pattern(
         const std::filesystem::path& directory_path,
         const std::string& filename_pattern,
         bool first_match_only = true
-    ) const
-    {
-        std::regex filename_regex(filename_pattern);
-
-        // If this is an existing absolute path, or a relative path to the working directory, search it.
-        {
-            std::filesystem::path absolute = std::filesystem::absolute(directory_path);
-            std::vector<std::filesystem::path> resolved = glob_files(absolute, filename_regex, first_match_only);
-            if (!resolved.empty())
-                return resolved;
-        }
-
-        for (auto& search_path : m_search_paths_stack.back()) {
-            auto absolute = search_path / directory_path;
-            auto resolved = glob_files(absolute, filename_regex, first_match_only);
-            if (!resolved.empty())
-                return resolved;
-        }
-
-        return {};
-    }
-
-    /// TODO: This probably should be a more global utility
-    std::vector<std::filesystem::path> static glob_files(
-        const std::filesystem::path& path,
-        const std::regex& filename_regex,
-        bool first_match_only
-    )
-    {
-        std::vector<std::filesystem::path> result;
-        if (!std::filesystem::exists(path))
-            return {};
-
-        for (const auto& entry : std::filesystem::directory_iterator(path)) {
-            if (!entry.is_regular_file())
-                continue;
-            std::string filename = entry.path().filename().string();
-            if (std::regex_match(filename, filename_regex)) {
-                result.push_back(entry.path());
-                if (first_match_only)
-                    return result;
-            }
-        }
-
-        return result;
-    }
+    ) const;
 
 private:
-    std::vector<std::vector<std::filesystem::path>> m_search_paths_stack;
+    std::vector<std::filesystem::path> m_search_paths;
 };
 
 } // namespace falcor

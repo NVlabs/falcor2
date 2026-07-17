@@ -15,14 +15,18 @@ public struct InvalidMaterialInstance : IMaterialInstance
         return brdf.eval(wi_ls, wo_ls, sg, BSDFContext());
     }
 
-    public bool sample<S : ISampleGenerator>(const SurfaceInteraction si, inout S sg, out BSDFSample result)
+    public bool sample<S : ISampleGenerator>(const SurfaceInteraction si, inout S sg, out MaterialSample sample)
     {
+        sample = {};
         float3 wi_ls = shading_frame_ws.to_local(si.wi_ws);
-        float3 wo_ls;
-        result = {};
-        bool valid = brdf.sample(wi_ls, wo_ls, result.pdf, result.weight, result.lobe_types, sg, BSDFContext());
-        result.wo_ws = shading_frame_ws.to_global(wo_ls);
-        return valid;
+        BSDFSample bsdf_sample;
+        if (!brdf.sample(wi_ls, bsdf_sample, sg, BSDFContext()))
+            return false;
+        sample.wo_ws = shading_frame_ws.to_global(bsdf_sample.wo);
+        sample.pdf = bsdf_sample.pdf;
+        sample.weight = bsdf_sample.weight;
+        sample.flags = bsdf_sample.flags;
+        return true;
     }
 
     public float eval_pdf(const SurfaceInteraction si, const float3 wo_ws)
@@ -58,7 +62,7 @@ public struct InvalidMaterialInstance : IMaterialInstance
         return result;
     }
 
-    public LobeTypes get_lobe_types(const SurfaceInteraction si) { return LobeTypes::diffuse_reflection; }
+    public BSDFFlags get_lobe_types(const SurfaceInteraction si) { return BSDFFlags::diffuse_reflection; }
 };
 
 public struct InvalidMaterial : IMaterial

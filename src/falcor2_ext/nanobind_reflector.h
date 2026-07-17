@@ -5,6 +5,7 @@
 
 #include "nanobind.h"
 #include "falcor2/core/reflection/metadata.h"
+#include "falcor2/core/reflection/property_descriptor.h"
 
 #include <tuple>
 
@@ -52,13 +53,34 @@ public:
     NanobindClassReflector& def_prop_rw(const char* name, Getter getter, Setter setter, Extras&&... extras)
     {
         auto nb_extras = detail::filter_nanobind_extras(std::forward<Extras>(extras)...);
-        std::apply(
-            [&](auto&&... args)
+        if constexpr (detail::has_on_change_v<Extras...>) {
+            using ReturnType = std::invoke_result_t<Getter, const T&>;
+            using ValueType = std::remove_cv_t<std::remove_reference_t<ReturnType>>;
+            auto extracted = detail::extract_all<ValueType>(std::forward<Extras>(extras)...);
+            auto on_change_callback = std::move(extracted.on_change->callback);
+            auto wrapped_setter = [setter = std::move(setter),
+                                   on_change_callback = std::move(on_change_callback)](T& obj, const ValueType& value)
             {
-                m_nb_class.def_prop_rw(name, getter, setter, std::forward<decltype(args)>(args)...);
-            },
-            nb_extras
-        );
+                std::invoke(setter, obj, value);
+                on_change_callback(&obj);
+            };
+            std::apply(
+                [&](auto&&... args)
+                {
+                    m_nb_class
+                        .def_prop_rw(name, getter, std::move(wrapped_setter), std::forward<decltype(args)>(args)...);
+                },
+                nb_extras
+            );
+        } else {
+            std::apply(
+                [&](auto&&... args)
+                {
+                    m_nb_class.def_prop_rw(name, getter, setter, std::forward<decltype(args)>(args)...);
+                },
+                nb_extras
+            );
+        }
         return *this;
     }
 

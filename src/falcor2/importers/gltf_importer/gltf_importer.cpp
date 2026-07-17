@@ -388,7 +388,7 @@ void GltfImporter::extract_cameras()
         camera.focal_length = 50.0f;
         camera.fstop = 1.0f;
         camera.depth_range = float2(0.01f, 1000.0f);
-        camera.aperture = 0.0f;
+        camera.sensor_size_mm = 24.f;
         // Projection
         if (gltf_camera.type == "perspective") {
             camera.projection = ImporterCamera::Projection::perspective;
@@ -397,9 +397,10 @@ void GltfImporter::extract_cameras()
                 // Could use aspectRatio if needed
             }
             if (gltf_camera.perspective.yfov > 0.0) {
-                // Standard full-frame sensor is 36x24mm
-                constexpr float sensor_height = 24.f;
-                camera.focal_length = sensor_height / (2.0f * std::tan((float)gltf_camera.perspective.yfov * 0.5f));
+                camera.focal_length = ImporterCamera::focal_length_from_fov_degrees(
+                    sgl::math::degrees(static_cast<float>(gltf_camera.perspective.yfov)),
+                    camera.sensor_size_mm
+                );
             }
             if (gltf_camera.perspective.znear > 0.0) {
                 camera.depth_range.x = static_cast<float>(gltf_camera.perspective.znear);

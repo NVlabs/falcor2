@@ -115,8 +115,8 @@ public struct Scene
     /// Returns true if the scene has any analytic lights.
     public bool has_analytic_lights() { return light_system.has_any_analytic_lights(); }
 
-    /// Returns true if the scene has an environment light.
-    public bool has_environment_light() { return light_system.has_environment_light(); }
+    /// Returns true if the scene has one or more environment lights.
+    public bool has_environment_lights() { return light_system.has_environment_lights(); }
 
     /// Returns true if the scene has emissive triangles.
     public bool has_emissive_triangles() { return emissive_geometry.has_active_triangles(); }

@@ -28,22 +28,14 @@ public struct MxSurfaceUnlitTransparentBSDF : ILayerableBSDF
         return float3(0.0);
     }
 
-    public bool sample<S : ISampleGenerator>(
-        const float3 wi,
-        out float3 wo,
-        out float pdf,
-        out float3 weight,
-        out LobeTypes lobe_types,
-        inout S sg,
-        const BSDFContext bc
-    )
+    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
-        float3 clamped_tint = saturate(tint);
-        wo = -wi;
-        pdf = float.MAX;
-        weight = clamped_tint;
-        lobe_types = LobeTypes::delta_transmission;
-        return mx_hmax(clamped_tint) > 0.0;
+        sample = {};
+        sample.wo = -wi;
+        sample.pdf = float.MAX;
+        sample.weight = saturate(tint);
+        sample.flags = BSDFFlags::delta_transmission;
+        return mx_hmax(sample.weight) > 0.0;
     }
 
     public float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc) { return 0.0; }

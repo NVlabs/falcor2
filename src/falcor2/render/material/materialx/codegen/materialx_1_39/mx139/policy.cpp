@@ -600,11 +600,11 @@ std::string glossy_scatter_lobe_types(std::string_view scatter_mode)
 {
     std::vector<std::string> lobes;
     if (scatter_mode_includes_reflection(scatter_mode))
-        lobes.push_back("LobeTypes::glossy_reflection");
+        lobes.push_back("BSDFFlags::glossy_reflection");
     if (scatter_mode_includes_transmission(scatter_mode))
-        lobes.push_back("LobeTypes::glossy_transmission");
+        lobes.push_back("BSDFFlags::glossy_transmission");
     if (lobes.empty())
-        return "LobeTypes::none";
+        return "BSDFFlags::none";
     if (lobes.size() == 1)
         return lobes.front();
     return "(" + lobes[0] + " | " + lobes[1] + ")";

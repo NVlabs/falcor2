@@ -12,6 +12,8 @@ from falcor2.rendernodes.reference_pathtracer_node import (
     REFERENCE_MODULE_PATH,
     WRITE_GUIDE_INTERFACE,
     ReferencePathTracerNode,
+    SchedulingMode,
+    VisibilityRayMode,
 )
 from falcor2.rendernodes.tonemapper_node import TonemapperNode
 
@@ -23,6 +25,8 @@ __all__ = [
     "PathTracerPipeline",
     "REFERENCE_MODULE_PATH",
     "ReferencePathTracerNode",
+    "SchedulingMode",
     "TonemapperNode",
     "WRITE_GUIDE_INTERFACE",
+    "VisibilityRayMode",
 ]

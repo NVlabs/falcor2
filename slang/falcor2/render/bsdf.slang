@@ -25,7 +25,7 @@ import falcor2.utils;
 /// so using a small epsilon for consistency.
 public static constexpr float BSDF_MIN_COS_THETA = 1e-6;
 
-public enum LobeTypes : uint {
+public enum BSDFFlags : uint {
     none = 0x00,
 
     diffuse_reflection = 0x01,
@@ -52,6 +52,22 @@ public enum LobeTypes : uint {
 
     all = reflection | transmission | curve,
 };
+
+/// Result of a BSDF sample.
+public struct BSDFSample : IDifferentiable
+{
+    /// Outgoing direction.
+    public float3 wo;
+    /// pdf with respect to solid angle for sampling outgoing direction wo (0 for delta events).
+    public float pdf;
+    /// Sample weight eval(wi, wo) / pdf(wo).
+    public float3 weight;
+    /// Flags describing the sampled scattering event (see BSDFFlags).
+    public BSDFFlags flags;
+
+    /// Return true if the sample contains any of the specified flags.
+    public bool has_flag(const BSDFFlags flags) { return is_set(this.flags, flags); }
+}
 
 /// Albedo is split into four components. They have to sum up to 1.0.
 public struct AlbedoContributions
@@ -141,23 +157,23 @@ public struct BSDFContext
     /// the matching hinted sampling PDF. Ignoring this hint is still correct
     /// BSDF behavior; it only spends samples on events the caller will later
     /// reject.
-    public LobeTypes sample_lobe_types_hint;
+    public BSDFFlags sample_lobe_types_hint;
 
     public __init()
     {
         ior_i = 1.0;
         ior_t = 1.0;
-        sample_lobe_types_hint = LobeTypes::all;
+        sample_lobe_types_hint = BSDFFlags::all;
     }
 
     public __init(float ior_i, float ior_t)
     {
         this.ior_i = ior_i;
         this.ior_t = ior_t;
-        sample_lobe_types_hint = LobeTypes::all;
+        sample_lobe_types_hint = BSDFFlags::all;
     }
 
-    public __init(float ior_i, float ior_t, LobeTypes sample_lobe_types_hint)
+    public __init(float ior_i, float ior_t, BSDFFlags sample_lobe_types_hint)
     {
         this.ior_i = ior_i;
         this.ior_t = ior_t;
@@ -178,22 +194,11 @@ public interface IBSDF
 
     /// Samples the BSDF.
     /// @param wi Incident direction.
-    /// @param[out] wo Outgoing direction.
-    /// @param[out] pdf pdf with respect to solid angle for sampling outgoing direction wo (0 for delta events).
-    /// @param[out] weight Sample weight eval(wi, wo) / pdf(wo).
-    /// @param[out] lobe_types Sampled lobe types (see LobeTypes).
+    /// @param[out] sample BSDF sample. Only valid if the function returns true.
     /// @param[inout] sg Sample generator.
     /// @param bc BSDF context.
     /// @return Returns true if successful.
-    public bool sample<S : ISampleGenerator>(
-        const float3 wi,
-        out float3 wo,
-        out float pdf,
-        out float3 weight,
-        out LobeTypes lobe_types,
-        inout S sg,
-        const BSDFContext bc
-    );
+    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc);
 
     /// Evaluates the directional pdf for sampling outgoing direction wo.
     /// @param wi Incident direction.

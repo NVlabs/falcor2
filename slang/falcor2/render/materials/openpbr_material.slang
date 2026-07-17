@@ -140,7 +140,7 @@ openpbr_collect_properties(const OpenPBR_ResolvedInputs inputs, const float3 wi_
     return properties;
 }
 
-public LobeTypes openpbr_lobe_types_from_sampled_type(const OpenPBR_BsdfLobeType sampled_type)
+public BSDFFlags openpbr_lobe_types_from_sampled_type(const OpenPBR_BsdfLobeType sampled_type)
 {
     const bool has_reflection = (sampled_type & OpenPBR_BsdfLobeTypeReflection) != 0;
     const bool has_transmission = (sampled_type & OpenPBR_BsdfLobeTypeTransmission) != 0;
@@ -148,25 +148,25 @@ public LobeTypes openpbr_lobe_types_from_sampled_type(const OpenPBR_BsdfLobeType
     const bool has_glossy = (sampled_type & OpenPBR_BsdfLobeTypeGlossy) != 0;
     const bool has_specular = (sampled_type & OpenPBR_BsdfLobeTypeSpecular) != 0;
 
-    uint lobe_types = uint(LobeTypes::none);
+    uint lobe_types = uint(BSDFFlags::none);
     if (has_reflection) {
         if (has_diffuse)
-            lobe_types |= uint(LobeTypes::diffuse_reflection);
+            lobe_types |= uint(BSDFFlags::diffuse_reflection);
         if (has_glossy)
-            lobe_types |= uint(LobeTypes::glossy_reflection);
+            lobe_types |= uint(BSDFFlags::glossy_reflection);
         if (has_specular)
-            lobe_types |= uint(LobeTypes::delta_reflection);
+            lobe_types |= uint(BSDFFlags::delta_reflection);
     }
     if (has_transmission) {
         if (has_diffuse)
-            lobe_types |= uint(LobeTypes::diffuse_transmission);
+            lobe_types |= uint(BSDFFlags::diffuse_transmission);
         if (has_glossy)
-            lobe_types |= uint(LobeTypes::glossy_transmission);
+            lobe_types |= uint(BSDFFlags::glossy_transmission);
         if (has_specular)
-            lobe_types |= uint(LobeTypes::delta_transmission);
+            lobe_types |= uint(BSDFFlags::delta_transmission);
     }
     // TODO: figure out how to classify volume scattering lobes, if we want to support them in the future.
-    return LobeTypes(lobe_types);
+    return BSDFFlags(lobe_types);
 }
 
 public struct OpenPBRMaterialInstance : IMaterialInstance
@@ -186,19 +186,19 @@ public struct OpenPBRMaterialInstance : IMaterialInstance
         return result.diffuse + result.specular;
     }
 
-    public bool sample<S : ISampleGenerator>(const SurfaceInteraction si, inout S sg, out BSDFSample result)
+    public bool sample<S : ISampleGenerator>(const SurfaceInteraction si, inout S sg, out MaterialSample sample)
     {
-        result = {};
+        sample = {};
 
         const OpenPBR_PreparedBsdf bsdf = prepare_bsdf(si);
         OpenPBR_DiffuseSpecular weight = {};
         OpenPBR_BsdfLobeType sampled_type = OpenPBR_BsdfLobeTypeNone;
-        openpbr_sample(bsdf, next_float3(sg), result.wo_ws, weight, result.pdf, sampled_type);
-        if (result.pdf <= 0.0)
+        openpbr_sample(bsdf, next_float3(sg), sample.wo_ws, weight, sample.pdf, sampled_type);
+        if (sample.pdf <= 0.0)
             return false;
 
-        result.weight = weight.diffuse + weight.specular;
-        result.lobe_types = openpbr_lobe_types_from_sampled_type(sampled_type);
+        sample.weight = weight.diffuse + weight.specular;
+        sample.flags = openpbr_lobe_types_from_sampled_type(sampled_type);
 
         return true;
     }
@@ -236,10 +236,10 @@ public struct OpenPBRMaterialInstance : IMaterialInstance
         return result;
     }
 
-    public override LobeTypes get_lobe_types(const SurfaceInteraction si)
+    public override BSDFFlags get_lobe_types(const SurfaceInteraction si)
     {
         // TODO: Return a more accurate set of lobes.
-        return LobeTypes::all;
+        return BSDFFlags::all;
     }
 };
 

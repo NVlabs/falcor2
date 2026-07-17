@@ -12,7 +12,7 @@ import shutil
 from typing import Any
 
 import numpy as np
-from PIL import Image
+from slangpy import Bitmap
 
 from examples.render_material.render_material_manifest import (
     RenderResult,
@@ -94,18 +94,13 @@ def compare_image_sets(
 def load_rgb(path: Path) -> np.ndarray:
     """Load an image as linear-ish float RGB data for metric computation."""
 
-    if path.suffix.lower() in {".exr", ".hdr"}:
-        from slangpy import Bitmap
-
-        bitmap = Bitmap.load_from_file(str(path))
-        image = bitmap.convert(
-            pixel_format=Bitmap.PixelFormat.rgba,
-            component_type=Bitmap.ComponentType.float32,
-        )
-        data = np.asarray(image, copy=False)
-        return data[:, :, :3].astype(np.float32, copy=False)
-    image = Image.open(path).convert("RGB")
-    return (np.asarray(image, dtype=np.float32) / 255.0).astype(np.float32, copy=False)
+    bitmap = Bitmap.load_from_file(path)
+    image = bitmap.convert(
+        pixel_format=Bitmap.PixelFormat.rgba,
+        component_type=Bitmap.ComponentType.float32,
+    )
+    data = np.asarray(image, copy=False)
+    return data[:, :, :3].astype(np.float32, copy=False)
 
 
 def compare_images(reference_rgb: np.ndarray, tested_rgb: np.ndarray) -> ImageMetrics | str:
@@ -661,8 +656,15 @@ def _find_source_image(root: Path, relative: str) -> Path | None:
 def _write_png(path: Path, rgb: np.ndarray) -> None:
     image = np.nan_to_num(rgb[:, :, :3], nan=0.0, posinf=1.0, neginf=0.0)
     image = np.clip(image, 0.0, 1.0)
-    encoded = (np.power(image, 1.0 / 2.2) * 255.0 + 0.5).astype(np.uint8)
-    Image.fromarray(encoded, mode="RGB").save(path)
+    bitmap = Bitmap(
+        data=image,
+        pixel_format=Bitmap.PixelFormat.rgb,
+        srgb_gamma=False,
+    ).convert(
+        component_type=Bitmap.ComponentType.uint8,
+        srgb_gamma=True,
+    )
+    bitmap.write(path, Bitmap.FileFormat.png)
 
 
 def _format_number(value: Any) -> str:

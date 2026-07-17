@@ -294,7 +294,7 @@ void PythonContext::execute_string(const std::string& code)
     }
 }
 
-void PythonContext::execute_file(const std::filesystem::path& path)
+void PythonContext::execute_file(const std::filesystem::path& path, std::string_view module_name)
 {
     FALCOR_ASSERT(Py_IsInitialized());
     FALCOR_ASSERT(m_globals);
@@ -319,6 +319,15 @@ void PythonContext::execute_file(const std::filesystem::path& path)
     GILGuard gil;
 
     PyObject* globals = static_cast<PyObject*>(m_globals);
+
+    PyObject* py_module_name
+        = PyUnicode_FromStringAndSize(module_name.data(), static_cast<Py_ssize_t>(module_name.size()));
+    if (!py_module_name || PyDict_SetItemString(globals, "__name__", py_module_name) != 0) {
+        Py_XDECREF(py_module_name);
+        std::string msg = PythonInterpreter::capture_python_error();
+        throw PythonException(msg);
+    }
+    Py_DECREF(py_module_name);
 
     // Set __file__ with forward slashes for Python convention.
     std::string generic_path_str = path.generic_string();

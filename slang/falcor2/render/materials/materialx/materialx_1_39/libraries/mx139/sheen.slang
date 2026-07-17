@@ -190,28 +190,16 @@ public struct MxSheenBSDF : ILayerableBSDF
         return r.pdf > 0.0 ? r.weight * r.pdf : float3(0.0);
     }
 
-    public bool sample<S : ISampleGenerator>(
-        const float3 wi,
-        out float3 wo,
-        out float pdf,
-        out float3 weight,
-        out LobeTypes lobe_types,
-        inout S sg,
-        const BSDFContext bc
-    )
+    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
+        sample = {};
         MxBsdfSample r = sample_bsdf_sample(wi, next_float3(sg));
-        if (r.pdf <= 0.0) {
-            wo = float3(0.0);
-            pdf = 0.0;
-            weight = float3(0.0);
-            lobe_types = LobeTypes::none;
+        if (r.pdf <= 0.0)
             return false;
-        }
-        wo = r.wo;
-        pdf = r.pdf;
-        weight = r.weight;
-        lobe_types = LobeTypes::glossy_reflection;
+        sample.wo = r.wo;
+        sample.pdf = r.pdf;
+        sample.weight = r.weight;
+        sample.flags = BSDFFlags::glossy_reflection;
         return true;
     }
 
@@ -307,11 +295,6 @@ public MxSheenBSDF create_mx_sheen(float3 color, float roughness, float3 normal,
 {
     // Mx139 follows the authored MaterialX mode.
     return MxSheenBSDF(color, roughness, mode, !front_facing);
-}
-
-public MxSheenBSDF create_mx_sheen(float3 color, float roughness, float3 normal, int mode)
-{
-    return create_mx_sheen(color, roughness, normal, mode, true);
 }
 
 } // namespace mx139

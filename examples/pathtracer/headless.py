@@ -3,44 +3,23 @@
 
 from __future__ import annotations
 
-import falcor2
 import slangpy as spy
 from falcor2.editor import create_device, create_torch_device, load_scene, save_image
 from falcor2.rendergraph import ContainerSpec
 from falcor2.rendernodes import PathTracerPipeline
 
 OUTPUT_CONTAINER = "torch"  # Options: "tensor", "texture", "torch"
+SCENE_PATH = "data/scenes/emissive-strength.py"
 
 if OUTPUT_CONTAINER == "torch":
     device = create_torch_device()
 else:
     device = create_device()
 
-scene = load_scene(
-    device,
-    "data/assets/kronos/EmissiveStrengthTest/glTF/EmissiveStrengthTest.gltf",
-)
-
-# Add env map
-env_entity = scene.create_entity()
-env_map = env_entity.create_component(falcor2.EnvMapLight)
-env_map["env_map_path"] = "data/assets/envmaps/aerodynamics_workshop_512.hdr"
-
-# Add camera
-position = spy.float3(0, 0.2, 20)
-camera_entity = scene.create_entity()
-camera = camera_entity.create_component(falcor2.Camera)
-camera.width = 1024
-camera.height = 1024
-camera.fov_y = 45
-camera_transform = falcor2.Transform()
-camera_transform.translation = position
-camera_transform.rotation = spy.math.quat_from_look_at(
-    -spy.math.normalize(position),
-    spy.float3(0, 1, 0),
-)
-camera_entity.transform = camera_transform
-camera.recompute()
+scene = load_scene(device, SCENE_PATH)
+camera = scene.active_camera
+if camera is None:
+    raise RuntimeError(f"Scene file does not contain an active camera: {SCENE_PATH}")
 
 # Create a pipeline, and choose an output type
 pipeline = PathTracerPipeline.create(device)

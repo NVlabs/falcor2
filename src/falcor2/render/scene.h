@@ -23,6 +23,7 @@
 #include "falcor2/core/object.h"
 #include "falcor2/core/properties.h"
 #include "falcor2/core/signal.h"
+#include "falcor2/importers/fwd.h"
 #include "falcor2/importers/importer_types.h"
 
 #include <sgl/device/fwd.h>
@@ -116,6 +117,21 @@ public:
     /// @return The created scene.
     static ref<Scene>
     create(ref<sgl::Device> device, const ImporterScene& importer_scene, std::optional<UVOrigin> uv_origin = {});
+
+    /// Create a scene from the edits recorded by an importer.
+    /// @param device The device to use for rendering.
+    /// @param importer The importer whose recorded edits and scene-created callbacks to apply.
+    /// @param uv_origin Optional target scene texture coordinate origin. If unset, uses importer scene convention.
+    /// @param add_default_camera_best_view If true, add a best-view camera when the built importer scene has none.
+    /// @param camera_aspect Aspect ratio used when adding the best-view camera.
+    /// @return The created scene.
+    static ref<Scene> create(
+        ref<sgl::Device> device,
+        const Importer& importer,
+        std::optional<UVOrigin> uv_origin = {},
+        bool add_default_camera_best_view = false,
+        float camera_aspect = 16.f / 9.f
+    );
 
     /// Create a scene by loading from a file.
     /// @param device The device to use for rendering.
@@ -476,7 +492,7 @@ private:
     /// This is currently hard-coded but will eventually be configurable.
     HitGroupPolicy m_hit_group_policy{
         .mode = HitGroupPolicy::Mode::per_geometry_type,
-        .ray_type_count = 2,
+        .ray_type_count = 3,
         .geometry_type_count = 2,
     };
 

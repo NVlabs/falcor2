@@ -13,6 +13,8 @@
 namespace falcor::materialx::mx139 {
 namespace {
 
+constexpr std::size_t k_extra_bsdf_properties_max_bsdf_count = 16;
+
 class SlangEmitter {
 public:
     void line(const std::string& text = {}, bool auto_semicolon = true)
@@ -81,14 +83,9 @@ int ref_index(ClosureRef ref)
     return static_cast<int>(ref.combiner_index());
 }
 
-std::string bsdf_field(int index)
-{
-    return "bsdf" + std::to_string(index);
-}
-
 std::string bsdf_param(int index)
 {
-    return bsdf_field(index) + "_";
+    return "bsdf" + std::to_string(index) + "_";
 }
 
 std::string bsdf_weight_field(int index)
@@ -131,14 +128,14 @@ std::string combiner_branch1_sample_albedo_local(int index)
     return "branch1_sample_albedo[" + std::to_string(index) + "]";
 }
 
-std::string combiner_branch0_eval_scale_local(int index)
+std::string combiner_branch0_closure_weight_local(int index)
 {
-    return "branch0_eval_scale[" + std::to_string(index) + "]";
+    return "branch0_closure_weight[" + std::to_string(index) + "]";
 }
 
-std::string combiner_branch1_eval_scale_local(int index)
+std::string combiner_branch1_closure_weight_local(int index)
 {
-    return "branch1_eval_scale[" + std::to_string(index) + "]";
+    return "branch1_closure_weight[" + std::to_string(index) + "]";
 }
 
 std::string combiner_branch0_probability_local(int index)
@@ -246,7 +243,7 @@ std::string layer_pass_through_transmission_mode_expr(MxFlatLayerPassThroughTran
     FALCOR_UNREACHABLE();
 }
 
-std::string bsdf_layer_pass_through_transmissive_expr(const MxFlatBsdfDesc& bsdf)
+std::string bsdf_active_transmissive_scatter_expr(const MxFlatBsdfDesc& bsdf)
 {
     if (!bsdf.uses_transmission_tint_predicate)
         return "false";
@@ -269,13 +266,14 @@ std::string multiply_probability_term(const std::string& probability, const std:
     return "(" + probability + ") * " + factor;
 }
 
-std::string multiply_eval_scale_term(const std::string& scale, const std::string& factor)
+std::string multiply_closure_weight_term(const std::string& closure_weight, const std::string& factor)
 {
-    if (scale.empty() || scale == "float3(1.0)")
+    if (closure_weight.empty() || closure_weight == "float3(1.0)")
         return factor;
-    if (scale.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_") == std::string::npos)
-        return scale + " * " + factor;
-    return "(" + scale + ") * " + factor;
+    if (closure_weight.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
+        == std::string::npos)
+        return closure_weight + " * " + factor;
+    return "(" + closure_weight + ") * " + factor;
 }
 
 std::string direct_spine_local(
@@ -296,11 +294,16 @@ std::string direct_spine_local(
     return result;
 }
 
-std::string
-eval_scale_spine_local(int combiner_index, bool branch0_child, bool branch1_child, bool branch0_branch, int use_index)
+std::string closure_weight_spine_local(
+    int combiner_index,
+    bool branch0_child,
+    bool branch1_child,
+    bool branch0_branch,
+    int use_index
+)
 {
     const bool only_one_child_continues = branch0_child != branch1_child;
-    std::string result = "eval_spine_";
+    std::string result = "closure_weight_spine_";
     if (!only_one_child_continues)
         result += branch0_branch ? "branch0_" : "branch1_";
     result += std::to_string(combiner_index);
@@ -378,11 +381,11 @@ void collect_bsdf_sample_probability_terms(
     visiting_combiners[size_t(combiner_index)] = false;
 }
 
-void collect_bsdf_eval_scale_terms(
+void collect_bsdf_closure_weight_terms(
     SlangEmitter& e,
     const MxFlatRootDesc& desc,
     ClosureRef ref,
-    const std::string& scale,
+    const std::string& closure_weight,
     std::vector<std::vector<std::string>>& bsdf_terms,
     std::vector<bool>& visiting_combiners,
     std::vector<int>& spine_uses
@@ -392,20 +395,20 @@ void collect_bsdf_eval_scale_terms(
         const int bsdf_index = ref_index(ref);
         FALCOR_CHECK(
             bsdf_index >= 0 && size_t(bsdf_index) < bsdf_terms.size(),
-            "Mx139 bsdf_mix eval scale references invalid BSDF {}.",
+            "Mx139 bsdf_mix closure weight references invalid BSDF {}.",
             bsdf_index
         );
-        bsdf_terms[size_t(bsdf_index)].push_back(scale.empty() ? "float3(1.0)" : scale);
+        bsdf_terms[size_t(bsdf_index)].push_back(closure_weight.empty() ? "float3(1.0)" : closure_weight);
         return;
     }
 
     const int combiner_index = ref_index(ref);
     FALCOR_CHECK(
         combiner_index >= 0 && size_t(combiner_index) < desc.combiners.size(),
-        "Mx139 bsdf_mix eval scale references invalid combiner {}.",
+        "Mx139 bsdf_mix closure weight references invalid combiner {}.",
         combiner_index
     );
-    FALCOR_CHECK(!visiting_combiners[size_t(combiner_index)], "Mx139 bsdf_mix eval scale graph contains a cycle.");
+    FALCOR_CHECK(!visiting_combiners[size_t(combiner_index)], "Mx139 bsdf_mix closure weight graph contains a cycle.");
     visiting_combiners[size_t(combiner_index)] = true;
 
     const MxFlatCombinerDesc& combiner = desc.combiners[size_t(combiner_index)];
@@ -415,23 +418,31 @@ void collect_bsdf_eval_scale_terms(
 
     const auto descend = [&](ClosureRef child_ref, const std::string& factor, bool branch0_branch)
     {
-        std::string child_scale = multiply_eval_scale_term(scale, factor);
+        std::string child_closure_weight = multiply_closure_weight_term(closure_weight, factor);
         if (!is_bsdf_ref(child_ref)) {
-            const std::string spine = eval_scale_spine_local(
+            const std::string spine = closure_weight_spine_local(
                 combiner_index,
                 branch0_child_continues,
                 branch1_child_continues,
                 branch0_branch,
                 spine_uses[size_t(combiner_index)]++
             );
-            e.line("float3 " + spine + " = " + child_scale);
-            child_scale = spine;
+            e.line("float3 " + spine + " = " + child_closure_weight);
+            child_closure_weight = spine;
         }
-        collect_bsdf_eval_scale_terms(e, desc, child_ref, child_scale, bsdf_terms, visiting_combiners, spine_uses);
+        collect_bsdf_closure_weight_terms(
+            e,
+            desc,
+            child_ref,
+            child_closure_weight,
+            bsdf_terms,
+            visiting_combiners,
+            spine_uses
+        );
     };
 
-    descend(combiner.branch0_ref, combiner_branch0_eval_scale_local(combiner_index), true);
-    descend(combiner.branch1_ref, combiner_branch1_eval_scale_local(combiner_index), false);
+    descend(combiner.branch0_ref, combiner_branch0_closure_weight_local(combiner_index), true);
+    descend(combiner.branch1_ref, combiner_branch1_closure_weight_local(combiner_index), false);
 
     visiting_combiners[size_t(combiner_index)] = false;
 }
@@ -480,7 +491,7 @@ void emit_final_bsdf_weights(SlangEmitter& e, const MxFlatRootDesc& desc)
     std::vector<std::vector<std::string>> bsdf_terms(desc.bsdfs.size());
     std::vector<bool> visiting_combiners(desc.combiners.size(), false);
     std::vector<int> spine_uses(desc.combiners.size(), 0);
-    collect_bsdf_eval_scale_terms(e, desc, desc.root_ref, "", bsdf_terms, visiting_combiners, spine_uses);
+    collect_bsdf_closure_weight_terms(e, desc, desc.root_ref, "", bsdf_terms, visiting_combiners, spine_uses);
 
     for (size_t i = 0; i < bsdf_terms.size(); ++i) {
         if (!bsdf_terms[i].empty())
@@ -498,8 +509,8 @@ void emit_sample_probabilities(SlangEmitter& e, const MxFlatRootDesc& desc)
 void emit_bsdf_dispatch(SlangEmitter& e, const MxFlatRootDesc& desc)
 {
     e.begin(
-        "bool sample_bsdf<S : ISampleGenerator>(int bsdf_index, const float3 wi, out float3 "
-        "wo, out float pdf, out float3 weight, out LobeTypes lobe_types, inout S sg, const BSDFContext bc)"
+        "bool sample_bsdf<S : ISampleGenerator>(int bsdf_index, const float3 wi, out BSDFSample sample, inout S sg, "
+        "const BSDFContext bc)"
     );
     e.line("switch (bsdf_index)");
     e.line("{");
@@ -507,16 +518,12 @@ void emit_bsdf_dispatch(SlangEmitter& e, const MxFlatRootDesc& desc)
         const int bsdf_index = int(i);
         e.line(
             "case " + std::to_string(i) + ": return flat::sample_bsdf(" + desc.bsdfs[i].field_name + ", "
-            + bsdf_weight_field(bsdf_index) + ", " + bsdf_frame_field(bsdf_index)
-            + ", wi, wo, pdf, weight, lobe_types, sg, bc);"
+            + bsdf_weight_field(bsdf_index) + ", " + bsdf_frame_field(bsdf_index) + ", wi, sample, sg, bc);"
         );
     }
     e.line("default: break;");
     e.line("}");
-    e.line("wo = float3(0.0)");
-    e.line("pdf = 0.0");
-    e.line("weight = float3(0.0)");
-    e.line("lobe_types = LobeTypes::none");
+    e.line("sample = {}");
     e.line("return false");
     e.end();
 }
@@ -571,45 +578,31 @@ void emit_cdf_sample_bsdf_selector(SlangEmitter& e, const MxFlatRootDesc& desc)
 void emit_sample(SlangEmitter& e)
 {
     e.begin(
-        "public bool sample<S : ISampleGenerator>(const float3 wi, out float3 wo, out float "
-        "pdf, out float3 weight, out LobeTypes lobe_types, inout S sg, const BSDFContext bc)"
+        "public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const "
+        "BSDFContext bc)"
     );
     e.line("// MX139 bsdf_mix sample selector: direct CDF over final BSDF probabilities.", false);
-    e.line("wo = float3(0.0)");
-    e.line("pdf = 0.0");
-    e.line("weight = float3(0.0)");
-    e.line("lobe_types = LobeTypes::none");
+    e.line("sample = {}");
     e.line();
     e.line("int bsdf_index = 0");
     e.line("float path_probability = 0.0");
     e.line("if (!select_cdf_sample_bsdf(sg, bsdf_index, path_probability)) return false");
-    e.line("float branch_pdf = 0.0");
-    e.line("float3 branch_weight = float3(0.0)");
-    e.line(
-        "bool valid = sample_bsdf(bsdf_index, wi, wo, branch_pdf, branch_weight, lobe_types, sg, "
-        "bc)"
-    );
+    e.line("bool valid = sample_bsdf(bsdf_index, wi, sample, sg, bc)");
     e.begin("if (!valid)");
-    e.line("wo = float3(0.0)");
-    e.line("pdf = 0.0");
-    e.line("weight = float3(0.0)");
-    e.line("lobe_types = LobeTypes::none");
+    e.line("sample = {}");
     e.line("return false");
     e.end();
-    e.begin("if ((uint(lobe_types) & uint(LobeTypes::delta)) != 0)");
-    e.line("pdf = path_probability * branch_pdf");
-    e.line("weight = branch_weight / path_probability");
+    e.begin("if (sample.has_flag(BSDFFlags::delta))");
+    e.line("sample.pdf = path_probability * sample.pdf");
+    e.line("sample.weight = sample.weight / path_probability");
     e.line("return true");
     e.end();
-    e.line("pdf = eval_pdf(wi, wo, bc)");
-    e.begin("if (pdf <= 0.0)");
-    e.line("wo = float3(0.0)");
-    e.line("pdf = 0.0");
-    e.line("weight = float3(0.0)");
-    e.line("lobe_types = LobeTypes::none");
+    e.line("sample.pdf = eval_pdf(wi, sample.wo, bc)");
+    e.begin("if (sample.pdf <= 0.0)");
+    e.line("sample = {}");
     e.line("return false");
     e.end();
-    e.line("weight = eval(wi, wo, sg, bc) / pdf");
+    e.line("sample.weight = eval(wi, sample.wo, sg, bc) / sample.pdf");
     e.line("return true");
     e.end();
 }
@@ -682,17 +675,17 @@ std::string emit_bsdf_mix_root_bsdf(const MxFlatRootDesc& desc)
         const MxFlatBsdfDesc& bsdf = desc.bsdfs[i];
         const std::string local_wi = "bsdf_local_wi_" + std::to_string(i);
         const std::string eval_albedo = "bsdf_eval_albedo_" + std::to_string(i);
-        const std::string layer_pass_through_transmissive = "layer_pass_through_transmissive_" + std::to_string(i);
+        const std::string active_transmissive_scatter = "active_transmissive_scatter_" + std::to_string(i);
         const std::string compatibility_albedo = "compatibility_albedo_" + std::to_string(i);
         const std::string albedo_mode = layer_pass_through_albedo_mode_expr(bsdf.layer_pass_through_albedo_mode);
         const std::string transmission_mode
             = layer_pass_through_transmission_mode_expr(bsdf.layer_pass_through_transmission_mode);
         e.line("float3 " + local_wi + " = " + bsdf_frame_field(bsdf_index) + ".to_local(wi)");
         e.line("AlbedoContributions " + eval_albedo + " = " + bsdf.field_name + ".eval_albedo(" + local_wi + ")");
-        e.line("bool " + layer_pass_through_transmissive + " = " + bsdf_layer_pass_through_transmissive_expr(bsdf));
+        e.line("bool " + active_transmissive_scatter + " = " + bsdf_active_transmissive_scatter_expr(bsdf));
         e.line(
             "flat::BsdfCompatibilityAlbedo " + compatibility_albedo + " = flat::bsdf_compatibility_albedo("
-            + eval_albedo + ", " + albedo_mode + ", " + transmission_mode + ", " + layer_pass_through_transmissive + ")"
+            + eval_albedo + ", " + albedo_mode + ", " + transmission_mode + ", " + active_transmissive_scatter + ")"
         );
         e.line(
             "bsdf_summaries[" + std::to_string(i) + "] = flat::summarize_bsdf(" + bsdf.field_name + ", "
@@ -708,8 +701,8 @@ std::string emit_bsdf_mix_root_bsdf(const MxFlatRootDesc& desc)
         e.line("float3 mix[" + std::to_string(combiner_count) + "] = {}");
         e.line("float3 branch0_sample_albedo[" + std::to_string(combiner_count) + "] = {}");
         e.line("float3 branch1_sample_albedo[" + std::to_string(combiner_count) + "] = {}");
-        e.line("float3 branch0_eval_scale[" + std::to_string(combiner_count) + "] = {}");
-        e.line("float3 branch1_eval_scale[" + std::to_string(combiner_count) + "] = {}");
+        e.line("float3 branch0_closure_weight[" + std::to_string(combiner_count) + "] = {}");
+        e.line("float3 branch1_closure_weight[" + std::to_string(combiner_count) + "] = {}");
         e.line("float3 combiner_albedo[" + std::to_string(combiner_count) + "] = {}");
         e.line("float3 combiner_opacity[" + std::to_string(combiner_count) + "] = {}");
         e.line("float3 combiner_reflection[" + std::to_string(combiner_count) + "] = {}");
@@ -728,7 +721,7 @@ std::string emit_bsdf_mix_root_bsdf(const MxFlatRootDesc& desc)
         e.end();
         e.end();
 
-        e.begin("// Reduce closure tree into combiner summaries and branch scales.");
+        e.begin("// Reduce closure tree into combiner summaries and branch closure weights.");
     }
     for (const MxFlatCombinerDesc& combiner : desc.combiners) {
         const int i = combiner.index;
@@ -743,9 +736,9 @@ std::string emit_bsdf_mix_root_bsdf(const MxFlatRootDesc& desc)
                 combiner_branch1_sample_albedo_local(i) + " = base_scale_" + std::to_string(i) + " * "
                 + ref_albedo(combiner.branch1_ref)
             );
-            e.line(combiner_branch0_eval_scale_local(i) + " = " + combiner_weight_local(i));
+            e.line(combiner_branch0_closure_weight_local(i) + " = " + combiner_weight_local(i));
             e.line(
-                combiner_branch1_eval_scale_local(i) + " = " + combiner_weight_local(i) + " * base_scale_"
+                combiner_branch1_closure_weight_local(i) + " = " + combiner_weight_local(i) + " * base_scale_"
                 + std::to_string(i)
             );
             e.line(
@@ -785,11 +778,12 @@ std::string emit_bsdf_mix_root_bsdf(const MxFlatRootDesc& desc)
                 + ref_albedo(combiner.branch1_ref)
             );
             e.line(
-                combiner_branch0_eval_scale_local(i) + " = " + combiner_weight_local(i) + " * "
+                combiner_branch0_closure_weight_local(i) + " = " + combiner_weight_local(i) + " * "
                 + combiner_inverse_mix_local(i)
             );
             e.line(
-                combiner_branch1_eval_scale_local(i) + " = " + combiner_weight_local(i) + " * " + combiner_mix_local(i)
+                combiner_branch1_closure_weight_local(i) + " = " + combiner_weight_local(i) + " * "
+                + combiner_mix_local(i)
             );
             e.line(
                 combiner_summary_local(i, "albedo") + " = " + combiner_weight_local(i) + " * ("
@@ -835,8 +829,8 @@ std::string emit_bsdf_mix_root_bsdf(const MxFlatRootDesc& desc)
         } else {
             e.line(combiner_branch0_sample_albedo_local(i) + " = " + ref_albedo(combiner.branch0_ref));
             e.line(combiner_branch1_sample_albedo_local(i) + " = " + ref_albedo(combiner.branch1_ref));
-            e.line(combiner_branch0_eval_scale_local(i) + " = " + combiner_weight_local(i));
-            e.line(combiner_branch1_eval_scale_local(i) + " = " + combiner_weight_local(i));
+            e.line(combiner_branch0_closure_weight_local(i) + " = " + combiner_weight_local(i));
+            e.line(combiner_branch1_closure_weight_local(i) + " = " + combiner_weight_local(i));
             e.line(
                 combiner_summary_local(i, "albedo") + " = " + combiner_weight_local(i) + " * ("
                 + ref_albedo(combiner.branch0_ref) + " + " + ref_albedo(combiner.branch1_ref) + ")"
@@ -890,7 +884,7 @@ std::string emit_bsdf_mix_root_bsdf(const MxFlatRootDesc& desc)
     emit_sample_probabilities(e, desc);
     e.end();
 
-    e.begin("// Fold BSDF contribution scales into the persistent weights.");
+    e.begin("// Fold BSDF closure weights into the persistent weights.");
     emit_final_bsdf_weights(e, desc);
     e.end();
 
@@ -908,17 +902,61 @@ std::string emit_bsdf_mix_root_bsdf(const MxFlatRootDesc& desc)
         "MxExtraBsdfPropertiesContext ctx)"
     );
     for (size_t i = 0; i < desc.bsdfs.size(); ++i) {
+        if (i >= k_extra_bsdf_properties_max_bsdf_count) {
+            e.line("reported_count = max(reported_count, " + std::to_string(desc.bsdfs.size()) + ")");
+            break;
+        }
         const int bsdf_index = int(i);
         e.line("{", false);
-        e.line("    const float3 local_wi = " + bsdf_frame_field(bsdf_index) + ".to_local(ctx.wi_node)");
+        e.line("    const float3 local_wi = " + bsdf_frame_field(bsdf_index) + ".to_local(ctx.wi_adjusted)");
+        const MxFlatBsdfDesc& bsdf = desc.bsdfs[i];
+        const std::string eval_albedo = "extra_eval_albedo_" + std::to_string(i);
+        const std::string eval_roughness = "extra_eval_roughness_" + std::to_string(i);
+        const std::string active_transmissive_scatter = "extra_active_transmissive_scatter_" + std::to_string(i);
+        const std::string compatibility_albedo = "extra_compatibility_albedo_" + std::to_string(i);
+        const std::string albedo_mode = layer_pass_through_albedo_mode_expr(bsdf.layer_pass_through_albedo_mode);
+        const std::string transmission_mode
+            = layer_pass_through_transmission_mode_expr(bsdf.layer_pass_through_transmission_mode);
+        e.line("    AlbedoContributions " + eval_albedo + " = " + desc.bsdfs[i].field_name + ".eval_albedo(local_wi)");
+        e.line("    bool " + active_transmissive_scatter + " = " + bsdf_active_transmissive_scatter_expr(bsdf));
         e.line(
-            "    const Frame leaf_frame_ws = mx_compose_child_frame_ws(ctx.node_frame_ws, "
-            + bsdf_frame_field(bsdf_index) + ")"
+            "    flat::BsdfCompatibilityAlbedo " + compatibility_albedo + " = flat::bsdf_compatibility_albedo("
+            + eval_albedo + ", " + albedo_mode + ", " + transmission_mode + ", " + active_transmissive_scatter + ")"
         );
         e.line(
-            "    mx_append_extra_bsdf_leaf(result, reported_count, " + desc.bsdfs[i].field_name
-            + ", local_wi, ctx.eval_scale * " + bsdf_weight_field(bsdf_index)
-            + ", leaf_frame_ws, ctx.diagnostic_frame_ws, " + std::to_string(i) + ")"
+            "    RoughnessInformation " + eval_roughness + " = " + desc.bsdfs[i].field_name
+            + ".eval_roughness(local_wi)"
+        );
+        e.line("    result.bsdf_N[" + std::to_string(i) + "] = " + bsdf_frame_field(bsdf_index) + ".normal");
+        e.line("    result.bsdf_T[" + std::to_string(i) + "] = " + bsdf_frame_field(bsdf_index) + ".tangent");
+        e.line("    result.bsdf_B[" + std::to_string(i) + "] = " + bsdf_frame_field(bsdf_index) + ".bitangent");
+        e.line(
+            "    result.bsdf_albedo[" + std::to_string(i) + "] = " + eval_albedo + ".reflection + "
+            + compatibility_albedo + ".material_instance_transmission"
+        );
+        e.line(
+            "    result.bsdf_weight[" + std::to_string(i) + "] += ctx.closure_weight * " + bsdf_weight_field(bsdf_index)
+        );
+        e.line("    result.bsdf_roughness[" + std::to_string(i) + "] = " + eval_roughness + ".roughness");
+        e.line("    result.bsdf_scratch[" + std::to_string(i) + "] = " + eval_roughness + ".scratch");
+        e.line("    reported_count = max(reported_count, " + std::to_string(i + 1) + ")");
+        e.line("}", false);
+    }
+    e.line("return float3(0.0)");
+    e.end();
+
+    e.begin(
+        "public float3 collect_material_properties(inout MaterialProperties result, inout float roughness_norm, inout "
+        "float3 guide_normal, inout MxExtraBsdfPropertiesContext ctx)"
+    );
+    for (size_t i = 0; i < desc.bsdfs.size(); ++i) {
+        const int bsdf_index = int(i);
+        e.line("{", false);
+        e.line("    const float3 local_wi = " + bsdf_frame_field(bsdf_index) + ".to_local(ctx.wi_adjusted)");
+        e.line(
+            "    mx_accumulate_material_properties_leaf(result, roughness_norm, guide_normal, "
+            + desc.bsdfs[i].field_name + ", local_wi, ctx.closure_weight * " + bsdf_weight_field(bsdf_index) + ", "
+            + bsdf_frame_field(bsdf_index) + ".normal)"
         );
         e.line("}", false);
     }
@@ -947,7 +985,7 @@ std::string emit_bsdf_mix_root_bsdf(const MxFlatRootDesc& desc)
 
     e.begin("public AlbedoContributions eval_albedo(const float3 wi)");
     e.line("// Return the closure-tree aggregate reconstructed above, not per-BSDF eval_albedo.");
-    e.line("return flat::from_scattering_albedo(root_reflection, root_transmission)");
+    e.line("return mx139::from_scattering_albedo(root_reflection, root_transmission)");
     e.end();
 
     e.begin("public RoughnessInformation eval_roughness(const float3 wi)");

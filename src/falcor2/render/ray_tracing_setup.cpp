@@ -88,6 +88,10 @@ SceneRayTracingSetup SceneRayTracingSetup::create(
 
     FALCOR_CHECK(policy.mode == HitGroupPolicy::Mode::per_geometry_type, "Only per_geometry_type mode is supported.");
     FALCOR_CHECK(!ray_descs.empty(), "ray_descs must not be empty.");
+    FALCOR_CHECK(
+        ray_descs.size() <= policy.ray_type_count,
+        "ray_descs contains more ray types than the scene hit-group policy supports."
+    );
 
     SceneRayTracingSetup result;
 

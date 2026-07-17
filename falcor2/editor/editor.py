@@ -34,6 +34,7 @@ class EditorConfig:
     height: int = 720
     title: str = "Falcor2"
     vsync: bool = True
+    mcp: bool = True
 
 
 @dataclass
@@ -78,6 +79,10 @@ class Editor:
 
         # ImGui UI context
         self._ui_context = spy.ui.Context(device)
+        self.profiler = spy.Profiler()
+        self.profiler.enabled = False
+        self.show_profiler = False
+        self._profile_frame: Optional[Any] = None
 
         # C++ camera controller (Unreal Editor-style with orbit, dolly, etc.)
         self._camera_controller = f2.ui.CameraController()
@@ -90,6 +95,7 @@ class Editor:
             "Application",
             [
                 ("F5", "Toggle scene editor"),
+                ("F6", "Toggle profiler"),
                 ("F12", "Cycle render mode"),
                 ("F", "Focus camera on selection"),
                 ("Escape", "Close application"),
@@ -110,6 +116,7 @@ class Editor:
         self._scene_shader: Optional[SceneShaderHelper] = None
         self._viewer_module = None
         self._present_module = None
+        self._mcp_bridge: Optional[Any] = None
 
         # User callbacks
         self.on_keyboard_event: Optional[Callable[..., Any]] = None
@@ -121,6 +128,7 @@ class Editor:
 
         # Set initial scene.
         self.scene = scene
+        self._start_mcp_bridge()
 
     @classmethod
     def create(
@@ -176,7 +184,9 @@ class Editor:
 
     def close(self):
         self._closed = True
-        self.device.wait()
+        self._stop_mcp_bridge()
+        self._end_profile_frame()
+        self._wait_for_device()
         self.window.close()
 
     def _on_camera_capture(self, captured: bool) -> None:
@@ -194,8 +204,11 @@ class Editor:
         # Process window events
         self.window.process_events()
         if self.window.should_close() or self._closed:
-            self.device.wait()
+            self._stop_mcp_bridge()
+            self._wait_for_device()
             return False
+
+        self._update_mcp_bridge()
 
         scene = self._scene
 
@@ -234,6 +247,8 @@ class Editor:
             self._cmd = None
             self._needs_render = False
             return True
+
+        self._begin_profile_frame()
 
         # Begin ImGui frame (pass window when camera is not captured to allow ImGui to manage the cursor).
         ui_window = None if self._interaction_controller.has_pointer_capture() else self.window
@@ -331,6 +346,7 @@ class Editor:
     def _present_frame(self):
         """Finalize and present the active frame."""
         if self._output is None or self._cmd is None or self._image is None:
+            self._end_profile_frame()
             return
 
         fps = 1.0 / self._dt if self._dt > 0 else 0.0
@@ -363,17 +379,40 @@ class Editor:
                 fps,
             )
 
+        # Submit the profiler after the scene editor has created its dockspace.
+        if self.show_profiler:
+            spy.ui.render_profiler_window(self.profiler)
+
         # Finalize ImGui and render to swapchain.
         self._ui_context.end_frame(self._image, self._cmd)
 
         # Submit and present
         self._cmd.set_texture_state(self._image, spy.ResourceState.present)
         self.device.submit_command_buffer(self._cmd.finish())
+        self._end_profile_frame()
+        self.profiler.tick()
         del self._image
         self._image = None
         self._cmd = None
         self.surface.present()
         self._needs_render = False
+
+    def _begin_profile_frame(self) -> None:
+        if self._profile_frame is not None:
+            raise RuntimeError("A profiler frame is already active.")
+        frame = spy.profile_frame("frame")
+        frame.__enter__()
+        self._profile_frame = frame
+
+    def _end_profile_frame(self) -> None:
+        frame = self._profile_frame
+        self._profile_frame = None
+        if frame is not None:
+            frame.__exit__(None, None, None)
+
+    def _wait_for_device(self) -> None:
+        self.device.wait()
+        self.profiler.tick()
 
     def _render_debug(self):
         """Dispatch debug shaders using SceneShaderHelper."""
@@ -435,6 +474,28 @@ class Editor:
             color_target=color_target,
         )
 
+    # -- MCP bridge -----------------------------------------------------------
+
+    def _start_mcp_bridge(self) -> None:
+        if not self.config.mcp or self._mcp_bridge is not None:
+            return
+
+        from falcor2.mcp.editor_bridge import create_editor_bridge
+
+        bridge = create_editor_bridge(self)
+        bridge.start()
+        self._mcp_bridge = bridge
+
+    def _update_mcp_bridge(self) -> None:
+        if self._mcp_bridge is not None:
+            self._mcp_bridge.update()
+
+    def _stop_mcp_bridge(self) -> None:
+        bridge = self._mcp_bridge
+        self._mcp_bridge = None
+        if bridge is not None:
+            bridge.stop()
+
     # -- Event handlers --------------------------------------------------------
 
     def _cycle_render_mode(self):
@@ -470,12 +531,20 @@ class Editor:
             elif event.key == spy.KeyCode.f5:
                 self._scene_editor.visible = not self._scene_editor.visible
                 return
+            elif event.key == spy.KeyCode.f6:
+                self._toggle_profiler()
+                return
             elif event.key == spy.KeyCode.f and self._camera is not None:
                 self._interaction_controller.focus_on_selection(self._camera)
                 return
 
         if self.on_keyboard_event is not None:
             self.on_keyboard_event(event)
+
+    def _toggle_profiler(self) -> None:
+        self.show_profiler = not self.show_profiler
+        if self.show_profiler and not self.profiler.enabled:
+            self.profiler.enabled = True
 
     def _on_mouse_event(self, event: spy.MouseEvent):
         # Always feed ImGui so it maintains consistent state.

@@ -12,11 +12,6 @@ public float balance_probability(float3 albedo_a, float3 albedo_b)
     return mx139::balance_probability(albedo_a, albedo_b);
 }
 
-public AlbedoContributions from_scattering_albedo(float3 reflection, float3 transmission)
-{
-    return mx139::from_scattering_albedo(reflection, transmission);
-}
-
 // Mx139 BSDF eval_albedo follows the MaterialX 1.38 material instance contract, where
 // transmission is layer pass-through and transmits[] separately controls real through-material
 // transmission. OSL bsdf_mix layering uses BSDL albedo/filter_o directly, so these helpers
@@ -65,10 +60,10 @@ public struct BsdfCompatibilityAlbedo
     // BSDL filter_o pass-through used by layer opacity. Layer(top, base)
     // attenuates the base by this value; it is not the same contract as
     // through-material transmission exposed by a Falcor material instance.
-    public float3 layer_transmission = float3(0.0);
+    public float3 filter_o_transmission = float3(0.0);
 
     // Through-material transmission reconstructed for the Falcor material
-    // instance contract. This is kept separate from layer_transmission because
+    // instance contract. This is kept separate from filter_o_transmission because
     // OSL/BSDL layer filtering may deliberately block the base while the BSDF
     // still has physical transmission.
     public float3 material_instance_transmission = float3(0.0);
@@ -86,16 +81,16 @@ public BsdfSummary summarize_bsdf<TBsdf : IBSDF>(
         return result;
     }
     float3 sample_albedo = compatibility_albedo.sample_albedo;
-    float3 layer_transmission = compatibility_albedo.layer_transmission;
+    float3 filter_o_transmission = compatibility_albedo.filter_o_transmission;
     float3 graph_transmission = min(compatibility_albedo.material_instance_transmission, sample_albedo);
     float3 graph_reflection = sample_albedo - graph_transmission;
     result.albedo = bsdf_weight * sample_albedo;
-    result.opacity = saturate(bsdf_weight * saturate(float3(1.0) - layer_transmission));
+    result.opacity = saturate(bsdf_weight * saturate(float3(1.0) - filter_o_transmission));
 
     // Rebuild material-instance AlbedoContributions from BSDL sample albedo and graph-aware
     // through-material transmission.
     AlbedoContributions weighted_albedo
-        = from_scattering_albedo(bsdf_weight * graph_reflection, bsdf_weight * graph_transmission);
+        = mx139::from_scattering_albedo(bsdf_weight * graph_reflection, bsdf_weight * graph_transmission);
     result.reflection = weighted_albedo.reflection;
     result.transmission = weighted_albedo.transmission;
     result.roughness = bsdf.eval_roughness(local_wi);
@@ -106,10 +101,10 @@ public BsdfSummary summarize_bsdf<TBsdf : IBSDF>(
 float3 layer_pass_through_albedo(
     AlbedoContributions albedo,
     const LayerPassThroughAlbedoMode mode,
-    const bool layer_pass_through_transmissive
+    const bool active_transmissive_scatter
 )
 {
-    if (mode == LayerPassThroughAlbedoMode.transmissive_unity && layer_pass_through_transmissive) {
+    if (mode == LayerPassThroughAlbedoMode.transmissive_unity && active_transmissive_scatter) {
         return float3(1.0);
     }
     if (mode == LayerPassThroughAlbedoMode.reflection || mode == LayerPassThroughAlbedoMode.transmissive_unity) {
@@ -121,7 +116,7 @@ float3 layer_pass_through_albedo(
 float3 layer_pass_through_transmission(
     AlbedoContributions albedo,
     const LayerPassThroughTransmissionMode mode,
-    const bool layer_pass_through_transmissive
+    const bool active_transmissive_scatter
 )
 {
     if (mode == LayerPassThroughTransmissionMode.zero) {
@@ -130,12 +125,12 @@ float3 layer_pass_through_transmission(
     if (mode == LayerPassThroughTransmissionMode.one) {
         return float3(1.0);
     }
-    if (mode == LayerPassThroughTransmissionMode.absorption_unless_transmissive && layer_pass_through_transmissive) {
+    if (mode == LayerPassThroughTransmissionMode.absorption_unless_transmissive && active_transmissive_scatter) {
         return float3(0.0);
     }
     float3 physical_transmission = albedo.transmission;
     if (mode == LayerPassThroughTransmissionMode.physical_unless_transmissive) {
-        return layer_pass_through_transmissive ? float3(0.0) : physical_transmission;
+        return active_transmissive_scatter ? float3(0.0) : physical_transmission;
     }
     if (mode == LayerPassThroughTransmissionMode.absorption
         || mode == LayerPassThroughTransmissionMode.absorption_unless_transmissive) {
@@ -148,7 +143,7 @@ float3 material_instance_transmission(
     AlbedoContributions albedo,
     const LayerPassThroughAlbedoMode albedo_mode,
     const LayerPassThroughTransmissionMode transmission_mode,
-    const bool layer_pass_through_transmissive
+    const bool active_transmissive_scatter
 )
 {
     float3 physical_transmission = albedo.transmission;
@@ -156,7 +151,7 @@ float3 material_instance_transmission(
         return float3(1.0);
     }
     if (transmission_mode == LayerPassThroughTransmissionMode.physical_unless_transmissive) {
-        return layer_pass_through_transmissive ? physical_transmission : float3(0.0);
+        return active_transmissive_scatter ? physical_transmission : float3(0.0);
     }
     if (albedo_mode == LayerPassThroughAlbedoMode.reflection
         || transmission_mode == LayerPassThroughTransmissionMode.zero
@@ -197,15 +192,15 @@ public BsdfCompatibilityAlbedo bsdf_compatibility_albedo(
     AlbedoContributions albedo,
     const LayerPassThroughAlbedoMode albedo_mode,
     const LayerPassThroughTransmissionMode transmission_mode,
-    const bool layer_pass_through_transmissive
+    const bool active_transmissive_scatter
 )
 {
     BsdfCompatibilityAlbedo result = {};
-    result.sample_albedo = layer_pass_through_albedo(albedo, albedo_mode, layer_pass_through_transmissive);
-    result.layer_transmission
-        = layer_pass_through_transmission(albedo, transmission_mode, layer_pass_through_transmissive);
+    result.sample_albedo = layer_pass_through_albedo(albedo, albedo_mode, active_transmissive_scatter);
+    result.filter_o_transmission
+        = layer_pass_through_transmission(albedo, transmission_mode, active_transmissive_scatter);
     result.material_instance_transmission
-        = material_instance_transmission(albedo, albedo_mode, transmission_mode, layer_pass_through_transmissive);
+        = material_instance_transmission(albedo, albedo_mode, transmission_mode, active_transmissive_scatter);
     return result;
 }
 
@@ -235,48 +230,30 @@ public bool sample_bsdf<TBsdf : IBSDF, S : ISampleGenerator>(
     const float3 bsdf_weight,
     Frame bsdf_frame,
     const float3 wi,
-    out float3 wo,
-    out float pdf,
-    out float3 sample_weight,
-    out LobeTypes lobe_types,
+    out BSDFSample sample,
     inout S sg,
     const BSDFContext bc
 )
 {
-    wo = float3(0.0);
-    pdf = 0.0;
-    sample_weight = float3(0.0);
-    lobe_types = LobeTypes::none;
+    sample = {};
 
     if (mx_hmax(bsdf_weight) <= 0.0) {
         return false;
     }
     float3 local_wi = bsdf_frame.to_local(wi);
-    if (!validate_bump_frame_hemisphere(wi, local_wi)) {
-        wo = float3(0.0);
-        pdf = 0.0;
-        sample_weight = float3(0.0);
-        lobe_types = LobeTypes::none;
+    if (!validate_bump_frame_hemisphere(wi, local_wi))
+        return false;
+    BSDFSample local_sample = {};
+    bool valid = bsdf.sample(local_wi, local_sample, sg, bc);
+    if (!valid)
+        return false;
+    sample = local_sample;
+    sample.wo = bsdf_frame.to_global(local_sample.wo);
+    if (!validate_bump_frame_hemisphere(sample.wo, local_sample.wo)) {
+        sample = {};
         return false;
     }
-    float3 local_wo = float3(0.0);
-    bool valid = bsdf.sample(local_wi, local_wo, pdf, sample_weight, lobe_types, sg, bc);
-    if (!valid) {
-        wo = float3(0.0);
-        pdf = 0.0;
-        sample_weight = float3(0.0);
-        lobe_types = LobeTypes::none;
-        return false;
-    }
-    wo = bsdf_frame.to_global(local_wo);
-    if (!validate_bump_frame_hemisphere(wo, local_wo)) {
-        wo = float3(0.0);
-        pdf = 0.0;
-        sample_weight = float3(0.0);
-        lobe_types = LobeTypes::none;
-        return false;
-    }
-    sample_weight *= bsdf_weight;
+    sample.weight *= bsdf_weight;
     return true;
 }
 

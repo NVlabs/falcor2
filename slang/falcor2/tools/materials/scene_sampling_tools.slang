@@ -30,18 +30,18 @@ material_eval<SampleGenerator : ISampleGenerator>(uint3 seeds, IMaterial materia
     return material_instance.eval(si, wo, sg);
 }
 
-public BSDFSample
+public MaterialSample
 material_sample<SampleGenerator : ISampleGenerator>(uint3 seeds, IMaterial material, SurfaceInteraction si)
 {
     var sg = SampleGenerator(seeds.xy, seeds.z);
     let lod_sampler = ExplicitLodSampler(0);
     let material_instance = material.setup_material_instance(si, lod_sampler, MaterialInstanceHints::none);
 
-    BSDFSample result;
-    bool ok = material_instance.sample(si, sg, result);
+    MaterialSample sample;
+    bool ok = material_instance.sample(si, sg, sample);
     if (!ok)
-        result.pdf = 0;
-    return result;
+        sample.pdf = 0;
+    return sample;
 }
 
 public float material_eval_pdf(IMaterial material, SurfaceInteraction si, float3 wo)
@@ -97,7 +97,7 @@ public float3 material_eval_simple<
     return material_eval<SampleGenerator>(seeds, material, setup_surface_interaction(uv, wi), wo);
 }
 
-public BSDFSample
+public MaterialSample
 material_sample_simple<SampleGenerator : ISampleGenerator>(uint3 seeds, IMaterial material, float2 uv, float3 wi)
 {
     return material_sample<SampleGenerator>(seeds, material, setup_surface_interaction(uv, wi));
@@ -153,7 +153,7 @@ public float3 material_eval_system<
     return material_eval<SampleGenerator>(seeds, material, setup_surface_interaction(uv, wi), wo);
 }
 
-public BSDFSample
+public MaterialSample
 material_sample_system<SampleGenerator : ISampleGenerator>(uint3 seeds, uint32_t material_id, float2 uv, float3 wi)
 {
     // material_id must be within buffer boundaries

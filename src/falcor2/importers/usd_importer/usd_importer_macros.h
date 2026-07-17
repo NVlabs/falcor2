@@ -12,6 +12,7 @@
     SGL_DISABLE_MSVC_WARNING(4244) /* Conversion possible loss of data */                                              \
     SGL_DISABLE_MSVC_WARNING(4267) /* Conversion possible loss of data */                                              \
     SGL_DISABLE_MSVC_WARNING(4305) /* Truncation double to float */                                                    \
+    SGL_DISABLE_MSVC_WARNING(4324) /* Structure was padded for alignment */                                            \
     SGL_DISABLE_MSVC_WARNING(5033) /* 'register' storage class specifier deprecated */                                 \
     SGL_DISABLE_MSVC_WARNING(4100) /* Unreferenced format parameter */                                                 \
     SGL_DISABLE_CLANG_WARNING("-Wignored-attributes")                                                                  \

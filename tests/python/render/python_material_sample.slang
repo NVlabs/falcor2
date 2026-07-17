@@ -17,14 +17,16 @@ public struct PythonMaterialSampleInstance : IMaterialInstance
         return brdf.eval(wi_ls, wo_ls, sg, BSDFContext());
     }
 
-    public bool sample<S : ISampleGenerator>(const SurfaceInteraction si, inout S sg, out BSDFSample result)
+    public bool sample<S : ISampleGenerator>(const SurfaceInteraction si, inout S sg, out MaterialSample sample)
     {
+        sample = {};
         float3 wi_ls = shading_frame_ws.to_local(si.wi_ws);
-        float3 wo_ls;
-        result = {};
-        bool valid = brdf.sample(wi_ls, wo_ls, result.pdf, result.weight, result.lobe_types, sg, BSDFContext());
-        result.wo_ws = shading_frame_ws.to_global(wo_ls);
-        result.lobe_types = LobeTypes::diffuse_reflection;
+        BSDFSample bsdf_sample;
+        bool valid = brdf.sample(wi_ls, bsdf_sample, sg, BSDFContext());
+        sample.wo_ws = shading_frame_ws.to_global(bsdf_sample.wo);
+        sample.pdf = bsdf_sample.pdf;
+        sample.weight = bsdf_sample.weight;
+        sample.flags = BSDFFlags::diffuse_reflection;
         return valid;
     }
 
@@ -62,7 +64,7 @@ public struct PythonMaterialSampleInstance : IMaterialInstance
         return result;
     }
 
-    public LobeTypes get_lobe_types(const SurfaceInteraction si) { return LobeTypes::diffuse_reflection; }
+    public BSDFFlags get_lobe_types(const SurfaceInteraction si) { return BSDFFlags::diffuse_reflection; }
 };
 
 public struct PythonMaterialSample : IMaterial

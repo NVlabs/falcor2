@@ -15,7 +15,7 @@ from falcor2.rendernodes import PathTracerPipeline
 
 DESCRIPTION = "Example PathTracer with DLSS-RR"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_SCENE_PATH = PROJECT_ROOT / "data/assets/cornell-box/usdpreviewsurface/cornell-box.usda"
+DEFAULT_SCENE_PATH = PROJECT_ROOT / "data/scenes/cornell-box.py"
 SLANG_SOURCE_PATH = Path(__file__).with_name("dlss_rr_viewer.slang")
 DEFAULT_WIDTH = 1920
 DEFAULT_HEIGHT = 1080

@@ -1,0 +1,208 @@
+{
+  "name": "falcor2",
+  "description": "Falcor2 built-in MCP endpoints.",
+  "endpoints": [
+    {
+      "name": "falcor2.bridge.ping",
+      "title": "Ping Falcor2 bridge",
+      "description": "Return a simple liveness response from the selected running Falcor2 bridge.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "falcor2.app.status",
+      "title": "Get Falcor2 app status",
+      "description": "Return lightweight status information for the selected running Falcor2 app.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    {
+      "name": "falcor2.app.screenshot",
+      "title": "Capture Falcor2 screenshot",
+      "description": "Save the current Falcor2 Editor output texture to an image file and return a local path that can be embedded in chat. MANDATORY PRESENTATION REQUIREMENT: After a successful call, the assistant must include the result in its final response as both (1) a clickable Markdown link using markdown_path and (2) an inline Markdown image using ![Falcor2 screenshot](markdown_path). The assistant must not rely on tool output, commentary, or a collapsible preview to display the image.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Optional output image path. Relative paths are resolved against the Falcor2 workspace. Defaults to a timestamped PNG in the system temp directory."
+          }
+        },
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "markdown_path": {
+            "type": "string"
+          },
+          "width": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
+          },
+          "mime_type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "markdown_path",
+          "width",
+          "height",
+          "mime_type"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "falcor2.offline.python_info",
+      "title": "Get Falcor2 offline Python info",
+      "description": "Run in the resolved Falcor2 Python environment and return lightweight interpreter and workspace context.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "module": "falcor2.mcp.offline",
+      "function": "python_info"
+    },
+    {
+      "name": "falcor2.offline.render_scene",
+      "title": "Render Falcor2 scene offline",
+      "description": "Load a Falcor2 scene without a running app and render every camera to PNG files. MANDATORY PRESENTATION REQUIREMENT: After a successful call, the assistant must include every returned image in its final response as both (1) a clickable Markdown link using images[].markdown_path and (2) an inline Markdown image using ![<camera_name>](<markdown_path>). The assistant must not rely on tool output, commentary, or a collapsible preview to display the images.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "scene_path": {
+            "type": "string"
+          },
+          "out": {
+            "type": "string"
+          },
+          "width": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "height": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "spp": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "device_type": {
+            "type": "string",
+            "enum": [
+              "automatic",
+              "d3d12",
+              "vulkan",
+              "cuda"
+            ]
+          }
+        },
+        "required": [
+          "scene_path"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "scene_path": {
+            "type": "string"
+          },
+          "output_dir": {
+            "type": "string"
+          },
+          "images": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "camera_name": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "markdown_path": {
+                  "type": "string"
+                },
+                "width": {
+                  "type": "integer"
+                },
+                "height": {
+                  "type": "integer"
+                },
+                "mime_type": {
+                  "type": "string",
+                  "const": "image/png"
+                }
+              },
+              "required": [
+                "camera_name",
+                "path",
+                "markdown_path",
+                "width",
+                "height",
+                "mime_type"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "scene_path",
+          "output_dir",
+          "images"
+        ],
+        "additionalProperties": false
+      },
+      "module": "falcor2.mcp.offline",
+      "function": "render_scene"
+    },
+    {
+      "name": "falcor2.echo",
+      "title": "Echo JSON payload",
+      "description": "Return the JSON payload sent to this endpoint.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    }
+  ],
+  "launch_profiles": []
+}

@@ -1,14 +1,55 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import slangpy as spy
+import shutil
 from pathlib import Path
-from falcor2 import TextureManager, TextureHandle
+
+import slangpy as spy
+from falcor2 import AssetResolver, TextureHandle, TextureManager
 import numpy as np
 import pytest
 import falcor2.testing.helpers as helpers
 
 DATA_DIR = Path(__file__).parent.parent.parent.parent / "data"
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
+def test_asset_resolver_priority_for_regular_and_udim_textures(
+    device_type: spy.DeviceType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_dir = DATA_DIR / "assets/textures/test_texture_manager"
+    high_root = tmp_path / "high"
+    low_root = tmp_path / "low"
+    working = tmp_path / "working"
+
+    (high_root / "regular").mkdir(parents=True)
+    (working / "regular").mkdir(parents=True)
+    (high_root / "tiles").mkdir(parents=True)
+    (low_root / "tiles").mkdir(parents=True)
+    shutil.copyfile(source_dir / "white_1k.png", high_root / "regular/shared.png")
+    shutil.copyfile(source_dir / "regular_blue.png", working / "regular/shared.png")
+    shutil.copyfile(source_dir / "udim_1001.png", high_root / "tiles/udim_1001.png")
+    shutil.copyfile(source_dir / "udim_1003.png", low_root / "tiles/udim_1003.png")
+    monkeypatch.chdir(working)
+
+    device = helpers.get_device(device_type)
+    texture_manager = TextureManager(device)
+    resolver = AssetResolver([high_root, low_root])
+
+    regular = texture_manager.load_texture("regular/shared.png", resolver=resolver)
+    assert regular.is_valid()
+    assert regular.path == high_root / "regular/shared.png"
+    assert regular.texture is not None
+    assert regular.texture.width == 1024
+
+    udim = texture_manager.load_texture("tiles/udim_<UDIM>.png", resolver=resolver)
+    assert udim.is_valid()
+    assert udim.is_udim()
+    assert len(udim.udim_tiles) == 1
+    assert udim.udim_tiles[0].tile_index == 1001
+    assert udim.udim_tiles[0].texture_handle.path == high_root / "tiles/udim_1001.png"
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)

@@ -21,6 +21,23 @@ struct ImporterAnimationChannel;
 struct ImporterAnimation;
 class ImporterScene;
 
+// importer.h
+struct ImporterSelector;
+struct ImporterCameraSelector;
+struct ImporterNodeSelector;
+class ImporterMaterialSelector;
+class ImporterBuildContext;
+class ImporterEdit;
+class ImportAssetEdit;
+class ReplaceMaterialEdit;
+class SetEnvironmentEdit;
+class ImporterCameraCollection;
+class ImporterNodeCollection;
+class ImporterEnvCollection;
+class ImporterMaterialCollection;
+class Importer;
+class ScopedCurrentImporter;
+
 // gltf_importer.h
 class GltfImporter;
 

@@ -38,12 +38,12 @@ void collect_root_lobes(const LayeringDesc& desc, ClosureRef ref, std::set<std::
     if (ref.is_bsdf()) {
         const std::string& bsdf_lobes = desc.bsdfs[ref.bsdf_index()].lobe_types;
         static const std::array<std::string, 6> k_lobe_tokens = {
-            "LobeTypes::diffuse_reflection",
-            "LobeTypes::diffuse_transmission",
-            "LobeTypes::glossy_reflection",
-            "LobeTypes::glossy_transmission",
-            "LobeTypes::glossy_curve",
-            "LobeTypes::delta_transmission",
+            "BSDFFlags::diffuse_reflection",
+            "BSDFFlags::diffuse_transmission",
+            "BSDFFlags::glossy_reflection",
+            "BSDFFlags::glossy_transmission",
+            "BSDFFlags::glossy_curve",
+            "BSDFFlags::delta_transmission",
         };
         for (const std::string& token : k_lobe_tokens) {
             if (bsdf_lobes.find(token) != std::string::npos)
@@ -132,51 +132,6 @@ std::string graph_thin_walled_expr(const MaterialX::VariableBlock& outputs)
     if (!graph_output_can_emit(outputs))
         return "false";
     return "mtlx_graph." + outputs[0]->getVariable() + ".thin_walled";
-}
-
-void emit_synthetic_opacity_stack_setup(
-    const MaterialX::ShaderGenerator& shadergen,
-    const LayeringDesc& layering,
-    const std::string& stack_name,
-    const std::string& graph_opacity,
-    bool use_stack_frames,
-    MaterialX::ShaderStage& stage
-)
-{
-    const std::optional<size_t> transparent_bsdf = synthetic_opacity_bsdf_index(layering);
-    if (!transparent_bsdf)
-        return;
-
-    const std::optional<size_t> opacity_mix = synthetic_opacity_combiner_index(layering);
-    FALCOR_CHECK(opacity_mix.has_value(), "Synthetic Mx139 opacity mix is missing its root mix combiner.");
-
-    shadergen
-        .emitLine("// Stochastic root opacity is represented as mix(actual_root, SimpleBTDF, opacity).", stage, false);
-    shadergen.emitLine(fmt::format("{}.set_bsdf({}, MxSimpleBTDF())", stack_name, *transparent_bsdf), stage);
-    shadergen.emitLine(fmt::format("{}.bsdf_weights[{}] = float3(1.0)", stack_name, *transparent_bsdf), stage);
-    shadergen.emitLine(
-        fmt::format("{}.bsdf_transmission_scales[{}] = float3(1.0)", stack_name, *transparent_bsdf),
-        stage
-    );
-    shadergen.emitLine(fmt::format("{}.bsdf_n[{}] = float3(0.0, 0.0, 1.0)", stack_name, *transparent_bsdf), stage);
-    shadergen.emitLine(fmt::format("{}.bsdf_t[{}] = float3(1.0, 0.0, 0.0)", stack_name, *transparent_bsdf), stage);
-    if (use_stack_frames) {
-        shadergen.emitLine(
-            fmt::format(
-                "{}.bsdf_frames[{}] = Frame({}.bsdf_n[{}], {}.bsdf_t[{}])",
-                stack_name,
-                *transparent_bsdf,
-                stack_name,
-                *transparent_bsdf,
-                stack_name,
-                *transparent_bsdf
-            ),
-            stage
-        );
-    }
-    shadergen.emitLine(fmt::format("{}.layer_weights[{}] = float3(1.0)", stack_name, *opacity_mix), stage);
-    shadergen.emitLine(fmt::format("{}.layer_transmission_scales[{}] = float3(1.0)", stack_name, *opacity_mix), stage);
-    shadergen.emitLine(fmt::format("{}.mix_values[{}] = float3({})", stack_name, *opacity_mix, graph_opacity), stage);
 }
 
 std::string build_synthetic_opacity_stack_setup_text(

@@ -41,17 +41,7 @@ std::vector<sgl::DeviceType> ngx_device_types()
 
 sgl::DeviceDesc make_ngx_device_desc(sgl::DeviceType device_type)
 {
-    sgl::DeviceDesc desc{
-        .type = device_type,
-        .enable_debug_layers = true,
-        .compiler_options = {
-            .include_paths = {
-                falcor::testing::project_directory() / "slang",
-                falcor::testing::project_directory() / "tests" / "native",
-                falcor::testing::project_directory() / "external" / "slangpy" / "slangpy" / "slang",
-            },
-        }
-    };
+    sgl::DeviceDesc desc = falcor::testing::make_test_device_desc(device_type);
 
     if (device_type == sgl::DeviceType::vulkan) {
         auto ngx_info = ngx::get_vulkan_pre_device_info();

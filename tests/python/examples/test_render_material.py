@@ -8,8 +8,8 @@ import shutil
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
 import pytest
+from slangpy import Bitmap
 
 from examples.render_material.materialx import provider as materialx_suite
 from examples.render_material.materialx.discovery import make_materialx_entry
@@ -462,7 +462,12 @@ def _assert_smoke_manifest_has_pass(
 def _write_png(path: Path, value: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = np.full((2, 2, 3), value, dtype=np.uint8)
-    Image.fromarray(data, mode="RGB").save(path)
+    bitmap = Bitmap(
+        data=data,
+        pixel_format=Bitmap.PixelFormat.rgb,
+        srgb_gamma=True,
+    )
+    bitmap.write(path, Bitmap.FileFormat.png)
 
 
 def _write_materialx_smoke_options(

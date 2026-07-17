@@ -434,6 +434,31 @@ TEST_CASE("get_enum_as_int64 and set_enum_from_int64 for flags enum")
     CHECK(val == combined);
 }
 
+TEST_CASE("Integral typed property enum access requires enum metadata")
+{
+    MetadataTestClass obj;
+    auto setter = [](MetadataTestClass& instance, const int& value)
+    {
+        instance.set_count(value);
+    };
+    auto enum_prop
+        = make_prop<int>("mode", &MetadataTestClass::count, setter, enum_descriptor({{10, "Ten"}, {20, "Twenty"}}));
+    auto plain_prop = make_prop<int>("count", &MetadataTestClass::count, setter);
+
+    obj.set_count(20);
+    CHECK(enum_prop->get_enum_as_int64(&obj) == 20);
+
+    enum_prop->set_enum_from_int64(&obj, 10);
+    CHECK(obj.count() == 10);
+
+    CHECK_THROWS_WITH(plain_prop->get_enum_as_int64(&obj), doctest::Contains("integral type has no enum metadata"));
+    CHECK_THROWS_WITH(
+        plain_prop->set_enum_from_int64(&obj, 20),
+        doctest::Contains("integral type has no enum metadata")
+    );
+    CHECK(obj.count() == 10);
+}
+
 TEST_CASE("enum property read_from_properties accepts integer values")
 {
     MetadataTestClass obj;

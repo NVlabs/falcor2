@@ -29,7 +29,7 @@ where = ["."]
 include = ["falcor2*"]
 
 [tool.setuptools.package-data]
-"*" = ["*.py", "*.pyi"]
+"*" = ["*.py", "*.pyi", "*.json"]
 
 [tool.setuptools.exclude-package-data]
 "*" = ["__pycache__/*", "*.pyc"]

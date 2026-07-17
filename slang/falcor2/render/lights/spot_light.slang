@@ -12,6 +12,12 @@ public struct SpotLight : ILight
     public float cos_cutoff_angle;
     public float cos_falloff_angle;
 
+    public float emitted_power()
+    {
+        const float solid_angle_factor = (1.0 - cos_falloff_angle) + (cos_falloff_angle - cos_cutoff_angle) / 5.0;
+        return float.TWO_PI * solid_angle_factor * luminance(intensity);
+    }
+
     public float3 eval_direction<Interaction : IInteraction>(const Interaction ref, const DirectionSample sample)
     {
         return float3(0.0);

@@ -101,6 +101,37 @@ TEST_CASE("execute_file runs a script")
     ctx.execute_string("assert '\\\\' not in __file__");
 }
 
+TEST_CASE("execute_file controls persistent module identity")
+{
+    PythonInterpreter& py = PythonInterpreter::get();
+    PythonContext ctx = py.create_context();
+
+    auto temp_dir = falcor::testing::get_case_temp_directory();
+    auto script_path = temp_dir / "module_identity.py";
+
+    {
+        std::ofstream f(script_path);
+        f << "guard_count = globals().get('guard_count', 0)\n";
+        f << "if __name__ == '__main__':\n";
+        f << "    guard_count += 1\n";
+        f << "observed_name = __name__\n";
+    }
+
+    ctx.execute_file(script_path);
+    ctx.execute_string("assert observed_name == '__main__'");
+    ctx.execute_string("assert guard_count == 1");
+
+    ctx.execute_file(script_path, "__falcor2_scene__");
+    ctx.execute_string("assert observed_name == '__falcor2_scene__'");
+    ctx.execute_string("assert __name__ == '__falcor2_scene__'");
+    ctx.execute_string("assert guard_count == 1");
+
+    ctx.execute_file(script_path);
+    ctx.execute_string("assert observed_name == '__main__'");
+    ctx.execute_string("assert __name__ == '__main__'");
+    ctx.execute_string("assert guard_count == 2");
+}
+
 TEST_CASE("execute_file with non-existent path throws")
 {
     PythonInterpreter& py = PythonInterpreter::get();

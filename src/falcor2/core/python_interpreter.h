@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace falcor {
 
@@ -63,8 +64,9 @@ public:
 
     /// Execute a Python file in this context.
     /// @param path Path to the .py file to execute.
+    /// @param module_name Value assigned to __name__ before executing the file.
     /// @throws PythonException on failure with the full Python traceback.
-    void execute_file(const std::filesystem::path& path);
+    void execute_file(const std::filesystem::path& path, std::string_view module_name = "__main__");
 
 private:
     PythonContext();

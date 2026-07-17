@@ -9,6 +9,8 @@
 #include <sgl/core/platform.h>
 #include <sgl/math/vector_math.h>
 
+#include <fstream>
+
 using namespace falcor;
 
 namespace {
@@ -127,6 +129,43 @@ TEST_CASE("GltfImporter - Invalid File")
 
     // Should throw an exception for invalid files
     CHECK_THROWS_AS(importer->load_scene(invalid_file), std::runtime_error);
+}
+
+TEST_CASE("GltfImporter - camera stores vertical sensor size and focal length")
+{
+    const std::filesystem::path camera_path = testing::get_case_temp_directory() / "camera.gltf";
+    {
+        std::ofstream file(camera_path, std::ios::trunc);
+        file << R"json({
+  "asset": { "version": "2.0" },
+  "scene": 0,
+  "scenes": [{ "nodes": [0] }],
+  "nodes": [{ "name": "CameraNode", "camera": 0 }],
+  "cameras": [{
+    "name": "AuthoredCamera",
+    "type": "perspective",
+    "perspective": {
+      "yfov": 0.7853981633974483,
+      "znear": 0.25,
+      "zfar": 250.0
+    }
+  }]
+})json";
+    }
+
+    auto importer = make_ref<GltfImporter>();
+    auto scene = importer->load_scene(camera_path);
+    REQUIRE(scene != nullptr);
+    REQUIRE_EQ(scene->cameras.size(), 1);
+
+    const auto& camera = scene->cameras[0];
+    CHECK_EQ(camera.name, "AuthoredCamera");
+    CHECK_EQ(camera.projection, ImporterCamera::Projection::perspective);
+    CHECK_EQ(camera.fov_direction, ImporterCamera::FOVDirection::vertical);
+    CHECK_EQ(camera.sensor_size_mm, 24.f);
+    CHECK(camera.focal_length == doctest::Approx(ImporterCamera::focal_length_from_fov_degrees(45.f, 24.f)));
+    CHECK(camera.vertical_fov_degrees() == doctest::Approx(45.f));
+    CHECK_EQ(camera.depth_range, float2(0.25f, 250.f));
 }
 
 TEST_CASE("GltfImporter - Empty Scene Handling")

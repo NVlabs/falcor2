@@ -19,29 +19,17 @@ public struct SimpleBTDF : IBSDF
         return float3(0.0);
     }
 
-    public bool sample<S : ISampleGenerator>(
-        const float3 wi,
-        out float3 wo,
-        out float pdf,
-        out float3 weight,
-        out LobeTypes lobe_types,
-        inout S sg,
-        const BSDFContext bc
-    )
+    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
-        // Default initialization to avoid divergence at returns.
-        wo = {};
-        weight = {};
-        pdf = {};
-        lobe_types = {};
+        sample = {};
 
         if (wi.z > BSDF_MIN_COS_THETA)
             return false;
 
-        wo = float3(-wi.x, -wi.y, -wi.z);
-        pdf = 0.0;
-        weight = transmittance;
-        lobe_types = LobeTypes::delta_transmission;
+        sample.wo = float3(-wi.x, -wi.y, -wi.z);
+        sample.pdf = 0.0;
+        sample.weight = transmittance;
+        sample.flags = BSDFFlags::delta_transmission;
         return true;
     }
 

@@ -34,6 +34,8 @@ falcor2.egg-info/
 output/
 
 falcor2_tests.log
+tests/_mcp_smoke/
+tests/_pytest_tmp*/
 
 falcor2/materialtracer/testscenes/Mx_*.slang
 

@@ -8,6 +8,7 @@ target_sources(falcor2_tests PRIVATE
     native/testing.cpp
 
     native/core/test_archive.cpp
+    native/core/test_asset_resolver.cpp
     native/core/test_macros.cpp
     native/core/test_blob_cache.cpp
     native/core/test_pack_file.cpp
@@ -25,6 +26,7 @@ target_sources(falcor2_tests PRIVATE
     native/gltf_importer/test_gltf_importer.cpp
     native/gltf_importer/test_sampler_info.cpp
     native/importers/test_importer_animation.cpp
+    native/importers/test_importer_edit_stream.cpp
     native/importers/test_mikkt_cache.cpp
     native/render/test_scene.cpp
     native/render/test_animation.cpp
@@ -39,6 +41,7 @@ target_sources(falcor2_tests PRIVATE
 target_include_directories(falcor2_tests PRIVATE ./native)
 target_link_libraries(falcor2_tests PRIVATE falcor2 falcor2_header_only usd)
 add_dependencies(falcor2_tests
+    falcor2_ext
     falcor2_copy_materialx_1_39
 )
 target_compile_definitions(falcor2_tests

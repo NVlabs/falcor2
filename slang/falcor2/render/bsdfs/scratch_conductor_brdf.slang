@@ -329,20 +329,9 @@ public struct ScratchConductorBRDF : IBSDF
             + evalScratch * mask[0] * (phongCoefficient + 2.f) / (2.f * float.PI);
     }
 
-    public bool sample<S : ISampleGenerator>(
-        float3 wiLocal,
-        out float3 wo,
-        out float pdf,
-        out float3 weight,
-        out LobeTypes lobeTypes,
-        inout S sg,
-        BSDFContext bc = {}
-    )
+    public bool sample<S : ISampleGenerator>(float3 wiLocal, out BSDFSample sample, inout S sg, BSDFContext bc = {})
     {
-        wo = {};
-        pdf = {};
-        weight = {};
-        lobeTypes = {};
+        sample = {};
 
         if (wiLocal.z < 0.0f)
             return false;
@@ -358,7 +347,7 @@ public struct ScratchConductorBRDF : IBSDF
         float3 f;
         if (mask[0] <= threshold) {
             PBRTConductorBSDF unscratched = { D, eta, k };
-            return unscratched.sample(wiLocal, wo, pdf, weight, lobeTypes, sg, bc);
+            return unscratched.sample(wiLocal, sample, sg, bc);
         } else {
             const float groovelength = kDefaultGrooveLength;
             const float cosTheta = scratchdirection[0];
@@ -384,34 +373,30 @@ public struct ScratchConductorBRDF : IBSDF
 
                 Frame sf = Frame(outgoing);
 
-                wo = sf.to_global(phongLocal);
+                sample.wo = sf.to_global(phongLocal);
 
                 // If the roughness is too high, a lot of rays will go into the surface. The only way to prevent this is
                 // to do the roughening during the bounces and reflect rays back, but then we won't have a deterministic
                 // eval and pdf
-                if (min(wiLocal.z, wo.z) < BSDF_MIN_COS_THETA) {
-                    weight = {};
+                if (min(wiLocal.z, sample.wo.z) < BSDF_MIN_COS_THETA)
                     return false;
-                }
 
                 // switch to Dirac
                 if (phongCoefficient < kDiracLimit) {
-                    const float evalScratch = calculateEvalOrPdf(wiLocal, wo, false)[0];
-                    pdf = evalScratch * (phongCoefficient + 2.f) / (2.f * float.PI);
+                    const float evalScratch = calculateEvalOrPdf(wiLocal, sample.wo, false)[0];
+                    sample.pdf = evalScratch * (phongCoefficient + 2.f) / (2.f * float.PI);
 
                     // This should not happen. But it occasionally does in regions where we blend from scratch to
                     // no-scratch if the scratch direction doesn't have enough bleed.
-                    if (pdf <= 0.f) {
-                        weight = {};
+                    if (sample.pdf <= 0.f)
                         return false;
-                    }
 
-                    weight = f;
-                    lobeTypes = LobeTypes::non_delta_reflection;
+                    sample.weight = f;
+                    sample.flags = BSDFFlags::non_delta_reflection;
                 } else {
-                    weight = f;
-                    pdf = 1.f;
-                    lobeTypes = LobeTypes::delta_reflection;
+                    sample.weight = f;
+                    sample.pdf = 1.f;
+                    sample.flags = BSDFFlags::delta_reflection;
                 }
             }
         }

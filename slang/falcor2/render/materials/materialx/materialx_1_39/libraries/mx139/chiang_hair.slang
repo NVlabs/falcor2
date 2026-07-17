@@ -215,21 +215,9 @@ public struct MxChiangHairBSDF : ILayerableBSDF
         return eval_value(wi, wo);
     }
 
-    public bool sample<S : ISampleGenerator>(
-        const float3 wi,
-        out float3 wo,
-        out float pdf,
-        out float3 weight,
-        out LobeTypes lobe_types,
-        inout S sg,
-        const BSDFContext bc
-    )
+    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
-        wo = float3(0.0);
-        pdf = 0.0;
-        weight = float3(0.0);
-        lobe_types = LobeTypes::none;
-
+        sample = {};
 
         float sin_theta_o = wi.x;
         float cos_theta_o = hair_safe_sqrt(1.0 - sin_theta_o * sin_theta_o);
@@ -276,27 +264,17 @@ public struct MxChiangHairBSDF : ILayerableBSDF
             ? hair_phi(p, gamma_o, gamma_t) + hair_sample_trimmed_logistic(u.y, lobe_s(p), -float.PI, float.PI)
             : u.y * float.TWO_PI;
         float phi_i = phi_o + dphi;
-        wo = float3(sin_theta_i, cos_theta_i * cos(phi_i), cos_theta_i * sin(phi_i));
+        sample.wo = float3(sin_theta_i, cos_theta_i * cos(phi_i), cos_theta_i * sin(phi_i));
 
-        pdf = eval_pdf(wi, wo, bc);
-        if (pdf <= 0.0 || isnan(pdf) || isinf(pdf)) {
-            wo = float3(0.0);
-            pdf = 0.0;
-            weight = float3(0.0);
-            lobe_types = LobeTypes::none;
+        sample.pdf = eval_pdf(wi, sample.wo, bc);
+        if (sample.pdf <= 0.0 || isnan(sample.pdf) || isinf(sample.pdf))
             return false;
-        }
 
-        weight = eval_value(wi, wo) / pdf;
-        if (any(isnan(weight)) || any(isinf(weight)) || any(weight < float3(0.0))) {
-            wo = float3(0.0);
-            pdf = 0.0;
-            weight = float3(0.0);
-            lobe_types = LobeTypes::none;
+        sample.weight = eval_value(wi, sample.wo) / sample.pdf;
+        if (any(isnan(sample.weight)) || any(isinf(sample.weight)) || any(sample.weight < float3(0.0)))
             return false;
-        }
 
-        lobe_types = LobeTypes::glossy_curve;
+        sample.flags = BSDFFlags::glossy_curve;
         return true;
     }
 
