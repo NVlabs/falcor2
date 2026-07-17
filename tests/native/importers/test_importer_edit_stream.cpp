@@ -21,12 +21,6 @@ std::filesystem::path cornell_box_path()
     return testing::project_directory() / "data" / "assets" / "cornell-box" / "usdpreviewsurface" / "cornell-box.usda";
 }
 
-std::filesystem::path damaged_helmet_path()
-{
-    return testing::project_directory() / "data" / "assets" / "kronos" / "DamagedHelmet" / "glTF"
-        / "DamagedHelmet.gltf";
-}
-
 std::filesystem::path animation_test_path(std::string_view filename)
 {
     return testing::project_directory() / "data" / "assets" / "animation_test" / std::filesystem::path(filename);
@@ -561,58 +555,6 @@ TEST_CASE("Importer edit stream - import_asset imports cornell box at build time
     check_all_meshes_have_recomputed_frames(scene);
 }
 
-TEST_CASE("Importer edit stream - material selector replaces imported material")
-{
-    SKIP("Missing asset");
-
-    ref<Importer> importer = Importer::create();
-    importer->import_asset(damaged_helmet_path());
-
-    Properties props;
-    props.set("roughness_factor", 0.25f);
-    props.set("_scene_material_type", "IgnoredMaterialType");
-    importer->materials()["Material_MR"].replace("StandardMaterial", props);
-
-    ref<ImporterScene> scene = importer->build_importer_scene();
-
-    auto material_it = std::find_if(
-        scene->materials.begin(),
-        scene->materials.end(),
-        [](const ImporterMaterial& material)
-        {
-            return material.name == "Material_MR";
-        }
-    );
-    REQUIRE(material_it != scene->materials.end());
-    CHECK_EQ(material_it->params.get<std::string>("_scene_material_type"), "StandardMaterial");
-    CHECK_EQ(material_it->params.get<float>("roughness_factor"), 0.25f);
-
-    bool has_material_binding = false;
-    for (const ImporterMesh& mesh : scene->meshes) {
-        has_material_binding |= std::any_of(
-            mesh.subgeometries.begin(),
-            mesh.subgeometries.end(),
-            [](const ImporterMesh::Subgeometry& subgeometry)
-            {
-                return subgeometry.material_name == "Material_MR";
-            }
-        );
-    }
-    CHECK(has_material_binding);
-
-    ref<ImporterScene> rebuilt_scene = importer->build_importer_scene();
-    auto rebuilt_material_it = std::find_if(
-        rebuilt_scene->materials.begin(),
-        rebuilt_scene->materials.end(),
-        [](const ImporterMaterial& material)
-        {
-            return material.name == "Material_MR";
-        }
-    );
-    REQUIRE(rebuilt_material_it != rebuilt_scene->materials.end());
-    CHECK_EQ(rebuilt_material_it->params.get<std::string>("_scene_material_type"), "StandardMaterial");
-}
-
 TEST_CASE("Importer edit stream - material selector replaces every match")
 {
     ImporterBuildContext context;
@@ -670,67 +612,12 @@ TEST_CASE("Importer edit stream - empty material selection is a no-op")
     CHECK(scene->materials.empty());
 }
 
-TEST_CASE("Importer edit stream - material selector records constructor replacement")
-{
-    SKIP("Missing asset");
-
-    ref<Importer> importer = Importer::create();
-    importer->import_asset(damaged_helmet_path());
-
-    Properties props;
-    props.set("value", 7);
-    props.set("_scene_material_type", "IgnoredMaterialType");
-    ImporterMaterial::Constructor constructor = [](Scene&, const ImporterMaterial&) -> Material*
-    {
-        return nullptr;
-    };
-    importer->materials()["Material_MR"].replace(constructor, props);
-
-    ref<ImporterScene> scene = importer->build_importer_scene();
-    auto material_it = std::find_if(
-        scene->materials.begin(),
-        scene->materials.end(),
-        [](const ImporterMaterial& material)
-        {
-            return material.name == "Material_MR";
-        }
-    );
-    REQUIRE(material_it != scene->materials.end());
-    CHECK(static_cast<bool>(material_it->constructor));
-    CHECK_EQ(material_it->params.get<int>("value"), 7);
-    CHECK_FALSE(material_it->params.has_property("_scene_material_type"));
-    CHECK(material_it->output_to_material_network.empty());
-}
-
 TEST_CASE("Importer edit stream - material selector validates input")
 {
     ref<Importer> importer = Importer::create();
     CHECK_THROWS(importer->materials().find(""));
     CHECK_THROWS(importer->materials().find("Material").replace(""));
     CHECK_THROWS(importer->materials().find("Material").replace(ImporterMaterial::Constructor{}));
-}
-
-TEST_CASE("Importer edit stream - import_asset carries recompute normal options to build")
-{
-    SKIP("Missing asset");
-
-    const std::filesystem::path damaged_helmet = damaged_helmet_path();
-    REQUIRE(std::filesystem::exists(damaged_helmet));
-
-    ref<ImporterScene> direct_scene = import_scene(damaged_helmet);
-    REQUIRE(direct_scene);
-
-    ImportOptions options;
-    options.recompute_normals = true;
-    ref<Importer> importer = Importer::create(options);
-    importer->import_asset(damaged_helmet);
-
-    ref<ImporterScene> recomputed_scene = importer->build_importer_scene();
-    REQUIRE(recomputed_scene);
-
-    REQUIRE_EQ(recomputed_scene->meshes.size(), direct_scene->meshes.size());
-    CHECK(any_mesh_normal_differs(direct_scene, recomputed_scene));
-    check_all_meshes_have_recomputed_frames(recomputed_scene);
 }
 
 TEST_CASE("Importer edit stream - import_asset preserves imported animation name")
