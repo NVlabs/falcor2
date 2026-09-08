@@ -1,0 +1,19 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+mdl 1.10;
+
+import ::df::*;
+using ::wildcard_import_helper import make_tint;
+
+export material Default(
+    color tint = make_tint(0.2, 0.4, 0.8),
+    float compiled_parameter_0 = 0.6,
+    float mollify = 0.37
+) = material(
+    surface: material_surface(
+        scattering: df::specular_bsdf(
+            tint: tint * color(1.0, compiled_parameter_0, mollify)
+        )
+    )
+);

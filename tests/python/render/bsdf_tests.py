@@ -111,7 +111,8 @@ class BSDFChiSquareTest:
 class BSDFEvalSampleConsistencyTest:
     """Test eval/sample consistency of a BSDF.
 
-    For each non-delta sample, verifies:
+    For each sample, verifies that delta events have zero solid-angle PDF. For
+    each non-delta sample, verifies:
     1. eval(wi, wo) / eval_pdf(wi, wo) ~= weight (weight consistency)
     2. eval_pdf(wi, wo) ~= pdf from sample() (pdf consistency)
     """
@@ -198,19 +199,21 @@ class BSDFEvalSampleConsistencyTest:
         n_valid = int(counts[0])
         n_failed = int(counts[1])
         n_delta = int(counts[2])
-        n_negative = int(counts[3])
+        n_invalid = int(counts[3])
 
         passed = True
         self.messages = f"Eval/sample consistency ({self.bsdf_type}):\n"
         self.messages += (
             f"  Samples: {n_valid} valid, {n_failed} failed, "
-            f"{n_delta} delta, {n_negative} negative\n"
+            f"{n_delta} delta, {n_invalid} invalid\n"
         )
         self.messages += f"  Max weight error: {max_weight_err:.6e} (tolerance: {weight_tol})\n"
         self.messages += f"  Max PDF error: {max_pdf_err:.6e} (tolerance: {pdf_tol})\n"
 
-        if n_negative > 0:
-            self.messages += f"  FAIL: {n_negative} samples with negative pdf or weight\n"
+        if n_invalid > 0:
+            self.messages += (
+                f"  FAIL: {n_invalid} samples with an invalid PDF, weight, or direction\n"
+            )
             passed = False
         if max_weight_err > weight_tol:
             self.messages += (

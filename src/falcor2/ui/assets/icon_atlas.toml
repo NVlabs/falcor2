@@ -1,0 +1,80 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[atlas]
+padding = 4
+max_width = 512
+
+[[icon]]
+name = "select"
+source = "icons/select.svg"
+preferred_size = 20
+
+[[icon]]
+name = "move"
+source = "icons/move.svg"
+preferred_size = 20
+
+[[icon]]
+name = "rotate"
+source = "icons/rotate.svg"
+preferred_size = 20
+
+[[icon]]
+name = "scale"
+source = "icons/scale.svg"
+preferred_size = 20
+
+[[icon]]
+name = "camera"
+source = "icons/camera.svg"
+preferred_size = 32
+effect = "drop_shadow"
+
+[[icon]]
+name = "light_point"
+source = "icons/light_point.svg"
+preferred_size = 32
+effect = "drop_shadow"
+
+[[icon]]
+name = "light_spot"
+source = "icons/light_spot.svg"
+preferred_size = 32
+effect = "drop_shadow"
+
+[[icon]]
+name = "light_distant"
+source = "icons/light_distant.svg"
+preferred_size = 32
+effect = "drop_shadow"
+
+[[icon]]
+name = "light_sphere"
+source = "icons/light_sphere.svg"
+preferred_size = 32
+effect = "drop_shadow"
+
+[[icon]]
+name = "light_disk"
+source = "icons/light_disk.svg"
+preferred_size = 32
+effect = "drop_shadow"
+
+[[icon]]
+name = "light_rect"
+source = "icons/light_rect.svg"
+preferred_size = 32
+effect = "drop_shadow"
+
+[[icon]]
+name = "light_env_map"
+source = "icons/light_env_map.svg"
+preferred_size = 32
+effect = "drop_shadow"
+
+[[icon]]
+name = "light_constant"
+source = "icons/light_constant.svg"
+preferred_size = 32
+effect = "drop_shadow"

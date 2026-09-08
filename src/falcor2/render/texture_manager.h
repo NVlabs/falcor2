@@ -9,7 +9,6 @@
 #include "falcor2/core/object.h"
 #include "falcor2/core/types.h"
 
-#include "falcor2/utils/idictionary.h"
 
 #include <sgl/device/fwd.h>
 #include <sgl/device/types.h>
@@ -17,9 +16,11 @@
 #include <sgl/device/shader_cursor.h>
 #include <sgl/utils/texture_loader.h>
 
+#include <array>
 #include <atomic>
-#include <vector>
 #include <map>
+#include <string_view>
+#include <vector>
 
 namespace falcor {
 
@@ -364,6 +365,10 @@ class FALCOR_API TextureHandle {
 public:
     FALCOR_STATIC_WRITE_TO_CURSOR(TextureHandle);
 
+    /// Base Slang type used by the native cursor-writer functional fallback.
+    static constexpr std::string_view slang_type_name = "TextureHandle";
+    static constexpr std::array<std::string_view, 1> slangpy_imports() { return {"falcor2/render.slang"}; }
+
     /// Default constructor. Creates an invalid handle.
     TextureHandle() = default;
     /// Destructor.
@@ -416,10 +421,6 @@ public:
 
     /// Packed handle data for use on the device.
     uint32_t data() const;
-
-    /// Serialize the handle data to a dictionary.
-    /// @param dict Dictionary to write to.
-    void to_dictionary(IDictionary& dict) const { dict["data"] = data(); }
 
     /// Write the handle data to a shader cursor for GPU binding.
     /// @tparam TCursor Shader cursor type.

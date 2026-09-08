@@ -4,9 +4,9 @@
 #include "falcor2/importers/importer_types.h"
 #include "falcor2/importers/importer.h"
 #include "falcor2/importers/mikkt.h"
+#include "falcor2/importers/vertex_remap.h"
 
 #include "falcor2/core/types.h"
-#include "falcor2/utils/fnv_hash.h"
 #include "falcor2/utils/indexed_vector.h"
 
 #include <algorithm>
@@ -189,13 +189,14 @@ int append_camera_and_node(
 {
     ImporterCamera camera;
     camera.name = std::string(camera_name);
-    camera.focus_distance = std::max(focus_distance, 0.01f);
     camera.focal_length = ImporterCamera::focal_length_from_fov_degrees(fov_degrees, DEFAULT_SENSOR_HEIGHT_MM);
     camera.fstop = 8.f;
+    camera.sensor_size_mm = DEFAULT_SENSOR_HEIGHT_MM;
+    camera.enable_depth_of_field = false;
+    camera.focus_distance = std::max(focus_distance, 0.f);
     camera.depth_range = float2(std::max(near_plane, 0.001f), std::max(far_plane, near_plane + 0.1f));
     camera.projection = ImporterCamera::Projection::perspective;
     camera.fov_direction = ImporterCamera::FOVDirection::vertical;
-    camera.sensor_size_mm = DEFAULT_SENSOR_HEIGHT_MM;
 
     const int camera_index = static_cast<int>(scene.cameras.size());
     scene.cameras.push_back(std::move(camera));
@@ -265,16 +266,17 @@ float ImporterCamera::fov_degrees() const
     return fov_degrees_from_focal_length(sensor_size_mm, focal_length);
 }
 
-float ImporterCamera::vertical_fov_degrees(float horizontal_to_vertical_sensor_ratio) const
+float ImporterCamera::vertical_sensor_size_mm(float horizontal_to_vertical_sensor_ratio) const
 {
     SGL_CHECK(horizontal_to_vertical_sensor_ratio > 0.f, "Camera sensor ratio must be positive");
 
-    float vertical_sensor_size_mm = sensor_size_mm;
-    if (fov_direction == FOVDirection::horizontal) {
-        vertical_sensor_size_mm = sensor_size_mm / horizontal_to_vertical_sensor_ratio;
-    }
+    return fov_direction == FOVDirection::vertical ? sensor_size_mm
+                                                   : sensor_size_mm / horizontal_to_vertical_sensor_ratio;
+}
 
-    return fov_degrees_from_focal_length(vertical_sensor_size_mm, focal_length);
+float ImporterCamera::vertical_fov_degrees(float horizontal_to_vertical_sensor_ratio) const
+{
+    return fov_degrees_from_focal_length(vertical_sensor_size_mm(horizontal_to_vertical_sensor_ratio), focal_length);
 }
 
 void ImporterCurve::calculate_local_aabb()
@@ -789,56 +791,57 @@ void ImporterMesh::add_tangents_from_normals()
 
 void ImporterMesh::deduplicate_vertices()
 {
-    // Build a mapping of vertex hash to new, deduplicated index and
-    // Mapping of old vertex index to new vertex index
-    std::unordered_map<size_t, size_t> hash_to_index; // vertex hash -> new index
-    hash_to_index.reserve(m_vertex_count);
-    std::vector<size_t> old_to_new_index(m_vertex_count, size_t(-1)); // old index -> new index
-    std::vector<uint8_t> is_first_instance(m_vertex_count, false);
-    size_t next_index = 0;
-    for (size_t i = 0; i < m_vertex_count; i++) {
-        size_t hash = hash_vertex(i);
-        if (hash_to_index.find(hash) == hash_to_index.end()) {
-            hash_to_index[hash] = next_index++;
-            is_first_instance[i] = true;
-        }
-        old_to_new_index[i] = hash_to_index[hash];
+    // TODO: Replacing vertex buffers below can invalidate non-owning Python stream views. Move the buffers to
+    // allocation-owned copy-on-write storage before treating topology-changing operations as generally view-safe.
+    std::vector<VertexRemapStream> streams;
+    streams.reserve(m_attributes.size());
+    for (const ImporterMeshAttribute& attribute : m_attributes) {
+        const void* data = nullptr;
+        size_t stride = 0;
+        get_stream_info(attribute, data, stride);
+        streams.push_back(
+            VertexRemapStream{
+                .data = static_cast<const std::byte*>(data),
+                .element_size = data_type_size(attribute.type) * attribute.num_components,
+                .stride = stride,
+            }
+        );
     }
 
-    // Early out if there are no duplicated vertices.
-    if (next_index == m_vertex_count)
+    const VertexRemap remap = generate_vertex_remap(streams, m_vertex_count);
+    apply_vertex_remap(remap);
+}
+
+void ImporterMesh::apply_vertex_remap(const VertexRemap& remap)
+{
+    FALCOR_ASSERT(remap.old_to_new.size() == m_vertex_count);
+    if (remap.is_identity())
         return;
 
-    // Remap the vertex indices in each subgeometry
-    for (auto& subgeo : subgeometries) {
-        for (auto& indices : subgeo.indices) {
-            for (int i = 0; i < 3; ++i) {
-                indices[i] = (uint32_t)old_to_new_index[indices[i]];
-            }
+    for (Subgeometry& subgeometry : subgeometries) {
+        for (uint3& triangle : subgeometry.indices) {
+            for (int corner = 0; corner < 3; ++corner)
+                triangle[corner] = remap.old_to_new[triangle[corner]];
         }
     }
 
-    // Generate new buffers with deduplicated vertices
     std::vector<ImporterMeshBuffer> new_buffers(m_buffers.size());
-    for (size_t buffer_idx = 0; buffer_idx < m_buffers.size(); buffer_idx++) {
-        const auto& old_buffer = m_buffers[buffer_idx];
-        auto& new_buffer = new_buffers[buffer_idx];
+    for (size_t buffer_index = 0; buffer_index < m_buffers.size(); ++buffer_index) {
+        const ImporterMeshBuffer& old_buffer = m_buffers[buffer_index];
+        ImporterMeshBuffer& new_buffer = new_buffers[buffer_index];
         new_buffer.stride = old_buffer.stride;
-        new_buffer.data.resize(next_index * new_buffer.stride);
-        for (size_t old_idx = 0; old_idx < m_vertex_count; old_idx++) {
-            if (is_first_instance[old_idx]) {
-                // Copy the old vertex data to the new buffer
-                size_t new_idx = old_to_new_index[old_idx];
-                std::memcpy(
-                    &new_buffer.data[new_idx * new_buffer.stride],
-                    &old_buffer.data[old_idx * old_buffer.stride],
-                    old_buffer.stride
-                );
-            }
+        new_buffer.data.resize(remap.new_to_old.size() * new_buffer.stride);
+        for (size_t new_index = 0; new_index < remap.new_to_old.size(); ++new_index) {
+            const size_t old_index = remap.new_to_old[new_index];
+            std::memcpy(
+                new_buffer.data.data() + new_index * new_buffer.stride,
+                old_buffer.data.data() + old_index * old_buffer.stride,
+                old_buffer.stride
+            );
         }
     }
 
-    m_vertex_count = next_index;
+    m_vertex_count = remap.new_to_old.size();
     m_buffers = std::move(new_buffers);
 }
 
@@ -1047,22 +1050,6 @@ size_t ImporterMesh::allocate_vertices(size_t count, bool init_to_zero)
         }
     }
     return start_index;
-}
-
-size_t ImporterMesh::hash_vertex(size_t vertex_index)
-{
-    FNVHash64 hash;
-    for (auto& attrib : m_attributes) {
-        void* base_ptr;
-        size_t stride;
-        get_stream_info(attrib, base_ptr, stride);
-        size_t size = data_type_size(attrib.type) * attrib.num_components;
-        size_t offset = vertex_index * stride;
-        const uint8_t* data_ptr = (const uint8_t*)base_ptr + offset;
-        // Simple hash combine
-        hash.insert(data_ptr, size);
-    }
-    return hash.get();
 }
 
 } // namespace falcor

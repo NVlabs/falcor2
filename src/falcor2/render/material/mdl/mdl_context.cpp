@@ -13,7 +13,30 @@
 #include <sgl/core/platform.h>
 #include <sgl/core/crypto.h>
 
+#include <algorithm>
+#include <set>
+
 namespace falcor {
+
+struct Tagged_bsdf_info {
+    struct Input {
+        Input() { };
+        Input(std::string _path)
+            : path(_path)
+            , name(_path)
+        {
+            std::replace(name.begin(), name.end(), '.', '_');
+        }
+
+        std::string path;
+        std::string name;
+    };
+
+    Input roughness_u;
+    Input roughness_v;
+    Input tangent_u;
+    Input tint;
+};
 
 struct MDLContextImpl : public MDLContext::IImpl {
     ~MDLContextImpl() override
@@ -72,6 +95,9 @@ struct MDLContextImpl : public MDLContext::IImpl {
     sgl::SharedLibraryHandle mdl;
     mi::base::Handle<mi::neuraylib::INeuray> neuray;
     std::map<std::string, int> path_frequency;
+    // Modified materials outlive individual compile requests in the MDL database, so their tagged-BSDF metadata must
+    // have the same lifetime. The outer key is the generated material name; the inner key is the unique DF handle.
+    std::map<std::string, std::map<std::string, Tagged_bsdf_info>> tagged_bsdf_info_cache;
 
     void* get_neuray() override { return neuray.get(); };
     bool add_search_paths(const std::span<const std::filesystem::path>& paths) override
@@ -168,33 +194,88 @@ MDLContext::MDLContext()
 
 MDLContext::~MDLContext() { }
 
-struct Tagged_bsdf_info {
-    struct Input {
-        Input() { };
-        Input(std::string _path)
-            : path(_path)
-            , name(_path)
-        {
-            std::replace(name.begin(), name.end(), '.', '_');
-        }
+struct ModifiedParameterNames {
+    // Names reported by the original compiled material. These remain the public names in Falcor, but may be paths
+    // such as "tint.r" that cannot be used as parameter identifiers in the generated MDL material.
+    std::vector<std::string> source;
+    // Unique MDL identifiers used for the corresponding parameters in the generated material.
+    std::vector<std::string> generated;
+    // Name allocated for Falcor's additional mollification parameter, when enabled.
+    std::optional<std::string> mollify;
+};
 
-        std::string path;
-        std::string name;
+// Build the one-to-one parameter-name mapping used when cloning a compiled material into a generated MDL module.
+// The mapping must be deterministic because a previously generated module may be reused from the MDL database while
+// this mapping is rebuilt to interpret its argument block.
+inline bool build_modified_parameter_names(
+    const MDLContext::CompileRequest& request,
+    const mi::neuraylib::ICompiled_material* src_material,
+    mi::neuraylib::IMdl_factory* factory,
+    ModifiedParameterNames& names,
+    std::string& out_error_msg
+)
+{
+    const mi::Size parameter_count = src_material->get_parameter_count();
+    names.source.resize(parameter_count);
+    names.generated.resize(parameter_count);
+
+    // Reserve every usable source name before allocating aliases. For example, if parameter 0 is the path "tint.r"
+    // and a later source parameter is named "compiled_parameter_0", a one-pass allocator would give both parameters
+    // the same generated name.
+    std::set<std::string, std::less<>> used_parameter_names;
+    for (mi::Size i = 0; i < parameter_count; ++i) {
+        const char* name = src_material->get_parameter_name(i);
+        if (name == nullptr) {
+            out_error_msg = "Unexpected nameless parameter";
+            return false;
+        }
+        names.source[i] = name;
+        if (factory->is_valid_mdl_identifier(name)) {
+            if (!used_parameter_names.insert(name).second) {
+                out_error_msg = fmt::format("Duplicate compiled parameter name '{}'", name);
+                return false;
+            }
+            names.generated[i] = name;
+        }
+    }
+
+    auto allocate_parameter_name = [&used_parameter_names](const std::string& base_name)
+    {
+        // The preferred name is normally available, so this path performs no suffix formatting.
+        if (used_parameter_names.insert(base_name).second)
+            return base_name;
+
+        // Every suffixed candidate can itself be a valid source name (for example, "mollify_1"), so probe until an
+        // unused identifier is found. Each generated positional alias has a distinct base, so caching the next suffix
+        // per base would not avoid work in this call site.
+        for (size_t suffix = 1;; ++suffix) {
+            std::string name = fmt::format("{}_{}", base_name, suffix);
+            if (used_parameter_names.insert(name).second)
+                return name;
+        }
     };
 
-    Input roughness_u;
-    Input roughness_v;
-    Input tangent_u;
-    Input tint;
-};
+    // Compiled-material paths are not legal declaration identifiers. Give each one a stable positional base name;
+    // allocate_parameter_name() adds a suffix only if that base is already a source parameter.
+    for (mi::Size i = 0; i < parameter_count; ++i) {
+        if (names.generated[i].empty())
+            names.generated[i] = allocate_parameter_name(fmt::format("compiled_parameter_{}", i));
+    }
+
+    // Falcor's injected parameter shares the generated material's namespace with source parameters and aliases.
+    if (request.options.enable_param_mollification)
+        names.mollify = allocate_parameter_name("mollify");
+
+    return true;
+}
 
 inline bool build_modified_material(
     const MDLContext::CompileRequest& request,
     const std::string dst_simple_material_name,
-    const char* src_module_db_name,
     const mi::neuraylib::ICompiled_material* src_material,
     const mi::neuraylib::IFunction_definition* src_definition,
     const mi::neuraylib::IExpression_list* instance_args,
+    const ModifiedParameterNames& parameter_names,
     mi::neuraylib::IMdl_factory* factory,
     mi::neuraylib::IMdl_execution_context* context,
     mi::neuraylib::ITransaction* trans,
@@ -229,44 +310,85 @@ inline bool build_modified_material(
     mi::base::Handle<mi::neuraylib::IExpression_list> dst_defaults(ef->create_expression_list());
     mi::base::Handle<mi::neuraylib::IAnnotation_list> dst_parameter_annotations(ef->create_annotation_list());
 
+    // Build Falcor's diagnostic clone in a separate module. Editing the source module forces the MDL SDK to
+    // reanalyze unrelated source declarations and can fail on otherwise valid imports that were already resolved
+    // when the original module was loaded. The modified material name contains the compiled-material and option
+    // hashes, so it also gives the generated module stable, collision-resistant identity.
+    const std::string dst_module_db_name = fmt::format("mdl::falcor_modified_{}", dst_simple_material_name);
+
     mi::base::Handle<mi::neuraylib::IMdl_module_builder> module_builder(factory->create_module_builder(
         trans,
-        src_module_db_name,
+        dst_module_db_name.c_str(),
         /*ignored*/ mi::neuraylib::MDL_VERSION_1_0,
         mi::neuraylib::MDL_VERSION_LATEST,
         context
     ));
+    if (!module_builder) {
+        out_error_msg = "Failed to create module for modified material";
+        return false;
+    }
+
+    const mi::Size parameter_count = src_material->get_parameter_count();
+    FALCOR_ASSERT(parameter_names.source.size() == parameter_count);
+    FALCOR_ASSERT(parameter_names.generated.size() == parameter_count);
 
     // clone parameter defaults
-    mi::Size parameter_count = src_material->get_parameter_count();
     for (mi::Size i = 0; i < parameter_count; ++i) {
-        const char* name = src_material->get_parameter_name(i);
-        if (name == nullptr) {
-            out_error_msg = "Unexpected nameless parameter";
+        const std::string& name = parameter_names.source[i];
+        const std::string& dst_name = parameter_names.generated[i];
+
+        mi::base::Handle<const mi::neuraylib::IAnnotation_block> src_param_annotation(
+            src_parameter_annotations->get_annotation_block(name.c_str())
+        );
+        if (src_param_annotation) {
+            if (mi::Sint32 result
+                = dst_parameter_annotations->add_annotation_block(dst_name.c_str(), src_param_annotation.get())) {
+                out_error_msg
+                    = fmt::format("Failed to clone annotation block for parameter {} ('{}'): {}", i, name, result);
+                return false;
+            }
+        }
+
+        mi::base::Handle<const mi::neuraylib::IValue> compiled_default(src_material->get_argument(i));
+        if (!compiled_default) {
+            out_error_msg = fmt::format("Failed to get default for parameter {} ('{}')", i, name);
             return false;
         }
 
-        mi::base::Handle<const mi::neuraylib::IAnnotation_block> src_param_annotation(
-            src_parameter_annotations->get_annotation_block(name)
-        );
-        if (src_param_annotation) {
-            dst_parameter_annotations->add_annotation_block(name, src_param_annotation.get());
+        mi::base::Handle<const mi::neuraylib::IType> src_type(src_parameters->get_type(name.c_str()));
+        if (!src_type)
+            src_type = compiled_default->get_type();
+        if (!src_type) {
+            out_error_msg = fmt::format("Failed to find type for parameter {} ('{}')", i, name);
+            return false;
         }
-
-        mi::base::Handle<const mi::neuraylib::IType> src_type(src_parameters->get_type(name));
-        dst_parameters->add_type(name, src_type.get());
+        if (mi::Sint32 result = dst_parameters->add_type(dst_name.c_str(), src_type.get())) {
+            out_error_msg = fmt::format("Failed to clone type for parameter {} ('{}'): {}", i, name, result);
+            return false;
+        }
 
         // If there is a provided instance argument with the same name, use it to set the default value.
         // Otherwise, use the value specified by the original source argument.
         mi::base::Handle<const mi::neuraylib::IExpression> arg(
-            instance_args ? instance_args->get_expression(name) : nullptr
+            instance_args ? instance_args->get_expression(name.c_str()) : nullptr
         );
         if (arg) {
-            dst_defaults->add_expression(name, arg.get());
+            if (mi::Sint32 result = dst_defaults->add_expression(dst_name.c_str(), arg.get())) {
+                out_error_msg
+                    = fmt::format("Failed to clone instance default for parameter {} ('{}'): {}", i, name, result);
+                return false;
+            }
         } else {
-            mi::base::Handle<const mi::neuraylib::IValue> src_default(src_material->get_argument(i));
-            mi::base::Handle<const mi::neuraylib::IExpression> dst_default(ef->create_constant(src_default.get()));
-            dst_defaults->add_expression(name, dst_default.get());
+            mi::base::Handle<const mi::neuraylib::IExpression> dst_default(ef->create_constant(compiled_default.get()));
+            if (!dst_default) {
+                out_error_msg = fmt::format("Failed to create default for parameter {} ('{}')", i, name);
+                return false;
+            }
+            if (mi::Sint32 result = dst_defaults->add_expression(dst_name.c_str(), dst_default.get())) {
+                out_error_msg
+                    = fmt::format("Failed to clone compiled default for parameter {} ('{}'): {}", i, name, result);
+                return false;
+            }
         }
     }
 
@@ -285,14 +407,15 @@ inline bool build_modified_material(
         mollify_annotation_block->add_annotation(mollify_annotation.get());
 
         // add the mollification parameter
-        const char* mollify_name = "mollify";
+        FALCOR_ASSERT(parameter_names.mollify.has_value());
+        const std::string& mollify_name = *parameter_names.mollify;
         mi::base::Handle<const mi::neuraylib::IType> mollify_type(tf->create_float());
-        dst_parameters->add_type(mollify_name, mollify_type.get());
-        dst_defaults->add_expression(mollify_name, epsilon_expression.get());
-        dst_parameter_annotations->set_annotation_block(mollify_name, mollify_annotation_block.get());
+        dst_parameters->add_type(mollify_name.c_str(), mollify_type.get());
+        dst_defaults->add_expression(mollify_name.c_str(), epsilon_expression.get());
+        dst_parameter_annotations->set_annotation_block(mollify_name.c_str(), mollify_annotation_block.get());
 
         // create the parameterized roughness expression used to approximate specular BSDFs
-        mi::Size mollify_parameter_index = dst_parameters->get_index(mollify_name);
+        mi::Size mollify_parameter_index = dst_parameters->get_index(mollify_name.c_str());
         mi::base::Handle<mi::neuraylib::IExpression_parameter> mollify_parameter(
             ef->create_parameter(mollify_type.get(), mollify_parameter_index)
         );
@@ -531,8 +654,12 @@ inline bool build_modified_material(
 
     // instantiate cloned material
     mi::base::Handle<const mi::neuraylib::IModule> dst_module(
-        trans->access<mi::neuraylib::IModule>(src_module_db_name)
+        trans->access<mi::neuraylib::IModule>(dst_module_db_name.c_str())
     );
+    if (!dst_module) {
+        out_error_msg = "Failed to access module for modified material";
+        return false;
+    }
     mi::base::Handle<const mi::IArray> dst_func_overloads(
         dst_module->get_function_overloads(dst_simple_material_name.c_str())
     );
@@ -569,7 +696,8 @@ inline bool build_modified_material(
 inline MDLContext::CompileResult compileInternal(
     const MDLContext::CompileRequest& request,
     mi::neuraylib::INeuray* neuray,
-    mi::neuraylib::ITransaction* trans
+    mi::neuraylib::ITransaction* trans,
+    std::map<std::string, std::map<std::string, Tagged_bsdf_info>>& tagged_bsdf_info_cache
 )
 {
     auto createError = [](const std::string& msg)
@@ -777,11 +905,31 @@ inline MDLContext::CompileResult compileInternal(
     mi::base::Handle<const mi::neuraylib::ICompiled_material> compiled_material(
         material_instance->create_compiled_material(flags, context.get())
     );
+    if (!compiled_material) {
+        log_messages_and_check_errors(context.get());
+        return createError("MDL SDK returned no compiled material.");
+    }
 
     material_instance = {};
 
     std::map<std::string, Tagged_bsdf_info> tagged_bsdf_infos;
+    // The second compilation sees the generated identifiers. Keep their original names so the argument-block API
+    // continues to expose the same parameters as the source material. Injected parameters are intentionally unmapped.
+    std::map<std::string, std::string, std::less<>> source_name_by_generated_name;
     if (modify_material) {
+        ModifiedParameterNames parameter_names;
+        std::string parameter_name_error;
+        if (!build_modified_parameter_names(
+                request,
+                compiled_material.get(),
+                mdl_factory.get(),
+                parameter_names,
+                parameter_name_error
+            ))
+            return createError(parameter_name_error);
+        for (mi::Size i = 0; i < parameter_names.source.size(); ++i)
+            source_name_by_generated_name.emplace(parameter_names.generated[i], parameter_names.source[i]);
+
         // include the options in the hash so when the same compiled material is recompiled with different modification
         // options, the modified material gets a unique name.
         const size_t optionsHash = fnv_hash_array64(&request.options, sizeof(MDLContext::CompileRequest::options));
@@ -821,10 +969,10 @@ inline MDLContext::CompileResult compileInternal(
             if (!build_modified_material(
                     request,
                     modified_mdl_simple_name,
-                    module_db_name->get_c_str(),
                     compiled_material.get(),
                     material_definition.get(),
                     useExistingInstance ? srcArgs.get() : nullptr,
+                    parameter_names,
                     mdl_factory.get(),
                     context.get(),
                     trans,
@@ -842,6 +990,13 @@ inline MDLContext::CompileResult compileInternal(
 
             if (!modified_material_instance)
                 return createError("Failed to access the modified material instance.");
+
+            tagged_bsdf_info_cache[modified_mdl_simple_name] = tagged_bsdf_infos;
+        } else if (request.options.enable_tagged_df_properties) {
+            const auto tagged_bsdf_info = tagged_bsdf_info_cache.find(modified_mdl_simple_name);
+            if (tagged_bsdf_info == tagged_bsdf_info_cache.end())
+                return createError("Cached modified material is missing tagged BSDF metadata.");
+            tagged_bsdf_infos = tagged_bsdf_info->second;
         }
 
         // set the target compilation options for the final modified material
@@ -879,6 +1034,8 @@ inline MDLContext::CompileResult compileInternal(
     mi::base::Handle<mi::neuraylib::IMdl_backend> hlsl_backend(
         backend_api->get_backend(mi::neuraylib::IMdl_backend_api::MB_HLSL)
     );
+    if (!hlsl_backend)
+        return createError("Failed to create the MDL HLSL backend.");
 
     // Set code generation options.
     hlsl_backend->set_option("internal_space", "coordinate_world");
@@ -913,7 +1070,7 @@ inline MDLContext::CompileResult compileInternal(
 
     // Create a link unit that will contain all the functions we want to generate code for.
     mi::base::Handle<mi::neuraylib::ILink_unit> hlsl_link_unit(hlsl_backend->create_link_unit(trans, context.get()));
-    if (log_messages_and_check_errors(context.get()))
+    if (log_messages_and_check_errors(context.get()) || !hlsl_link_unit)
         return createError("Failed to create a link unit");
 
     enum FUNCTION_DESCRIPTOR_SLOTS {
@@ -976,9 +1133,15 @@ inline MDLContext::CompileResult compileInternal(
         add_input_function(value.tint);
     }
 
-    hlsl_link_unit->add_material(compiled_material.get(), descs.data(), descs.size(), context.get());
-    if (log_messages_and_check_errors(context.get()))
-        return createError("Failed to select functions for code generation.");
+    mi::Sint32 add_material_result
+        = hlsl_link_unit->add_material(compiled_material.get(), descs.data(), descs.size(), context.get());
+    if (log_messages_and_check_errors(context.get()) || add_material_result != 0)
+        return createError(
+            fmt::format(
+                "Failed to select functions for code generation (ILink_unit::add_material returned {}).",
+                add_material_result
+            )
+        );
 
     // Translating the link unit into the target language is the last step and the only one
     // that can be time consuming. All the steps before are designed to be lightweight for
@@ -986,12 +1149,16 @@ inline MDLContext::CompileResult compileInternal(
     mi::base::Handle<const mi::neuraylib::ITarget_code> hlsl_target_code(
         hlsl_backend->translate_link_unit(hlsl_link_unit.get(), context.get())
     );
-    if (log_messages_and_check_errors(context.get()))
+    if (log_messages_and_check_errors(context.get()) || !hlsl_target_code)
         return createError("Failed to translate the link unit to code.");
 
     // Next, we query the generated target code and all the resources it needs.
     // We store all of that in a CompileResult object.
     MDLContext::CompileResult result = {};
+
+    mi::Float32 cutout_opacity;
+    if (compiled_material->get_cutout_opacity(&cutout_opacity))
+        result.cutout_opacity = std::clamp(cutout_opacity, 0.f, 1.f);
 
     result.code = hlsl_target_code->get_code();
 
@@ -1168,7 +1335,13 @@ inline MDLContext::CompileResult compileInternal(
                         break;
                     };
 
-                    result.arg_block_layout.insert({std::string(name), entry});
+                    // Translate aliases such as "compiled_parameter_0_1" back to source paths such as "tint.r".
+                    // An unmapped name belongs to an injected parameter and is already its intended public name.
+                    const auto source_name = source_name_by_generated_name.find(name);
+                    const std::string public_name
+                        = source_name == source_name_by_generated_name.end() ? std::string(name) : source_name->second;
+                    if (!result.arg_block_layout.insert({public_name, entry}).second)
+                        return createError(fmt::format("Duplicate material parameter name '{}'.", public_name));
                 }
             }
         }
@@ -1273,43 +1446,6 @@ inline MDLContext::CompileResult compileInternal(
         }
     }
 
-    // We need to query the index of refraction of the material.
-    // To do this, we create a native backend where we can generate code for the "ior"
-    // function and then run it to query the value.
-
-    mi::base::Handle<mi::neuraylib::IMdl_backend> native_backend(
-        backend_api->get_backend(mi::neuraylib::IMdl_backend_api::MB_NATIVE)
-    );
-
-    mi::base::Handle<mi::neuraylib::ILink_unit> native_link_unit(
-        native_backend->create_link_unit(trans, context.get())
-    );
-    if (log_messages_and_check_errors(context.get()))
-        return createError("Failed to create a native link unit");
-
-    descs.clear();
-    descs.push_back(TD("ior", "ior"));
-
-    native_link_unit->add_material(compiled_material.get(), descs.data(), descs.size(), context.get());
-    if (log_messages_and_check_errors(context.get()))
-        return createError("Failed to select functions for code generation.");
-
-    mi::base::Handle<const mi::neuraylib::ITarget_code> native_target_code(
-        native_backend->translate_link_unit(native_link_unit.get(), context.get())
-    );
-    if (log_messages_and_check_errors(context.get()))
-        return createError("Failed to translate the native link unit to code.");
-
-    // Query index of refraction.
-    {
-        mi::neuraylib::Shading_state_material state = {};
-        mi::Sint32 execute_result = native_target_code->execute(0, state, nullptr, nullptr, &result.ior);
-        if (execute_result != 0) {
-            sgl::log_warn("Failed to execute target code to get index of refraction: {}", execute_result);
-            result.ior = float3(1.f);
-        }
-    }
-
     result.success = true;
 
     return result;
@@ -1332,7 +1468,8 @@ MDLContext::CompileResult MDLContext::compile(const CompileRequest& request)
     mi::base::Handle<mi::neuraylib::ITransaction> trans(scope->create_transaction());
 
     // Compile the MDL material using the transaction we just created.
-    CompileResult result = compileInternal(request, neuray, trans.get());
+    auto& impl = static_cast<MDLContextImpl&>(*m_impl);
+    CompileResult result = compileInternal(request, neuray, trans.get(), impl.tagged_bsdf_info_cache);
 
     // Close the transaction.
     if (result.success)

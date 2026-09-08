@@ -4,23 +4,33 @@
 
 default:
   timeout: 2h
-  before_script:
-    # Update top-level submodules without recursing into stale nested checkouts,
-    # then synchronize and update nested submodules from the checked-out revisions.
-    - git submodule init
-    - git submodule sync
-    - git -c fetch.recurseSubmodules=false submodule update --init --force
-    - git submodule foreach --quiet git submodule init
-    - git submodule sync --recursive
-    - git -c fetch.recurseSubmodules=false submodule update --init --recursive --force
+  interruptible: true
 
 # -----------------------------------------------------------------------------
 # Global variables
 # -----------------------------------------------------------------------------
 
 variables:
+  # Checkout strategy experiment:
+  # CI used fetch from its introduction in May 2025. After several July 2026
+  # attempts to repair stale nested submodules in reused worktrees, commit
+  # 730e02af changed the global strategy to clone. Clone avoided that reused
+  # state, but repeatedly downloads the large recursive repository graph.
+  #
+  # Retry fetch for the superproject, but disable GitLab Runner's submodule
+  # checkout. Each job below runs tools/ci_submodules.py, which resets and
+  # cleans cached submodules before updating them. If that fails, the helper
+  # discards the submodule worktrees and metadata and retries once from clean
+  # state. GET_SOURCES_ATTEMPTS separately retries transient runner failures
+  # while fetching the superproject.
+  #
+  # Rollback: revert this MR as a unit. The previous config was clone/recursive
+  # with a default before_script that unshallowed vcpkg. Remove the retry, the
+  # three helper calls, and the helper file together when restoring it.
   GIT_SUBMODULE_STRATEGY: none
+  GIT_SUBMODULE_DEPTH: 1
   GIT_STRATEGY: fetch
+  GET_SOURCES_ATTEMPTS: 2
 
 # -----------------------------------------------------------------------------
 # Rule templates
@@ -55,6 +65,9 @@ pre-commit:
     - kernelvm
   variables:
     KERNELVM_OS: ubuntu24
+  before_script:
+    # Paired with the checkout strategy experiment above.
+    - /opt/ci/miniconda3/bin/python tools/ci_submodules.py
   script:
     # Setup conda environment
     - source /opt/ci/miniconda3/bin/activate
@@ -80,17 +93,15 @@ pre-commit:
   variables:
     KERNELVM_OS: windows11
     KERNELVM_DRIVER: "581.80"
+    CI_PYTEST_WORKERS: "4"
     VS_PATH: C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools
     CONDA_ENV: falcor2
   hooks:
     pre_get_sources_script:
       - git config --global core.longpaths true
-      # Remove build folder
-      - |
-        $buildDir = Join-Path $env:CI_PROJECT_DIR 'build'
-        if (Test-Path -LiteralPath $buildDir) {
-          Remove-Item -LiteralPath $buildDir -Recurse -Force
-        }
+  before_script:
+    # Paired with the checkout strategy experiment above.
+    - '& C:\Anaconda3\python.exe tools/ci_submodules.py'
   script:
     # Setup conda environment
     # Requires PowerShell 7.3+ for $PSNativeCommandUseErrorActionPreference
@@ -136,10 +147,10 @@ pre-commit:
   variables:
     KERNELVM_OS: ubuntu24
     KERNELVM_DRIVER: "580.173.02"
-  hooks:
-    pre_get_sources_script:
-      # Remove build folder
-      - rm -rf ${CI_PROJECT_DIR}/build
+    CI_PYTEST_WORKERS: "4"
+  before_script:
+    # Paired with the checkout strategy experiment above.
+    - /opt/ci/miniconda3/bin/python tools/ci_submodules.py
   script:
     # Setup conda environment
     - source /opt/ci/miniconda3/bin/activate # Initialize conda for the shell
@@ -173,10 +184,13 @@ pre-commit:
   variables:
     RUN_UNIT_TESTS: true
     CI_FLAGS: crashpad
+    CI_DEVICE_CACHE_POLICY: file
   artifacts:
     when: always
     paths:
       - "reports/*junit.xml"
+      - "reports/test-telemetry.json"
+      - "reports/system-telemetry.json"
       - ".crashpad/"
     reports:
       junit:
@@ -218,7 +232,7 @@ windows-debug:
 # Linux build jobs
 # -----------------------------------------------------------------------------
 
-linux-release:
+linux-gcc-release:
   extends:
     - .default-rules
     - .linux-base
@@ -227,7 +241,7 @@ linux-release:
     CI_CONFIG: Release
 
 # Temporarily disabled as parallel builds not working with 4090
-#linux-release-4090:
+#linux-gcc-release-4090:
 #  extends:
 #    - .default-rules
 #    - .linux-base
@@ -239,7 +253,7 @@ linux-release:
 #    CI_CONFIG: Release
 
 # Doesn't work yet :(
-#linux-release-4090-d535:
+#linux-gcc-release-4090-d535:
 #  extends:
 #    - .default-rules
 #    - .linux-base
@@ -267,22 +281,29 @@ linux-build-container:
   stage: build
   extends:
     - .linux-base
-  tags:
-    - linux
-    - gpu
   rules:
     - if: $CI_PIPELINE_SOURCE == 'api' && $JOB_TYPE_BUILD
     - if: $CI_PIPELINE_SOURCE == 'schedule' && $SCHEDULE_REASON == 'deploy'
   script:
     # Setup conda environment
     - source /opt/ci/miniconda3/bin/activate
+    - |
+      if ! conda env list | grep falcor2; then
+        conda create -n falcor2 python=3.10 -y
+      fi
     - conda activate falcor2
 
     # Quick bodge to make sure requests is installed
     - pip install requests
 
     # Docker login
-    - echo "$JOB_DEPLOY_TOKEN" | docker login -u $JOB_DEPLOY_USERNAME --password-stdin "$CI_REGISTRY"
+    - echo "$CI_REGISTRY_PASSWORD" | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin
+
+    # Discard persistent Docker state so every container build starts clean.
+    - docker system prune --all --force --volumes
+
+    # Discard persistent Docker state so every container build starts clean.
+    - docker system prune --all --force --volumes
 
     # Run the supplied build command
     - python -u $BUILD_COMMAND
@@ -293,9 +314,8 @@ linux-build-container:
 
 devcontainer-build:
   stage: build
-  tags:
-    - linux
-    - gpu
+  extends:
+    - .linux-base
   rules:
     - if: $CI_PIPELINE_SOURCE == 'api' && $JOB_TYPE_DEV_CONTAINER_BUILD
     - if: $CI_PIPELINE_SOURCE == 'web' && $JOB_TYPE_DEV_CONTAINER_BUILD

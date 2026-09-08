@@ -13,7 +13,6 @@
 
 namespace falcor {
 class Scene;
-class Camera;
 } // namespace falcor
 
 namespace falcor::ui {
@@ -30,9 +29,9 @@ class SelectionOverlay;
 /// gizmo suppression, explicit pointer ownership, and selection picking that
 /// would otherwise be scattered across the application.
 ///
-/// The controller does not own any of its services; they are injected by the
-/// application and can be null (in which case the corresponding feature is
-/// disabled).
+/// The controller does not own any of its services. The scene editor, picker,
+/// and overlay are injected by the application and can be null. Camera input
+/// uses the controller configured on the scene editor.
 class FALCOR_API SceneInteractionController : public Object {
     FALCOR_OBJECT(SceneInteractionController)
 public:
@@ -48,16 +47,13 @@ public:
         }
     );
 
-    /// Callback invoked when the controller requests accumulation reset.
-    using ResetCallback = std::function<void()>;
     /// Callback invoked when pointer capture starts or ends.
     using PointerCaptureCallback = std::function<void(bool capture)>;
 
     SceneInteractionController(
         ref<SceneEditor> scene_editor,
         ref<ScenePicker> scene_picker,
-        ref<SelectionOverlay> selection_overlay,
-        ref<CameraController> camera_controller
+        ref<SelectionOverlay> selection_overlay
     );
 
     /// Scene editor used for gizmos and selection.
@@ -69,16 +65,12 @@ public:
     /// Selection overlay used for selection highlighting.
     SelectionOverlay* selection_overlay() const { return m_selection_overlay; }
 
-    /// Camera controller used for navigation.
-    CameraController* camera_controller() const { return m_camera_controller; }
+    /// Camera controller configured on the scene editor and used for navigation.
+    CameraController* camera_controller() const;
 
     /// Scene for picking operations.
     Scene* scene() const { return m_scene; }
     void set_scene(ref<Scene> scene);
-
-    /// Callback invoked when interaction requires accumulation reset (e.g. selection change, focus on selection).
-    ResetCallback reset_callback() const { return m_reset_callback; }
-    void set_reset_callback(ResetCallback callback);
 
     /// Current pointer owner for mouse drag/cursor capture.
     PointerOwner pointer_owner();
@@ -106,13 +98,7 @@ public:
     /// Update selection overlay if the editor's selection changed.
     void update_selection_overlay();
 
-    /// Focus the camera on the currently selected entity.
-    /// @param camera The camera to update, or nullptr if no camera is active.
-    /// @return True if the camera was moved.
-    bool focus_on_selection(Camera* camera);
-
 private:
-    void request_reset();
     void set_pointer_owner(PointerOwner owner);
     void reconcile_pointer_owner();
     bool can_route_viewport_event(const sgl::MouseEvent& event) const;
@@ -120,13 +106,11 @@ private:
     ref<SceneEditor> m_scene_editor;
     ref<ScenePicker> m_scene_picker;
     ref<SelectionOverlay> m_selection_overlay;
-    ref<CameraController> m_camera_controller;
 
     ref<Scene> m_scene;
 
     uint64_t m_last_selection_version{0};
 
-    ResetCallback m_reset_callback;
     PointerCaptureCallback m_pointer_capture_callback;
     PointerOwner m_pointer_owner{PointerOwner::none};
 };

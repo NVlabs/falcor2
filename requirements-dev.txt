@@ -4,6 +4,7 @@ pre-commit
 pytest
 pytest-xdist
 pytest-cov
+psutil
 pyright
 deepdiff
 isort
@@ -12,6 +13,7 @@ libcst
 boto3
 setuptools
 requests
+resvg_py == 0.2.6
 pybind11_mkdoc >= 2.6.2
 clang >= 20.1.5
 libclang >= 18.1.1

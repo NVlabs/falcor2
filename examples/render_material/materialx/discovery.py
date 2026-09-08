@@ -80,8 +80,6 @@ def make_materialx_entry(
         "mtlx_basepath": str(material_basepath),
         "mtlx_search_paths": str(materialx_root),
         "mtlx_layering_mode": layering_mode,
-        "mtlx_target_color_space_override": "lin_rec709",
-        "mtlx_autogamma": False,
         "mtlx_geomprop_names": list(MATERIALX_TEST_GEOMPROP_NAMES),
         "mtlx_geomprop_ids": list(MATERIALX_TEST_GEOMPROP_IDS),
     }

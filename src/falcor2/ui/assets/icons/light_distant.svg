@@ -1,0 +1,8 @@
+<!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <g transform="translate(32 32)" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <circle r="9"/>
+    <path d="M0-25v7M0 18v7M-25 0h7M18 0h7M-18-18l5 5M13 13l5 5M18-18l-5 5M-13 13l-5 5"/>
+  </g>
+</svg>

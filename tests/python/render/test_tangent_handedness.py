@@ -144,7 +144,7 @@ def test_render_frame_handedness(device_type: spy.DeviceType) -> None:
             helper.bind_scene
         ).dispatch(
             thread_count=spy.uint3(WIDTH, HEIGHT, 1),
-            camera=camera.get_uniforms(),
+            camera=camera,
             render_mode=int(render_mode),
             color_output=output,
         )
@@ -255,5 +255,30 @@ def test_material_frame_handedness(device_type: spy.DeviceType) -> None:
     np.testing.assert_allclose(
         materialx_result,
         np.array([[1.0, SQRT_HALF], [-1.0, -SQRT_HALF]], dtype=np.float32),
+        atol=1e-5,
+    )
+
+    bc5_probe = module.bc5_normalmap_probe.as_func().return_type(spy.Tensor)
+    bc5_result = bc5_probe(
+        spy.Tensor.from_numpy(
+            device,
+            np.array(
+                [
+                    [0.5, 0.5],
+                    [0.5 + 0.25, 0.5 - 0.125],
+                ],
+                dtype=np.float32,
+            ),
+        )
+    ).to_numpy()
+    np.testing.assert_allclose(
+        bc5_result,
+        np.array(
+            [
+                [0.0, 0.0, 1.0],
+                [0.5, -0.25, np.sqrt(1.0 - 0.5**2 - 0.25**2)],
+            ],
+            dtype=np.float32,
+        ),
         atol=1e-5,
     )

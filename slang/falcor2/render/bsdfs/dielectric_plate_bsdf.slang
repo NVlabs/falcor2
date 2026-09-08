@@ -25,10 +25,12 @@ public struct DielectricPlateBSDF : IBSDF
         this.eta = eta;
     }
 
-    public float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+
+    public BSDFEval
+    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
     {
-        if (D.is_singular() || eta == 1.0 || wi.z * wo.z == 0.0)
-            return float3(0.0);
+        if (D.is_singular() || eta == 1.0 || min(wi.z, abs(wo.z)) < BSDF_MIN_COS_THETA)
+            return BSDFEval();
 
         bool reflect = wi.z * wo.z > 0.0;
         float rel_eta = eta;
@@ -38,7 +40,7 @@ public struct DielectricPlateBSDF : IBSDF
         float wi_dot_h = dot(wi, h);
         float wo_dot_h = dot(wo, h);
         if (wi_dot_h * wi.z < 0.0 || wo_dot_h * wo.z < 0.0)
-            return float3(0.0);
+            return BSDFEval();
 
         float sin_theta_t_sq = eta * eta * (1 - wi_dot_h * wi_dot_h);
         float cos_theta_t = sqrt(1.0 - sin_theta_t_sq); // No clamp needed
@@ -48,14 +50,21 @@ public struct DielectricPlateBSDF : IBSDF
         float t1 = 1.0 - r2;
         float F = r1 + t1 * t1 * r2 / (1.0 - r1 * r2);
 
-        return reflect ? D.G2(wo, wi) * D.eval_ndf(h) * F / (4.0 * abs(wi.z))
-                       : D_inside.G2(wo, wi) * D_inside.eval_ndf(h) * (1.0 - F)
+        float3 value = reflect ? D.G2(wo, wi) * D.eval_ndf(h) * F / (4.0 * abs(wi.z))
+                               : D_inside.G2(wo, wi) * D_inside.eval_ndf(h) * (1.0 - F)
                 * abs(wi_dot_h * wo_dot_h / (sqr(wo_dot_h + wi_dot_h / eta_refract) * abs(wi.z)));
+        float pdf = reflect
+            ? F * D.eval_pdf(wi, h) / (4.0 * abs(wi_dot_h))
+            : (1.0 - F) * D_inside.eval_pdf(wi, h) * abs(wo_dot_h) / sqr(wo_dot_h + wi_dot_h / eta_refract);
+        return BSDFEval(value, pdf);
     }
 
     public bool sample<S : ISampleGenerator>(float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
         sample = {};
+
+        if (wi.z < BSDF_MIN_COS_THETA)
+            return false;
 
         float rel_eta = eta;
         const float eta_refract = 1.005;
@@ -73,12 +82,12 @@ public struct DielectricPlateBSDF : IBSDF
                 sample.wo = float3(-wi.x, -wi.y, wi.z);
                 sample.weight = float3(1.0);
                 sample.flags = BSDFFlags::delta_reflection;
-                sample.pdf = 1.0;
+                sample.pdf = 0.0;
             } else {
                 sample.wo = refract(-wi, float3(0.0, 0.0, sign(wi.z)), 1.0 / eta_refract);
                 sample.weight = float3(1.0);
                 sample.flags = BSDFFlags::delta_transmission;
-                sample.pdf = 1.0;
+                sample.pdf = 0.0;
             }
         } else {
             float3 h = D.sample(wi, sg);
@@ -92,9 +101,16 @@ public struct DielectricPlateBSDF : IBSDF
             float t1 = 1.0 - r2;
             float F = r1 + t1 * t1 * r2 / (1.0 - r1 * r2);
 
+            // TODO(BSDF, @aweidlich): The transmission branch uses this F from a normal sampled from D,
+            // but its direction and Jacobian use a new normal sampled from D_inside. Its directional density is
+            // therefore E_D[1 - F] * q_inside. sample.pdf retains the latent 1 - F, while eval() and eval_pdf()
+            // reconstruct F from the D_inside normal. One compatibility-preserving repair is to choose the lobe
+            // with a direction-only p_r = F_plate(wi.z), sample only that lobe's distribution, and compensate its
+            // weight by F(h_r) / p_r or (1 - F(h_t)) / (1 - p_r). This remains unresolved because preserving the
+            // current two-stage estimator instead requires an integrated directional-transmittance model.
             if (next_float(sg) < F) {
                 sample.wo = reflect(-wi, h);
-                if (wi.z * sample.wo.z < 0.0)
+                if (sample.wo.z < BSDF_MIN_COS_THETA)
                     return false;
 
                 sample.weight = D.G2(sample.wo, wi) / D.G1(wi);
@@ -106,7 +122,7 @@ public struct DielectricPlateBSDF : IBSDF
 
                 sample.wo = refract(-wi, sign(wi.z) * h, 1.0 / eta_refract);
                 float wo_dot_h = dot(h, sample.wo);
-                if (wi.z * sample.wo.z > 0.0)
+                if (sample.wo.z > -BSDF_MIN_COS_THETA)
                     return false;
 
                 sample.weight = D_inside.G2(sample.wo, wi) / D_inside.G1(wi);
@@ -118,32 +134,6 @@ public struct DielectricPlateBSDF : IBSDF
         return true;
     }
 
-    public float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
-    {
-        if (D.is_singular() || eta == 1.0 || wi.z * wo.z == 0.0)
-            return 0.0;
-
-        bool reflect = wi.z * wo.z > 0.0;
-        float rel_eta = eta;
-        const float eta_refract = 1.005f;
-        float3 h = reflect ? normalize(wi + wo) : normalize(wi / eta_refract + wo);
-        h *= sign(h.z);
-        float wi_dot_h = dot(wi, h);
-        float wo_dot_h = dot(wo, h);
-        if (wi_dot_h * wi.z < 0.0 || wo_dot_h * wo.z < 0.0)
-            return 0.0;
-
-        float sin_theta_t_sq = eta * eta * (1 - wi_dot_h * wi_dot_h);
-        float cos_theta_t = sqrt(1 - sin_theta_t_sq); // No clamp needed
-
-        float r1 = eval_fresnel_dielectric(eta, wi_dot_h);
-        float r2 = eval_fresnel_dielectric(eta, -cos_theta_t);
-        float t1 = 1.0 - r2;
-        float F = r1 + t1 * t1 * r2 / (1.0 - r1 * r2);
-
-        return reflect ? F * D.eval_pdf(wi, h) / (4.0 * abs(wi_dot_h))
-                       : (1.0 - F) * D_inside.eval_pdf(wi, h) * abs(wo_dot_h) / sqr(wo_dot_h + wi_dot_h / eta_refract);
-    }
 
     public AlbedoContributions eval_albedo(const float3 wi)
     {

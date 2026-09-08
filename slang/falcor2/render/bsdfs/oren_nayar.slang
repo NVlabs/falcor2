@@ -20,10 +20,12 @@ public struct OrenNayarBRDF : IBSDF
         this.roughness = roughness;
     }
 
-    public float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+
+    public BSDFEval
+    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
     {
         if (min(wi.z, wo.z) < BSDF_MIN_COS_THETA)
-            return float3(0.0);
+            return BSDFEval();
 
         const float sin_theta_i = sqrt(1.0 - wi.z * wi.z);
         const float sin_phi_i = (sin_theta_i == 0.0 ? 0.0 : clamp(wi.y / sin_theta_i, -1.0, 1.0));
@@ -49,7 +51,8 @@ public struct OrenNayarBRDF : IBSDF
             tan_beta = sin_theta_o / abs(wo.z);
         }
 
-        return albedo * float.INV_PI * (A + B * cos_diff * sin_alpha * tan_beta) * wo.z;
+        const float pdf = float.INV_PI * wo.z;
+        return BSDFEval(albedo * (A + B * cos_diff * sin_alpha * tan_beta) * pdf, pdf);
     }
 
     public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
@@ -64,17 +67,10 @@ public struct OrenNayarBRDF : IBSDF
         if (min(wi.z, sample.wo.z) < BSDF_MIN_COS_THETA)
             return false;
 
-        sample.weight = eval(wi, sample.wo, sg, bc) / eval_pdf(wi, sample.wo, bc);
+        sample.weight = eval(wi, sample.wo, sg, bc) / sample.pdf;
         return true;
     }
 
-    public float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
-    {
-        if (min(wi.z, wo.z) < BSDF_MIN_COS_THETA)
-            return 0.0;
-
-        return float.INV_PI * wo.z;
-    }
 
     public AlbedoContributions eval_albedo(const float3 wi)
     {

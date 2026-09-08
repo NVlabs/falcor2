@@ -11,9 +11,11 @@ import slangpy as spy
 
 import falcor2 as f2
 import falcor2.ngx as fngx
+from falcor2.reflection import reflected, reflected_property
 from falcor2.rendergraph import ContainerSpec, RenderNode, TextureBridge, TextureOutput
 
 
+@reflected
 class DLSSRayReconNode(RenderNode):
     """Evaluate NVIDIA DLSS-RR from path-traced color and guide textures."""
 
@@ -31,7 +33,7 @@ class DLSSRayReconNode(RenderNode):
         """Create a DLSS-RR node for ``device`` without allocating runtime resources."""
         super().__init__()
         self._device = device
-        self.quality = fngx.QualityMode.quality
+        self._quality = fngx.QualityMode.quality
         self.output_spec = ContainerSpec.texture2d()
         self._ngx: fngx.NGX | None = None
         self._feature: fngx.DLSSRRFeature | None = None
@@ -51,6 +53,18 @@ class DLSSRayReconNode(RenderNode):
     def reset(self) -> None:
         """Reset DLSS-RR history on the next evaluate call."""
         self._reset = True
+
+    @reflected_property(ui_label="Quality")
+    def quality(self) -> fngx.QualityMode:
+        """Quality mode used to select the internal render resolution."""
+        return self._quality
+
+    @quality.setter
+    def quality(self, value: fngx.QualityMode) -> None:
+        quality = fngx.QualityMode(value)
+        if quality != self._quality:
+            self._quality = quality
+            self.reset()
 
     def _get_ngx(self) -> fngx.NGX:
         """Return the lazily created NGX context."""
@@ -194,7 +208,7 @@ class DLSSRayReconNode(RenderNode):
 
         return color_texture, guide_textures
 
-    def forward(
+    def _exec(
         self,
         color: Any,
         guides: dict[str, Any],

@@ -72,7 +72,7 @@ public:
     static void clear_cache();
 
     /// Find or create a cached PythonClassReflection for the given instance's type.
-    /// Used by the convenience ``python_properties_editor`` overload.
+    /// Used by the Python-facing property editor bridge.
     static PythonClassReflection& find_or_create(nb::handle instance);
 
 private:
@@ -104,7 +104,7 @@ private:
     /// Keys are raw PyObject* but the corresponding CachedDescriptors always
     /// holds a strong reference via py_class_ref, preventing GC.
     static std::unordered_map<PyObject*, std::shared_ptr<CachedDescriptors>> s_cache;
-    /// Global cache: Python type object pointer -> PythonClassReflection (convenience overload).
+    /// Global cache: Python type object pointer -> PythonClassReflection (property editor bridge).
     static std::unordered_map<PyObject*, std::unique_ptr<PythonClassReflection>> s_reflections;
 
     FALCOR_NON_COPYABLE_AND_MOVABLE(PythonClassReflection);

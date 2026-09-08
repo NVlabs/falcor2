@@ -10,6 +10,24 @@ import slangpy as spy
 import falcor2.testing.helpers as helpers
 
 
+def test_create_device_forwards_cuda_interop(monkeypatch: pytest.MonkeyPatch) -> None:
+    from falcor2.editor import create_device
+
+    expected = object()
+    captured: dict[str, object] = {}
+
+    def fake_create_device(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return expected
+
+    monkeypatch.setattr(spy, "create_device", fake_create_device)
+
+    result = create_device(enable_cuda_interop=True)
+
+    assert result is expected
+    assert captured["enable_cuda_interop"] is True
+
+
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_create_device(device_type: spy.DeviceType) -> None:
     """create_device returns a working Device."""
@@ -25,7 +43,7 @@ def test_load_scene(device_type: spy.DeviceType) -> None:
     from falcor2.editor import create_device, load_scene
 
     device = create_device(device_type, enable_debug_layers=True)
-    scene = load_scene(device, "data/assets/kronos/DamagedHelmet/glTF/DamagedHelmet.gltf")
+    scene = load_scene(device, "data/assets/kronos/Avocado/glTF-Binary/Avocado.glb")
     assert len(scene.materials) > 0
     assert len(scene.geometries) > 0
 

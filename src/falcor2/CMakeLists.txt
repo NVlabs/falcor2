@@ -43,6 +43,7 @@ target_sources(falcor2 PRIVATE
     core/reflection/property_descriptor.h
     core/reflection/property_range.cpp
     core/reflection/property_range.h
+    core/reflection/reflected_object_factory.h
     core/reflection/reflector.h
     core/reflection/registry_reflector.h
     core/reflection/type_registry.cpp
@@ -53,10 +54,19 @@ target_sources(falcor2 PRIVATE
 
     ui/camera_controller.cpp
     ui/camera_controller.h
+    ui/editor_command.cpp
+    ui/editor_command.h
+    ui/icon_data.inc
+    ui/icon_library.cpp
+    ui/icon_library.h
     ui/property_editor.cpp
     ui/property_editor.h
     ui/scene_editor.cpp
     ui/scene_editor.h
+    ui/scene_editor_gizmos.cpp
+    ui/scene_editor_gizmos.h
+    ui/scene_editor_outliner.cpp
+    ui/scene_editor_outliner.h
     ui/scene_interaction_controller.cpp
     ui/scene_interaction_controller.h
     ui/scene_picker.cpp
@@ -65,7 +75,6 @@ target_sources(falcor2 PRIVATE
     ui/selection_overlay.h
     ui/widgets.cpp
     ui/widgets.h
-
     external/imguizmo.cpp
     external/tiny_gltf.cpp
     external/tiny_gltf.h
@@ -99,16 +108,28 @@ target_sources(falcor2 PRIVATE
     denoisers/optix_denoiser.cpp
     denoisers/optix_denoiser.h
 
-    importers/importer_types.h
-    importers/importer_types.cpp
-    importers/importer.h
-    importers/importer.cpp
-    importers/importer_collections.h
+    importers/importer_area_light_geometry.cpp
+    importers/importer_area_light_geometry.h
     importers/importer_collections.cpp
-    importers/importer_edits.h
+    importers/importer_collections.h
     importers/importer_edits.cpp
-    importers/mikkt.h
+    importers/importer_edits.h
+    importers/importer_types.cpp
+    importers/importer_types.h
+    importers/vertex_remap.cpp
+    importers/vertex_remap.h
+    importers/importer.cpp
+    importers/importer.h
     importers/mikkt.cpp
+    importers/mikkt.h
+    importers/mikkt_internal.h
+
+    importers/mesh_tessellator/mesh_tessellator.cpp
+    importers/mesh_tessellator/mesh_tessellator.h
+    importers/mesh_tessellator/mesh_tessellator_bfr.cpp
+    importers/mesh_tessellator/mesh_tessellator_common.cpp
+    importers/mesh_tessellator/mesh_tessellator_internal.h
+    importers/mesh_tessellator/mesh_tessellator_triangulate.cpp
 
     importers/gltf_importer/gltf_importer.cpp
     importers/gltf_importer/gltf_importer.h
@@ -121,6 +142,8 @@ target_sources(falcor2 PRIVATE
     importers/usd_importer/usd_importer_macros.h
     importers/usd_importer/material_network.cpp
     importers/usd_importer/material_network.h
+    importers/usd_importer/usd_importer_falcor_material.cpp
+    importers/usd_importer/usd_importer_falcor_material.h
     importers/usd_importer/usd_importer_material.cpp
     importers/usd_importer/usd_importer_material.h
     importers/usd_importer/usd_importer_mdl.cpp
@@ -130,18 +153,19 @@ target_sources(falcor2 PRIVATE
     importers/usd_importer/usdshade_to_mtlx.h
     importers/usd_importer/usd_importer_curve_tesselator.cpp
     importers/usd_importer/usd_importer_curve_tesselator.h
-    importers/usd_importer/usd_importer_mesh_tesselator.cpp
-    importers/usd_importer/usd_importer_mesh_tesselator.h
+    importers/usd_importer/usd_importer_mesh_adapter.cpp
+    importers/usd_importer/usd_importer_mesh_adapter.h
     importers/usd_importer/usd_importer_utils.cpp
     importers/usd_importer/usd_importer_utils.h
     importers/usd_importer/usd_importer.cpp
     importers/usd_importer/usd_importer.h
 
     utils/aabb.h
+    utils/color.cpp
+    utils/color.h
     utils/buffer_handle.cpp
     utils/buffer_handle.h
     utils/fnv_hash.h
-    utils/idictionary.h
     utils/indexed_vector.h
     utils/managed_buffer.h
     utils/managed_vector.h
@@ -168,6 +192,11 @@ target_sources(falcor2 PRIVATE
     render/component.h
     render/emissive_geometry_system.cpp
     render/emissive_geometry_system.h
+    render/light_sampler.cpp
+    render/light_sampler.h
+    render/emissive_triangle_tree.cpp
+    render/emissive_triangle_tree.h
+    render/shared_emissive_triangle_tree_types.h
     render/entity.cpp
     render/entity.h
     render/animation.cpp
@@ -181,16 +210,16 @@ target_sources(falcor2 PRIVATE
     render/material_system.h
     render/material.cpp
     render/material.h
+    render/material_types.h
     render/ray_tracing_setup.cpp
     render/ray_tracing_setup.h
     render/render_scene.cpp
     render/render_scene.h
+    render/scene_config.h
     render/scene_globals.h
     render/scene_import.cpp
-    render/scene_import.h
     render/scene_object.cpp
     render/scene_object.h
-    render/scene_options.h
     render/scene_requirements.h
     render/scene_system.cpp
     render/scene_system.h
@@ -219,8 +248,8 @@ target_sources(falcor2 PRIVATE
     render/geometry/static_curve_geometry.cpp
     render/geometry/static_curve_geometry.h
 
-    render/material/materialx/materialx_material.cpp
-    render/material/materialx/materialx_material.h
+    render/material/mtlx/mtlx_material.cpp
+    render/material/mtlx/mtlx_material.h
 
     render/material/mdl/mdl_context.cpp
     render/material/mdl/mdl_context.h
@@ -234,15 +263,29 @@ target_sources(falcor2 PRIVATE
 
     render/material/openpbr_material.cpp
     render/material/openpbr_material.h
-    render/material/materialx/mx139/dielectric_lut_globals.cpp
-    render/material/materialx/mx139/dielectric_lut_globals.h
-    render/material/materialx/mx139/lut_globals.cpp
-    render/material/materialx/mx139/lut_globals.h
+    render/material/mtlx/dielectric_lut_globals.cpp
+    render/material/mtlx/dielectric_lut_globals.h
+    render/material/mtlx/lut_globals.cpp
+    render/material/mtlx/lut_globals.h
+    render/material/emission_only_material.cpp
+    render/material/emission_only_material.h
     render/material/standard_material.cpp
     render/material/standard_material.h
     render/material/standard_specgloss_material.cpp
     render/material/standard_specgloss_material.h
+    render/material/unlit_material.cpp
+    render/material/unlit_material.h
 )
+
+if(FALCOR_BUILD_TESTS)
+    target_sources(falcor2 PRIVATE importers/parallel_mikktspace.cpp)
+    target_compile_definitions(falcor2 PRIVATE FALCOR_ENABLE_MIKKT_COMPARISON)
+    if(MSVC)
+        # The parallel implementation's direct weld uses small checked stream accessors in its inner loops. Allow their
+        # explicit inline expansion in Debug while retaining /Od for the surrounding algorithm.
+        set_source_files_properties(importers/parallel_mikktspace.cpp PROPERTIES COMPILE_OPTIONS "$<$<CONFIG:Debug>:/Ob1>")
+    endif()
+endif()
 
 # ImGuizmo is compiled as part of falcor2 but references ImGui symbols from sgl.
 # On Windows, mark IMGUI_API as dllimport so the linker resolves them from sgl.dll.
@@ -261,11 +304,16 @@ if(FALCOR_ENABLE_PCH)
     set_source_files_properties(external/imguizmo.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 endif()
 
-add_subdirectory(render/material/materialx/codegen)
+add_subdirectory(render/material/mtlx/codegen "${CMAKE_BINARY_DIR}/mtlx")
+
+cmrc_add_resource_library(falcor2_ui_data
+    ui/assets/icon_atlas.png
+)
 
 target_include_directories(falcor2 PUBLIC ../)
 target_include_directories(falcor2 PUBLIC ../../slang)
 target_link_libraries(falcor2 PUBLIC sgl)
+target_link_libraries(falcor2 PRIVATE falcor2_ui_data)
 if(WIN32)
     target_link_libraries(falcor2 PRIVATE Dbghelp)
 endif()
@@ -305,38 +353,38 @@ target_link_libraries(falcor2
         OpenSubdiv::osdCPU_static
         mikktspace::mikktspace)
 
-# Keep MX139 MaterialX libraries and snippets in sync even when only resource files change.
-file(GLOB_RECURSE FALCOR_MATERIALX_1_39_RESOURCE_FILES CONFIGURE_DEPENDS
-    "${MATERIALX_1_39_SLANG_LIBRARY}/*.mtlx"
-    "${MATERIALX_1_39_SLANG_LIBRARY}/*.slang"
-    "${MATERIALX_1_39_MX139_SNIPPET_LIBRARY}/*.slang"
+# Keep MTLX MaterialX libraries and snippets in sync even when only resource files change.
+file(GLOB_RECURSE FALCOR_MTLX_RESOURCE_FILES CONFIGURE_DEPENDS
+    "${MTLX_LIBRARY}/*.mtlx"
+    "${MTLX_LIBRARY}/*.slang"
+    "${MTLX_SNIPPET_LIBRARY}/*.slang"
 )
 
-set(FALCOR_MATERIALX_1_39_COPY_STAMP "${CMAKE_CURRENT_BINARY_DIR}/materialx_1_39_copy.stamp")
+set(FALCOR_MTLX_COPY_STAMP "${CMAKE_CURRENT_BINARY_DIR}/mtlx_copy.stamp")
 add_custom_command(
-    OUTPUT "${FALCOR_MATERIALX_1_39_COPY_STAMP}"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${FALCOR_OUTPUT_DIRECTORY}/materialx/1_39/slang/libraries"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${FALCOR_OUTPUT_DIRECTORY}/materialx/1_39/mx139/slang"
+    OUTPUT "${FALCOR_MTLX_COPY_STAMP}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${FALCOR_OUTPUT_DIRECTORY}/mtlx/libraries"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${FALCOR_OUTPUT_DIRECTORY}/mtlx/snippets"
     COMMAND ${CMAKE_COMMAND} -E ${FALCOR_COPY_DIRECTORY}
-        "${MATERIALX_1_39_SLANG_LIBRARY}"
-        "${FALCOR_OUTPUT_DIRECTORY}/materialx/1_39/slang/libraries"
+        "${MTLX_LIBRARY}"
+        "${FALCOR_OUTPUT_DIRECTORY}/mtlx/libraries"
     COMMAND ${CMAKE_COMMAND} -E ${FALCOR_COPY_DIRECTORY}
-        "${MATERIALX_1_39_MX139_SNIPPET_LIBRARY}"
-        "${FALCOR_OUTPUT_DIRECTORY}/materialx/1_39/mx139/slang"
-    COMMAND ${CMAKE_COMMAND} -E touch "${FALCOR_MATERIALX_1_39_COPY_STAMP}"
-    DEPENDS ${FALCOR_MATERIALX_1_39_RESOURCE_FILES}
-    COMMENT "Sync MaterialX 1.39 MX139 codegen resources"
+        "${MTLX_SNIPPET_LIBRARY}"
+        "${FALCOR_OUTPUT_DIRECTORY}/mtlx/snippets"
+    COMMAND ${CMAKE_COMMAND} -E touch "${FALCOR_MTLX_COPY_STAMP}"
+    DEPENDS ${FALCOR_MTLX_RESOURCE_FILES}
+    COMMENT "Sync MTLX codegen resources"
     VERBATIM
 )
 
-add_custom_target(falcor2_sync_materialx_1_39_resources ALL
-    DEPENDS "${FALCOR_MATERIALX_1_39_COPY_STAMP}"
+add_custom_target(falcor2_sync_mtlx_resources ALL
+    DEPENDS "${FALCOR_MTLX_COPY_STAMP}"
 )
-add_dependencies(falcor2 falcor2_sync_materialx_1_39_resources)
+add_dependencies(falcor2 falcor2_sync_mtlx_resources)
 
 # Keep isolated MaterialX 1.39 runtime libraries in sync even when only
 # MaterialX 1.39 dependencies rebuild and the falcor2 target itself does not relink.
-set(FALCOR_MATERIALX_1_39_RUNTIME_TARGETS
+set(FALCOR_MTLX_RUNTIME_TARGETS
     MaterialXCore
     MaterialXFormat
     MaterialXGenShader
@@ -344,31 +392,31 @@ set(FALCOR_MATERIALX_1_39_RUNTIME_TARGETS
     MaterialXGenSlang
 )
 
-set(FALCOR_MATERIALX_1_39_RUNTIME_COPY_COMMANDS)
-set(FALCOR_MATERIALX_1_39_RUNTIME_COPY_DEPS)
-foreach(target IN LISTS FALCOR_MATERIALX_1_39_RUNTIME_TARGETS)
+set(FALCOR_MTLX_RUNTIME_COPY_COMMANDS)
+set(FALCOR_MTLX_RUNTIME_COPY_DEPS)
+foreach(target IN LISTS FALCOR_MTLX_RUNTIME_TARGETS)
     if(TARGET ${target})
-        list(APPEND FALCOR_MATERIALX_1_39_RUNTIME_COPY_COMMANDS
+        list(APPEND FALCOR_MTLX_RUNTIME_COPY_COMMANDS
             COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:${target}>" "${FALCOR_OUTPUT_DIRECTORY}"
         )
-        list(APPEND FALCOR_MATERIALX_1_39_RUNTIME_COPY_DEPS ${target})
+        list(APPEND FALCOR_MTLX_RUNTIME_COPY_DEPS ${target})
     endif()
 endforeach()
 
-add_custom_target(falcor2_copy_materialx_1_39_runtime ALL
+add_custom_target(falcor2_copy_mtlx_runtime ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory "${FALCOR_OUTPUT_DIRECTORY}"
-    ${FALCOR_MATERIALX_1_39_RUNTIME_COPY_COMMANDS}
-    COMMENT "Sync MaterialX 1.39 runtime libraries"
+    ${FALCOR_MTLX_RUNTIME_COPY_COMMANDS}
+    COMMENT "Sync MaterialX runtime libraries"
     VERBATIM
 )
-add_dependencies(falcor2_copy_materialx_1_39_runtime falcor2 ${FALCOR_MATERIALX_1_39_RUNTIME_COPY_DEPS})
+add_dependencies(falcor2_copy_mtlx_runtime falcor2 ${FALCOR_MTLX_RUNTIME_COPY_DEPS})
 
-add_custom_target(falcor2_copy_materialx_1_39 ALL
-    COMMENT "Sync MaterialX 1.39 runtime and standard libraries"
+add_custom_target(falcor2_copy_mtlx ALL
+    COMMENT "Sync MaterialX runtime and standard libraries"
 )
-add_dependencies(falcor2_copy_materialx_1_39
-    falcor2_copy_materialx_1_39_runtime
-    falcor2_copy_materialx_1_39_std_libraries
+add_dependencies(falcor2_copy_mtlx
+    falcor2_copy_mtlx_runtime
+    falcor2_copy_mtlx_standard_libraries
 )
 
 # Copy USD plugins as described here: https://github.com/microsoft/vcpkg/issues/37947
@@ -426,30 +474,30 @@ file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${FALCOR_BUILD_TYPE}/include/fa
 )
 target_include_directories(falcor2 PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/${FALCOR_BUILD_TYPE}/include)
 
-add_library(falcor2_usd_mx139_materialx OBJECT
+add_library(falcor2_mtlx_usd_importer OBJECT
     importers/usd_importer/usdshade_to_mtlx.cpp
 )
-target_include_directories(falcor2_usd_mx139_materialx
+target_include_directories(falcor2_mtlx_usd_importer
     PRIVATE
         ../
         ../../slang
         ${CMAKE_CURRENT_BINARY_DIR}/${FALCOR_BUILD_TYPE}/include
 )
-target_compile_definitions(falcor2_usd_mx139_materialx
+target_compile_definitions(falcor2_mtlx_usd_importer
     PRIVATE
         FALCOR_DLL
         FALCOR_PROJECT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../"
-        MATERIALX_1_39_STD_LIBRARY_PATH="${FALCOR_OUTPUT_DIRECTORY}/materialx/1_39/std/libraries"
+        MTLX_STANDARD_LIBRARY_PATH="${FALCOR_OUTPUT_DIRECTORY}/mtlx/standard"
 )
-target_link_libraries(falcor2_usd_mx139_materialx
+target_link_libraries(falcor2_mtlx_usd_importer
     PRIVATE
         sgl
         falcor2_header_only
         MaterialXCore
         MaterialXFormat
 )
-set_target_properties(falcor2_usd_mx139_materialx PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_link_libraries(falcor2 PRIVATE falcor2_usd_mx139_materialx)
+set_target_properties(falcor2_mtlx_usd_importer PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_link_libraries(falcor2 PRIVATE falcor2_mtlx_usd_importer)
 
 target_compile_options(falcor2
     PUBLIC

@@ -19,7 +19,7 @@ def test_geometry_instance_id_wrapper(device: spy.Device) -> None:
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_geometry_instance_exposes_typed_id(device: spy.Device) -> None:
-    scene = f2.Scene.create(device, "data/assets/kronos/DamagedHelmet/glTF/DamagedHelmet.gltf")
+    scene = f2.Scene.load(device, "data/assets/kronos/Avocado/glTF-Binary/Avocado.glb")
     scene.update()
 
     component = next(

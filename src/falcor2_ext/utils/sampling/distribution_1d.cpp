@@ -34,19 +34,7 @@ FALCOR_PY_EXPORT(utils_sampling_distribution_1d)
         .DEF_PROP_RO(DiscreteDistribution1D, pdf)
         .DEF_PROP_RO(DiscreteDistribution1D, cdf)
         .DEF_PROP_RO(DiscreteDistribution1D, pdf_buffer)
-        .DEF_PROP_RO(DiscreteDistribution1D, cdf_buffer)
-        .def(
-            "get_this",
-            [](DiscreteDistribution1D* self)
-            {
-                nb::dict result = nb::dict();
-                result["_type"] = "DiscreteDistribution1D";
-                result["size"] = self->size();
-                result["pdf_buffer"] = self->pdf_buffer();
-                result["cdf_buffer"] = self->cdf_buffer();
-                return result;
-            }
-        );
+        .DEF_PROP_RO(DiscreteDistribution1D, cdf_buffer);
 
     nb::class_<AliasTable1D>(m, "AliasTable1D", D(AliasTable1D))
         .def(
@@ -67,17 +55,5 @@ FALCOR_PY_EXPORT(utils_sampling_distribution_1d)
         .DEF_PROP_RO(AliasTable1D, pdf)
         .DEF_PROP_RO(AliasTable1D, alias_table)
         .DEF_PROP_RO(AliasTable1D, pdf_buffer)
-        .DEF_PROP_RO(AliasTable1D, alias_table_buffer)
-        .def(
-            "get_this",
-            [](AliasTable1D* self)
-            {
-                nb::dict result = nb::dict();
-                result["_type"] = "AliasTable1D";
-                result["size"] = self->size();
-                result["pdf_buffer"] = self->pdf_buffer();
-                result["alias_table_buffer"] = self->alias_table_buffer();
-                return result;
-            }
-        );
+        .DEF_PROP_RO(AliasTable1D, alias_table_buffer);
 }

@@ -1,3 +1,5 @@
+vcpkg_check_linkage(ONLY_DYNAMIC_LIBRARY)
+
 set(VCPKG_POLICY_MISMATCHED_NUMBER_OF_BINARIES enabled)
 
 vcpkg_from_github(

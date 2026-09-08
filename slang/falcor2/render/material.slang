@@ -29,13 +29,43 @@ public enum MaterialInstanceHints : uint {
     adjust_shading_normal = 0x2,
 };
 
+/// Resolved properties of a homogeneous participating medium.
+/// Absorption and scattering coefficients are expressed in inverse scene units.
+/// Zero coefficients represent vacuum.
+public struct HomogeneousMediumProperties
+{
+    public float3 sigma_a = {};
+    public float3 sigma_s = {};
+    public float anisotropy = 0.0;
+};
+
+/// Scattering and emission at a geometrically accepted surface hit.
 public interface IMaterialInstance
 {
-    public float3 eval<S : ISampleGenerator>(const SurfaceInteraction si, const float3 wo_ws, inout S sg);
+    /// Evaluates the scattering value. This is a convenience alias for eval_with_pdf().
+    public float3 eval<S : ISampleGenerator>(const SurfaceInteraction si, const float3 wo_ws, inout S sg)
+    {
+        return eval_with_pdf<BSDFEvalHints::eval>(si, wo_ws, sg).value;
+    }
+
+    /// Evaluates the scattering value and directional PDF together.
+    /// Prefer this operation when both results are needed, so shared work is performed only once.
+    /// The sample generator may affect only the value calculation; the PDF must be deterministic and
+    /// generator-independent.
+    public BSDFEval eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both, S : ISampleGenerator>(
+        const SurfaceInteraction si,
+        const float3 wo_ws,
+        inout S sg
+    );
 
     public bool sample<S : ISampleGenerator>(const SurfaceInteraction si, inout S sg, out MaterialSample sample);
 
-    public float eval_pdf(const SurfaceInteraction si, const float3 wo_ws);
+    /// Evaluates the directional PDF. This is a convenience alias for eval_with_pdf().
+    public float eval_pdf(const SurfaceInteraction si, const float3 wo_ws)
+    {
+        EvalPdfFallbackSampleGenerator sg = EvalPdfFallbackSampleGenerator(0u);
+        return eval_with_pdf<BSDFEvalHints::pdf>(si, wo_ws, sg).pdf;
+    }
 
     /// Returns true if the material is emissive and thus can contribute to lighting.
     public bool is_emissive() { return false; }
@@ -44,19 +74,13 @@ public interface IMaterialInstance
     /// @return Emissive radiance.
     public float3 eval_emissive_radiance() { return float3(0.0); }
 
-    /// Returns true if the material represents an infinitely thin surface.
-    public bool is_thin_walled() { return false; }
+    /// Return the absolute IOR of the homogeneous medium bounded by this material.
+    public float get_interior_ior() { return 1.0; }
+
+    /// Return the resolved homogeneous medium bounded by this material.
+    public HomogeneousMediumProperties get_interior_medium() { return {}; }
 
     public MaterialProperties collect_properties(const SurfaceInteraction si);
-
-    /// Evaluate a non-physical, direction-independent material color guide.
-    /// The default falls back to diffuse reflectance at normal incidence.
-    public float3 eval_material_color(const SurfaceInteraction si)
-    {
-        SurfaceInteraction normal_si = si;
-        normal_si.wi_ws = si.front_normal_ws();
-        return saturate(collect_properties(normal_si).diffuse_reflection_albedo);
-    }
 
     public Optional<ExtraBsdfProperties> collect_extra_bsdf_properties(const SurfaceInteraction si, const float3 wo)
     {
@@ -64,9 +88,6 @@ public interface IMaterialInstance
     }
 
     public BSDFFlags get_lobe_types(const SurfaceInteraction si);
-
-    // public bool has_volume_properties() { return false; }
-    // public VolumeProperties volume_properties() { return {}; }
 };
 
 public interface IMaterial
@@ -75,9 +96,9 @@ public interface IMaterial
 
     /// Setup a material instance for a given surface interaction.
     /// @param si Surface interaction.
-    /// @param lod_sampler LOD sampler for sampling the emissive texture.
-    /// @param hints Material instance hints (optional).
-    /// @return A new material instance.
+    /// @param lod_sampler LOD sampler used while constructing the instance.
+    /// @param hints Material instance hints.
+    /// @return A material instance conditional on an accepted surface hit.
     public MaterialInstance setup_material_instance<LodSampler : ILodSampler>(
         const SurfaceInteraction si,
         const LodSampler lod_sampler,
@@ -90,6 +111,18 @@ public interface IMaterial
     /// Returns static material flags.
     public MaterialFlags flags() { return MaterialFlags::none; }
 
+    /// Evaluate cutout opacity for a surface interaction.
+    /// This is called during intersection traversal when the material header selects
+    /// material opacity evaluation instead of the packed factor and texture source.
+    public float eval_opacity<LodSampler : ILodSampler>(
+        const SurfaceInteraction si,
+        const LodSampler lod_sampler,
+        const MaterialInstanceHints hints = MaterialInstanceHints::none
+    )
+    {
+        return 1.0;
+    }
+
     /// Computes the resolution of the sampling grid for a triangle with the given UV coordinates.
     /// This is used to integrate emission across a triangle.
     /// @param uv UV coordinates of the triangle vertices.
@@ -97,6 +130,7 @@ public interface IMaterial
     public uint2 compute_emission_sampling_grid(float2 uv[3]) { return uint2(1); }
 
     /// Evaluate emission (radiant exitance) for a given surface interaction.
+    /// For one-sided Lambertian emission, radiant exitance is pi times emitted radiance.
     /// This is used to integrate emission across a surface.
     /// @param si Surface interaction.
     /// @param lod_sampler LOD sampler for sampling the emissive texture.
@@ -136,23 +170,18 @@ public interface IMaterial
 
 public struct MaterialProperties
 {
-    public enum Flags : uint {
-        none = 0x0,
-        is_transmissive = 0x1,
-        is_curve_scattering = 0x2,
-        is_thin_walled = 0x4,
-    };
-
+    /// Representative non-physical material color guide.
+    public float3 material_color = {};
     /// Radiance emitted in the incident direction (wi).
     public float3 emission = {};
+    /// Metallic workflow parameter, if the material has one.
+    public float metallic = {};
     /// Surface roughness on a perceptually linear scale, where 0.0 = perfectly smooth and 1.0 =
     /// maximum roughness.
     public float roughness = {};
     /// Representative shading normal in world space that includes effects of normal mapping. Useful
     /// as guide for denoisers.
     public float3 guide_normal = {};
-    ///< Flags storing additional properties.
-    public Flags flags = {};
 
     // Approximate directional-hemispherical reflectance/transmittance of the BSDF (black-sky
     // albedo). The exact values are given by the integrals of the BSDF over wo given an incident
@@ -177,30 +206,6 @@ public struct MaterialProperties
 
     /// Specular reflectance at normal incidence (F0). This is in the range [0,1].
     public float3 specular_reflectance = {};
-
-    public property is_transmissive : bool
-    {
-        get
-        {
-            return (flags & Flags::is_transmissive) != 0;
-        }
-    }
-
-    public property is_curve_scattering : bool
-    {
-        get
-        {
-            return (flags & Flags::is_curve_scattering) != 0;
-        }
-    }
-
-    public property is_thin_walled : bool
-    {
-        get
-        {
-            return (flags & Flags::is_thin_walled) != 0;
-        }
-    }
 }
 
 public struct ExtraBsdfProperties

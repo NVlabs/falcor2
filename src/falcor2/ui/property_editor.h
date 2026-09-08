@@ -11,8 +11,10 @@
 
 #include <cstdint>
 #include <list>
+#include <limits>
 #include <span>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -137,5 +139,31 @@ FALCOR_API bool properties_editor(
 /// Property editor for a Properties objects.
 /// Returns true if any value changed.
 FALCOR_API bool properties_editor(Properties& properties);
+
+namespace detail {
+
+/// Return the drag speed for a numeric property.
+/// Bounded ranges use a nice 1/2/5 decimal step targeting about 400 pixels
+/// across the range. Integer speeds are capped at 1. Explicit UIDragSpeed
+/// metadata takes precedence.
+FALCOR_API float property_drag_speed(
+    const reflection::PropertyDescriptor& desc,
+    bool is_floating_point,
+    double type_lowest,
+    double type_max
+);
+
+template<typename T>
+float property_drag_speed(const reflection::PropertyDescriptor& desc)
+{
+    return property_drag_speed(
+        desc,
+        std::is_floating_point_v<T>,
+        static_cast<double>(std::numeric_limits<T>::lowest()),
+        static_cast<double>(std::numeric_limits<T>::max())
+    );
+}
+
+} // namespace detail
 
 } // namespace falcor::ui

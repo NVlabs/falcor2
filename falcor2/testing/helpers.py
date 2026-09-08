@@ -53,6 +53,7 @@ DEVICE_CACHE: dict[
         bool,
         Path | None,
         Path | None,
+        bool,
     ],
     Device,
 ] = {}
@@ -61,6 +62,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 DEFAULT_MODULE_AND_SHADER_CACHE_DIR = PROJECT_ROOT / ".shader-cache" / "tests"
 MODULE_CACHE_ENABLED = False
 SHADER_CACHE_ENABLED = False
+COMPILATION_REPORTS_ENABLED = False
 MODULE_AND_SHADER_CACHE_ROOT = DEFAULT_MODULE_AND_SHADER_CACHE_DIR.resolve()
 CONFIG: dict[str, Any] = {}
 DRIVER_VERSION: Optional[Sequence[int]] = None
@@ -73,15 +75,17 @@ USED_TORCH_DEVICES: bool = False
 slangpy.set_dump_generated_shaders(True)
 
 
-def configure_module_and_shader_cache(
+def configure_test_device_options(
     *,
     module_cache_enabled: bool = False,
     shader_cache_enabled: bool = False,
+    compilation_reports_enabled: bool = False,
     cache_dir: str | Path | None = None,
 ) -> None:
-    """Configure persistent module and shader caches used by test devices."""
+    """Configure cache and compilation-report options used by test devices."""
     global MODULE_CACHE_ENABLED
     global SHADER_CACHE_ENABLED
+    global COMPILATION_REPORTS_ENABLED
     global MODULE_AND_SHADER_CACHE_ROOT
 
     root = Path(cache_dir) if cache_dir is not None else DEFAULT_MODULE_AND_SHADER_CACHE_DIR
@@ -90,6 +94,7 @@ def configure_module_and_shader_cache(
 
     MODULE_CACHE_ENABLED = module_cache_enabled
     SHADER_CACHE_ENABLED = shader_cache_enabled
+    COMPILATION_REPORTS_ENABLED = compilation_reports_enabled
     MODULE_AND_SHADER_CACHE_ROOT = root.resolve()
 
 
@@ -143,7 +148,7 @@ def create_test_camera(
     return camera
 
 
-def close_all_devices():
+def close_all_devices(reason: str = "shutdown"):
     # After all tests finish, close remaining devices before shared GPU contexts
     # such as torch start shutting down.
     global USED_TORCH_DEVICES
@@ -154,21 +159,37 @@ def close_all_devices():
 
     for device in Device.get_created_devices():
         label = device.desc.label or "<unlabeled>"
-        print(f"Closing device on shutdown {label}")
+        print(f"Closing device on {reason} {label}")
         device.close()
     DEVICE_CACHE.clear()
+    USED_TORCH_DEVICES = False
 
 
-def close_leaked_devices():
+def close_leaked_devices() -> list[str]:
     # Keep helper-managed cached devices alive between tests, but clean up
     # devices created directly by tests or public helper wrappers.
     cached_device_ids = {id(device) for device in DEVICE_CACHE.values()}
+    closed_labels: list[str] = []
     for device in Device.get_created_devices():
-        if id(device) in cached_device_ids or device.desc.label.startswith("cached-"):
+        label = device.desc.label
+        if (
+            bool(getattr(device, "is_closed", False))
+            or id(device) in cached_device_ids
+            or (isinstance(label, str) and label.startswith("cached-"))
+        ):
             continue
-        label = device.desc.label or "<unlabeled>"
+        label = label or "<unlabeled>"
         print(f"Closing leaked device {label}")
         device.close()
+        closed_labels.append(label)
+    return closed_labels
+
+
+def _should_recycle_device_cache(policy: str, current_path: Path, next_path: Path | None) -> bool:
+    """Return whether the configured policy recycles devices after the current test."""
+    if policy == "test":
+        return True
+    return policy == "file" and (next_path is None or current_path != next_path)
 
 
 # Helper to get the driver version, as a list of version components
@@ -203,6 +224,7 @@ def get_device(
         enable_print,
         module_cache_path,
         shader_cache_path,
+        COMPILATION_REPORTS_ENABLED,
     )
     if use_cache and cache_key in DEVICE_CACHE:
         return DEVICE_CACHE[cache_key]
@@ -228,6 +250,7 @@ def get_device(
         type=type,
         enable_debug_layers=True,
         enable_print=enable_print,
+        enable_compilation_reports=COMPILATION_REPORTS_ENABLED,
         compiler_options=SlangCompilerOptions(
             {
                 "include_paths": [

@@ -26,6 +26,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+import falcor2 as f2
 import falcor2.importers as importers
 
 
@@ -67,7 +68,7 @@ Examples:
     # Load the scene
     print(f"Loading scene: {file_path}")
     try:
-        scene = importers.import_scene(file_path)
+        scene = f2.import_scene(file_path)
 
         if scene is None:
             print("Error: Failed to load scene.")

@@ -240,6 +240,7 @@ class MaterialVisualizer:
                     session.result_texture.width, session.result_texture.height, 1
                 ),
                 material=material,
+                material_id=self._material_id(scene, material),
                 camera_size=camera_size_value,
                 pixel_offset=pixel_offset_value,
                 sample_index_offset=completed_before_batch,
@@ -423,6 +424,7 @@ class MaterialVisualizer:
             render.dispatch(
                 thread_count=spy.uint3(result_texture.width, result_texture.height, 1),
                 material=material,
+                material_id=self._material_id(scene, material),
                 camera_size=camera_size_value,
                 pixel_offset=pixel_offset_value,
                 sample_index_offset=completed_sample_count,
@@ -507,6 +509,7 @@ class MaterialVisualizer:
         trace.dispatch(
             thread_count=spy.uint3(1, 1, 1),
             material=material,
+            material_id=self._material_id(scene, material),
             max_bounces=max_bounces_value,
             camera_size=camera_size_value,
             pixel=pixel_value,
@@ -589,7 +592,7 @@ class MaterialVisualizer:
         for batch_offset, current_sample_count in sample_batches:
             render.dispatch(
                 thread_count=spy.uint3(result_texture.width, result_texture.height, 1),
-                material_id=self._material_id(material),
+                material_id=self._material_id(scene, material),
                 camera_size=camera_size_value,
                 pixel_offset=pixel_offset_value,
                 sample_index_offset=completed_sample_count,
@@ -864,7 +867,7 @@ class MaterialVisualizer:
         scene: f2.Scene,
         material: f2.Material,
         result_texture: spy.Texture | None = None,
-        view_direction_ws: Sequence[float] = (0.0, 0.0, 1.0),
+        view_dir_ws: Sequence[float] = (0.0, 0.0, 1.0),
         texture_filtering: TextureFilteringMode = "analytic",
         texture_filter_width_scale: float = DEFAULT_TEXTURE_FILTER_WIDTH_SCALE,
     ) -> spy.Texture:
@@ -872,9 +875,7 @@ class MaterialVisualizer:
             raise TypeError("MaterialVisualizer.show_eval_plot() requires a falcor2.Scene")
         if not isinstance(material, f2.Material):
             raise TypeError("MaterialVisualizer.show_eval_plot() requires a falcor2.Material")
-        view_direction_ws_value = self._validate_float3_direction(
-            view_direction_ws, "view_direction_ws"
-        )
+        view_dir_ws_value = self._validate_float3_direction(view_dir_ws, "view_dir_ws")
         use_analytic_texture_filtering = self._use_analytic_texture_filtering(texture_filtering)
         texture_filter_width_scale = self._validate_texture_filter_width_scale(
             texture_filter_width_scale
@@ -890,7 +891,7 @@ class MaterialVisualizer:
         render.dispatch(
             thread_count=spy.uint3(result_texture.width, result_texture.height, 1),
             material=material,
-            view_direction_ws=view_direction_ws_value,
+            view_dir_ws=view_dir_ws_value,
             use_analytic_texture_filtering=use_analytic_texture_filtering,
             texture_filter_width_scale=texture_filter_width_scale,
             result=result_texture,
@@ -909,7 +910,7 @@ class MaterialVisualizer:
         pdf_integration_res: int = 4,
         samples_per_thread: int = 1024,
         seed: int = 1234,
-        view_direction_ws: Sequence[float] = (0.0, 0.0, 1.0),
+        view_dir_ws: Sequence[float] = (0.0, 0.0, 1.0),
         texture_filtering: TextureFilteringMode = "analytic",
         texture_filter_width_scale: float = DEFAULT_TEXTURE_FILTER_WIDTH_SCALE,
     ) -> dict[str, np.ndarray | int | float]:
@@ -929,9 +930,7 @@ class MaterialVisualizer:
         )
         samples_per_thread = self._validate_positive_int(samples_per_thread, "samples_per_thread")
         seed = self._validate_nonnegative_int(seed, "seed")
-        view_direction_ws_value = self._validate_float3_direction(
-            view_direction_ws, "view_direction_ws"
-        )
+        view_dir_ws_value = self._validate_float3_direction(view_dir_ws, "view_dir_ws")
         use_analytic_texture_filtering = self._use_analytic_texture_filtering(texture_filtering)
         texture_filter_width_scale = self._validate_texture_filter_width_scale(
             texture_filter_width_scale
@@ -952,7 +951,7 @@ class MaterialVisualizer:
         eval_pdf_kernel.dispatch(
             thread_count=spy.uint3(width, height, 1),
             material=material,
-            view_direction_ws=view_direction_ws_value,
+            view_dir_ws=view_dir_ws_value,
             use_analytic_texture_filtering=use_analytic_texture_filtering,
             texture_filter_width_scale=texture_filter_width_scale,
             pdf_integration_res=pdf_integration_res,
@@ -974,7 +973,7 @@ class MaterialVisualizer:
             sample_count=sample_count,
             samples_per_thread=samples_per_thread,
             seed=seed,
-            view_direction_ws=view_direction_ws_value,
+            view_dir_ws=view_dir_ws_value,
             use_analytic_texture_filtering=use_analytic_texture_filtering,
             texture_filter_width_scale=texture_filter_width_scale,
             histogram=histogram,
@@ -1001,11 +1000,13 @@ class MaterialVisualizer:
         self._prev_scene.bind(cursor)
 
     @staticmethod
-    def _material_id(material: f2.Material) -> int:
-        collection_index = int(material.collection_index)
-        if collection_index < 0:
+    def _material_id(scene: f2.Scene, material: f2.Material) -> int:
+        if material.scene is not scene:
+            raise ValueError("MaterialVisualizer requires a material owned by the active scene")
+        material_id = int(material.material_id)
+        if material_id == int(f2.MaterialID.invalid):
             raise ValueError("MaterialVisualizer requires a material owned by the scene")
-        return collection_index + 1
+        return material_id
 
     @staticmethod
     def _use_analytic_texture_filtering(texture_filtering: TextureFilteringMode) -> bool:

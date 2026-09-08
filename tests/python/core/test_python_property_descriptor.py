@@ -4,17 +4,20 @@
 """Tests for PythonPropertyDescriptor and PythonClassReflection (C++ bridge)."""
 
 import enum
+from typing import Any, Callable
 
 import pytest
 import slangpy as spy
 
 from falcor2.reflection import (
+    object_factory,
     reflected,
-    Property,
+    reflected_property,
     PythonPropertyDescriptor,
     PythonClassReflection,
     UIFlags,
 )
+from falcor2.testing import _native
 import falcor2
 
 
@@ -29,11 +32,27 @@ class Color(enum.IntEnum):
     BLUE = 2
 
 
+class PlainColor(enum.Enum):
+    RED = 0
+    GREEN = 1
+    BLUE = 2
+
+
+class Permissions(enum.IntFlag):
+    READ = 1
+    WRITE = 2
+
+
+class Features(enum.Flag):
+    FIRST = 1
+    SECOND = 2
+
+
 @reflected
 class SampleObject:
-    flag = Property(True, doc="A boolean flag")
-    count = Property(42, doc="An integer count", value_range=(0.0, 100.0))
-    roughness = Property(
+    flag = reflected_property(True, doc="A boolean flag")
+    count = reflected_property(42, doc="An integer count", value_range=(0.0, 100.0))
+    roughness = reflected_property(
         0.5,
         doc="Surface roughness",
         value_range=(0.0, 1.0),
@@ -42,21 +61,21 @@ class SampleObject:
         ui_group="Appearance",
         ui_drag_speed=0.01,
     )
-    name = Property("default", doc="Object name")
-    color = Property(Color.RED, enum_type=Color, doc="Object color")
+    name = reflected_property("default", doc="Object name")
+    color = reflected_property(Color.RED, doc="Object color")
 
 
 @reflected
 class VectorSampleObject:
-    position = Property(spy.float3(0, 0, 0), doc="Position")
-    rotation = Property(spy.float4(0, 0, 0, 1), doc="Rotation")
-    pixel = Property(spy.int2(0, 0), doc="Pixel coord")
-    resolution = Property(spy.uint2(0, 0), doc="Resolution")
-    transform = Property(
+    position = reflected_property(spy.float3(0, 0, 0), doc="Position")
+    rotation = reflected_property(spy.float4(0, 0, 0, 1), doc="Rotation")
+    pixel = reflected_property(spy.int2(0, 0), doc="Pixel coord")
+    resolution = reflected_property(spy.uint2(0, 0), doc="Resolution")
+    transform = reflected_property(
         spy.float4x4([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
         doc="Transform",
     )
-    normal_matrix = Property(
+    normal_matrix = reflected_property(
         spy.float3x3([1, 0, 0, 0, 1, 0, 0, 0, 1]),
         doc="Normal matrix",
     )
@@ -64,26 +83,26 @@ class VectorSampleObject:
 
 @reflected
 class HalfSampleObject:
-    roughness = Property(spy.float16_t(0.5), doc="Half roughness")
-    color = Property(spy.float16_t3(0, 0, 0), doc="Half color")
+    roughness = reflected_property(spy.float16_t(0.5), doc="Half roughness")
+    color = reflected_property(spy.float16_t3(0, 0, 0), doc="Half color")
 
 
 @reflected
 class MetadataSampleObject:
-    enabled = Property(True, doc="Enabled")
-    color_value = Property(
+    enabled = reflected_property(True, doc="Enabled")
+    color_value = reflected_property(
         spy.float3(1, 0, 0),
         doc="Color",
         ui_flags=UIFlags.display_as_color,
     )
-    debug_mode = Property(False, doc="Debug mode", ui_flags=UIFlags.hidden)
-    detail_level = Property(
+    debug_mode = reflected_property(False, doc="Debug mode", ui_flags=UIFlags.hidden)
+    detail_level = reflected_property(
         0,
         doc="Detail level",
         value_range=(0.0, 10.0),
         ui_enable_if=lambda self: self.enabled,
     )
-    combo_flags = Property(
+    combo_flags = reflected_property(
         0.5,
         doc="Combo",
         ui_flags=UIFlags.advanced | UIFlags.hidden,
@@ -92,7 +111,7 @@ class MetadataSampleObject:
 
 @reflected
 class ReadOnlyObject:
-    @Property(doc="A read-only value")
+    @reflected_property(doc="A read-only value")
     def derived(self) -> float:
         return 3.14
 
@@ -103,13 +122,42 @@ class ComputedObject:
         super().__init__()
         self._x = 0.0
 
-    @Property(doc="X value", value_range=(0.0, 10.0))
+    @reflected_property(doc="X value", value_range=(0.0, 10.0))
     def x(self) -> float:
         return self._x
 
     @x.setter
     def x(self, value: float) -> None:
         self._x = value
+
+
+@reflected
+class ConcreteSamplerHolder:
+    def __init__(self) -> None:
+        self._value = falcor2.UniformLightSampler()
+
+    @reflected_property(
+        object_factories=(falcor2.UniformLightSampler,),
+    )
+    def value(self) -> falcor2.UniformLightSampler:
+        return self._value
+
+    @value.setter
+    def value(self, value: falcor2.UniformLightSampler) -> None:
+        self._value = value
+
+
+@reflected
+class NullableSamplerHolder:
+    value = reflected_property(
+        None,
+        value_type=falcor2.LightSampler,
+        object_factories=(
+            None,
+            falcor2.UniformLightSampler,
+            falcor2.PowerLightSampler,
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +229,52 @@ class TestPythonPropertyDescriptor:
         desc.set_enum_from_int64(obj, 2)
         assert obj.color == Color.BLUE
 
+    @pytest.mark.parametrize(
+        ("initial", "value", "expected", "is_flags"),
+        [
+            (PlainColor.RED, 2, PlainColor.BLUE, False),
+            (Permissions.READ, 3, Permissions.READ | Permissions.WRITE, True),
+            (Features.FIRST, 3, Features.FIRST | Features.SECOND, True),
+        ],
+    )
+    def test_integer_enum_types_round_trip(
+        self,
+        initial: PlainColor | Permissions | Features,
+        value: int,
+        expected: PlainColor | Permissions | Features,
+        is_flags: bool,
+    ) -> None:
+        @reflected
+        class Obj:
+            enum_value = reflected_property(initial)
+
+        info = Obj._reflected_properties[0]
+        desc = PythonPropertyDescriptor(info)
+        obj = Obj()
+
+        assert _native._property_enum_is_flags(info) is is_flags
+        assert desc.is_serializable_to_properties is True
+        assert desc.get_enum_as_int64(obj) == initial.value
+        desc.set_enum_from_int64(obj, value)
+        assert obj.enum_value == expected
+
+        props = falcor2.Properties()
+        desc.write_to_properties(obj, props)
+        restored = Obj()
+        assert desc.read_from_properties(restored, props) is True
+        assert restored.enum_value == expected
+
+    def test_enum_values_must_be_integers(self) -> None:
+        class Label(enum.Enum):
+            VALUE = "value"
+
+        @reflected
+        class Obj:
+            value = reflected_property(Label.VALUE)
+
+        with pytest.raises(RuntimeError, match="must have an integer value"):
+            PythonPropertyDescriptor(Obj._reflected_properties[0])
+
     def test_metadata_doc(self):
         info = [p for p in SampleObject._reflected_properties if p.name == "roughness"][0]
         desc = PythonPropertyDescriptor(info)
@@ -244,6 +338,118 @@ class TestPythonPropertyDescriptor:
 
         desc.set_any_value(obj, 5.5)
         assert obj.x == pytest.approx(5.5)
+
+    def test_reflected_object_rejects_incompatible_subtype(self) -> None:
+        info = ConcreteSamplerHolder._reflected_properties[0]
+        desc = PythonPropertyDescriptor(info)
+        obj = ConcreteSamplerHolder()
+
+        with pytest.raises(RuntimeError, match="UniformLightSampler"):
+            desc.set_any_value(obj, falcor2.PowerLightSampler())
+
+        obj._value = falcor2.PowerLightSampler()
+        with pytest.raises(RuntimeError, match="UniformLightSampler"):
+            desc.get_any_value(obj)
+
+    def test_reflected_object_rejects_none_by_default(self) -> None:
+        info = ConcreteSamplerHolder._reflected_properties[0]
+        desc = PythonPropertyDescriptor(info)
+        obj = ConcreteSamplerHolder()
+
+        with pytest.raises(RuntimeError, match="does not allow None"):
+            desc.set_any_value(obj, None)
+
+        obj._value = None
+        with pytest.raises(RuntimeError, match="does not allow None"):
+            desc.get_any_value(obj)
+
+    def test_nullable_reflected_object_round_trip(self) -> None:
+        info = NullableSamplerHolder._reflected_properties[0]
+        desc = PythonPropertyDescriptor(info)
+        obj = NullableSamplerHolder()
+
+        assert desc.has_default_value is True
+        assert desc.is_default(obj) is True
+        assert desc.get_any_value(obj) is None
+        replacement = falcor2.PowerLightSampler()
+        desc.set_any_value(obj, replacement)
+        assert obj.value is replacement
+        assert desc.is_default(obj) is False
+        desc.reset(obj)
+        assert obj.value is None
+        assert desc.is_default(obj) is True
+
+
+class TestPythonObjectFactory:
+    def test_bridge_reports_types_and_finds_current_type(self) -> None:
+        uniform = object_factory(falcor2.UniformLightSampler, label="Sampler")
+        power = object_factory(falcor2.PowerLightSampler, label="Sampler")
+
+        @reflected
+        class Holder:
+            @reflected_property(
+                object_factories=(uniform, None, power),
+            )
+            def value(self) -> falcor2.LightSampler | None:
+                return None
+
+        info = Holder._reflected_properties[0]
+        assert _native._object_factory_labels(info) == ["Sampler", "None", "Sampler"]
+        assert _native._object_factory_find_index(info, falcor2.UniformLightSampler()) == 0
+        assert _native._object_factory_find_index(info, None) == 1
+        assert _native._object_factory_find_index(info, falcor2.PowerLightSampler()) == 2
+        assert _native._object_factory_create(info, Holder(), 1) is None
+
+    def test_bridge_create_passes_owner(self) -> None:
+        owners = []
+        custom = object_factory(
+            falcor2.UniformLightSampler,
+            factory=lambda owner: owners.append(owner) or falcor2.UniformLightSampler(),
+        )
+
+        @reflected
+        class Holder:
+            @reflected_property(
+                object_factories=(custom,),
+            )
+            def value(self) -> falcor2.LightSampler:
+                return falcor2.UniformLightSampler()
+
+        owner = Holder()
+        result = _native._object_factory_create(Holder._reflected_properties[0], owner, 0)
+        assert isinstance(result, falcor2.UniformLightSampler)
+        assert owners == [owner]
+
+    @pytest.mark.parametrize(
+        ("result_factory", "message"),
+        [
+            (lambda _owner: None, "returned None"),
+            (
+                lambda _owner: falcor2.PowerLightSampler(),
+                "declared concrete type",
+            ),
+        ],
+    )
+    def test_bridge_rejects_invalid_factory_result(
+        self,
+        result_factory: Callable[[Any], Any],
+        message: str,
+    ) -> None:
+        custom = object_factory(
+            falcor2.UniformLightSampler,
+            factory=result_factory,
+        )
+
+        @reflected
+        class Holder:
+            @reflected_property(
+                object_factories=(custom,),
+            )
+            def value(self) -> falcor2.LightSampler:
+                return falcor2.UniformLightSampler()
+
+        with pytest.raises(RuntimeError, match=message):
+            _native._object_factory_create(Holder._reflected_properties[0], Holder(), 0)
 
 
 # ---------------------------------------------------------------------------
@@ -652,31 +858,37 @@ class TestPythonClassReflection:
 
 
 # ---------------------------------------------------------------------------
-# OnChange metadata tests
+# OnChange tests
 # ---------------------------------------------------------------------------
 
 
-class TestOnChangeMetadata:
-    def test_on_change_present(self):
-        """on_change callback is accessible as metadata on the C++ descriptor."""
+class TestOnChange:
+    def test_on_change_called_by_native_writes(self) -> None:
+        observed_values: list[float] = []
 
         @reflected
         class Obj:
-            val = Property(1.0, on_change=lambda self: None)
+            val = reflected_property(
+                1.0,
+                on_change=lambda self: observed_values.append(self.val),
+            )
 
         desc = PythonPropertyDescriptor(Obj._reflected_properties[0])
-        # The on_change callback is stored as OnChange metadata, which is
-        # extracted by the C++ build_metadata. We can verify the descriptor
-        # was constructed without error and the property round-trips.
         obj = Obj()
-        assert desc.get_any_value(obj) == pytest.approx(1.0)
+        desc.set_any_value(obj, 2.0)
 
-    def test_on_change_absent(self):
-        """Properties without on_change still work normally."""
+        props = falcor2.Properties()
+        desc.write_to_properties(obj, props)
+        desc.reset(obj)
+        assert desc.read_from_properties(obj, props) is True
+
+        assert observed_values == [2.0, 1.0, 2.0]
+
+    def test_on_change_absent(self) -> None:
 
         @reflected
         class Obj:
-            val = Property(1.0)
+            val = reflected_property(1.0)
 
         desc = PythonPropertyDescriptor(Obj._reflected_properties[0])
         obj = Obj()
@@ -695,7 +907,7 @@ class TestDynamicSchema:
 
         @reflected
         class Obj:
-            x = Property(1)
+            x = reflected_property(1)
 
         PythonClassReflection.clear_cache()
         refl = PythonClassReflection(Obj)
@@ -704,7 +916,7 @@ class TestDynamicSchema:
 
         # Simulate adding a property by re-running @reflected on a subclass
         # that replaces the property list.
-        Obj.y = Property(2)
+        Obj.y = reflected_property(2)
         Obj.y.__set_name__(Obj, "y")
         Obj._reflected_properties = list(Obj._reflected_properties) + [Obj.y._make_info("y", Obj)]
 
@@ -717,7 +929,7 @@ class TestDynamicSchema:
 
         @reflected
         class Obj:
-            x = Property(1)
+            x = reflected_property(1)
 
         PythonClassReflection.clear_cache()
         refl = PythonClassReflection(Obj)

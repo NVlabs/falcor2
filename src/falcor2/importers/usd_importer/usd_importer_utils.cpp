@@ -19,16 +19,44 @@ BEGIN_DISABLE_USD_WARNINGS
 #include <pxr/base/vt/array.h>
 #include <pxr/base/tf/stringUtils.h>
 #include <pxr/base/vt/value.h>
+#include <pxr/usd/ar/asset.h>
+#include <pxr/usd/ar/packageUtils.h>
+#include <pxr/usd/ar/resolvedPath.h>
+#include <pxr/usd/ar/resolver.h>
 #include <pxr/usd/sdf/assetPath.h>
 END_DISABLE_USD_WARNINGS
 
 #include <array>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 #include <vector>
 
 namespace falcor {
 namespace usd_importer {
+
+bool is_package_asset(const std::filesystem::path& path)
+{
+    return pxr::ArIsPackageRelativePath(path.string());
+}
+
+std::optional<std::vector<uint8_t>> read_package_asset(const std::filesystem::path& path)
+{
+    const std::string path_string = path.string();
+    if (!is_package_asset(path))
+        return {};
+
+    const std::shared_ptr<pxr::ArAsset> asset = pxr::ArGetResolver().OpenAsset(pxr::ArResolvedPath(path_string));
+    if (!asset)
+        throw std::runtime_error("Failed to open packaged USD asset: " + path_string);
+
+    std::vector<uint8_t> data(asset->GetSize());
+    if (!data.empty() && asset->Read(data.data(), data.size(), 0) != data.size())
+        throw std::runtime_error("Failed to read packaged USD asset: " + path_string);
+
+    return data;
+}
+
 namespace {
 
 template<typename T>

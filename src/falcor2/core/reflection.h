@@ -30,6 +30,7 @@
 #include "falcor2/core/reflection/properties_reflector.h"
 #include "falcor2/core/reflection/property_descriptor.h"
 #include "falcor2/core/reflection/property_range.h"
+#include "falcor2/core/reflection/reflected_object_factory.h"
 #include "falcor2/core/reflection/class_descriptor.h"
 #include "falcor2/core/reflection/type_registry.h"
 #include "falcor2/core/reflection/registry_reflector.h"

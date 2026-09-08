@@ -25,6 +25,12 @@ public:
     const std::vector<Material*>& materials() const { return m_materials; }
     void set_materials(const std::vector<Material*>& materials);
 
+    /// Number of material slots available for indexed assignment.
+    size_t material_slot_count() const;
+    /// Assign a material to one slot, growing the material list as needed.
+    /// Returns true if the assignment changed.
+    bool set_material(size_t slot_index, Material* material);
+
     /// GeometryInstanceID assigned to this geometry instance.
     shared::GeometryInstanceID geometry_instance_id() const;
     /// Number of geometries belonging to this geometry instance.
@@ -50,7 +56,7 @@ public:
     }
 
 private:
-    Geometry* m_geometry;
+    Geometry* m_geometry{nullptr};
     std::vector<Material*> m_materials;
 
     RenderGeometryInstanceHandle m_render_geometry_instance;

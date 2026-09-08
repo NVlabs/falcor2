@@ -1,0 +1,15 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+mdl 1.10;
+
+import ::df::*;
+using ::wildcard_import_helper import *;
+
+export material Default(
+    color tint = make_tint(0.8, 0.7, 0.6)
+) = material(
+    surface: material_surface(
+        scattering: df::diffuse_reflection_bsdf(tint: tint)
+    )
+);

@@ -2,8 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import gc
 import hashlib
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 import re
 import uuid
@@ -16,12 +18,24 @@ import falcor2 as f2
 import falcor2.testing.helpers as helpers
 from falcor2.testing.image_test_plugin import ImageTestPlugin
 from falcor2.testing.shader_test_plugin import SlangTestFile, clear_dispatcher_cache
+from falcor2.testing.telemetry_plugin import (
+    DEFAULT_TELEMETRY_OUTPUT_PATH,
+    DEVICE_LEAKS_STASH_KEY,
+    TelemetryPlugin,
+)
+from falcor2.utils.per_device_cache import PerDeviceCache
 from tools import crashpad
 
-_HELMET_SCENE_CACHE: dict[int, tuple[f2.Scene, int]] = {}
+DEVICE_CACHE_POLICIES = ("session", "file", "test")
 
 CRASHPAD_KIND = "python"
 CRASHPAD_SUPPORT = spy.crashpad.is_supported()
+
+
+@dataclass(frozen=True)
+class _HelmetSceneEntry:
+    scene: f2.Scene
+    generation: int
 
 
 def pytest_addoption(parser: pytest.Parser):
@@ -74,16 +88,42 @@ def pytest_addoption(parser: pytest.Parser):
         default=None,
         help="Root directory for persistent test caches",
     )
+    parser.addoption(
+        "--telemetry",
+        action="store_true",
+        default=False,
+        help="Write per-test timing, memory, resource-leak, and shader-compilation telemetry",
+    )
+    parser.addoption(
+        "--telemetry-output",
+        type=Path,
+        default=DEFAULT_TELEMETRY_OUTPUT_PATH,
+        help="Path for the merged test telemetry JSON sidecar",
+    )
+    parser.addoption(
+        "--device-cache-policy",
+        choices=DEVICE_CACHE_POLICIES,
+        default="file",
+        help="Recycle worker GPU state at session, test-file, or test boundaries",
+    )
 
 
 def pytest_configure(config: pytest.Config):
     """Configure the image test plugin."""
-    helpers.configure_module_and_shader_cache(
-        module_cache_enabled=config.getoption("--module-cache"),
-        shader_cache_enabled=config.getoption("--shader-cache"),
+    helpers.configure_test_device_options(
+        module_cache_enabled=bool(config.getoption("--module-cache")),
+        shader_cache_enabled=bool(config.getoption("--shader-cache")),
+        compilation_reports_enabled=bool(config.getoption("--telemetry")),
         cache_dir=config.getoption("--module-and-shader-cache-dir"),
     )
     config.pluginmanager.register(ImageTestPlugin(config), "image_test_plugin")
+    if config.getoption("--telemetry"):
+        telemetry_output = config.getoption("--telemetry-output")
+        assert isinstance(telemetry_output, Path)
+        config.pluginmanager.register(
+            TelemetryPlugin(config, telemetry_output),
+            "telemetry_plugin",
+        )
     if CRASHPAD_SUPPORT and not os.environ.get("PYTEST_XDIST_WORKER"):
         crashpad.setup(CRASHPAD_KIND)
 
@@ -110,9 +150,27 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int):
     helpers.close_all_devices()
 
 
-@pytest.hookimpl(trylast=True)
-def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None):
-    helpers.close_leaked_devices()
+@pytest.hookimpl(hookwrapper=True, trylast=True)
+def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None) -> Iterator[None]:
+    try:
+        yield
+    finally:
+        # pytest clears item.funcargs only after the teardown report is complete.
+        # Recycle devices after the full protocol so fixtures no longer retain
+        # device-owned objects while garbage collection runs.
+        item.stash[DEVICE_LEAKS_STASH_KEY] = helpers.close_leaked_devices()
+        policy = str(item.config.getoption("--device-cache-policy"))
+        next_path = nextitem.path if nextitem is not None else None
+        if helpers._should_recycle_device_cache(policy, item.path, next_path):
+            _recycle_worker_gpu_state()
+
+
+def _recycle_worker_gpu_state() -> None:
+    """Release caches that retain device-owned state, then close all devices."""
+    clear_dispatcher_cache()
+    gc.collect()
+    helpers.close_all_devices(reason="cache boundary")
+    gc.collect()
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -182,23 +240,29 @@ def empty_scene(device: spy.Device) -> f2.Scene:
     return scene
 
 
+@pytest.fixture(scope="session")
+def _helmet_scene_cache() -> Iterator[PerDeviceCache[_HelmetSceneEntry]]:
+    cache = PerDeviceCache[_HelmetSceneEntry]()
+    yield cache
+    cache.clear()
+
+
 @pytest.fixture
-def helmet_scene(device: spy.Device) -> Iterator[f2.Scene]:
-    """Cached DamagedHelmet scene, recreated if a test mutates it."""
-    key = id(device)
-    cached = _HELMET_SCENE_CACHE.get(key)
-    if cached is None:
-        scene = _load_helmet_scene(device)
-        generation = scene.update_generation
-        _HELMET_SCENE_CACHE[key] = (scene, generation)
-    else:
-        scene, generation = cached
+def helmet_scene(
+    device: spy.Device,
+    _helmet_scene_cache: PerDeviceCache[_HelmetSceneEntry],
+) -> Iterator[f2.Scene]:
+    """Cached Avocado scene, recreated if a test mutates it."""
+    entry = _helmet_scene_cache.get_or_create(device, _load_helmet_scene_entry)
 
-    yield scene
+    yield entry.scene
 
-    update_flags = scene.update()
-    if update_flags != f2.SceneUpdateFlags.none or scene.update_generation != generation:
-        _HELMET_SCENE_CACHE.pop(key, None)
+    update_flags = entry.scene.update()
+    if (
+        update_flags != f2.SceneUpdateFlags.none
+        or entry.scene.update_generation != entry.generation
+    ):
+        _helmet_scene_cache.discard(device)
 
 
 @pytest.fixture
@@ -213,7 +277,12 @@ def workspace_tmp_path(request: pytest.FixtureRequest) -> Path:
 
 
 def _load_helmet_scene(device: spy.Device) -> f2.Scene:
-    scene = f2.Scene.create(device, "data/assets/kronos/DamagedHelmet/glTF/DamagedHelmet.gltf")
+    scene = f2.Scene.load(device, "data/assets/kronos/Avocado/glTF-Binary/Avocado.glb")
     scene.update()
     scene.update()
     return scene
+
+
+def _load_helmet_scene_entry(device: spy.Device) -> _HelmetSceneEntry:
+    scene = _load_helmet_scene(device)
+    return _HelmetSceneEntry(scene=scene, generation=scene.update_generation)

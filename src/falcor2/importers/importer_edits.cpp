@@ -40,9 +40,9 @@ int remap_index(int index, size_t offset, std::string_view kind)
 
 bool has_scene_content(const ImporterScene& scene)
 {
-    return !scene.materials.empty() || !scene.textures.empty() || !scene.meshes.empty() || !scene.curves.empty()
-        || !scene.nodes.empty() || !scene.cameras.empty() || !scene.lights.empty() || !scene.prototypes.empty()
-        || !scene.root_nodes.empty() || !scene.animation.channels.empty();
+    return !scene.materials.empty() || !scene.assets.empty() || !scene.textures.empty() || !scene.meshes.empty()
+        || !scene.curves.empty() || !scene.nodes.empty() || !scene.cameras.empty() || !scene.lights.empty()
+        || !scene.prototypes.empty() || !scene.root_nodes.empty() || !scene.animation.channels.empty();
 }
 
 template<typename T>
@@ -67,6 +67,7 @@ void append_imported_scene(ImporterScene& destination, ImporterScene& source)
     const size_t animation_channel_offset = destination.animation.channels.size();
 
     destination.materials.reserve(destination.materials.size() + source.materials.size());
+    destination.assets.reserve(destination.assets.size() + source.assets.size());
     destination.textures.reserve(destination.textures.size() + source.textures.size());
     destination.meshes.reserve(destination.meshes.size() + source.meshes.size());
     destination.curves.reserve(destination.curves.size() + source.curves.size());
@@ -78,6 +79,7 @@ void append_imported_scene(ImporterScene& destination, ImporterScene& source)
     destination.root_nodes.reserve(destination.root_nodes.size() + source.root_nodes.size());
 
     append_move(destination.materials, source.materials);
+    append_move(destination.assets, source.assets);
     append_move(destination.textures, source.textures);
     append_move(destination.meshes, source.meshes);
     append_move(destination.curves, source.curves);

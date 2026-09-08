@@ -35,6 +35,12 @@ struct PropertyTypeMapEntry {
     /// Convert an Any to a Python object.
     nb::object (*from_any)(const Any&);
 
+    /// Copy a Python value into caller-provided C++ storage of this entry's type.
+    void (*copy_from_python)(nb::handle, void*);
+
+    /// Copy a caller-provided C++ value of this entry's type into a Python object.
+    nb::object (*copy_to_python)(const void*);
+
     /// Write a value (from Python object) to Properties under the given key.
     void (*write_to_props)(Properties&, std::string_view, nb::handle);
 

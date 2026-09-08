@@ -33,6 +33,23 @@ EmissiveGeometrySystem::EmissiveGeometrySystem(Scene* scene)
 {
 }
 
+void EmissiveGeometrySystem::clear_resources()
+{
+    m_triangle_count = 0;
+    m_active_triangle_count = 0;
+    m_triangles.clear();
+    m_triangle_flux.clear();
+    m_active_triangle_ids.clear();
+    m_active_triangle_flux.clear();
+    m_geometry_instance_to_triangle_id_buffer = nullptr;
+    m_triangles_buffer = nullptr;
+    m_triangle_emission_buffer = nullptr;
+    m_triangle_flux_buffer = nullptr;
+    m_triangle_id_to_active_triangle_id_buffer = nullptr;
+    m_active_triangle_id_to_triangle_id_buffer = nullptr;
+    m_active_triangle_flux_buffer = nullptr;
+}
+
 void EmissiveGeometrySystem::create_kernels()
 {
     // Early out if kernels are already created and up-to-date with the scene requirements.
@@ -104,8 +121,15 @@ SceneUpdateFlags EmissiveGeometrySystem::update(SceneUpdateContext& ctx)
     RenderScene* render_scene = m_scene->_render_scene();
 
     uint32_t geometry_instance_count = sgl::narrow_cast<uint32_t>(render_scene->geometry_instance_desc_count());
-    if (geometry_instance_count == 0)
-        return SceneUpdateFlags::none;
+    if (geometry_instance_count == 0) {
+        if (m_triangle_count == 0)
+            return SceneUpdateFlags::none;
+        clear_resources();
+        ++m_generations.topology;
+        ++m_generations.geometry;
+        ++m_generations.flux;
+        return SceneUpdateFlags::emissive_geometry;
+    }
 
     if (update_emission) {
 
@@ -353,24 +377,34 @@ SceneUpdateFlags EmissiveGeometrySystem::update(SceneUpdateContext& ctx)
             });
             ctx.command_encoder()->clear_buffer(max_emission_buffer);
 
-            uint32_t thread_count = static_cast<uint32_t>(std::min(total_sample_count, uint64_t(1024 * 1024)));
-            m_compute_triangle_max_emission_kernel->dispatch(
-                uint3(thread_count, 1, 1),
-                [&](sgl::ShaderCursor cursor)
-                {
-                    m_scene->bind(cursor, SceneBindFlags::all & ~SceneBindFlags::emissive_geometry);
-                    cursor = cursor.find_entry_point(0);
-                    cursor["triangles"] = m_triangles_buffer;
-                    cursor["sample_offset"] = sample_offset_buffer;
-                    cursor["sample_count"] = sample_count_buffer;
-                    cursor["sample_grid"] = sample_grid_buffer;
-                    cursor["triangle_count"] = m_triangle_count;
-                    cursor["thread_count"] = thread_count;
-                    cursor["total_sample_count"] = total_sample_count;
-                    cursor["max_emission"] = max_emission_buffer;
-                },
-                ctx.command_encoder()
-            );
+            static constexpr uint64_t SAMPLE_BATCH_SIZE = 1024 * 1024;
+            static constexpr uint32_t MAX_PERSISTENT_THREAD_COUNT = 64 * 1024;
+            for (uint64_t first_sample = 0; first_sample < total_sample_count; first_sample += SAMPLE_BATCH_SIZE) {
+                uint32_t batch_sample_count
+                    = sgl::narrow_cast<uint32_t>(std::min(SAMPLE_BATCH_SIZE, total_sample_count - first_sample));
+                uint32_t thread_count = std::min(MAX_PERSISTENT_THREAD_COUNT, batch_sample_count);
+                m_compute_triangle_max_emission_kernel->dispatch(
+                    uint3(thread_count, 1, 1),
+                    [&](sgl::ShaderCursor cursor)
+                    {
+                        m_scene->bind(cursor, SceneBindFlags::all & ~SceneBindFlags::emissive_geometry);
+                        cursor = cursor.find_entry_point(0);
+                        cursor["triangles"] = m_triangles_buffer;
+                        cursor["sample_offset"] = sample_offset_buffer;
+                        cursor["sample_count"] = sample_count_buffer;
+                        cursor["sample_grid"] = sample_grid_buffer;
+                        cursor["triangle_count"] = m_triangle_count;
+                        cursor["thread_count"] = thread_count;
+                        cursor["first_sample"] = first_sample;
+                        cursor["batch_sample_count"] = batch_sample_count;
+                        cursor["max_emission"] = max_emission_buffer;
+                    },
+                    ctx.command_encoder()
+                );
+                // Submitting each batch separately is required. Pooling all batches into one submission can cause
+                // device loss when scenes contain many triangles.
+                ctx.submit();
+            }
 
             if (ENABLE_DEBUG) {
                 ctx.submit();
@@ -422,24 +456,33 @@ SceneUpdateFlags EmissiveGeometrySystem::update(SceneUpdateContext& ctx)
             });
             ctx.command_encoder()->clear_buffer(accumulated_emission_buffer);
 
-            m_accumulate_triangle_emission_kernel->dispatch(
-                uint3(thread_count, 1, 1),
-                [&](sgl::ShaderCursor cursor)
-                {
-                    m_scene->bind(cursor, SceneBindFlags::all & ~SceneBindFlags::emissive_geometry);
-                    cursor = cursor.find_entry_point(0);
-                    cursor["triangles"] = m_triangles_buffer;
-                    cursor["sample_offset"] = sample_offset_buffer;
-                    cursor["sample_count"] = sample_count_buffer;
-                    cursor["sample_grid"] = sample_grid_buffer;
-                    cursor["emission_factor"] = emission_factor_buffer;
-                    cursor["triangle_count"] = m_triangle_count;
-                    cursor["thread_count"] = thread_count;
-                    cursor["total_sample_count"] = total_sample_count;
-                    cursor["accumulated_emission"] = accumulated_emission_buffer;
-                },
-                ctx.command_encoder()
-            );
+            for (uint64_t first_sample = 0; first_sample < total_sample_count; first_sample += SAMPLE_BATCH_SIZE) {
+                uint32_t batch_sample_count
+                    = sgl::narrow_cast<uint32_t>(std::min(SAMPLE_BATCH_SIZE, total_sample_count - first_sample));
+                uint32_t thread_count = std::min(MAX_PERSISTENT_THREAD_COUNT, batch_sample_count);
+                m_accumulate_triangle_emission_kernel->dispatch(
+                    uint3(thread_count, 1, 1),
+                    [&](sgl::ShaderCursor cursor)
+                    {
+                        m_scene->bind(cursor, SceneBindFlags::all & ~SceneBindFlags::emissive_geometry);
+                        cursor = cursor.find_entry_point(0);
+                        cursor["triangles"] = m_triangles_buffer;
+                        cursor["sample_offset"] = sample_offset_buffer;
+                        cursor["sample_count"] = sample_count_buffer;
+                        cursor["sample_grid"] = sample_grid_buffer;
+                        cursor["emission_factor"] = emission_factor_buffer;
+                        cursor["triangle_count"] = m_triangle_count;
+                        cursor["thread_count"] = thread_count;
+                        cursor["first_sample"] = first_sample;
+                        cursor["batch_sample_count"] = batch_sample_count;
+                        cursor["accumulated_emission"] = accumulated_emission_buffer;
+                    },
+                    ctx.command_encoder()
+                );
+                // Submitting each batch separately is required. Pooling all batches into one submission can cause
+                // device loss when scenes contain many triangles.
+                ctx.submit();
+            }
 
             if (ENABLE_DEBUG) {
                 ctx.submit();
@@ -591,12 +634,7 @@ SceneUpdateFlags EmissiveGeometrySystem::update(SceneUpdateContext& ctx)
                 SGL_PRINT(active_triangle_id_to_triangle_id);
             }
         } else {
-            m_active_triangle_count = 0;
-            m_geometry_instance_to_triangle_id_buffer = nullptr;
-            m_triangles_buffer = nullptr;
-            m_triangle_emission_buffer = nullptr;
-            m_triangle_id_to_active_triangle_id_buffer = nullptr;
-            m_active_triangle_id_to_triangle_id_buffer = nullptr;
+            clear_resources();
         }
     }
 
@@ -663,16 +701,13 @@ SceneUpdateFlags EmissiveGeometrySystem::update(SceneUpdateContext& ctx)
                 SGL_PRINT(active_triangle_id_to_triangle_id);
             }
 
-            // Build alias table.
-
-            m_active_triangle_alias_table.reset(
-                new AliasTable1D(m_device, m_active_triangle_flux, "EmissiveTriangle::active_triangle_alias_table")
-            );
-
         } else {
+            m_triangles.clear();
+            m_triangle_flux.clear();
+            m_active_triangle_ids.clear();
             m_triangle_flux_buffer = nullptr;
             m_active_triangle_flux_buffer = nullptr;
-            m_active_triangle_alias_table = nullptr;
+            m_active_triangle_flux.clear();
         }
     }
 
@@ -693,7 +728,18 @@ SceneUpdateFlags EmissiveGeometrySystem::update(SceneUpdateContext& ctx)
         }
     }
 
-    return SceneUpdateFlags::none;
+    const bool topology_changed = update_emission;
+    const bool geometry_changed = geometries_changed || instances_changed || transforms_changed;
+    const bool flux_changed = update_triangles;
+    if (topology_changed)
+        ++m_generations.topology;
+    if (geometry_changed)
+        ++m_generations.geometry;
+    if (flux_changed)
+        ++m_generations.flux;
+
+    return topology_changed || geometry_changed || flux_changed ? SceneUpdateFlags::emissive_geometry
+                                                                : SceneUpdateFlags::none;
 }
 
 void EmissiveGeometrySystem::bind_to_scene(const sgl::ShaderCursor& cursor) const
@@ -707,8 +753,52 @@ void EmissiveGeometrySystem::bind_to_scene(const sgl::ShaderCursor& cursor) cons
     emissive_geometry["geometry_instance_to_triangle_id"] = m_geometry_instance_to_triangle_id_buffer;
     emissive_geometry["triangle_id_to_active_triangle_id"] = m_triangle_id_to_active_triangle_id_buffer;
     emissive_geometry["active_triangle_id_to_triangle_id"] = m_active_triangle_id_to_triangle_id_buffer;
-    if (m_active_triangle_alias_table)
-        emissive_geometry["active_triangle_alias_table"] = *m_active_triangle_alias_table;
+}
+
+std::span<const shared::EmissiveTriangle> EmissiveGeometrySystem::triangles() const
+{
+    if (m_triangles_generations.topology != m_generations.topology
+        || m_triangles_generations.geometry != m_generations.geometry) {
+        m_triangles.clear();
+        if (m_triangles_buffer && m_triangle_count > 0) {
+            auto packed_triangles
+                = m_triangles_buffer->get_elements<shared::PackedEmissiveTriangle>(0, m_triangle_count);
+            m_triangles.resize(m_triangle_count);
+            std::transform(
+                packed_triangles.begin(),
+                packed_triangles.end(),
+                m_triangles.begin(),
+                shared::detail::unpack_emissive_triangle
+            );
+        }
+        m_triangles_generations = m_generations;
+    }
+    return m_triangles;
+}
+
+std::span<const float> EmissiveGeometrySystem::triangle_flux() const
+{
+    if (m_triangle_flux_generations.topology != m_generations.topology
+        || m_triangle_flux_generations.flux != m_generations.flux) {
+        m_triangle_flux.clear();
+        if (m_triangle_flux_buffer && m_triangle_count > 0)
+            m_triangle_flux = m_triangle_flux_buffer->get_elements<float>(0, m_triangle_count);
+        m_triangle_flux_generations = m_generations;
+    }
+    return m_triangle_flux;
+}
+
+std::span<const shared::EmissiveTriangleID> EmissiveGeometrySystem::active_triangle_ids() const
+{
+    if (m_active_triangle_ids_generations.topology != m_generations.topology) {
+        m_active_triangle_ids.clear();
+        if (m_active_triangle_id_to_triangle_id_buffer && m_active_triangle_count > 0) {
+            m_active_triangle_ids = m_active_triangle_id_to_triangle_id_buffer
+                                        ->get_elements<shared::EmissiveTriangleID>(0, m_active_triangle_count);
+        }
+        m_active_triangle_ids_generations = m_generations;
+    }
+    return m_active_triangle_ids;
 }
 
 } // namespace falcor

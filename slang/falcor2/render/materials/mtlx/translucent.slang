@@ -1,0 +1,107 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+//
+// Translucent BSDF ported from OSL/BSDL MTX.
+// BSDL: external/dbg_OSL/src/libbsdl/include/BSDL/MTX/bsdf_translucent_impl.h
+
+implementing mtlx;
+
+namespace mtlx {
+
+public struct MxTranslucentBSDF : ILayerableBSDF
+{
+    public float3 albedo_value = {};
+
+    public __init() { }
+
+    public __init(float3 albedo_value) { this.albedo_value = albedo_value; }
+
+    // ILayerableBSDF
+
+
+    // TODO: Remove the eval()/eval_pdf() overrides below when
+    // https://github.com/shader-slang/slang/issues/12814 is fixed.
+    public override
+        float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    {
+        return eval_with_pdf(wi, wo, sg, bc).value;
+    }
+
+    public override float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+    {
+        EvalPdfFallbackSampleGenerator sg = EvalPdfFallbackSampleGenerator(0u);
+        return eval_with_pdf(wi, wo, sg, bc).pdf;
+    }
+
+    public BSDFEval
+    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    {
+        MxBsdfSample r = eval_bsdf_sample(wi, wo);
+        return BSDFEval(r.pdf > 0.0 ? r.weight * r.pdf : float3(0.0), r.pdf);
+    }
+
+    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
+    {
+        sample = {};
+        MxBsdfSample r = sample_bsdf_sample(wi, next_float3(sg));
+        if (r.pdf <= 0.0)
+            return false;
+        sample.wo = r.wo;
+        sample.pdf = r.pdf;
+        sample.weight = r.weight;
+        sample.flags = BSDFFlags::diffuse_transmission;
+        return true;
+    }
+
+
+    public AlbedoContributions eval_albedo(const float3 wi)
+    {
+        const float3 transmission = saturate(albedo_value);
+        return AlbedoContributions(float3(0.0), float3(0.0), transmission, float3(1.0) - transmission);
+    }
+
+    public RoughnessInformation eval_roughness(const float3 wi)
+    {
+        // Translucent has no roughness control; treat as fully diffuse.
+        return RoughnessInformation(float2(1.0, 1.0), float3(0.0));
+    }
+
+    public float3 directional_albedo(const float3 wi) { return albedo_value; }
+
+    public float3 layer_opacity(const float3 wi) { return float3(1.0); }
+
+    public property float3 ior_as_reflectance
+    {
+        get {
+            return float3(0.0);
+        }
+    }
+
+    // Implementation
+
+    // BSDL: bsdf_translucent_impl.h:25-34 eval_impl
+    // BSDL ignores the view direction; we keep that contract after translating
+    // to Falcor wi/wo naming.
+    private MxBsdfSample eval_bsdf_sample(const float3 wi, const float3 wo)
+    {
+        if (wo.z >= 0.0)
+            return MxBsdfSample();
+        return MxBsdfSample(wo, albedo_value, abs(wo.z) * float.INV_PI, 1.0);
+    }
+
+    // BSDL: bsdf_translucent_impl.h:36-44 sample_impl
+    private MxBsdfSample sample_bsdf_sample(const float3 wi, const float3 rnd)
+    {
+        float3 wo = square_to_cosine_hemisphere_concentric(rnd.xy);
+        wo.z = -wo.z;
+        return eval_bsdf_sample(wi, wo);
+    }
+};
+
+public MxTranslucentBSDF create_mx_translucent(float3 color, float3 normal)
+{
+    return MxTranslucentBSDF(color);
+}
+
+} // namespace mtlx

@@ -62,32 +62,31 @@ public struct Scene
 
     /// Compute the motion vector for a surface point, accounting for both camera and object motion.
     public float2
-    get_motion_vector(Camera camera, Camera prev_camera, GeometryInstanceID geometry_instance_id, float3 position_ws)
+    get_motion_vector(Camera camera, Camera prev_camera, GeometryInstanceID geometry_instance_id, float3 pos_ws)
     {
         float4x4 obj_from_world = get_object_from_world(geometry_instance_id);
-        float3 position_os = mul(obj_from_world, float4(position_ws, 1.0)).xyz;
+        float3 pos_os = mul(obj_from_world, float4(pos_ws, 1.0)).xyz;
         float4x4 prev_wfo = get_prev_world_from_object(geometry_instance_id);
-        float3 prev_position_ws = mul(prev_wfo, float4(position_os, 1.0)).xyz;
-        float2 current_pixel = camera.project_world_to_pixel(position_ws);
-        float2 prev_pixel = prev_camera.project_world_to_pixel(prev_position_ws);
+        float3 prev_pos_ws = mul(prev_wfo, float4(pos_os, 1.0)).xyz;
+        float2 current_pixel = camera.project_world_to_pixel(pos_ws);
+        float2 prev_pixel = prev_camera.project_world_to_pixel(prev_pos_ws);
         return prev_pixel - current_pixel;
     }
 
-    /// Construct a surface interaction from a hit, dispatching by geometry type.
-    public SurfaceInteraction make_surface_interaction(HitInfo hit, float3 wi_ws)
+    /// Construct a surface interaction from a hit.
+    public SurfaceInteraction make_surface_interaction(IHitInfo hit, float3 wi_ws)
     {
-        SurfaceInteraction sd = {};
-        if (hit.geometry_type == GeometryType::triangle) {
-            sd = make_triangle_surface_interaction(hit, wi_ws);
-        } else if (hit.geometry_type == GeometryType::lss) {
-            sd = make_lss_surface_interaction(hit, wi_ws);
+        if (let triangle_hit = hit as TriangleHitInfo) {
+            return make_triangle_surface_interaction(triangle_hit, wi_ws);
+        } else if (let lss_hit = hit as LSSHitInfo) {
+            return make_lss_surface_interaction(lss_hit, wi_ws);
         }
-        return sd;
+        return {};
     }
 
     [Differentiable]
     public IMaterialInstance get_material_instance<LodSampler : ILodSampler>(
-        const HitInfo hit,
+        const IHitInfo hit,
         const SurfaceInteraction si,
         LodSampler lod_sampler,
         const MaterialInstanceHints hints = MaterialInstanceHints::none
@@ -98,13 +97,13 @@ public struct Scene
         return material.setup_material_instance(si, lod_sampler, hints);
     }
 
-    public IMaterial get_material(const HitInfo hit)
+    public IMaterial get_material(const IHitInfo hit)
     {
         MaterialID material_id = get_geometry_instance_desc(hit.geometry_instance_id).header.material_id;
         return material_system.get_material(material_id);
     }
 
-    public MaterialHeader get_material_header(const HitInfo hit)
+    public MaterialHeader get_material_header(const IHitInfo hit)
     {
         MaterialID material_id = get_geometry_instance_desc(hit.geometry_instance_id).header.material_id;
         return material_system.get_material_data(material_id).header;

@@ -6,6 +6,8 @@
 #include "falcor2/core/macros.h"
 
 #include <filesystem>
+#include <functional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -23,6 +25,7 @@ public:
 };
 
 class PythonInterpreter;
+class ScopedPythonSearchPaths;
 
 /// An isolated Python execution context with its own globals dict.
 ///
@@ -65,8 +68,13 @@ public:
     /// Execute a Python file in this context.
     /// @param path Path to the .py file to execute.
     /// @param module_name Value assigned to __name__ before executing the file.
+    /// @param search_paths Paths temporarily prepended to sys.path during execution.
     /// @throws PythonException on failure with the full Python traceback.
-    void execute_file(const std::filesystem::path& path, std::string_view module_name = "__main__");
+    void execute_file(
+        const std::filesystem::path& path,
+        std::string_view module_name = "__main__",
+        std::span<const std::filesystem::path> search_paths = {}
+    );
 
 private:
     PythonContext();
@@ -106,6 +114,11 @@ public:
     /// The context has a fresh globals dict seeded only with __builtins__.
     PythonContext create_context();
 
+    /// Run a callback while temporarily prepending paths to sys.path.
+    /// The original sys.path object and values are restored after success or failure.
+    /// The GIL remains held for the duration of the callback.
+    void with_search_paths(std::span<const std::filesystem::path> search_paths, const std::function<void()>& callback);
+
 private:
     PythonInterpreter();
     ~PythonInterpreter();
@@ -125,6 +138,7 @@ private:
     FALCOR_NON_COPYABLE_AND_MOVABLE(PythonInterpreter);
 
     friend class PythonContext;
+    friend class ScopedPythonSearchPaths;
 };
 
 } // namespace falcor

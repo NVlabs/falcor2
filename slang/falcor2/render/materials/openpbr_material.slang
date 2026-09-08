@@ -68,7 +68,7 @@ internal float4 openpbr_sample_3d_texture(const OpenPBR_LutId lut_id, float3 uv)
 /// @param inputs Fully resolved OpenPBR material inputs.
 /// @param wi_ws Incident direction in world-space (pointing away from the surface).
 /// @param emissive_radiance Pre-computed emissive radiance (emission_luminance * emission_color).
-/// @return Populated MaterialProperties with albedo decomposition, roughness, normal, and flags.
+/// @return Populated MaterialProperties with albedo decomposition, roughness, and normal.
 internal MaterialProperties
 openpbr_collect_properties(const OpenPBR_ResolvedInputs inputs, const float3 wi_ws, const float3 emissive_radiance)
 {
@@ -124,7 +124,9 @@ openpbr_collect_properties(const OpenPBR_ResolvedInputs inputs, const float3 wi_
 
     // Assemble result.
     MaterialProperties properties = {};
+    properties.material_color = saturate(inputs.base_color * inputs.base_weight);
     properties.emission = emissive_radiance;
+    properties.metallic = saturate(inputs.base_metalness);
     properties.roughness = inputs.specular_roughness;
     properties.guide_normal = inputs.geometry_basis.n;
     properties.diffuse_reflection_albedo = diffuse_reflection_albedo;
@@ -132,10 +134,6 @@ openpbr_collect_properties(const OpenPBR_ResolvedInputs inputs, const float3 wi_
     properties.specular_reflection_albedo = specular_reflection_albedo;
     properties.specular_transmission_albedo = specular_transmission_albedo;
     properties.specular_reflectance = specular_reflectance;
-    if (inputs.transmission_weight > 0.0 || inputs.subsurface_weight > 0.0)
-        properties.flags = properties.flags | MaterialProperties::Flags::is_transmissive;
-    if (inputs.geometry_thin_walled)
-        properties.flags = properties.flags | MaterialProperties::Flags::is_thin_walled;
 
     return properties;
 }
@@ -176,14 +174,28 @@ public struct OpenPBRMaterialInstance : IMaterialInstance
 
     internal OpenPBR_PreparedBsdf prepare_bsdf(const SurfaceInteraction si)
     {
-        return openpbr_prepare(inputs, float3(1.0), OpenPBR_BaseRgbWavelengths_nm, OpenPBR_VacuumIor, si.wi_ws);
+        return openpbr_prepare(inputs, float3(1.0), OpenPBR_BaseRgbWavelengths_nm, si.exterior_ior, si.wi_ws);
     }
 
-    public float3 eval<S : ISampleGenerator>(const SurfaceInteraction si, const float3 wo_ws, inout S sg)
+
+    public BSDFEval eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both, S : ISampleGenerator>(
+        const SurfaceInteraction si,
+        const float3 wo_ws,
+        inout S sg
+    )
     {
+        if (Hints == BSDFEvalHints::none)
+            return BSDFEval();
+
         const OpenPBR_PreparedBsdf bsdf = prepare_bsdf(si);
-        OpenPBR_DiffuseSpecular result = openpbr_eval(bsdf, wo_ws);
-        return result.diffuse + result.specular;
+        BSDFEval result = {};
+        if (is_set(Hints, BSDFEvalHints::eval)) {
+            const OpenPBR_DiffuseSpecular value = openpbr_eval(bsdf, wo_ws);
+            result.value = value.diffuse + value.specular;
+        }
+        if (is_set(Hints, BSDFEvalHints::pdf))
+            result.pdf = openpbr_pdf(bsdf, wo_ws);
+        return result;
     }
 
     public bool sample<S : ISampleGenerator>(const SurfaceInteraction si, inout S sg, out MaterialSample sample)
@@ -203,17 +215,25 @@ public struct OpenPBRMaterialInstance : IMaterialInstance
         return true;
     }
 
-    public float eval_pdf(const SurfaceInteraction si, const float3 wo_ws)
-    {
-        const OpenPBR_PreparedBsdf bsdf = prepare_bsdf(si);
-        return openpbr_pdf(bsdf, wo_ws);
-    }
 
     public override bool is_emissive() { return any(emissive_radiance > 0.0); }
 
     public override float3 eval_emissive_radiance() { return emissive_radiance; }
 
-    public override bool is_thin_walled() { return inputs.geometry_thin_walled; }
+    public override float get_interior_ior() { return inputs.specular_ior; }
+
+    public override HomogeneousMediumProperties get_interior_medium()
+    {
+        OpenPBR_VolumeDerivedProps volume_derived_props = {};
+        OpenPBR_PreparedBsdf prepared = {};
+        openpbr_prepare_volume(inputs, volume_derived_props, prepared, true);
+
+        HomogeneousMediumProperties result = {};
+        result.sigma_a = openpbr_calculate_absorption_coefficient(prepared.volume);
+        result.sigma_s = openpbr_calculate_scattering_coefficient(prepared.volume);
+        result.anisotropy = prepared.volume.anisotropy;
+        return result;
+    }
 
     public override MaterialProperties collect_properties(const SurfaceInteraction si)
     {
@@ -321,8 +341,8 @@ public struct OpenPBRMaterial : IMaterial
         // Setup shading frame.
         Frame shading_frame_ws = {};
         if (normal_texture_handle.is_valid()) {
-            float3 normal = normalize(
-                normal_texture_handle.sample(lod_sampler, si.uv, float4(0.0, 0.0, 1.0, 0.0)).xyz * 2.0 - 1.0
+            float3 normal = stdmat::decode_normal_map(
+                normal_texture_handle.sample(lod_sampler, si.uv, float4(0.0, 0.0, 1.0, 0.0)).xyz
             );
             normal = normalize(lerp(float3(0.0, 0.0, 1.0), normal, normal_texture_scale));
             shading_frame_ws = Frame(
@@ -334,7 +354,7 @@ public struct OpenPBRMaterial : IMaterial
             shading_frame_ws = si.shading_frame_ws;
         }
         if (hints & MaterialInstanceHints::adjust_shading_normal) {
-            adjust_shading_normal(shading_frame_ws, si.normal_ws, si.wi_ws);
+            adjust_shading_normal(shading_frame_ws, si.front_normal_ws(), si.wi_ws);
         }
 
         // Setup OpenPBR inputs.

@@ -88,7 +88,7 @@ private:
         // This call creates the NGX CUDA context for the native CUDA context
         // owned by the SGL device.
         NVSDK_NGX_Result init_result = NVSDK_NGX_CUDA_Init1(
-            k_application_id,
+            APPLICATION_ID,
             app_data_path_wide.c_str(),
             &m_cuda_device,
             &feature_common_info,

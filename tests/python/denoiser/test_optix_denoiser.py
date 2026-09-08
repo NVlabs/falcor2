@@ -133,7 +133,7 @@ def test_raytraced_image(device_type: spy.DeviceType):
 
     # Setup device/scene etc
     device = helpers.get_device(device_type, cuda_interop=True)
-    test_file = helpers.PROJECT_ROOT / "data/assets/kronos/DamagedHelmet/glTF/DamagedHelmet.gltf"
+    test_file = helpers.PROJECT_ROOT / "data/assets/kronos/Avocado/glTF-Binary/Avocado.glb"
     scene, renderer = mthelpers.create_scene_and_renderer(device, test_file)
     renderer.use_raytracing_pipeline = True
     camera = scene.create_camera(width, height, 45)

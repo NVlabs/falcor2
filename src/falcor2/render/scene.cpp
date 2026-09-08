@@ -17,6 +17,7 @@
 #include <sgl/device/shader.h>
 #include <sgl/device/shader_object.h>
 #include <sgl/device/shader_cursor.h>
+#include <sgl/core/crypto.h>
 #include <sgl/core/timer.h>
 
 namespace falcor {
@@ -43,20 +44,23 @@ static uint64_t next_generation_id()
     return ++id;
 }
 
-static ref<sgl::SlangModule> create_settings_module(sgl::Device* device, UVOrigin uv_origin)
+static ref<sgl::SlangModule>
+create_settings_module(sgl::Device* device, UVOrigin uv_origin, bool requires_opacity_evaluation)
 {
     bool is_lower_left = uv_origin == UVOrigin::lower_left;
-    const char* module_name
-        = is_lower_left ? "falcor2_scene_uv_origin_lower_left" : "falcor2_scene_uv_origin_upper_left";
-    const char* source = is_lower_left
-        ? "export static const bool FALCOR_TEXTURE_COORDINATE_ORIGIN_LOWER_LEFT = true;\n"
-        : "export static const bool FALCOR_TEXTURE_COORDINATE_ORIGIN_LOWER_LEFT = false;\n";
+    std::string source = "import falcor2.render;\n";
+    source += is_lower_left ? "export static const bool FALCOR_TEXTURE_COORDINATE_ORIGIN_LOWER_LEFT = true;\n"
+                            : "export static const bool FALCOR_TEXTURE_COORDINATE_ORIGIN_LOWER_LEFT = false;\n";
+    source += "export struct OpacityEvaluator : IOpacityEvaluator = ";
+    source += requires_opacity_evaluation ? "MaterialOpacityEvaluator;\n" : "AcceptAllHitsEvaluator;\n";
+
+    std::string module_name = "falcor2_scene_settings_" + sgl::SHA1(source).hex_digest();
     return device->load_module_from_source(module_name, source);
 }
 
-Scene::Scene(ref<sgl::Device> device, const SceneOptions& options)
+Scene::Scene(ref<sgl::Device> device, const SceneConfig& config)
     : m_device(std::move(device))
-    , m_options(options)
+    , m_config(config)
     , m_material_collection(this)
     , m_materials(m_material_collection)
     , m_geometry_collection(this)
@@ -69,7 +73,7 @@ Scene::Scene(ref<sgl::Device> device, const SceneOptions& options)
     , m_components(m_component_collection)
 {
     m_render_module = m_device->load_module("falcor2.render");
-    m_settings_module = create_settings_module(m_device.get(), m_options.uv_origin);
+    m_settings_module = create_settings_module(m_device.get(), m_config.uv_origin, false);
     m_requirements.modules.push_back(m_settings_module);
     m_requirements_generation = next_generation_id();
 
@@ -84,36 +88,9 @@ Scene::Scene(ref<sgl::Device> device, const SceneOptions& options)
 
 Scene::~Scene() { }
 
-ref<Scene> Scene::create(ref<sgl::Device> device, std::optional<UVOrigin> uv_origin)
+ref<Scene> Scene::create(ref<sgl::Device> device, const SceneConfig& config)
 {
-    return ref<Scene>{new Scene(std::move(device), SceneOptions(uv_origin.value_or(UVOrigin::upper_left)))};
-}
-
-ref<Scene>
-Scene::create(ref<sgl::Device> device, const ImporterScene& importer_scene, std::optional<UVOrigin> uv_origin)
-{
-    return detail::create_scene(std::move(device), importer_scene, uv_origin);
-}
-
-ref<Scene> Scene::create(
-    ref<sgl::Device> device,
-    const Importer& importer,
-    std::optional<UVOrigin> uv_origin,
-    bool add_default_camera_best_view,
-    float camera_aspect
-)
-{
-    return detail::create_scene(std::move(device), importer, uv_origin, add_default_camera_best_view, camera_aspect);
-}
-
-ref<Scene> Scene::create(
-    ref<sgl::Device> device,
-    const std::filesystem::path& path,
-    bool recompute_normals,
-    std::optional<UVOrigin> uv_origin
-)
-{
-    return detail::create_scene(std::move(device), path, recompute_normals, uv_origin);
+    return ref<Scene>{new Scene(std::move(device), config)};
 }
 
 Material* Scene::create_material(std::string_view type, std::optional<Properties> props)
@@ -373,6 +350,11 @@ SceneUpdateFlags Scene::_update(SceneUpdateContext& ctx)
     // Note: This needs to happen before updating the emissive geometry system, as it relies on the
     // scene requirements to determine if shaders need to be recompiled (for sampling material emission).
     {
+        const bool requires_opacity_evaluation = m_material_system->requires_opacity_evaluation();
+        if (requires_opacity_evaluation != m_requirements.requires_opacity_evaluation) {
+            m_settings_module = create_settings_module(m_device.get(), m_config.uv_origin, requires_opacity_evaluation);
+        }
+
         SceneRequirements new_requirements;
         new_requirements.modules.push_back(m_settings_module);
         const auto& mm = m_material_system->required_modules();
@@ -381,6 +363,7 @@ SceneUpdateFlags Scene::_update(SceneUpdateContext& ctx)
         new_requirements.type_conformances.assign(mc.begin(), mc.end());
         const auto& lc = m_light_system->required_type_conformances();
         new_requirements.type_conformances.insert(new_requirements.type_conformances.end(), lc.begin(), lc.end());
+        new_requirements.requires_opacity_evaluation = requires_opacity_evaluation;
 
         new_requirements.ray_tracing_pipeline_flags
             = (m_render_scene->has_lss_geometry() && m_render_scene->lss_mode() == RenderLSSMode::hardware)
@@ -395,7 +378,7 @@ SceneUpdateFlags Scene::_update(SceneUpdateContext& ctx)
     }
 
     // Update render scene.
-    if (m_render_scene->update(m_hit_group_policy))
+    if (m_render_scene->update(m_hit_group_policy, m_requirements.requires_opacity_evaluation))
         update_flags |= SceneUpdateFlags::render_state;
 
     // Update emissive geometry system.

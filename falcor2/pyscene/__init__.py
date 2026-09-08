@@ -11,6 +11,6 @@ from falcor2.pyscene.authoring import (
     load_asset,
     materials,
     nodes,
-    on_scene_created,
+    on_scene_loaded,
 )
 from falcor2.pyscene.preview import preview

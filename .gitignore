@@ -43,3 +43,4 @@ falcor2/materialtracer/testscenes/Mx_*.slang
 .imagetests/
 .falcor2/secrets.json
 container_info.json
+.codex/environments/environment.toml

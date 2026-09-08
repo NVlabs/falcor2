@@ -39,6 +39,9 @@ class CameraMarshall(spybind.Marshall):
     ):
         return data.get_uniforms()
 
+    def create_dispatchdata(self, data: "Camera"):
+        return data.get_uniforms()
+
     def gen_calldata(
         self,
         cgb: spybind.CodeGenBlock,

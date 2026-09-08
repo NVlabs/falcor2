@@ -71,7 +71,7 @@ private:
 
         // This call creates the NGX D3D12 context for the native SGL device.
         NVSDK_NGX_Result init_result = NVSDK_NGX_D3D12_Init(
-            k_application_id,
+            APPLICATION_ID,
             app_data_path_wide.c_str(),
             m_d3d12_device,
             &feature_common_info,
