@@ -12,7 +12,7 @@ public struct EnvMapLight : ILight
     public TextureHandle<float4, uint(TextureHandleFlags::none)> env_map_texture_handle;
     public DescriptorHandleWAR<Texture2D<float>> importance_map_texture;
 
-    public float emitted_power()
+    public float power_estimate()
     {
         Texture2D<float> importance_map = importance_map_texture.unwrap();
         uint3 dims;
@@ -25,22 +25,20 @@ public struct EnvMapLight : ILight
         return float.FOUR_PI * average_luminance * luminance(scale);
     }
 
-    public float3 eval_direction<Interaction : IInteraction>(const Interaction ref, const DirectionSample sample)
+    public override float3 eval_environment_radiance(const LightSampleContext ctx, const float3 dir_ws)
     {
-        float3 dir_os = normalize(mul(transpose(world_from_object), sample.dir_ws));
+        float3 dir_os = normalize(mul(transpose(world_from_object), dir_ws));
         float2 uv = world_to_latlong_map(dir_os);
         return env_map_texture_handle.sample(ExplicitLodSampler(), uv).rgb * scale;
     }
 
-    public bool sample_direction<Interaction : IInteraction, SampleGenerator : ISampleGenerator>(
-        const Interaction ref,
+    public bool sample<SampleGenerator : ISampleGenerator>(
+        const LightSampleContext ctx,
         inout SampleGenerator sg,
-        no_diff out DirectionSample sample,
-        out float3 weight
+        out LightSample sample
     )
     {
         sample = {};
-        weight = {};
 
         float2 uv = {};
         float pdf = {};
@@ -51,15 +49,15 @@ public struct EnvMapLight : ILight
         sample.dir_ws = normalize(mul(world_from_object, dir_os));
         sample.distance = float.MAX;
         sample.pdf = pdf * float.INV_FOUR_PI;
-        sample.emitter_type = EmitterType::environment;
-        weight = env_map_texture_handle.sample(ExplicitLodSampler(), world_to_latlong_map(dir_os)).rgb * scale
+        sample.weight = env_map_texture_handle.sample(ExplicitLodSampler(), world_to_latlong_map(dir_os)).rgb * scale
             / sample.pdf;
+        sample.emitter_type = EmitterType::environment;
         return true;
     }
 
-    public float eval_direction_pdf<Interaction : IInteraction>(const Interaction ref, const DirectionSample sample)
+    public override float eval_pdf(const LightSampleContext ctx, const float3 dir_ws)
     {
-        float3 dir_os = normalize(mul(transpose(world_from_object), sample.dir_ws));
+        float3 dir_os = normalize(mul(transpose(world_from_object), dir_ws));
         float2 uv = ndir_to_oct_equal_area_unorm(dir_os);
         return importance_map_eval_pdf(importance_map_texture.unwrap(), uv) * float.INV_FOUR_PI;
     }

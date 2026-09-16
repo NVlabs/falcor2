@@ -4,14 +4,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Importer utilities for Falcor2
+Importer inspection utilities for Falcor2
 
-Provides high-level functions for importing scenes from various formats
-and printing scene structure information.
+Provides functions for analyzing and printing scene structure information.
 """
 
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any, List
 import numpy as np
 
 try:
@@ -22,46 +21,6 @@ except ImportError as e:
         f"Failed to import required modules: {e}. "
         "Make sure Falcor2 is built and the Python environment is properly set up."
     )
-
-
-def import_scene(file_path: Path) -> Optional[f2.ImporterScene]:
-    """
-    Import a scene from the given file path, automatically selecting the appropriate importer.
-
-    Args:
-        file_path: Path to the scene file
-
-    Returns:
-        ImporterScene if successful, None if failed
-
-    Raises:
-        ValueError: If the file format is not supported
-        RuntimeError: If the import fails
-    """
-    file_path = Path(file_path)
-
-    if not file_path.exists():
-        raise FileNotFoundError(f"Scene file not found: {file_path}")
-
-    # Get file extension
-    extension = file_path.suffix.lower()
-
-    # Choose the appropriate importer based on file extension
-    if extension in [".gltf", ".glb"]:
-        importer = f2.GltfImporter()
-    elif extension in [".usd", ".usda", ".usdc", ".usdz"]:
-        importer = f2.UsdImporter()
-    else:
-        raise ValueError(
-            f"Unsupported file format: {extension}. "
-            f"Supported formats: .gltf, .glb, .usd, .usda, .usdc, .usdz"
-        )
-
-    try:
-        scene = importer.load_scene(file_path)
-        return scene
-    except Exception as e:
-        raise RuntimeError(f"Failed to load scene from {file_path}: {e}")
 
 
 def format_transform_matrix(transform: spy.math.float4x4, indent: int = 4) -> str:

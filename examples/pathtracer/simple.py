@@ -34,24 +34,22 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--width", type=int, default=DEFAULT_WIDTH)
     parser.add_argument("--height", type=int, default=DEFAULT_HEIGHT)
+
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     device_type = getattr(spy.DeviceType, args.device_type)
-    device = create_device(device_type=device_type)
+    device = create_device(device_type=device_type, enable_cuda_interop=True)
 
-    scene = f2.Scene.create(device, args.scene_path)
+    scene = f2.Scene.load(device, args.scene_path)
 
     pipeline = PathTracerPipeline.create(device)
     pipeline.path_tracer.max_depth = 3
     pipeline.path_tracer.enable_nee = True
     pipeline.path_tracer.enable_mis = True
-    pipeline.path_tracer.enable_analytic_lights = True
-    pipeline.path_tracer.enable_environment_light = True
-    pipeline.path_tracer.enable_emissive_triangles = True
-    pipeline.path_tracer.env_map_as_background = True
+    pipeline.path_tracer.use_background_color = False
     pipeline.tone_map = True
 
     editor = Editor.create(
@@ -64,10 +62,9 @@ def main() -> None:
         ),
         scene=scene,
     )
-
     while editor.update():
         if editor.needs_render:
-            image = pipeline(scene)
+            image = pipeline(scene, delta_time=editor.dt)
             editor.present(image)
 
 

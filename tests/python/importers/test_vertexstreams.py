@@ -171,5 +171,46 @@ def test_attribute_consistency():
             assert np.array_equal(uv1, uv3)
 
 
+def test_reacquire_streams_after_tangent_vertex_split() -> None:
+    """Topology-changing mesh operations require stream views to be reacquired."""
+    mesh = f2.ImporterMesh.create(
+        [np.array([[0, 1, 2], [0, 3, 4]], dtype=np.uint32)],
+        {
+            "position": np.array(
+                [
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [-1.0, 0.0, 0.0],
+                    [0.0, -1.0, 0.0],
+                ],
+                dtype=np.float32,
+            ),
+            "normal": np.array([[0.0, 0.0, 1.0]] * 5, dtype=np.float32),
+            "tex_coord": np.array(
+                [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 0.0], [0.0, 1.0]],
+                dtype=np.float32,
+            ),
+        },
+    )
+
+    positions_before_split = mesh.positions
+    assert positions_before_split is not None
+    with pytest.raises(RuntimeError, match="NumPy vertex stream views are alive"):
+        mesh.add_tangents_from_uvs()
+    del positions_before_split
+
+    mesh.add_tangents_from_uvs()
+
+    assert mesh.vertex_count == 6
+    positions = mesh.positions
+    tangents = mesh.tangents
+    handedness = mesh.handedness
+    assert positions is not None and positions.shape == (6, 3)
+    assert tangents is not None and tangents.shape == (6, 3)
+    assert handedness is not None and handedness.shape == (6,)
+    np.testing.assert_array_equal(positions[5], positions[0])
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -97,7 +97,7 @@ void ScenePicker::render(sgl::CommandEncoder* command_encoder, const Scene* scen
         sgl::ShaderCursor cursor = sgl::ShaderCursor(shader_object);
         scene->bind(cursor);
         cursor = cursor["g_render_ids_params"];
-        camera->bind(cursor["camera"]);
+        cursor["camera"] = *camera;
         cursor["output"] = m_geometry_instance_id_texture;
         pass_encoder->dispatch_rays(0, {width, height, 1});
         pass_encoder->end();
@@ -108,7 +108,7 @@ void ScenePicker::render(sgl::CommandEncoder* command_encoder, const Scene* scen
             {
                 scene->bind(cursor);
                 cursor = cursor.find_entry_point(0);
-                camera->bind(cursor["camera"]);
+                cursor["camera"] = *camera;
                 cursor["output"] = m_geometry_instance_id_texture;
             },
             command_encoder

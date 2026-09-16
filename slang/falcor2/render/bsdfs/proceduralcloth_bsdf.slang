@@ -77,7 +77,7 @@ public struct ProceduralClothBSDF : IBSDF
     }
 
 
-    public float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, BSDFContext bc)
+    public BSDFEval eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, BSDFContext bc)
     {
         float2 closest_hit;
         bool hit_top;
@@ -88,6 +88,7 @@ public struct ProceduralClothBSDF : IBSDF
         const int hit_id = eval_fiber_position(wi, false, closest_hit, hit_top, intersections, hit_counter);
 
         float3 contribution_eval = float3(0.f);
+        float contribution_pdf = 0.f;
 
         if (hit_id > -1) {
             const float3 diffuse = eval_fiber_contribution(
@@ -164,11 +165,20 @@ public struct ProceduralClothBSDF : IBSDF
 
             contribution_eval /= max(abs(sqrt(1.f - cos_wo_tfiber * cos_wo_tfiber)), C_MIN_ANGLE);
 
+            float4 selection_probability
+                = get_selection_probability(fresnel, avg(attenuation_f), avg(attenuation_b), avg(diffuse));
+            contribution_pdf += pdf_r(theta_ifiber, theta_ofiber, phi_ifiber, phi_ofiber) * selection_probability[0];
+            contribution_pdf += pdf_d() * selection_probability[2];
+            contribution_pdf += pdf_b(theta_ifiber, theta_ofiber, phi_ifiber, phi_ofiber, sqrt(roughness_yarn_bm2))
+                * selection_probability[3];
+            contribution_pdf /= max(abs(sqrt(1.f - cos_wo_tfiber * cos_wo_tfiber)), C_MIN_ANGLE);
+
             if (hit_top) {
                 // try again for bottom fiber
                 const int hit_id_bottom
                     = eval_fiber_position(wi, true, closest_hit, hit_top, intersections, hit_counter);
                 const float3 weight_f = (1.f - fresnel) * fiber_transparency * attenuation_f;
+                const float pdf_weight_f = selection_probability[1];
 
                 if (hit_id_bottom > -1) {
                     float3 contribution_eval_bottom = float3(0.f);
@@ -260,7 +270,29 @@ public struct ProceduralClothBSDF : IBSDF
                                                 )
                         * (1.f - fresnel) * fiber_transparency
                         / max(abs(sqrt(1.f - cos_wo_tply * cos_wo_tply)), C_MIN_ANGLE);
+
+                    float4 selection_probability
+                        = get_selection_probability(fresnel, avg(attenuation_f), avg(attenuation_b), avg(diffuse));
+                    float contribution_pdf_bottom = 0.f;
+                    contribution_pdf_bottom
+                        += pdf_r(theta_ifiber, theta_ofiber, phi_ifiber, phi_ofiber) * selection_probability[0];
+                    contribution_pdf_bottom += pdf_d() * selection_probability[2];
+                    contribution_pdf_bottom
+                        += pdf_b(theta_ifiber, theta_ofiber, phi_ifiber, phi_ofiber, sqrt(roughness_yarn_bm2))
+                        * selection_probability[3];
+                    contribution_pdf_bottom /= max(abs(sqrt(1.f - cos_wo_tfiber * cos_wo_tfiber)), C_MIN_ANGLE);
+                    contribution_pdf_bottom += pdf_f(
+                                                   theta_iply,
+                                                   theta_oply,
+                                                   phi_iply,
+                                                   phi_oply,
+                                                   sqrt(roughness_yarn_fm2),
+                                                   sqrt(roughness_yarn_fn2)
+                                               )
+                        / max(abs(sqrt(1.f - cos_wo_tply * cos_wo_tply)), C_MIN_ANGLE) * selection_probability[1];
+
                     contribution_eval += contribution_eval_bottom * weight_f;
+                    contribution_pdf += contribution_pdf_bottom * pdf_weight_f;
                 } else {
                     contribution_eval += eval_f(
                                              theta_iply,
@@ -273,8 +305,17 @@ public struct ProceduralClothBSDF : IBSDF
                                          )
                         * (1.f - fresnel) * fiber_transparency
                         / max(abs(sqrt(1.f - cos_wo_tply * cos_wo_tply)), C_MIN_ANGLE);
+                    contribution_pdf += pdf_f(
+                                            theta_iply,
+                                            theta_oply,
+                                            phi_iply,
+                                            phi_oply,
+                                            sqrt(roughness_yarn_fm2),
+                                            sqrt(roughness_yarn_fn2)
+                                        )
+                        / max(abs(sqrt(1.f - cos_wo_tply * cos_wo_tply)), C_MIN_ANGLE) * selection_probability[1];
                 }
-            } else
+            } else {
                 contribution_eval += eval_f(
                                          theta_iply,
                                          theta_oply,
@@ -286,12 +327,24 @@ public struct ProceduralClothBSDF : IBSDF
                                      )
                     * (1.f - fresnel) * fiber_transparency
                     / max(abs(sqrt(1.f - cos_wo_tply * cos_wo_tply)), C_MIN_ANGLE);
+                contribution_pdf += pdf_f(
+                                        theta_iply,
+                                        theta_oply,
+                                        phi_iply,
+                                        phi_oply,
+                                        sqrt(roughness_yarn_fm2),
+                                        sqrt(roughness_yarn_fn2)
+                                    )
+                    / max(abs(sqrt(1.f - cos_wo_tply * cos_wo_tply)), C_MIN_ANGLE) * selection_probability[1];
+            }
         }
 
         if (any(isnan(contribution_eval)) || any(isinf(contribution_eval)))
-            return 0.f;
+            contribution_eval = 0.f;
+        if (isnan(contribution_pdf) || isinf(contribution_pdf))
+            contribution_pdf = 0.f;
 
-        return contribution_eval;
+        return BSDFEval(contribution_eval, contribution_pdf);
     }
 
     public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, BSDFContext bc)
@@ -346,185 +399,6 @@ public struct ProceduralClothBSDF : IBSDF
         return true;
     }
 
-    public float eval_pdf(const float3 wi, const float3 wo, BSDFContext bc)
-    {
-        float2 closest_hit;
-        bool hit_top;
-        float3 roughness_yarn_fm2, roughness_yarn_fn2, roughness_yarn_bm2;
-        float3 attenuation_f, attenuation_b;
-        Intersection intersections[C_MAX_PLIES];
-        int hit_counter;
-        const int hit_id = eval_fiber_position(wi, false, closest_hit, hit_top, intersections, hit_counter);
-
-        if (hit_id > -1) {
-            const float3 diffuse = eval_fiber_contribution(
-                wi,
-                closest_hit,
-                hit_id,
-                hit_top,
-                intersections,
-                hit_counter,
-                roughness_yarn_fm2,
-                roughness_yarn_fn2,
-                attenuation_f,
-                roughness_yarn_bm2,
-                attenuation_b
-            );
-
-            Frame sf_yarn = get_yarn_frame(hit_top);
-            Frame sf_ply, sf_fiber;
-            const float z = get_z(hit_top, wi, sf_yarn.bitangent);
-            get_frames(hit_id, z, closest_hit, sf_fiber, sf_ply);
-
-            // Coordinate frames and angles
-            float3 wi_yarn, wo_yarn, wi_ply, wo_ply, wi_fiber, wo_fiber;
-            float theta_ifiber, theta_ofiber, phi_ifiber, phi_ofiber, theta_iply, theta_oply, phi_iply, phi_oply,
-                cos_wo_tfiber, cos_wo_tply;
-            get_angles(
-                wi,
-                wo,
-                sf_yarn,
-                sf_ply,
-                sf_fiber,
-                wi_yarn,
-                wo_yarn,
-                wi_ply,
-                wo_ply,
-                wi_fiber,
-                wo_fiber,
-                theta_ifiber,
-                theta_ofiber,
-                phi_ifiber,
-                phi_ofiber,
-                theta_iply,
-                theta_oply,
-                phi_iply,
-                phi_oply,
-                cos_wo_tfiber,
-                cos_wo_tply
-            );
-
-            const float fresnel = eval_fresnel_schlick(fiber_reflectance, 1.f, cos(theta_ifiber));
-            float4 selection_probability
-                = get_selection_probability(fresnel, avg(attenuation_f), avg(attenuation_b), avg(diffuse));
-
-            float contribution_pdf = 0.f;
-            contribution_pdf += pdf_r(theta_ifiber, theta_ofiber, phi_ifiber, phi_ofiber) * selection_probability[0];
-            contribution_pdf += pdf_d() * selection_probability[2];
-            contribution_pdf += pdf_b(theta_ifiber, theta_ofiber, phi_ifiber, phi_ofiber, sqrt(roughness_yarn_bm2))
-                * selection_probability[3];
-
-            contribution_pdf /= max(abs(sqrt(1.f - cos_wo_tfiber * cos_wo_tfiber)), C_MIN_ANGLE);
-
-            float contribution_pdf_bottom = 0.f;
-            if (hit_top) {
-                // try again for bottom fiber
-                const int hit_id_bottom
-                    = eval_fiber_position(wi, true, closest_hit, hit_top, intersections, hit_counter);
-                const float weight_f = selection_probability[1];
-
-                if (hit_id_bottom > -1) {
-                    float3 contribution_eval_bottom = float3(0.f);
-                    const float3 diffuse = eval_fiber_contribution(
-                        wi,
-                        closest_hit,
-                        hit_id_bottom,
-                        false,
-                        intersections,
-                        hit_counter,
-                        roughness_yarn_fm2,
-                        roughness_yarn_fn2,
-                        attenuation_f,
-                        roughness_yarn_bm2,
-                        attenuation_b
-                    );
-
-                    Frame sf_yarn = get_yarn_frame(false);
-                    Frame sf_ply, sf_fiber;
-                    const float z = get_z(false, wi, sf_yarn.bitangent);
-                    get_frames(hit_id_bottom, z, closest_hit, sf_fiber, sf_ply);
-
-                    float3 wi_yarn, wo_yarn, wi_ply, wo_ply, wi_fiber, wo_fiber;
-                    float theta_ifiber, theta_ofiber, phi_ifiber, phi_ofiber, theta_iply, theta_oply, phi_iply,
-                        phi_oply, cos_wo_tfiber, cos_wo_tply;
-                    get_angles(
-                        wi,
-                        wo,
-                        sf_yarn,
-                        sf_ply,
-                        sf_fiber,
-                        wi_yarn,
-                        wo_yarn,
-                        wi_ply,
-                        wo_ply,
-                        wi_fiber,
-                        wo_fiber,
-                        theta_ifiber,
-                        theta_ofiber,
-                        phi_ifiber,
-                        phi_ofiber,
-                        theta_iply,
-                        theta_oply,
-                        phi_iply,
-                        phi_oply,
-                        cos_wo_tfiber,
-                        cos_wo_tply
-                    );
-
-                    const float fresnel = eval_fresnel_schlick(fiber_reflectance, 1.f, cos(theta_ifiber));
-                    float4 selection_probability
-                        = get_selection_probability(fresnel, avg(attenuation_f), avg(attenuation_b), avg(diffuse));
-
-                    contribution_pdf_bottom
-                        += pdf_r(theta_ifiber, theta_ofiber, phi_ifiber, phi_ofiber) * selection_probability[0];
-                    contribution_pdf_bottom += pdf_d() * selection_probability[2];
-                    contribution_pdf_bottom
-                        += pdf_b(theta_ifiber, theta_ofiber, phi_ifiber, phi_ofiber, sqrt(roughness_yarn_bm2))
-                        * selection_probability[3];
-                    contribution_pdf_bottom /= max(abs(sqrt(1.f - cos_wo_tfiber * cos_wo_tfiber)), C_MIN_ANGLE);
-
-                    contribution_pdf_bottom += pdf_f(
-                                                   theta_iply,
-                                                   theta_oply,
-                                                   phi_iply,
-                                                   phi_oply,
-                                                   sqrt(roughness_yarn_fm2),
-                                                   sqrt(roughness_yarn_fn2)
-                                               )
-                        / max(abs(sqrt(1.f - cos_wo_tply * cos_wo_tply)), C_MIN_ANGLE) * selection_probability[1];
-
-                    contribution_pdf += contribution_pdf_bottom * weight_f;
-                } else {
-                    contribution_pdf += pdf_f(
-                                            theta_iply,
-                                            theta_oply,
-                                            phi_iply,
-                                            phi_oply,
-                                            sqrt(roughness_yarn_fm2),
-                                            sqrt(roughness_yarn_fn2)
-                                        )
-                        / max(abs(sqrt(1.f - cos_wo_tply * cos_wo_tply)), C_MIN_ANGLE) * selection_probability[1];
-                }
-            } else
-                contribution_pdf += pdf_f(
-                                        theta_iply,
-                                        theta_oply,
-                                        phi_iply,
-                                        phi_oply,
-                                        sqrt(roughness_yarn_fm2),
-                                        sqrt(roughness_yarn_fn2)
-                                    )
-                    / max(abs(sqrt(1.f - cos_wo_tply * cos_wo_tply)), C_MIN_ANGLE) * selection_probability[1];
-
-            if (isnan(contribution_pdf) || isinf(contribution_pdf))
-                return 0.f;
-
-            return contribution_pdf;
-        }
-
-        // We have not hit anything and will produce a Dirac ray.
-        return 0.f;
-    }
 
     public AlbedoContributions eval_albedo(const float3 wi)
     {

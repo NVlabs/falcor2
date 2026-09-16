@@ -9,6 +9,8 @@
 #include <sgl/device/resource.h>
 #include <sgl/device/cursor_utils.h>
 
+#include <cmath>
+
 namespace falcor {
 
 DiscreteDistribution1D::DiscreteDistribution1D(sgl::Device* device, std::span<const float> func, std::string_view label)
@@ -64,18 +66,18 @@ AliasTable1D::AliasTable1D(sgl::Device* device, std::span<const float> func, std
     m_size = static_cast<uint32_t>(func.size());
     m_pdf.resize(m_size);
     m_alias_table.resize(m_size);
-    float sum = 0.f;
+    double sum = 0.0;
     for (uint32_t i = 0; i < m_size; ++i) {
         float value = func[i];
-        if (value < 0.f) {
-            FALCOR_THROW("AliasTable1D: function values must be non-negative");
+        if (!std::isfinite(value) || value < 0.f) {
+            FALCOR_THROW("AliasTable1D: function values must be finite and non-negative");
         }
         sum += value;
     }
 
-    float normalization = sum > 0.f ? 1.f / sum : 0.f;
+    double normalization = sum > 0.0 ? 1.0 / sum : 0.0;
     for (uint32_t i = 0; i < m_size; ++i) {
-        m_pdf[i] = func[i] * normalization;
+        m_pdf[i] = static_cast<float>(func[i] * normalization);
     }
 
     // Build alias table using Vose's algorithm (Vose, 1991).

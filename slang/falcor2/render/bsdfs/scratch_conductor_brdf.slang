@@ -147,6 +147,9 @@ public struct ScratchConductorBRDF : IBSDF
             counter++;
         }
 
+        if (counter == 100)
+            return false;
+
         outgoing = incoming;
         return true;
     }
@@ -283,6 +286,8 @@ public struct ScratchConductorBRDF : IBSDF
                 r = 0.f;
             else if (distA > 0.f && distB > 0.f)
                 r = 1.f - distA / (distA + distB);
+            else
+                continue;
 
             const float areaRatio[2] = { r, 1.f - r };
 
@@ -292,6 +297,10 @@ public struct ScratchConductorBRDF : IBSDF
                 float3 f = float3(1.f);
                 bool valid = trace(wiLocal, pos, -projectedIncomingYZ, outgoing, f);
                 // for the PDF, we need a different estimator; normalissation is done in evalPdf
+                // TODO(BSDF, @aweidlich): Revisit the scratch broadening against Raymond, Guennebaud, and Barla,
+                // "Multi-Scale Rendering of Scratched Materials using a Structured SV-BRDF Model," 2016,
+                // doi:10.1145/2897824.2925945. Sampling draws (n+1)/(2*pi)*cos^n(theta), while this reconstruction
+                // declares n+1 but uses n, an outer (n+2)/(2*pi) normalization, and an additional macro wo.z.
                 f = isEval ? f : 1.f;
                 const float exponent = isEval ? phongCoefficient : phongCoefficient + 1.f;
 
@@ -313,20 +322,174 @@ public struct ScratchConductorBRDF : IBSDF
         return evalScratch;
     }
 
-    public float3 eval<S : ISampleGenerator>(const float3 wiLocal, const float3 woLocal, inout S sg, BSDFContext bc)
+    BSDFEval calculateScratchEvalWithPdf(const float3 wiLocal, const float3 woLocal)
+    {
+        // set up geometry
+        float groovelength = kDefaultGrooveLength;
+        float3 P[5];
+        float3 grooveNormal[2];
+
+        const float cosTheta = scratchdirection[0];
+        const float sinTheta = scratchdirection[1];
+        P[0] = { -groovelength * sinTheta, groovelength * cosTheta, -depth };
+        P[1] = { groovelength * sinTheta, -groovelength * cosTheta, -depth };
+        P[2] = { -cosTheta - groovelength * sinTheta, cosTheta * groovelength - sinTheta, 0.f };
+        P[3] = { -cosTheta + groovelength * sinTheta, -cosTheta * groovelength - sinTheta, 0.f };
+        P[4] = { cosTheta - groovelength * sinTheta, cosTheta * groovelength + sinTheta, 0.f };
+
+        grooveNormal[0] = normalize(cross(P[1] - P[0], -(P[2] - P[0])));
+        grooveNormal[1] = normalize(cross(P[1] - P[0], P[4] - P[0]));
+
+        float3 incoming = -wiLocal;
+        const float3 projectedIncomingYZ = -calculatePojectedIncoming(incoming, P[2], P[4]);
+
+        // groove angle theta_v - we assume a constant width of 2; this is NOT the half angle we use above, this is the
+        // FULL angle
+        float thetaV = asin(1.f / sqrt(1.f + depth * depth)) * 2.f;
+
+        float samplePosition[4];
+        float sideWeight;
+        int reflectionCount;
+        float bounceCount[2];
+        float3 a, b;
+        const float2 along = normalize(float3(P[2] - P[3])).xy;
+        const float sx = along.x;
+        const float sy = along.y;
+        const float sx2 = sx * sx;
+        const float sy2 = sy * sy;
+
+        const float cosInNLeft = dot(projectedIncomingYZ, grooveNormal[0]);
+        const float cosInNRight = dot(projectedIncomingYZ, grooveNormal[1]);
+
+        // If we can see both sides, we can have a maximum of four different rays. Since we draw a random number from
+        // the whole range, we can partition the groove symetrically and look at both sides individually
+        if (cosInNLeft > 0.f && cosInNRight > 0.f) {
+            // we see both sides; the max number of reflections is 4
+            samplePosition = { 0.01f, 0.499f, 0.501f, 0.99f };
+            const float acosYZ = acos(projectedIncomingYZ.z);
+            // number of bounces k; we have either k or k - 1 bounces; we need to calculate it for both sides
+            if (cosInNLeft > cosInNRight) {
+                bounceCount[0] = floor((float.PI + (-acosYZ)) / thetaV + 0.5f);
+                bounceCount[1] = -floor((float.PI + acosYZ) / thetaV + 0.5f);
+            } else {
+                bounceCount[0] = floor((float.PI + acosYZ) / thetaV + 0.5f);
+                bounceCount[1] = -floor((float.PI + (-acosYZ)) / thetaV + 0.5f);
+            }
+
+            a = P[4];
+            b = P[2];
+
+            // both sides are equally visible, split the weight
+            sideWeight = 0.5f;
+            reflectionCount = 2;
+        } else {
+            // we see only one side; the maximum number of reflections is 2
+            // clamping has to be conistent with values in sample()
+            samplePosition = { 0.01f, 0.99f, -1.f, -1.f };
+
+            // switch rotation points depending on the whch side is hit
+            if (cosInNLeft < 0.f) {
+                // number of bounces k; we have either k or k - 1 bounces;
+                bounceCount[0] = -(floor((float.PI + 2.f * (-acos(projectedIncomingYZ.z))) / thetaV) + 1.f);
+                a = P[2];
+                b = P[4];
+            } else {
+                // number of bounces k; we have either k or k - 1 bounces;
+                bounceCount[0] = (floor((float.PI + 2.f * (-acos(projectedIncomingYZ.z))) / thetaV)) + 1.f;
+                a = P[4];
+                b = P[2];
+            }
+
+            sideWeight = 1.f;
+            reflectionCount = 1;
+        }
+
+        float3 evalScratch = 0.f;
+        float pdfScratch = 0.f;
+        for (int i = 0; i < reflectionCount; i++) {
+            const float3 aPivot = a - P[0];
+            const float c = cos(-thetaV * bounceCount[i]);
+            const float s = sin(-thetaV * bounceCount[i]);
+
+            const float3 kPoint
+                = { P[0].x - aPivot.y * sx * sy * (-1 + c) + aPivot.x * (sx * sx + c - sx * sx * c) + aPivot.z * sy * s,
+                    P[0].y - aPivot.x * sx * sy * (-1 + c) + aPivot.y * (sy * sy + c - sy * sy * c)
+                        + (-a.z + P[0].z) * sx * s,
+                    P[0].z + aPivot.z * c + aPivot.y * sx * s - aPivot.x * sy * s };
+
+            // project k on the plane between a and b
+            const float3 kProjected = intersectLinePlane(P[2], P[3], P[4], kPoint, projectedIncomingYZ);
+            const float distAcross = length(a - b);
+            float distA = length(a - kProjected);
+            float distB = length(b - kProjected);
+
+            // sanity check: remove invalid points; this can happen if there is only one reflection instead of two
+            distA = distA > distAcross ? 0.0f : distA;
+            distB = distB > distAcross ? 0.0f : distB;
+
+            // sanity check: only one of them should be zero, never both unless we have an error in the bounceCount
+            float r;
+            if (distA > 0.0f && distB <= 0.f)
+                r = 1.f;
+            else if (distA <= 0.0f && distB > 0.f)
+                r = 0.f;
+            else if (distA > 0.f && distB > 0.f)
+                r = 1.f - distA / (distA + distB);
+            else
+                continue;
+
+            const float areaRatio[2] = { r, 1.f - r };
+
+            for (int j = 0; j < 2; j++) {
+                float pos = samplePosition[i * 2 + j];
+                float3 outgoing;
+                float3 f = float3(1.f);
+                bool valid = trace(wiLocal, pos, -projectedIncomingYZ, outgoing, f);
+                // for the PDF, we need a different estimator; normalissation is done in evalPdf
+                // TODO(BSDF, @aweidlich): Revisit the scratch broadening against Raymond, Guennebaud, and Barla,
+                // "Multi-Scale Rendering of Scratched Materials using a Structured SV-BRDF Model," 2016,
+                // doi:10.1145/2897824.2925945. Sampling draws (n+1)/(2*pi)*cos^n(theta), while this reconstruction
+                // declares n+1 but uses n, an outer (n+2)/(2*pi) normalization, and an additional macro wo.z.
+                const float lobe = valid
+                    ? areaRatio[j] * pow(max(dot(outgoing, woLocal), 0.f), phongCoefficient) * woLocal.z * sideWeight
+                    : 0.0f;
+                evalScratch += f * lobe;
+                pdfScratch += lobe;
+            }
+
+            const float3 temp = a;
+            a = b;
+            b = temp;
+        }
+
+        // safety precaution
+        if (any(isnan(evalScratch)) || any(isinf(evalScratch)))
+            evalScratch = 0.0f;
+        if (isnan(pdfScratch) || isinf(pdfScratch))
+            pdfScratch = 0.0f;
+
+        return BSDFEval(evalScratch, pdfScratch);
+    }
+
+
+    public BSDFEval
+    eval_with_pdf<S : ISampleGenerator>(const float3 wiLocal, const float3 woLocal, inout S sg, BSDFContext bc)
     {
         if (min(wiLocal.z, woLocal.z) < BSDF_MIN_COS_THETA)
-            return float3(0.f);
+            return BSDFEval();
 
         // eval and pdf have similar computations, but we remove the Fresnel factor for the PDF
-        float3 evalScratch = 0.f;
+        BSDFEval scratch = {};
 
         if (phongCoefficient < kDiracLimit)
-            evalScratch = calculateEvalOrPdf(wiLocal, woLocal, true);
+            scratch = calculateScratchEvalWithPdf(wiLocal, woLocal);
 
         PBRTConductorBSDF unscratched = { D, eta, k };
-        return unscratched.eval(wiLocal, woLocal, sg, bc) * (1.0 - mask[0])
-            + evalScratch * mask[0] * (phongCoefficient + 2.f) / (2.f * float.PI);
+        BSDFEval result = unscratched.eval_with_pdf(wiLocal, woLocal, sg, bc);
+        result.value
+            = result.value * (1.0 - mask[0]) + scratch.value * mask[0] * (phongCoefficient + 2.f) / (2.f * float.PI);
+        result.pdf = result.pdf * (1.0 - mask[0]) + scratch.pdf * mask[0] * (phongCoefficient + 2.f) / (2.f * float.PI);
+        return result;
     }
 
     public bool sample<S : ISampleGenerator>(float3 wiLocal, out BSDFSample sample, inout S sg, BSDFContext bc = {})
@@ -340,14 +503,21 @@ public struct ScratchConductorBRDF : IBSDF
         const float threshold = rand[0];
 
         // eval() and eval_pdf() expose the full masked mixture of the unscratched conductor and scratch lobes.
-        // sample() chooses one branch and returns that branch's local pdf/weight, so statistical tests that
-        // expect sample().pdf == eval_pdf() and sample().weight == eval()/eval_pdf() do not apply here.
+        // sample() chooses one branch and returns that branch's local weight, but its non-delta pdf includes the
+        // full mixture for MIS. The branch-local weight is therefore not necessarily eval()/eval_pdf().
         bool valid = false;
         float3 outgoing;
         float3 f;
         if (mask[0] <= threshold) {
             PBRTConductorBSDF unscratched = { D, eta, k };
-            return unscratched.sample(wiLocal, sample, sg, bc);
+            valid = unscratched.sample(wiLocal, sample, sg, bc);
+            if (valid && !sample.has_flag(BSDFFlags::delta)) {
+                float evalScratch = 0.f;
+                if (phongCoefficient < kDiracLimit)
+                    evalScratch = calculateEvalOrPdf(wiLocal, sample.wo, false)[0];
+                sample.pdf = sample.pdf * (1.0 - mask[0])
+                    + evalScratch * mask[0] * (phongCoefficient + 2.f) / (2.f * float.PI);
+            }
         } else {
             const float groovelength = kDefaultGrooveLength;
             const float cosTheta = scratchdirection[0];
@@ -393,9 +563,12 @@ public struct ScratchConductorBRDF : IBSDF
 
                     sample.weight = f;
                     sample.flags = BSDFFlags::non_delta_reflection;
+
+                    PBRTConductorBSDF unscratched = { D, eta, k };
+                    sample.pdf = unscratched.eval_pdf(wiLocal, sample.wo, bc) * (1.0 - mask[0]) + sample.pdf * mask[0];
                 } else {
                     sample.weight = f;
-                    sample.pdf = 1.f;
+                    sample.pdf = 0.f;
                     sample.flags = BSDFFlags::delta_reflection;
                 }
             }
@@ -404,22 +577,6 @@ public struct ScratchConductorBRDF : IBSDF
         return valid;
     }
 
-    public float eval_pdf(const float3 wiLocal, const float3 woLocal, BSDFContext bc)
-    {
-        if (min(wiLocal.z, woLocal.z) < BSDF_MIN_COS_THETA)
-            return 0.f;
-
-        // eval and pdf have similar computations, but we remove the Fresnel factor for the PDF
-        // the PDF is wavelength independent
-        float evalScratch = 0.f;
-
-        if (phongCoefficient < kDiracLimit)
-            evalScratch = calculateEvalOrPdf(wiLocal, woLocal, false)[0];
-
-        PBRTConductorBSDF unscratched = { D, eta, k };
-        return unscratched.eval_pdf(wiLocal, woLocal, bc) * (1.0 - mask[0])
-            + evalScratch * mask[0] * (phongCoefficient + 2.f) / (2.f * float.PI);
-    }
 
     public AlbedoContributions eval_albedo(const float3 wi)
     {

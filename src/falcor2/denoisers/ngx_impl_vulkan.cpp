@@ -98,7 +98,7 @@ private:
 
         // This call creates the NGX Vulkan context for the native SGL device.
         NVSDK_NGX_Result init_result = NVSDK_NGX_VULKAN_Init(
-            k_application_id,
+            APPLICATION_ID,
             app_data_path_wide.c_str(),
             handles.instance,
             handles.physical_device,

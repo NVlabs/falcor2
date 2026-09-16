@@ -3,10 +3,10 @@
 
 import slangpy;
 import falcor2.render;
-import falcor2.render.materials.materialx.materialx_1_39.libraries.mx139.mx139;
+import falcor2.render.materials.mtlx.mtlx;
 import falcor2.utils;
 
-#include "../../../src/falcor2/render/material/materialx/codegen/materialx_1_39/libraries/stdlib/genslangpt/mx_normalmap.slang"
+#include "../../../src/falcor2/render/material/mtlx/codegen/libraries/stdlib/genslangpt/mx_normalmap.slang"
 
 SurfaceInteraction make_signed_si(float handedness)
 {
@@ -47,7 +47,7 @@ float4 material_frame_probe(
         material_bitangent_y(standard_material_id, si),
         material_bitangent_y(spec_gloss_material_id, si),
         material_bitangent_y(openpbr_material_id, si),
-        mx139::mx_geomprop_bitangent(si).y
+        mtlx::mx_geomprop_bitangent(si).y
     );
 }
 
@@ -67,5 +67,10 @@ float2 materialx_normalmap_probe(float handedness)
         normalmap_result
     );
 
-    return float2(mx139::mx_geomprop_bitangent(si).y, normalmap_result.y);
+    return float2(mtlx::mx_geomprop_bitangent(si).y, normalmap_result.y);
+}
+
+float3 bc5_normalmap_probe(float2 encoded_xy)
+{
+    return stdmat::decode_normal_map(float3(encoded_xy, 0.0));
 }

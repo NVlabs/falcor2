@@ -13,6 +13,7 @@
 
 #include <fstream>
 #include <sstream>
+#include <unordered_map>
 
 namespace falcor {
 
@@ -164,16 +165,29 @@ void MDLMaterial::update(SceneUpdateContext& ctx)
         /// We prepare the actual code, minus the type name, to allow efficient class compilation.
         std::string defines;
         defines += fmt::format("#define MDL_NUM_TEXTURE_RESULTS {}\n", m_request.options.num_texture_results);
+        defines += fmt::format("#define MDL_NUM_TEXTURE_SPACES {}\n", m_request.options.num_texture_spaces);
         defines += fmt::format("#define MDL_DF_HANDLE_SLOT_MODE {}\n", m_request.options.df_handle_slot_mode);
         defines += fmt::format(
             "#define MDL_USE_RENDERER_ADAPT_NORMAL {}\n",
             m_request.options.use_renderer_adapt_normal ? "1" : "0"
         );
 
+        std::string texture_space_cases;
+        for (size_t i = 1; i < m_texture_space_geomprop_ids.size(); ++i) {
+            if (!m_texture_space_geomprop_ids[i])
+                continue;
+            texture_space_cases += fmt::format(
+                "            case {}: mdl_uv = GeomPropProvider::get_float2(si, {}u); break;\n",
+                i,
+                *m_texture_space_geomprop_ids[i]
+            );
+        }
+
         std::string source = replace_substrings(
             SHADER_SOURCE_TEMPLATE,
             std::map<std::string, std::string>({
                 {"${MDL_DEFINES}", defines},
+                {"${MDL_TEXTURE_SPACE_CASES}", texture_space_cases},
                 {"${MDL_CODE}", m_result.code},
             })
         );
@@ -211,8 +225,6 @@ void MDLMaterial::update(SceneUpdateContext& ctx)
             buffer << ifs.rdbuf();
             source = buffer.str();
         }
-
-        m_ior = (float16_t)((m_result.ior.x + m_result.ior.y + m_result.ior.z) / 3.f);
 
         m_slang_module = m_scene->device()->load_module_from_source(m_slang_type_name, source);
     }
@@ -272,6 +284,26 @@ ref<sgl::SlangModule> MDLMaterial::required_module() const
     return m_slang_module;
 }
 
+Material::OpacityDesc MDLMaterial::opacity_desc() const
+{
+    OpacityDesc result;
+
+    if (m_result.cutout_opacity) {
+        const float opacity = *m_result.cutout_opacity;
+        if (opacity == 1.f)
+            return result;
+
+        result.flags = shared::OpacityFlags::enabled;
+        result.factor = opacity;
+        return result;
+    } else {
+        result.flags = shared::OpacityFlags::enabled;
+    }
+
+    result.flags |= shared::OpacityFlags::evaluate_material;
+    return result;
+}
+
 std::vector<TextureHandle> MDLMaterial::build_texture_list() const
 {
     std::vector<TextureHandle> result;
@@ -294,12 +326,47 @@ void MDLMaterial::run_codegen()
     if (!m_require_codegen)
         return;
 
+    const std::vector<std::string>& geomprop_names = m_mdl_geomprop_names.as_vector<std::string>();
+    const std::vector<uint32_t> geomprop_id_values
+        = detail::from_storage_vector<uint32_t>(m_mdl_geomprop_ids.as_vector<int64_t>(), "mdl_geomprop_ids");
+    FALCOR_CHECK(
+        geomprop_names.size() == geomprop_id_values.size(),
+        "MDL geomprop name/ID lists must have the same length ({} names, {} IDs).",
+        geomprop_names.size(),
+        geomprop_id_values.size()
+    );
+    std::unordered_map<std::string, uint32_t> geomprop_ids;
+    geomprop_ids.reserve(geomprop_names.size());
+    for (size_t i = 0; i < geomprop_names.size(); ++i) {
+        const std::string& name = geomprop_names[i];
+        FALCOR_CHECK(!name.empty(), "MDL geomprop names cannot be empty.");
+        FALCOR_CHECK(
+            geomprop_ids.emplace(name, geomprop_id_values[i]).second,
+            "Duplicate MDL geomprop name `{}`.",
+            name
+        );
+    }
+
+    std::vector<std::optional<uint32_t>> texture_space_geomprop_ids(
+        MDLContext::CompileRequest{}.options.num_texture_spaces
+    );
+    for (size_t i = 1; i < texture_space_geomprop_ids.size(); ++i) {
+        const auto it = geomprop_ids.find(fmt::format("texcoord_{}", i));
+        if (it != geomprop_ids.end())
+            texture_space_geomprop_ids[i] = it->second;
+    }
+
     // Hash the properties influencing codegen to determine if we actually need to re-run.
     size_t codegen_properties_hash
         = sgl::hash(m_mdl_library_path, m_mdl_material_name, m_mdl_class_compilation, m_learnable);
+    codegen_properties_hash = sgl::hash_combine(codegen_properties_hash, sgl::hash(texture_space_geomprop_ids.size()));
+    for (const std::optional<uint32_t>& id : texture_space_geomprop_ids) {
+        codegen_properties_hash = sgl::hash_combine(codegen_properties_hash, sgl::hash(id.has_value(), id.value_or(0)));
+    }
     if (codegen_properties_hash == m_codegen_properties_hash)
         return;
     m_codegen_properties_hash = codegen_properties_hash;
+    m_texture_space_geomprop_ids = std::move(texture_space_geomprop_ids);
 
     MDLContext& mdl_context = MDLContext::get();
 
@@ -490,33 +557,61 @@ struct ${NAME}_Instance : IMaterialInstance
     MDLMaterialData data;
     ${NAME}_ns::Shading_state_material state;
     float3 ior1, ior2;
+    float interior_ior;
 
-    float3 eval<S : ISampleGenerator>(const SurfaceInteraction si, const float3 wo, inout S sg)
+    override float get_interior_ior() { return interior_ior; }
+
+    override HomogeneousMediumProperties get_interior_medium()
     {
-        ${NAME}_ns::Bsdf_evaluate_data eval_data = {};
-        eval_data.ior1 = ior1;     // IOR current medium
-        eval_data.ior2 = ior2;     // IOR other side
-        eval_data.k1 = si.wi_ws; // outgoing direction
-        eval_data.k2 = wo;         // incoming direction
+        ${NAME}_ns::gMDLMaterialData = data;
+        HomogeneousMediumProperties result = {};
+        result.sigma_a = ${NAME}_ns::volume_absorption_coefficient(state);
+        result.sigma_s = ${NAME}_ns::volume_scattering_coefficient(state);
+        return result;
+    }
+
+    BSDFEval eval_with_pdf<
+        let Hints : BSDFEvalHints = BSDFEvalHints::both,
+        S : ISampleGenerator>(const SurfaceInteraction si, const float3 wo, inout S sg)
+    {
+        if (Hints == BSDFEvalHints::none)
+            return BSDFEval();
 
         ${NAME}_ns::gMDLMaterialData = data;
 
-        float3 result = float3(0.f);
+        BSDFEval result = {};
+        if (is_set(Hints, BSDFEvalHints::eval)) {
+            ${NAME}_ns::Bsdf_evaluate_data eval_data = {};
+            eval_data.ior1 = ior1;     // IOR current medium
+            eval_data.ior2 = ior2;     // IOR other side
+            eval_data.k1 = si.wi_ws; // outgoing direction
+            eval_data.k2 = wo;         // incoming direction
 #if MDL_DF_HANDLE_SLOT_MODE == 0
-        ${NAME}_ns::surface_scattering_evaluate(eval_data, state);
-        result = eval_data.bsdf_diffuse + eval_data.bsdf_glossy;
-#else
-        uint surfaceScatterBsdfCount = ${NAME}_ns::gMDLMaterialData.surface_scatter_bsdf_count;
-        uint offset = 0;
-        for (; offset < surfaceScatterBsdfCount; offset += MDL_DF_HANDLE_SLOT_MODE) {
-            eval_data.handle_offset = offset;
             ${NAME}_ns::surface_scattering_evaluate(eval_data, state);
-            for (uint lobe = 0; (lobe < MDL_DF_HANDLE_SLOT_MODE) && ((offset + lobe) < surfaceScatterBsdfCount);
-                 ++lobe) {
-                result += (eval_data.bsdf_diffuse[lobe] + eval_data.bsdf_glossy[lobe]);
+            result.value = eval_data.bsdf_diffuse + eval_data.bsdf_glossy;
+#else
+            uint surfaceScatterBsdfCount = ${NAME}_ns::gMDLMaterialData.surface_scatter_bsdf_count;
+            uint offset = 0;
+            for (; offset < surfaceScatterBsdfCount; offset += MDL_DF_HANDLE_SLOT_MODE) {
+                eval_data.handle_offset = offset;
+                ${NAME}_ns::surface_scattering_evaluate(eval_data, state);
+                for (uint lobe = 0; (lobe < MDL_DF_HANDLE_SLOT_MODE) && ((offset + lobe) < surfaceScatterBsdfCount);
+                     ++lobe) {
+                    result.value += (eval_data.bsdf_diffuse[lobe] + eval_data.bsdf_glossy[lobe]);
+                }
             }
-        }
 #endif
+            if (is_set(Hints, BSDFEvalHints::pdf))
+                result.pdf = eval_data.pdf;
+        } else {
+            ${NAME}_ns::Bsdf_pdf_data pdf_data = {};
+            pdf_data.ior1 = ior1;     // IOR current medium
+            pdf_data.ior2 = ior2;     // IOR other side
+            pdf_data.k1 = si.wi_ws; // outgoing direction
+            pdf_data.k2 = wo;         // incoming direction
+            ${NAME}_ns::surface_scattering_pdf(pdf_data, state);
+            result.pdf = pdf_data.pdf;
+        }
         return result;
     }
 
@@ -550,20 +645,6 @@ struct ${NAME}_Instance : IMaterialInstance
             sample.flags = BSDFFlags::delta_transmission;
 
         return sample_data.event_type != 0;
-    }
-
-    float eval_pdf(const SurfaceInteraction si, const float3 wo_ws)
-    {
-        ${NAME}_ns::Bsdf_pdf_data pdf_data = {};
-        pdf_data.ior1 = ior1;     // IOR current medium
-        pdf_data.ior2 = ior2;     // IOR other side
-        pdf_data.k1 = si.wi_ws; // outgoing direction
-        pdf_data.k2 = wo_ws;      // incoming direction
-
-        ${NAME}_ns::gMDLMaterialData = data;
-        ${NAME}_ns::surface_scattering_pdf(pdf_data, state);
-
-        return pdf_data.pdf;
     }
 
     MaterialProperties collect_properties(const SurfaceInteraction si)
@@ -610,6 +691,8 @@ struct ${NAME}_Instance : IMaterialInstance
         else
             result.guide_normal = normalize(result.guide_normal);
 
+        // TODO: use albedo at normal incidence
+        result.material_color = saturate(result.diffuse_reflection_albedo);
         return result;
     }
 
@@ -678,10 +761,8 @@ public struct ${NAME} : IMaterial
     public MaterialHeader header;
     public MDLMaterialData data;
 
-    MaterialInstance setup_material_instance<TLodSampler : ILodSampler>(
-        const SurfaceInteraction si,
-        const TLodSampler lod_sampler,
-        const MaterialInstanceHints hints
+    ${NAME}_ns::Shading_state_material init_shading_state(
+        const SurfaceInteraction si, const MaterialInstanceHints hints
     )
     {
         ${NAME}_ns::Shading_state_material state = {};
@@ -698,16 +779,24 @@ public struct ${NAME} : IMaterial
             state.normal = -state.normal;
         state.position = si.position_ws;
         state.animation_time = 0.f;
-        float2 mdl_uv = si.uv;
-        // MDL always receives lower-left coordinates. If the scene was upper-left, v_mdl = 1-v_scene
-        // makes positive MDL V point opposite the scene bitangent.
-        if (!FALCOR_TEXTURE_COORDINATE_ORIGIN_LOWER_LEFT)
-            mdl_uv.y = 1.0 - mdl_uv.y;
-        state.text_coords[0] = float3(mdl_uv, 0);
-        state.tangent_u[0] = sf.tangent;
-        state.tangent_v[0] = sf.bitangent;
-        if (!FALCOR_TEXTURE_COORDINATE_ORIGIN_LOWER_LEFT)
-            state.tangent_v[0] = -state.tangent_v[0];
+        [ForceUnroll]
+        for (uint i = 0; i < MDL_NUM_TEXTURE_SPACES; ++i) {
+            // Match MaterialX texture-coordinate resolution: UV0 is built in, mapped texcoord_<i> streams use their
+            // integration-defined provider IDs, and unmapped streams fall back to UV0.
+            float2 mdl_uv = si.uv;
+            switch (i) {
+${MDL_TEXTURE_SPACE_CASES}            }
+            // MDL always receives lower-left coordinates. If the scene was upper-left, v_mdl = 1-v_scene
+            // makes positive MDL V point opposite the scene bitangent.
+            if (!FALCOR_TEXTURE_COORDINATE_ORIGIN_LOWER_LEFT)
+                mdl_uv.y = 1.0 - mdl_uv.y;
+            state.text_coords[i] = float3(mdl_uv, 0);
+            // Falcor currently stores one per-vertex tangent frame, conventionally derived from UV0.
+            state.tangent_u[i] = sf.tangent;
+            state.tangent_v[i] = sf.bitangent;
+            if (!FALCOR_TEXTURE_COORDINATE_ORIGIN_LOWER_LEFT)
+                state.tangent_v[i] = -state.tangent_v[i];
+        }
         state.ro_data_segment_offset = 0;
         state.world_to_object = float4x4(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
         state.object_to_world = float4x4(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
@@ -719,15 +808,37 @@ public struct ${NAME} : IMaterial
         ${NAME}_ns::gMDLMaterialData = data;
         ${NAME}_ns::init(state);
 
+        return state;
+    }
+
+    public override float eval_opacity<TLodSampler : ILodSampler>(
+        const SurfaceInteraction si,
+        const TLodSampler lod_sampler,
+        const MaterialInstanceHints hints = MaterialInstanceHints::none
+    )
+    {
+        let state = init_shading_state(si, hints);
+        return saturate(${NAME}_ns::geometry_cutout_opacity(state));
+    }
+
+    MaterialInstance setup_material_instance<TLodSampler : ILodSampler>(
+        const SurfaceInteraction si,
+        const TLodSampler lod_sampler,
+        const MaterialInstanceHints hints
+    )
+    {
+        let state = init_shading_state(si, hints);
+
         // We use ior(state) instead of the IOR from the material system because MDL compares to the IoR and we have
         // quantization errors since we store it as float16_t
-        const float3 exteriorIoR = si.ior;
+        const float3 exteriorIoR = si.exterior_ior;
         const float3 interiorIoR = ${NAME}_ns::ior(state);
 
         const float3 ior1 = select(si.front_facing, exteriorIoR, interiorIoR);
         const float3 ior2 = select(si.front_facing, interiorIoR, exteriorIoR);
+        const float interior_ior = (interiorIoR.x + interiorIoR.y + interiorIoR.z) / 3.0;
 
-        ${NAME}_Instance mi = { data, state, ior1, ior2 };
+        ${NAME}_Instance mi = { data, state, ior1, ior2, interior_ior };
 
         return mi;
     }

@@ -5,6 +5,7 @@
 
 #include "falcor2/render/scene_object.h"
 #include "falcor2/render/shared_scene_types.h"
+#include "falcor2/render/texture_manager.h"
 
 #include "falcor2/core/cursor_writer.h"
 #include "falcor2/core/properties.h"
@@ -85,7 +86,23 @@ public:
     static void write_slangpy_signature(sgl::SignatureBuffer& signature, const Material* value);
 
     /// Returns material flags used by the scene material header.
-    virtual shared::MaterialFlags flags() const { return shared::MaterialFlags::none; }
+    /// - two_sided indicates the material can interact with rays on either side of the geometric surface.
+    /// - thin_walled is definitive but independent of whether the material can transmit.
+    virtual shared::MaterialFlags flags() const { return shared::MaterialFlags::two_sided; }
+
+    /// Nested dielectric priority. Zero denotes the highest effective priority.
+    uint32_t nested_priority() const { return m_nested_priority; }
+
+    /// Complete description of opacity evaluation for this material.
+    struct OpacityDesc {
+        shared::OpacityFlags flags{shared::OpacityFlags::none};
+        TextureHandle texture_handle;
+        uint32_t texture_channel{3};
+        float factor{1.f};
+        float threshold{0.f};
+    };
+
+    virtual OpacityDesc opacity_desc() const { return {}; }
 
     /// Returns an additional Slang module required by this material.
     virtual ref<sgl::SlangModule> required_module() const { return {}; }
@@ -94,14 +111,23 @@ public:
     template<reflection::ClassReflector R>
     static void reflect(R& r)
     {
-        FALCOR_UNUSED(r);
+        r.def_rw(
+            "nested_priority",
+            &Material::m_nested_priority,
+            "Nested dielectric priority. Zero denotes the highest effective priority.",
+            reflection::default_value(0u),
+            reflection::value_range(0, 255),
+            reflection::on_change(&Material::mark_dirty_properties)
+        );
     }
 
 protected:
     void mark_dirty(DirtyFlags flags);
+    void mark_dirty_properties() { mark_dirty(DirtyFlags::properties); }
 
     std::string m_slang_type_name;
     shared::MaterialID m_material_id{shared::MaterialID::invalid};
+    uint32_t m_nested_priority{0};
 };
 
 FALCOR_ENUM_CLASS_OPERATORS(Material::DirtyFlags);

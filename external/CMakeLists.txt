@@ -165,11 +165,11 @@ endforeach()
 
 add_subdirectory(MaterialX EXCLUDE_FROM_ALL)
 
-add_custom_target(falcor2_copy_materialx_1_39_std_libraries ALL
-	COMMAND ${CMAKE_COMMAND} -E make_directory ${FALCOR_OUTPUT_DIRECTORY}/materialx/1_39/std/libraries
+add_custom_target(falcor2_copy_mtlx_standard_libraries ALL
+	COMMAND ${CMAKE_COMMAND} -E make_directory ${FALCOR_OUTPUT_DIRECTORY}/mtlx/standard
 	COMMAND ${CMAKE_COMMAND} -E ${FALCOR_COPY_DIRECTORY}
 		${CMAKE_CURRENT_SOURCE_DIR}/MaterialX/libraries
-		${FALCOR_OUTPUT_DIRECTORY}/materialx/1_39/std/libraries
+		${FALCOR_OUTPUT_DIRECTORY}/mtlx/standard
 	VERBATIM
 )
 

@@ -32,7 +32,7 @@ def test_render_scene_resolves_paths_defaults_and_manifest(
     monkeypatch.setattr(
         offline,
         "f2",
-        SimpleNamespace(Scene=SimpleNamespace(create=lambda actual_device, path: scene)),
+        SimpleNamespace(Scene=SimpleNamespace(load=lambda actual_device, path: scene)),
     )
 
     def fake_render(
@@ -48,7 +48,15 @@ def test_render_scene_resolves_paths_defaults_and_manifest(
             kwargs=kwargs,
         )
         image_path = output_dir / "000-camera.png"
-        return [CameraRenderResult("Camera", image_path, kwargs["width"], kwargs["height"])]
+        return [
+            CameraRenderResult(
+                "Camera",
+                "/World/Camera",
+                image_path,
+                kwargs["width"],
+                kwargs["height"],
+            )
+        ]
 
     monkeypatch.setattr(offline, "render_scene_cameras", fake_render)
 
@@ -66,11 +74,13 @@ def test_render_scene_resolves_paths_defaults_and_manifest(
     assert captured["kwargs"] == {
         "width": offline.DEFAULT_WIDTH,
         "height": offline.DEFAULT_HEIGHT,
-        "spp": offline.DEFAULT_HEADLESS_SPP,
+        "spp": 128,
+        "tone_map": True,
     }
     assert result["images"] == [
         {
             "camera_name": "Camera",
+            "camera_path": "/World/Camera",
             "path": str((output_dir / "000-camera.png").resolve()),
             "markdown_path": (output_dir / "000-camera.png").resolve().as_posix(),
             "width": offline.DEFAULT_WIDTH,
@@ -97,7 +107,7 @@ def test_render_scene_resolves_explicit_output_and_options(
     monkeypatch.setattr(
         offline,
         "f2",
-        SimpleNamespace(Scene=SimpleNamespace(create=lambda device, path: object())),
+        SimpleNamespace(Scene=SimpleNamespace(load=lambda device, path: object())),
     )
     monkeypatch.setattr(
         offline,
@@ -116,13 +126,19 @@ def test_render_scene_resolves_explicit_output_and_options(
             "height": 32,
             "spp": 2,
             "device_type": "vulkan",
+            "tone_map": False,
         },
         {"workspace_root": str(workspace)},
     )
 
     assert result["output_dir"] == str((workspace / "renders").resolve())
     assert captured["output_dir"] == (workspace / "renders").resolve()
-    assert captured["kwargs"] == {"width": 64, "height": 32, "spp": 2}
+    assert captured["kwargs"] == {
+        "width": 64,
+        "height": 32,
+        "spp": 2,
+        "tone_map": False,
+    }
 
 
 def test_render_scene_validates_scene_before_device_creation(
@@ -150,6 +166,7 @@ def test_render_scene_validates_scene_before_device_creation(
         ({"scene_path": "scene.py", "height": -1}, "height"),
         ({"scene_path": "scene.py", "spp": True}, "spp"),
         ({"scene_path": "scene.py", "device_type": "metal"}, "device_type"),
+        ({"scene_path": "scene.py", "tone_map": 0}, "tone_map"),
         ({"scene_path": "scene.py", "out": ""}, "out"),
     ],
 )

@@ -6,37 +6,31 @@ implementing render;
 public struct PointLight : ILight
 {
     public LightHeader header;
-    public float3 position_ws;
+    public float3 pos_ws;
+    public float3 dir_ws;
     public float3 intensity;
+    public LightShaping shaping;
 
-    public float emitted_power() { return float.FOUR_PI * luminance(intensity); }
+    public float power_estimate() { return float.FOUR_PI * luminance(intensity) * shaping.full_sphere_power_factor(); }
 
-    public float3 eval_direction<Interaction : IInteraction>(const Interaction ref, const DirectionSample sample)
-    {
-        return float3(0.0);
-    }
-
-    public bool sample_direction<Interaction : IInteraction, SampleGenerator : ISampleGenerator>(
-        const Interaction ref,
+    public bool sample<SampleGenerator : ISampleGenerator>(
+        const LightSampleContext ctx,
         inout SampleGenerator sg,
-        no_diff out DirectionSample sample,
-        out float3 weight
+        out LightSample sample
     )
     {
         sample = {};
-        float3 to_light = position_ws - ref.position_ws;
+        float3 to_light = pos_ws - ctx.pos_ws;
         float distance = length(to_light);
+        if (distance <= 0.0)
+            return false;
         sample.dir_ws = to_light / distance;
         sample.distance = distance;
         sample.pdf = 1.0;
-        sample.delta = true;
+        sample.weight = intensity * shaping.eval(dir_ws, -sample.dir_ws) / sqr(distance);
+        sample.nee_only = true;
         sample.emitter_type = EmitterType::analytic;
-        weight = intensity / sqr(distance);
+        sample.pos_ws = pos_ws;
         return true;
-    }
-
-    public float eval_direction_pdf<Interaction : IInteraction>(const Interaction ref, const DirectionSample sample)
-    {
-        return 0.0;
     }
 };

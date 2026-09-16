@@ -101,7 +101,6 @@ class MDLProvider:
             device_type=self.device_type,
             width=self.options.render_size[0],
             height=self.options.render_size[1],
-            enable_analytic_lights=self.options.enable_direct_lighting,
             radiance_ibl_path=self.options.radiance_ibl_path,
             dump_generated_code=self.options.dump_generated_code,
         )

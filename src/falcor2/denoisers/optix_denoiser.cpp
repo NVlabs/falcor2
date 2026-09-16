@@ -490,12 +490,8 @@ void OptixDenoiser::Impl::create_denoiser(const OptixDenoiserDesc& desc)
 
     // Create denoiser
     rhi::optix_denoiser::OptixDenoiserOptions options = to_optix(desc);
-    rhi::optix_denoiser::OptixResult result = m_api->optixDenoiserCreate(
-        m_optix_context,
-        rhi::optix_denoiser::OPTIX_DENOISER_MODEL_KIND_LDR, // Could be configurable
-        &options,
-        &m_denoiser
-    );
+    rhi::optix_denoiser::OptixResult result
+        = m_api->optixDenoiserCreate(m_optix_context, to_optix(desc.model_kind), &options, &m_denoiser);
     if (result != rhi::optix_denoiser::OPTIX_SUCCESS) {
         SGL_THROW(
             "OptixDenoiser: Failed to create denoiser: {} ({})",
@@ -610,6 +606,67 @@ void OptixDenoiser::denoise(
 {
     FALCOR_ASSERT(m_impl);
     m_impl->denoise(params, guide_layer, layers, cuda_stream);
+}
+
+void OptixDenoiser::denoise(
+    const optix::DenoiserParams& params,
+    const optix::DenoiserGuideLayer& guide_layer,
+    std::span<optix::DenoiserLayer> layers,
+    sgl::CommandEncoder* command_encoder
+)
+{
+    FALCOR_CHECK_NOT_NULL(command_encoder);
+    FALCOR_CHECK(command_encoder->device() == m_device.get(), "Command encoder must use the OptiX denoiser device.");
+    FALCOR_CHECK(
+        m_device->type() == sgl::DeviceType::cuda,
+        "Recording OptiX denoising into a command encoder requires a CUDA device."
+    );
+    if (guide_layer.albedo.buffer)
+        command_encoder->set_buffer_state(guide_layer.albedo.buffer.get(), sgl::ResourceState::shader_resource);
+    if (guide_layer.normal.buffer)
+        command_encoder->set_buffer_state(guide_layer.normal.buffer.get(), sgl::ResourceState::shader_resource);
+    if (guide_layer.flow.buffer)
+        command_encoder->set_buffer_state(guide_layer.flow.buffer.get(), sgl::ResourceState::shader_resource);
+    if (guide_layer.previous_output_internal_guide_layer.buffer) {
+        command_encoder->set_buffer_state(
+            guide_layer.previous_output_internal_guide_layer.buffer.get(),
+            sgl::ResourceState::shader_resource
+        );
+    }
+    if (guide_layer.output_internal_guide_layer.buffer) {
+        command_encoder->set_buffer_state(
+            guide_layer.output_internal_guide_layer.buffer.get(),
+            sgl::ResourceState::unordered_access
+        );
+    }
+    if (guide_layer.flow_trustworthiness.buffer) {
+        command_encoder->set_buffer_state(
+            guide_layer.flow_trustworthiness.buffer.get(),
+            sgl::ResourceState::shader_resource
+        );
+    }
+    for (const auto& layer : layers) {
+        if (layer.input.buffer)
+            command_encoder->set_buffer_state(layer.input.buffer.get(), sgl::ResourceState::shader_resource);
+        if (layer.previous_output.buffer) {
+            command_encoder->set_buffer_state(layer.previous_output.buffer.get(), sgl::ResourceState::shader_resource);
+        }
+        if (layer.output.buffer)
+            command_encoder->set_buffer_state(layer.output.buffer.get(), sgl::ResourceState::unordered_access);
+    }
+
+    command_encoder->execute_callback(
+        [self = ref<OptixDenoiser>(this), params, guide_layer, layers = std::vector(layers.begin(), layers.end())](
+            sgl::NativeHandle native_handle
+        ) mutable
+        {
+            FALCOR_CHECK(
+                native_handle.type() == sgl::NativeHandleType::CUstream,
+                "OptiX denoising command callback requires an active CUDA stream."
+            );
+            self->denoise(params, guide_layer, layers, native_handle);
+        }
+    );
 }
 
 } // namespace falcor

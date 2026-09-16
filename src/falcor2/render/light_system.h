@@ -7,11 +7,26 @@
 #include "falcor2/render/shared_scene_types.h"
 
 #include "falcor2/utils/managed_vector.h"
-#include "falcor2/utils/sampling/distribution_1d.h"
-
 #include <sgl/device/fwd.h>
 
+#include <cstdint>
+#include <span>
+#include <vector>
+
 namespace falcor {
+
+/// Independent monotonic generations for sampler-relevant light data.
+/// Each generation advances when data in its domain may have changed.
+struct LightGenerations {
+    /// Light counts, active state, type, or identifier mappings may have changed.
+    uint64_t topology{0};
+    /// Light positions, directions, shapes, or other spatial data may have changed.
+    uint64_t geometry{0};
+    /// Scalar estimates used to construct light-selection distributions may have changed.
+    uint64_t selection_weights{0};
+
+    bool operator==(const LightGenerations&) const = default;
+};
 
 /// Scene system responsible for managing lights.
 class LightSystem : public SceneSystem {
@@ -31,13 +46,29 @@ public:
     /// Get the type conformances for all light types.
     std::span<const sgl::TypeConformance> required_type_conformances() const { return m_type_conformances; }
 
+    /// Current sampler-relevant data generations.
+    const LightGenerations& generations() const { return m_generations; }
+
+    /// Total number of active component lights.
+    uint32_t light_count() const { return m_light_count; }
+
+    /// Number of active analytic lights.
+    uint32_t analytic_light_count() const { return m_analytic_light_count; }
+
+    /// Number of active environment lights.
+    uint32_t environment_light_count() const { return m_environment_light_count; }
+
+    /// Non-negative luminance-weighted selection estimates in LightID order.
+    /// Finite lights report emitted radiant flux; infinite lights report incident radiance integrated over solid angle.
+    std::span<const float> light_powers() const;
+
 private:
     void create_kernels();
 
     ComponentCollection& m_components;
 
-    ref<sgl::ComputeKernel> m_compute_environment_light_powers_kernel;
-    ref<sgl::Buffer> m_environment_light_power_buffer;
+    ref<sgl::ComputeKernel> m_compute_light_powers_kernel;
+    ref<sgl::Buffer> m_light_power_buffer;
 
     std::vector<sgl::TypeConformance> m_type_conformances;
     ManagedVector<shared::LightData> m_light_data;
@@ -45,8 +76,9 @@ private:
     uint32_t m_analytic_light_count{0};
     shared::LightID m_environment_light_id{shared::LightID::invalid};
     uint32_t m_environment_light_count{0};
-    ref<AliasTable1D> m_analytic_light_selection_distribution;
-    ref<AliasTable1D> m_environment_light_selection_distribution;
+    mutable std::vector<float> m_light_powers;
+    mutable LightGenerations m_light_power_generations;
+    LightGenerations m_generations;
 };
 
 } // namespace falcor

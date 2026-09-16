@@ -9,11 +9,12 @@
 
 namespace falcor {
 
-/// Generate tangents for mesh vertices using MikkTSpace algorithm.
+/// Generate tangents using MikkTSpace, splitting vertices where its per-corner output is discontinuous.
+/// Existing vertices are never merged; exact compaction is a separate operation that may run before or after this.
 FALCOR_API void mikkt_generate_tangent_space(ImporterMesh& mesh);
 
-/// Generate tangents with caching. On cache hit, tangents are read from cache.
-/// On cache miss, tangents are computed and stored in cache.
+/// Generate tangents using cached per-corner output, splitting vertices and rewriting indices as above.
+/// On a cache miss, the per-corner tangents are computed and stored in the cache.
 FALCOR_API void mikkt_generate_tangent_space(ImporterMesh& mesh, BlobCache& cache);
 
 } // namespace falcor

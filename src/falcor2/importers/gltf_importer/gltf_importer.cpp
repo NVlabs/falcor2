@@ -384,11 +384,12 @@ void GltfImporter::extract_cameras()
         ImporterCamera camera;
         camera.name = gltf_camera.name.empty() ? ("camera_" + std::to_string(cam_idx)) : gltf_camera.name;
         // Defaults
-        camera.focus_distance = 1.0f;
         camera.focal_length = 50.0f;
-        camera.fstop = 1.0f;
-        camera.depth_range = float2(0.01f, 1000.0f);
+        camera.fstop = 8.0f;
         camera.sensor_size_mm = 24.f;
+        camera.enable_depth_of_field = false;
+        camera.focus_distance = 1.0f;
+        camera.depth_range = float2(0.01f, 1000.0f);
         // Projection
         if (gltf_camera.type == "perspective") {
             camera.projection = ImporterCamera::Projection::perspective;

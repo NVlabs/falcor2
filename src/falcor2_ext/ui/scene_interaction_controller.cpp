@@ -27,15 +27,10 @@ FALCOR_PY_EXPORT(ui_scene_interaction_controller)
     );
     scene_interaction_controller
         .def(
-            nb::init<
-                ref<ui::SceneEditor>,
-                ref<ui::ScenePicker>,
-                ref<ui::SelectionOverlay>,
-                ref<ui::CameraController>>(),
+            nb::init<ref<ui::SceneEditor>, ref<ui::ScenePicker>, ref<ui::SelectionOverlay>>(),
             "scene_editor"_a.none(),
             "scene_picker"_a.none(),
             "selection_overlay"_a.none(),
-            "camera_controller"_a.none(),
             D(ui, SceneInteractionController, SceneInteractionController)
         )
         .def_prop_ro(
@@ -64,13 +59,6 @@ FALCOR_PY_EXPORT(ui_scene_interaction_controller)
             &ui::SceneInteractionController::set_scene,
             nb::arg().none(),
             D(ui, SceneInteractionController, scene)
-        )
-        .def_prop_rw(
-            "reset_callback",
-            &ui::SceneInteractionController::reset_callback,
-            &ui::SceneInteractionController::set_reset_callback,
-            nb::arg().none(),
-            D(ui, SceneInteractionController, reset_callback)
         )
         .def_prop_ro(
             "pointer_owner",
@@ -110,12 +98,6 @@ FALCOR_PY_EXPORT(ui_scene_interaction_controller)
             "update_selection_overlay",
             &ui::SceneInteractionController::update_selection_overlay,
             D(ui, SceneInteractionController, update_selection_overlay)
-        )
-        .def(
-            "focus_on_selection",
-            &ui::SceneInteractionController::focus_on_selection,
-            "camera"_a.none(),
-            D(ui, SceneInteractionController, focus_on_selection)
         );
 
     nb::sgl_enum<ui::SceneInteractionController::PointerOwner>(

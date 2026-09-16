@@ -42,14 +42,26 @@ BEGIN_DISABLE_USD_WARNINGS
 #include <pxr/usd/usdShade/connectableAPI.h>
 END_DISABLE_USD_WARNINGS
 
+#include <filesystem>
+#include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
-#include <string>
 
 namespace falcor {
 namespace usd_importer {
 
 FALCOR_API bool set_from_value(Properties& props, std::string_view name, const pxr::VtValue& value);
+
+/// Return true if path identifies an asset contained in an OpenUSD package.
+FALCOR_API bool is_package_asset(const std::filesystem::path& path);
+
+/// Read an asset contained in an OpenUSD package.
+///
+/// Returns no value when path is not package-relative. A package-relative path
+/// that cannot be opened or read raises an exception.
+FALCOR_API std::optional<std::vector<uint8_t>> read_package_asset(const std::filesystem::path& path);
+
 inline bool set_from_value(Properties& props, std::string_view name, const pxr::UsdAttribute& attr)
 {
     pxr::VtValue value;

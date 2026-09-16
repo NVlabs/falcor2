@@ -22,12 +22,14 @@ def get_slang_include_paths() -> list[Union[Path, str]]:
 def create_device(
     device_type: spy.DeviceType = spy.DeviceType.automatic,
     enable_debug_layers: bool = False,
+    enable_cuda_interop: bool = False,
 ) -> spy.Device:
     """Creates a device with correct Slang include paths configured."""
     return spy.create_device(
         type=device_type,
         include_paths=get_slang_include_paths(),
         enable_debug_layers=enable_debug_layers,
+        enable_cuda_interop=enable_cuda_interop,
     )
 
 
@@ -50,7 +52,9 @@ def load_scene(
     recompute_normals: bool = False,
 ) -> f2.Scene:
     """Load a scene from a file using the C++ scene system."""
-    return f2.Scene.create(device, path, recompute_normals)
+    import_options = f2.ImportOptions()
+    import_options.recompute_normals = recompute_normals
+    return f2.Scene.load(device, path, import_options)
 
 
 def save_image(tensor: spy.Tensor, path: Union[str, PathLike[str]]) -> None:

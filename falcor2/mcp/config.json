@@ -80,6 +80,29 @@
       }
     },
     {
+      "name": "falcor2.app.inspect_scene",
+      "title": "Inspect the loaded Falcor2 scene",
+      "description": "Return a structured JSON representation of the scene loaded in the selected running editor. Optionally filter returned nodes with a shell-style wildcard pattern such as '*camera*'.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "node_name_pattern": {
+            "type": "string",
+            "minLength": 1
+          },
+          "case_sensitive": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    {
       "name": "falcor2.offline.python_info",
       "title": "Get Falcor2 offline Python info",
       "description": "Run in the resolved Falcor2 Python environment and return lightweight interpreter and workspace context.",
@@ -117,7 +140,14 @@
           },
           "spp": {
             "type": "integer",
-            "minimum": 1
+            "minimum": 1,
+            "default": 128,
+            "description": "Samples per pixel. Defaults to 128 when omitted."
+          },
+          "tone_map": {
+            "type": "boolean",
+            "default": true,
+            "description": "Apply Falcor's artistic tone mapper before PNG encoding. Set false for a linear-render comparison; PNG output still uses standard sRGB encoding."
           },
           "device_type": {
             "type": "string",
@@ -151,6 +181,9 @@
                 "camera_name": {
                   "type": "string"
                 },
+                "camera_path": {
+                  "type": "string"
+                },
                 "path": {
                   "type": "string"
                 },
@@ -170,6 +203,7 @@
               },
               "required": [
                 "camera_name",
+                "camera_path",
                 "path",
                 "markdown_path",
                 "width",
@@ -189,6 +223,65 @@
       },
       "module": "falcor2.mcp.offline",
       "function": "render_scene"
+    },
+    {
+      "name": "falcor2.offline.inspect_scene",
+      "title": "Inspect a Falcor2 scene offline",
+      "description": "Load a Falcor2 scene without a running app and return its structured JSON representation. Optionally filter returned nodes with a shell-style wildcard pattern such as '*camera*', and optionally write the result to a JSON file.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "scene_path": {
+            "type": "string"
+          },
+          "node_name_pattern": {
+            "type": "string",
+            "minLength": 1
+          },
+          "case_sensitive": {
+            "type": "boolean",
+            "default": false
+          },
+          "out": {
+            "type": "string"
+          },
+          "device_type": {
+            "type": "string",
+            "enum": [
+              "automatic",
+              "d3d12",
+              "vulkan",
+              "cuda"
+            ]
+          }
+        },
+        "required": [
+          "scene_path"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "scene_path": {
+            "type": "string"
+          },
+          "scene": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "output_path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "scene_path",
+          "scene"
+        ],
+        "additionalProperties": false
+      },
+      "module": "falcor2.mcp.offline",
+      "function": "inspect_scene"
     },
     {
       "name": "falcor2.echo",

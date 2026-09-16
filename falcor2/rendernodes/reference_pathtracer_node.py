@@ -10,10 +10,12 @@ import slangpy as spy
 from slangpy import CommandEncoder, Device, float3
 
 import falcor2 as f2
+from falcor2.reflection import reflected, reflected_property
 from falcor2.rendergraph import (
     ContainerSpec,
     RenderNode,
     Container,
+    OutputOperation,
     OutputPrelude,
 )
 
@@ -21,6 +23,7 @@ from falcor2.editor.scene_shader import SceneShaderHelper
 
 REFERENCE_MODULE_PATH = "falcor2/rendernodes/reference_pathtracer.slang"
 WRITE_GUIDE_INTERFACE = "IWriteGuide"
+MAX_PATH_DEPTH = 0xFF
 
 
 class SchedulingMode(IntEnum):
@@ -37,6 +40,7 @@ class VisibilityRayMode(IntEnum):
     trace_ray = 1
 
 
+@reflected
 class ReferencePathTracerNode(RenderNode):
     def __init__(self, device: Device):
         """Create a reference path tracer node and reflect its guide outputs."""
@@ -51,19 +55,24 @@ class ReferencePathTracerNode(RenderNode):
         self._render_func_constants = None
         self._scene = None
         self._output = None
-        self._previous_camera_uniforms: dict[str, Any] | None = None
+        self._previous_camera_uniforms: f2.CameraUniforms | None = None
         self._previous_camera_dims: tuple[int, int] | None = None
         self._guide_specs: dict[str, ContainerSpec | None] = {
             name: None for name in self._prelude.specs
         }
         self._guides: dict[str, Any | None] = {name: None for name in self._prelude.specs}
+        self._guide_outputs_needing_clear: set[str] = set()
+        self._light_sampler = f2.PowerLightSampler()
         self._enable_nee = False
         self._enable_mis = True
+        self._enable_interior_tracking = True
+        self._enable_nested_interiors = False
+        self._enable_homogeneous_media = True
+        self._enable_russian_roulette = True
         self._max_depth = 3
-        self._enable_analytic_lights = True
-        self._enable_environment_light = True
-        self._enable_emissive_triangles = True
-        self._env_map_as_background = True
+        self._rr_depth = 3
+        self._enable_depth_of_field = True
+        self._use_background_color = False
         self._background_color = float3(0.0, 0.0, 0.0)
         self._scheduling_mode = SchedulingMode.simple
         self._visibility_ray_mode = (
@@ -72,6 +81,8 @@ class ReferencePathTracerNode(RenderNode):
             else VisibilityRayMode.trace_ray
         )
         self._constants = {}
+        self._settings = {}
+        self.constants_changed()
         self.settings_changed()
 
     @classmethod
@@ -80,26 +91,40 @@ class ReferencePathTracerNode(RenderNode):
         return cls(device)
 
     def reset(self) -> None:
-        """Reset previous-camera history used for motion-vector guide outputs."""
+        """Reset temporal state used by motion vectors and NaN checks."""
         self._previous_camera_uniforms = None
         self._previous_camera_dims = None
+        self.reset_nan_checks()
 
-    def settings_changed(self):
-        """Refresh shader specialization constants after a setting changes."""
+    def reset_nan_checks(self) -> None:
+        """Clear the NaN count guide before its next dispatch."""
+        if self._guides.get("nan_count") is not None:
+            self._guide_outputs_needing_clear.add("nan_count")
+
+    def constants_changed(self) -> None:
+        """Refresh shader specialization constants after a constant changes."""
         self._constants = {
             "ENABLE_NEE": self._enable_nee,
             "ENABLE_MIS": self._enable_mis,
-            "MAX_DEPTH": self._max_depth,
-            "ENABLE_ANALYTIC_LIGHTS": self._enable_analytic_lights,
-            "ENABLE_ENVIRONMENT_LIGHT": self._enable_environment_light,
-            "ENABLE_EMISSIVE_TRIANGLES": self._enable_emissive_triangles,
-            "ENV_MAP_AS_BACKGROUND": self._env_map_as_background,
-            "BACKGROUND_COLOR": self._background_color,
+            "ENABLE_INTERIOR_TRACKING": self._enable_interior_tracking,
+            "ENABLE_NESTED_INTERIORS": self._enable_nested_interiors,
+            "ENABLE_HOMOGENEOUS_MEDIA": self._enable_homogeneous_media,
+            "ENABLE_RUSSIAN_ROULETTE": self._enable_russian_roulette,
+            "ENABLE_DEPTH_OF_FIELD": self._enable_depth_of_field,
             "SCHEDULING_MODE": int(self._scheduling_mode),
             "VISIBILITY_RAY_MODE": int(self._visibility_ray_mode),
         }
         self._render_func = None
         self._render_func_constants = None
+
+    def settings_changed(self) -> None:
+        """Refresh runtime shader settings after a setting changes."""
+        self._settings = {
+            "max_depth": self._max_depth,
+            "rr_depth": self._rr_depth,
+            "use_background_color": self._use_background_color,
+            "background_color": self._background_color,
+        }
 
     @property
     def output_spec(self) -> ContainerSpec:
@@ -111,6 +136,28 @@ class ReferencePathTracerNode(RenderNode):
         """Set the color output container specification."""
         self._output_spec = value
 
+    @reflected_property(
+        object_factories=(
+            f2.UniformLightSampler,
+            f2.PowerLightSampler,
+            f2.HierarchicalLightSampler,
+        ),
+        ui_label="Light sampler",
+        ui_group="Sampling",
+    )
+    def light_sampler(self) -> f2.LightSampler:
+        """Host-side strategy used to sample all scene lights."""
+        return self._light_sampler
+
+    @light_sampler.setter
+    def light_sampler(self, value: f2.LightSampler) -> None:
+        """Select the host-side scene light sampling strategy."""
+        if not isinstance(value, f2.LightSampler):
+            raise TypeError("light_sampler must be a LightSampler.")
+        self._light_sampler = value
+        self._render_func = None
+        self._render_func_constants = None
+
     @property
     def guide_output_specs(self) -> dict[str, ContainerSpec | None]:
         """Container specifications for optional guide outputs."""
@@ -121,7 +168,7 @@ class ReferencePathTracerNode(RenderNode):
         """Set guide output specs, ignoring names not declared by the guide interface."""
         self._guide_specs = {name: value.get(name) for name in self._prelude.specs}
 
-    @property
+    @reflected_property(ui_label="Next-event estimation", ui_group="Sampling")
     def enable_nee(self) -> bool:
         """Whether next-event estimation is enabled."""
         return self._enable_nee
@@ -130,9 +177,13 @@ class ReferencePathTracerNode(RenderNode):
     def enable_nee(self, value: bool):
         """Enable or disable next-event estimation."""
         self._enable_nee = value
-        self.settings_changed()
+        self.constants_changed()
 
-    @property
+    @reflected_property(
+        ui_label="Multiple importance sampling",
+        ui_group="Sampling",
+        ui_enable_if=lambda path_tracer: path_tracer.enable_nee,
+    )
     def enable_mis(self) -> bool:
         """Whether multiple importance sampling is enabled."""
         return self._enable_mis
@@ -141,75 +192,135 @@ class ReferencePathTracerNode(RenderNode):
     def enable_mis(self, value: bool):
         """Enable or disable multiple importance sampling."""
         self._enable_mis = value
-        self.settings_changed()
+        self.constants_changed()
 
-    @property
+    @reflected_property(ui_label="Interior tracking", ui_group="Media")
+    def enable_interior_tracking(self) -> bool:
+        """Whether closed-surface interiors are tracked for solid dielectric transmission."""
+        return self._enable_interior_tracking
+
+    @enable_interior_tracking.setter
+    def enable_interior_tracking(self, value: bool) -> None:
+        """Enable or disable closed-surface interior tracking."""
+        self._enable_interior_tracking = value
+        self.constants_changed()
+
+    @reflected_property(
+        ui_label="Nested interiors",
+        ui_group="Media",
+        ui_enable_if=lambda path_tracer: path_tracer.enable_interior_tracking,
+    )
+    def enable_nested_interiors(self) -> bool:
+        """Whether priority-based interfaces between nested interiors are handled."""
+        return self._enable_nested_interiors
+
+    @enable_nested_interiors.setter
+    def enable_nested_interiors(self, value: bool) -> None:
+        """Enable or disable priority-based nested-interior handling."""
+        self._enable_nested_interiors = value
+        self.constants_changed()
+
+    @reflected_property(
+        ui_label="Homogeneous media",
+        ui_group="Media",
+        ui_enable_if=lambda path_tracer: path_tracer.enable_interior_tracking,
+    )
+    def enable_homogeneous_media(self) -> bool:
+        """Whether homogeneous absorption and scattering are handled."""
+        return self._enable_homogeneous_media
+
+    @enable_homogeneous_media.setter
+    def enable_homogeneous_media(self, value: bool) -> None:
+        """Enable or disable homogeneous absorption and scattering."""
+        self._enable_homogeneous_media = value
+        self.constants_changed()
+
+    @reflected_property(ui_label="Russian roulette", ui_group="Sampling")
+    def enable_russian_roulette(self) -> bool:
+        """Whether Russian roulette path termination is enabled."""
+        return self._enable_russian_roulette
+
+    @enable_russian_roulette.setter
+    def enable_russian_roulette(self, value: bool) -> None:
+        """Enable or disable Russian roulette path termination."""
+        self._enable_russian_roulette = value
+        self.constants_changed()
+
+    @reflected_property(
+        value_range=(1, MAX_PATH_DEPTH),
+        ui_label="Maximum depth",
+        ui_group="Sampling",
+    )
     def max_depth(self) -> int:
         """Maximum path depth."""
         return self._max_depth
 
     @max_depth.setter
-    def max_depth(self, value: int):
+    def max_depth(self, value: int) -> None:
         """Set the maximum path depth."""
-        self._max_depth = value
+        self._max_depth = max(1, min(value, MAX_PATH_DEPTH))
         self.settings_changed()
 
-    @property
-    def enable_analytic_lights(self) -> bool:
-        """Whether analytic lights contribute to rendering."""
-        return self._enable_analytic_lights
+    @reflected_property(
+        value_range=(1, MAX_PATH_DEPTH),
+        ui_label="Russian roulette depth",
+        ui_group="Sampling",
+        ui_enable_if=lambda path_tracer: path_tracer.enable_russian_roulette,
+    )
+    def rr_depth(self) -> int:
+        """Path depth at which Russian roulette starts."""
+        return self._rr_depth
 
-    @enable_analytic_lights.setter
-    def enable_analytic_lights(self, value: bool):
-        """Enable or disable analytic light contribution."""
-        self._enable_analytic_lights = value
+    @rr_depth.setter
+    def rr_depth(self, value: int) -> None:
+        """Set the path depth at which Russian roulette starts."""
+        self._rr_depth = max(1, min(value, MAX_PATH_DEPTH))
         self.settings_changed()
 
-    @property
-    def enable_environment_light(self) -> bool:
-        """Whether environment lighting contributes to rendering."""
-        return self._enable_environment_light
+    @reflected_property(ui_label="Depth of field", ui_group="Camera")
+    def enable_depth_of_field(self) -> bool:
+        """Whether cameras with a nonzero aperture use stochastic depth of field."""
+        return self._enable_depth_of_field
 
-    @enable_environment_light.setter
-    def enable_environment_light(self, value: bool):
-        """Enable or disable environment light contribution."""
-        self._enable_environment_light = value
+    @enable_depth_of_field.setter
+    def enable_depth_of_field(self, value: bool) -> None:
+        """Enable or disable stochastic thin-lens camera rays."""
+        self._enable_depth_of_field = value
+        self.constants_changed()
+
+    @reflected_property(ui_label="Use background color", ui_group="Background")
+    def use_background_color(self) -> bool:
+        """Whether a constant color is used instead of the environment map as background."""
+        return self._use_background_color
+
+    @use_background_color.setter
+    def use_background_color(self, value: bool) -> None:
+        """Enable or disable using a constant background color."""
+        self._use_background_color = value
         self.settings_changed()
 
-    @property
-    def enable_emissive_triangles(self) -> bool:
-        """Whether emissive triangles contribute to rendering."""
-        return self._enable_emissive_triangles
-
-    @enable_emissive_triangles.setter
-    def enable_emissive_triangles(self, value: bool):
-        """Enable or disable emissive triangle contribution."""
-        self._enable_emissive_triangles = value
-        self.settings_changed()
-
-    @property
-    def env_map_as_background(self) -> bool:
-        """Whether the environment map is visible as the background."""
-        return self._env_map_as_background
-
-    @env_map_as_background.setter
-    def env_map_as_background(self, value: bool):
-        """Enable or disable using the environment map as the background."""
-        self._env_map_as_background = value
-        self.settings_changed()
-
-    @property
+    @reflected_property(
+        ui_label="Background color",
+        ui_group="Background",
+        ui_enable_if=lambda path_tracer: path_tracer.use_background_color,
+    )
     def background_color(self) -> float3:
-        """Fallback background color when the environment map is not shown."""
+        """Constant color used when ``use_background_color`` is enabled."""
         return self._background_color
 
     @background_color.setter
-    def background_color(self, value: float3):
-        """Set the fallback background color."""
+    def background_color(self, value: float3) -> None:
+        """Set the constant background color."""
         self._background_color = value
         self.settings_changed()
 
-    @property
+    @reflected_property(
+        ui_label="Scheduling",
+        ui_group="Advanced",
+        ui_enable_if=lambda path_tracer: path_tracer._device.has_feature(
+            spy.Feature.shader_execution_reordering
+        ),
+    )
     def scheduling_mode(self) -> SchedulingMode:
         """Selected path scheduling implementation."""
         return self._scheduling_mode
@@ -223,9 +334,13 @@ class ReferencePathTracerNode(RenderNode):
         ):
             raise RuntimeError("SER scheduling is not supported by this device.")
         self._scheduling_mode = mode
-        self.settings_changed()
+        self.constants_changed()
 
-    @property
+    @reflected_property(
+        ui_label="Visibility rays",
+        ui_group="Advanced",
+        ui_enable_if=lambda path_tracer: path_tracer._device.has_feature(spy.Feature.ray_query),
+    )
     def visibility_ray_mode(self) -> VisibilityRayMode:
         """Selected visibility-ray traversal implementation."""
         return self._visibility_ray_mode
@@ -239,21 +354,27 @@ class ReferencePathTracerNode(RenderNode):
         ):
             raise RuntimeError("Ray-query visibility is not supported by this device.")
         self._visibility_ray_mode = mode
-        self.settings_changed()
-
-    def _bind_scene(self, cursor: Any):
-        """Bind scene resources into the render call cursor."""
-        self._scene_shader.bind_scene(cursor)
+        self.constants_changed()
 
     def _clear_guide_outputs(
-        self, command_encoder: CommandEncoder, guide_outputs: dict[str, Any | None]
+        self,
+        command_encoder: CommandEncoder,
+        guide_outputs: dict[str, Any | None],
+        iteration: int,
     ):
-        """Clear enabled guide outputs using their reflected clear values."""
+        """Clear guide outputs using their reflected operation and clear values."""
         for name, output in guide_outputs.items():
             if output is None:
                 continue
             spec = self._prelude.specs[name]
+            if (
+                spec.operation == OutputOperation.increment
+                and iteration != 0
+                and name not in self._guide_outputs_needing_clear
+            ):
+                continue
             Container.clear(output, clear_value=spec.clear_value, command_encoder=command_encoder)
+            self._guide_outputs_needing_clear.discard(name)
 
     def _get_module(self, scene: f2.Scene) -> Any:
         """Return the scene-specialized module and invalidate cached dispatch if needed."""
@@ -275,6 +396,8 @@ class ReferencePathTracerNode(RenderNode):
         render_func_constants = (
             constants,
             self._prelude.signature(write_guide),
+            self._light_sampler.slang_type_name,
+            self._light_sampler.shader_generation,
         )
         if self._render_func is None or self._render_func_constants != render_func_constants:
             assert self._scene
@@ -283,13 +406,16 @@ class ReferencePathTracerNode(RenderNode):
             scatter_ray_desc.name = "scatter"
             scatter_ray_desc.has_miss = True
             scatter_ray_desc.has_closest_hit = True
+            scatter_ray_desc.has_any_hit = self._scene.requirements.requires_opacity_evaluation
             ray_descs = [scatter_ray_desc]
 
             if self._visibility_ray_mode == VisibilityRayMode.trace_ray:
                 visibility_ray_desc = f2.SceneRayTracingSetup.RayDesc()
                 visibility_ray_desc.name = "visibility"
                 visibility_ray_desc.has_miss = True
-                visibility_ray_desc.has_any_hit = True
+                visibility_ray_desc.has_any_hit = (
+                    self._scene.requirements.requires_opacity_evaluation
+                )
                 ray_descs.append(visibility_ray_desc)
 
             rt_setup = f2.SceneRayTracingSetup.create(
@@ -297,15 +423,21 @@ class ReferencePathTracerNode(RenderNode):
                 ray_descs,
             )
 
-            # Generate a prelude that implements IWriteGuide for the requested guide
-            # targets, then attach scene binding and ray tracing dispatch metadata.
-            render_func = module.render.constants(constants).prelude(
-                self._prelude.generate(write_guide)
+            # Generate a prelude that selects the light sampler and implements
+            # IWriteGuide for the requested guide targets.
+            prelude = ""
+            prelude += self._light_sampler.shader_specialization_source
+            prelude += (
+                "export struct LightSampler : ILightSampler = "
+                f"{self._light_sampler.slang_type_name};\n"
             )
+            prelude += self._prelude.generate(write_guide)
+            render_func = module.render.constants(constants).prelude(prelude)
 
+            # Attach scene binding and ray tracing dispatch metadata.
             self._render_func = (
                 render_func.type_conformances(self._scene.requirements.type_conformances)
-                .write(self._bind_scene)
+                .write(self._scene_shader.bind_scene)
                 .ray_tracing(
                     hit_groups=rt_setup.hit_groups,
                     hit_group_names=rt_setup.sbt_hit_group_names,
@@ -373,15 +505,20 @@ class ReferencePathTracerNode(RenderNode):
         for name, spec in self._guide_specs.items():
             if spec is None:
                 self._guides[name] = None
+                self._guide_outputs_needing_clear.discard(name)
                 outputs[name] = None
                 continue
             resolved = self._resolve_guide_output_spec(name, spec, width, height)
-            self._guides[name] = Container.create_temp(
+            previous = self._guides.get(name)
+            output = Container.create_temp(
                 self._device,
                 resolved,
-                current=self._guides.get(name),
+                current=previous,
             )
-            outputs[name] = self._guides[name]
+            if output is not previous:
+                self._guide_outputs_needing_clear.add(name)
+            self._guides[name] = output
+            outputs[name] = output
         return outputs
 
     def _make_write_guide_targets(self, guide_outputs: dict[str, Any | None]) -> dict[str, Any]:
@@ -413,6 +550,7 @@ class ReferencePathTracerNode(RenderNode):
 
         # The module is scene-specialized, while the generated prelude is specialized
         # only by the write-guide target dictionary below.
+        self._light_sampler.update(scene, cmd)
         module = self._get_module(scene)
         guide_outputs = guide_outputs or {name: None for name in self._prelude.specs}
         write_guide = self._make_write_guide_targets(guide_outputs)
@@ -426,10 +564,10 @@ class ReferencePathTracerNode(RenderNode):
             if render_cmd is None:
                 temp_cmd = self._device.create_command_encoder()
                 render_cmd = temp_cmd
-            self._clear_guide_outputs(render_cmd, guide_outputs)
+            self._clear_guide_outputs(render_cmd, guide_outputs, iteration)
 
         render_camera = camera.calc_uniforms(current_dims[0], current_dims[1])
-        current_camera_uniforms = dict(render_camera.get_uniforms())
+        current_camera_uniforms = render_camera
         if self._previous_camera_dims == current_dims:
             previous_camera = self._previous_camera_uniforms
         else:
@@ -440,6 +578,10 @@ class ReferencePathTracerNode(RenderNode):
         # function, because the target containers are frame-local and can change.
         def bind_dispatch(cursor: Any) -> None:
             self._prelude.bind(cursor, write_guide)
+            cursor["light_sampler"] = self._light_sampler
+            path_tracer_settings = cursor["g_path_tracer"]["settings"]
+            for name, value in self._settings.items():
+                path_tracer_settings[name] = value
             trace_context = cursor["g_trace_path_context"]
             trace_context["current_camera"] = current_camera_uniforms
             trace_context["previous_camera"] = previous_camera
@@ -458,7 +600,7 @@ class ReferencePathTracerNode(RenderNode):
         if temp_cmd is not None:
             self._device.submit_command_buffer(temp_cmd.finish())
 
-    def forward(
+    def _exec(
         self,
         scene: f2.Scene,
         camera: f2.Camera,

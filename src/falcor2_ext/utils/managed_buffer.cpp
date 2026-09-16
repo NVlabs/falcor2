@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "nanobind.h"
-#include "nbdictionary.h"
 
 #include "falcor2/falcor2.h"
 #include "falcor2/utils/buffer_handle.h"
@@ -20,23 +19,7 @@ FALCOR_PY_EXPORT(utils_managed_buffer)
     using namespace falcor;
 
     nb::class_<BufferHandle>(m, "BufferHandle", D(BufferHandle))
-        .def_prop_ro("data", &BufferHandle::data, D(BufferHandle, data))
-        .def(
-            "get_uniforms",
-            [](BufferHandle* self)
-            {
-                return NBDictionary::get_uniforms(*self);
-            }
-        )
-        .def(
-            "get_this",
-            [](BufferHandle* self)
-            {
-                auto dict = NBDictionary::get_uniforms(*self);
-                dict["_type"] = "BufferHandle";
-                return dict;
-            }
-        );
+        .def_prop_ro("data", &BufferHandle::data, D(BufferHandle, data));
 
     m.def(
         "to_handle",

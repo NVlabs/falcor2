@@ -9,6 +9,7 @@
 
 // compiler constants defined from outside:
 // - MDL_NUM_TEXTURE_RESULTS
+// - MDL_NUM_TEXTURE_SPACES
 // - MDL_USE_DERIVS
 // - MDL_DF_HANDLE_SLOT_MODE (0, 1, 2, 4, or 8)
 
@@ -16,6 +17,9 @@
 // The actual values do not matter, as the code will be compiled multiple times with different values for these defines.
 #ifndef MDL_NUM_TEXTURE_RESULTS
 #define MDL_NUM_TEXTURE_RESULTS 0
+#endif
+#ifndef MDL_NUM_TEXTURE_SPACES
+#define MDL_NUM_TEXTURE_SPACES 1
 #endif
 #ifndef MDL_DF_HANDLE_SLOT_MODE
 #define MDL_DF_HANDLE_SLOT_MODE 0
@@ -77,9 +81,9 @@ struct Shading_state_material
     /// The i-th entry represents the texture coordinates of the i-th texture space at the
     /// current position.
 #if defined(MDL_USE_DERIVS)
-    Derived_float3    text_coords[1];
+    Derived_float3    text_coords[MDL_NUM_TEXTURE_SPACES];
 #else
-    float3            text_coords[1];
+    float3            text_coords[MDL_NUM_TEXTURE_SPACES];
 #endif
 
     /// An array containing the results of state::texture_tangent_u(i).
@@ -87,14 +91,14 @@ struct Shading_state_material
     /// current position, which points in the direction of the projection of the tangent to the
     /// positive u axis of this texture space onto the plane defined by the original
     /// surface normal.
-    float3            tangent_u[1];
+    float3            tangent_u[MDL_NUM_TEXTURE_SPACES];
 
     /// An array containing the results of state::texture_tangent_v(i).
     /// The i-th entry represents the texture bitangent vector of the i-th texture space at the
     /// current position, which points in the general direction of the positive v axis of this
     /// texture space, but is orthogonal to both the original surface normal and the tangent
     /// of this texture space.
-    float3            tangent_v[1];
+    float3            tangent_v[MDL_NUM_TEXTURE_SPACES];
 
     /// The texture results lookup table.
     /// Values will be modified by BSDF init functions to avoid duplicate texture fetches

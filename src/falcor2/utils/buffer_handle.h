@@ -5,12 +5,13 @@
 
 #include "falcor2/core/cursor_writer.h"
 #include "falcor2/core/object.h"
-#include "falcor2/utils/idictionary.h"
 
 #include <sgl/device/resource.h>
 #include <sgl/device/device.h>
 
+#include <array>
 #include <limits>
+#include <string_view>
 
 namespace falcor {
 
@@ -20,11 +21,12 @@ class FALCOR_API BufferHandle {
 public:
     FALCOR_STATIC_WRITE_TO_CURSOR(BufferHandle);
 
+    /// Slang type used by the native cursor-writer functional fallback.
+    static constexpr std::string_view slang_type_name = "BufferHandle";
+    static constexpr std::array<std::string_view, 1> slangpy_imports() { return {"falcor2/utils.slang"}; }
+
     /// Data for direct upload into memory location with GPU BufferHandle.
     uint64_t data() const { return m_handle_data; }
-
-    /// Used in get_uniforms() and get_this() calls to produce Python dictionary.
-    void to_dictionary(IDictionary& dict) const { write_to_cursor(dict); }
 
     /// Used when writing using Buffer or Shader Cursors.
     template<typename TCursor>

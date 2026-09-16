@@ -291,10 +291,7 @@ class DlssViewer:
         path_tracer.max_depth = 3
         path_tracer.enable_nee = True
         path_tracer.enable_mis = True
-        path_tracer.enable_analytic_lights = True
-        path_tracer.enable_environment_light = True
-        path_tracer.enable_emissive_triangles = True
-        path_tracer.env_map_as_background = False
+        path_tracer.use_background_color = True
         return path_tracer
 
     def _render_accumulated_color(
@@ -309,9 +306,10 @@ class DlssViewer:
         base_iteration = self._iteration * self._samples_per_frame
         # self._accumulator.reset()
 
-        if camera.get_uniforms() != self._prev_camera_uniforms:
+        camera_uniforms = camera.calc_uniforms()
+        if camera_uniforms != self._prev_camera_uniforms:
             self._accumulator.reset()
-            self._prev_camera_uniforms = camera.get_uniforms()
+            self._prev_camera_uniforms = camera_uniforms
 
         self._path_tracer.output_spec = color_spec
         self._path_tracer.guide_output_specs = guide_specs
@@ -460,7 +458,7 @@ def main() -> None:
     )
     print_support(ngx, support)
 
-    scene = f2.Scene.create(device, args.scene_path)
+    scene = f2.Scene.load(device, args.scene_path)
 
     viewer = DlssViewer(
         device,

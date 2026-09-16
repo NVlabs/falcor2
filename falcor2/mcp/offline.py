@@ -19,6 +19,7 @@ from falcor2.pyscene.preview import (
     render_scene_cameras,
 )
 from falcor2.editor.utils import create_device
+from falcor2.mcp.scene_inspection import scene_to_dict, write_scene_json
 
 JsonObject = dict[str, object]
 
@@ -47,6 +48,13 @@ def _positive_int(params: JsonObject, name: str, default: int) -> int:
     return value
 
 
+def _boolean(params: JsonObject, name: str, default: bool) -> bool:
+    value = params.get(name, default)
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be a boolean")
+    return value
+
+
 def _workspace_path(path: Path, workspace_root: Path) -> Path:
     if not path.is_absolute():
         path = workspace_root / path
@@ -63,12 +71,65 @@ def _image_result(result: CameraRenderResult) -> JsonObject:
     path = result.path.resolve()
     return {
         "camera_name": result.camera_name,
+        "camera_path": result.camera_path,
         "path": str(path),
         "markdown_path": path.as_posix(),
         "width": result.width,
         "height": result.height,
         "mime_type": "image/png",
     }
+
+
+def _load_scene(params: JsonObject, context: JsonObject) -> tuple[Path, object]:
+    workspace_value = context.get("workspace_root")
+    if not isinstance(workspace_value, str) or not workspace_value:
+        raise ValueError("context.workspace_root must be a non-empty string")
+    workspace_root = Path(workspace_value).resolve()
+    scene_path = _workspace_path(_required_path(params, "scene_path"), workspace_root)
+    if not scene_path.is_file():
+        raise ValueError(f"scene_path does not exist or is not a file: {scene_path}")
+
+    device_type_value = params.get("device_type", DEFAULT_DEVICE_TYPE)
+    if not isinstance(device_type_value, str) or device_type_value not in {
+        "automatic",
+        "d3d12",
+        "vulkan",
+        "cuda",
+    }:
+        raise ValueError("device_type must be automatic, d3d12, vulkan, or cuda")
+    device = create_device(device_type=getattr(spy.DeviceType, device_type_value))
+    return scene_path, f2.Scene.load(device, scene_path)
+
+
+def inspect_scene(params: JsonObject, context: JsonObject) -> JsonObject:
+    scene_path, scene = _load_scene(params, context)
+    pattern = params.get("node_name_pattern")
+    if pattern is not None and (not isinstance(pattern, str) or not pattern):
+        raise ValueError("node_name_pattern must be a non-empty string when provided")
+    case_sensitive = params.get("case_sensitive", False)
+    if not isinstance(case_sensitive, bool):
+        raise ValueError("case_sensitive must be a boolean")
+
+    structure = scene_to_dict(
+        scene,
+        node_name_pattern=pattern,
+        case_sensitive=case_sensitive,
+    )
+    out_value = params.get("out")
+    result: JsonObject = {"scene_path": str(scene_path), "scene": structure}
+    if out_value is not None:
+        if not isinstance(out_value, str) or not out_value:
+            raise ValueError("out must be a non-empty string when provided")
+        workspace_root = Path(str(context["workspace_root"])).resolve()
+        output_path = _workspace_path(Path(out_value), workspace_root)
+        write_scene_json(
+            scene,
+            output_path,
+            node_name_pattern=pattern,
+            case_sensitive=case_sensitive,
+        )
+        result["output_path"] = str(output_path)
+    return result
 
 
 def render_scene(params: JsonObject, context: JsonObject) -> JsonObject:
@@ -92,6 +153,7 @@ def render_scene(params: JsonObject, context: JsonObject) -> JsonObject:
     width = _positive_int(params, "width", DEFAULT_WIDTH)
     height = _positive_int(params, "height", DEFAULT_HEIGHT)
     spp = _positive_int(params, "spp", DEFAULT_HEADLESS_SPP)
+    tone_map = _boolean(params, "tone_map", True)
     device_type_value = params.get("device_type", DEFAULT_DEVICE_TYPE)
     if not isinstance(device_type_value, str) or device_type_value not in {
         "automatic",
@@ -102,7 +164,7 @@ def render_scene(params: JsonObject, context: JsonObject) -> JsonObject:
         raise ValueError("device_type must be automatic, d3d12, vulkan, or cuda")
 
     device = create_device(device_type=getattr(spy.DeviceType, device_type_value))
-    scene = f2.Scene.create(device, scene_path)
+    scene = f2.Scene.load(device, scene_path)
     results = render_scene_cameras(
         device,
         scene,
@@ -110,6 +172,7 @@ def render_scene(params: JsonObject, context: JsonObject) -> JsonObject:
         width=width,
         height=height,
         spp=spp,
+        tone_map=tone_map,
     )
     return {
         "scene_path": str(scene_path),

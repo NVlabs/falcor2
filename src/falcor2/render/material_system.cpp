@@ -11,6 +11,9 @@
 #include <sgl/device/shader.h>
 #include <sgl/device/shader_cursor.h>
 
+#include <unordered_map>
+#include <unordered_set>
+
 namespace falcor {
 
 MaterialSystem::MaterialSystem(Scene* scene)
@@ -47,6 +50,16 @@ SceneUpdateFlags MaterialSystem::update(SceneUpdateContext& ctx)
         }
     }
 
+    // Check if any valid material uses opacity evaluation.
+    m_requires_opacity_evaluation = false;
+    for (size_t i = 0; i < m_materials.size(); ++i) {
+        const Material* material = m_materials[i];
+        if (!material->is_valid())
+            continue;
+        if (is_set(material->opacity_desc().flags, shared::OpacityFlags::enabled))
+            m_requires_opacity_evaluation = true;
+    }
+
     // Build type conformances.
     // TODO(scene): We should (optionally) only build conformances for materials actually used in the scene.
     std::set<std::string> slang_type_names;
@@ -68,18 +81,28 @@ SceneUpdateFlags MaterialSystem::update(SceneUpdateContext& ctx)
         type_id++;
     }
 
+    // Independent loads can produce distinct SlangModule wrappers for the same underlying Slang
+    // component. Deduplicate by the component identity that SGL passes to Slang during composition,
+    // then order the unique wrappers by name to keep scene requirements deterministic.
+    std::unordered_set<slang::IComponentType*> required_component_types;
     m_required_modules.clear();
     for (size_t i = 0; i < m_materials.size(); ++i) {
         Material* material = m_materials[i];
         if (!material->is_valid())
             continue;
-        if (const ref<sgl::SlangModule>& module = material->required_module())
-            m_required_modules.push_back(module);
+        if (const ref<sgl::SlangModule>& module = material->required_module()) {
+            if (required_component_types.insert(module->slang_component_type()).second)
+                m_required_modules.push_back(module);
+        }
     }
-    std::sort(m_required_modules.begin(), m_required_modules.end());
-    m_required_modules.erase(
-        std::unique(m_required_modules.begin(), m_required_modules.end()),
-        m_required_modules.end()
+
+    std::sort(
+        m_required_modules.begin(),
+        m_required_modules.end(),
+        [](const ref<sgl::SlangModule>& lhs, const ref<sgl::SlangModule>& rhs)
+        {
+            return lhs->name() < rhs->name();
+        }
     );
 
     // Resize material data buffer to max required size (some slots might be unused).
@@ -88,6 +111,10 @@ SceneUpdateFlags MaterialSystem::update(SceneUpdateContext& ctx)
     // Write InvalidMaterial data to slot 0.
     m_material_data[0] = {};
     m_material_data[0].header.type_id = 0; // InvalidMaterial
+    m_material_data[0].header.material_data = shared::detail::pack_material_data(shared::MaterialFlags::none, 0);
+    m_material_data[0].header.opacity_texture = 0xffffffff;
+    m_material_data[0].header.opacity_data
+        = shared::detail::pack_opacity_data(shared::OpacityFlags::none, 3, 0.5f, 1.f);
 
     // Write material data to corresponding slots based on material ID.
     for (size_t i = 0; i < m_materials.size(); ++i) {
@@ -96,8 +123,17 @@ SceneUpdateFlags MaterialSystem::update(SceneUpdateContext& ctx)
             continue;
 
         uint32_t material_index = static_cast<uint32_t>(material->material_id());
+        Material::OpacityDesc opacity_desc = material->opacity_desc();
         m_material_data[material_index].header.type_id = slang_type_name_to_type_id[material->slang_type_name()];
-        m_material_data[material_index].header.flags = material->flags();
+        m_material_data[material_index].header.material_data
+            = shared::detail::pack_material_data(material->flags(), material->nested_priority());
+        m_material_data[material_index].header.opacity_texture = opacity_desc.texture_handle.data();
+        m_material_data[material_index].header.opacity_data = shared::detail::pack_opacity_data(
+            opacity_desc.flags,
+            opacity_desc.texture_channel,
+            opacity_desc.threshold,
+            opacity_desc.factor
+        );
 
         std::string buffer_type_name = fmt::format("StructuredBuffer<{}>", material->slang_type_name());
 

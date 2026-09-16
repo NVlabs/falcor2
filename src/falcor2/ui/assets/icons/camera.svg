@@ -1,0 +1,9 @@
+<!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <g fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="10" y="18" width="34" height="28" rx="5"/>
+    <path d="M44 27L56 21V43L44 37Z"/>
+    <circle cx="27" cy="32" r="8"/>
+  </g>
+</svg>

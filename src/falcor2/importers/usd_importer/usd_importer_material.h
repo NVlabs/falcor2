@@ -13,6 +13,7 @@ BEGIN_DISABLE_USD_WARNINGS
 #include <pxr/usd/usdShade/material.h>
 END_DISABLE_USD_WARNINGS
 
+#include <filesystem>
 #include <functional>
 
 namespace falcor {
@@ -31,7 +32,8 @@ void build_material(
     const pxr::UsdPrim& usd_terminal,
     const std::string_view& terminal_identifier,
     const pxr::TfTokenVector& shaderSourceTypes,
-    const pxr::TfTokenVector& renderContexts
+    const pxr::TfTokenVector& renderContexts,
+    const std::function<void(const std::filesystem::path&)>& register_asset
 );
 
 } // namespace usd_importer

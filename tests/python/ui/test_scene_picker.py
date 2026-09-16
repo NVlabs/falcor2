@@ -12,7 +12,7 @@ import falcor2.ui as ui
 
 
 DATA = Path(__file__).resolve().parents[3] / "data"
-SCENE_PATH = DATA / "assets/kronos/DamagedHelmet/glTF/DamagedHelmet.gltf"
+SCENE_PATH = DATA / "assets/kronos/Avocado/glTF-Binary/Avocado.glb"
 
 
 @pytest.fixture
@@ -21,7 +21,7 @@ def device(device_type: spy.DeviceType) -> spy.Device:
 
 
 def _load_scene(device: spy.Device) -> f2.Scene:
-    scene = f2.Scene.create(device, str(SCENE_PATH))
+    scene = f2.Scene.load(device, str(SCENE_PATH))
     scene.update()
     return scene
 

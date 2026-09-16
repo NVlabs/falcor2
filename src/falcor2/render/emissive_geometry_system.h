@@ -4,15 +4,29 @@
 #pragma once
 
 #include "falcor2/render/scene_system.h"
-#include "falcor2/render/shared_scene_types.h"
-
-#include "falcor2/utils/sampling/distribution_1d.h"
+#include "falcor2/render/shared_emissive_geometry_types.h"
 
 #include <sgl/device/fwd.h>
 #include <sgl/device/shader.h>
 
+#include <cstdint>
+#include <span>
+#include <vector>
 
 namespace falcor {
+
+/// Independent monotonic generations for sampler-relevant emissive geometry data.
+/// Each generation advances when data in its domain may have changed.
+struct EmissiveGeometryGenerations {
+    /// Triangle counts, active set, or identifier mappings may have changed.
+    uint64_t topology{0};
+    /// World-space triangle positions, normals, or areas may have changed.
+    uint64_t geometry{0};
+    /// Active triangle emitted radiant flux may have changed.
+    uint64_t flux{0};
+
+    bool operator==(const EmissiveGeometryGenerations&) const = default;
+};
 
 /// Scene system responsible for managing emissive geometry.
 class EmissiveGeometrySystem : public SceneSystem {
@@ -27,8 +41,30 @@ public:
     virtual SceneUpdateFlags update(SceneUpdateContext& ctx) override;
     virtual void bind_to_scene(const sgl::ShaderCursor& cursor) const override;
 
+    /// Current sampler-relevant data generations.
+    const EmissiveGeometryGenerations& generations() const { return m_generations; }
+
+    /// Total number of potentially emissive triangles.
+    uint32_t triangle_count() const { return m_triangle_count; }
+
+    /// Number of active triangles with non-zero emission.
+    uint32_t active_triangle_count() const { return m_active_triangle_count; }
+
+    /// Luminance-weighted one-sided emitted radiant flux in active triangle order.
+    std::span<const float> active_triangle_flux() const { return m_active_triangle_flux; }
+
+    /// CPU snapshot of all potentially emissive triangles in global triangle ID order.
+    FALCOR_API std::span<const shared::EmissiveTriangle> triangles() const;
+
+    /// Luminance-weighted one-sided emitted radiant flux in global triangle ID order.
+    FALCOR_API std::span<const float> triangle_flux() const;
+
+    /// Global triangle IDs in active triangle order.
+    FALCOR_API std::span<const shared::EmissiveTriangleID> active_triangle_ids() const;
+
 private:
     void create_kernels();
+    void clear_resources();
 
 private:
     sgl::Device* m_device;
@@ -50,17 +86,21 @@ private:
     ref<sgl::ComputeKernel> m_update_triangle_kernel;
 
     uint64_t m_requirements_generation{0};
+    EmissiveGeometryGenerations m_generations;
 
     uint32_t m_triangle_count{0};
     uint32_t m_active_triangle_count{0};
 
     /// List of (potentially) emissive triangles.
-    std::vector<shared::EmissiveTriangle> m_triangles;
-    /// List of (potentially) emissive triangle fluxes.
-    std::vector<float> m_triangle_flux;
+    mutable std::vector<shared::EmissiveTriangle> m_triangles;
+    mutable EmissiveGeometryGenerations m_triangles_generations;
+    /// Luminance-weighted one-sided flux of each potentially emissive triangle.
+    mutable std::vector<float> m_triangle_flux;
+    mutable EmissiveGeometryGenerations m_triangle_flux_generations;
     /// List of active emissive triangles that have non-zero emission.
-    std::vector<shared::EmissiveTriangleID> m_active_triangle_ids;
-    /// List of active emissive triangle fluxes.
+    mutable std::vector<shared::EmissiveTriangleID> m_active_triangle_ids;
+    mutable EmissiveGeometryGenerations m_active_triangle_ids_generations;
+    /// Luminance-weighted one-sided flux of each active emissive triangle.
     std::vector<float> m_active_triangle_flux;
 
     ref<sgl::Buffer> m_geometry_instance_to_triangle_id_buffer;
@@ -70,10 +110,6 @@ private:
     ref<sgl::Buffer> m_triangle_id_to_active_triangle_id_buffer;
     ref<sgl::Buffer> m_active_triangle_id_to_triangle_id_buffer;
     ref<sgl::Buffer> m_active_triangle_flux_buffer;
-
-    /// TODO(scene): We might wanna move this to a light sampler object instead.
-    /// Alias table over all active emissive triangles (for sampling).
-    ref<AliasTable1D> m_active_triangle_alias_table;
 };
 
 } // namespace falcor

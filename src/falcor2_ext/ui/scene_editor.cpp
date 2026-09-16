@@ -58,6 +58,18 @@ FALCOR_PY_EXPORT(ui_scene_editor)
             &ui::SceneEditor::set_transform_space,
             D(ui, SceneEditor, transform_space)
         )
+        .def_prop_rw(
+            "show_camera_gizmos",
+            &ui::SceneEditor::show_camera_gizmos,
+            &ui::SceneEditor::set_show_camera_gizmos,
+            "Whether editor-only camera gizmos are shown in the viewport."
+        )
+        .def_prop_rw(
+            "show_light_gizmos",
+            &ui::SceneEditor::show_light_gizmos,
+            &ui::SceneEditor::set_show_light_gizmos,
+            "Whether editor-only light gizmos are shown in the viewport."
+        )
         .def(
             "set_active_camera",
             &ui::SceneEditor::set_active_camera,
@@ -75,6 +87,13 @@ FALCOR_PY_EXPORT(ui_scene_editor)
         .def_prop_rw("looping", &ui::SceneEditor::looping, &ui::SceneEditor::set_looping, D(ui, SceneEditor, looping))
         .def("update_playback", &ui::SceneEditor::update_playback, "dt"_a, D(ui, SceneEditor, update_playback))
         .def_prop_rw("visible", &ui::SceneEditor::visible, &ui::SceneEditor::set_visible, D(ui, SceneEditor, visible))
+        .def_prop_rw(
+            "graph_ui_callback",
+            &ui::SceneEditor::graph_ui_callback,
+            &ui::SceneEditor::set_graph_ui_callback,
+            nb::arg().none(),
+            "Generic callback invoked inside the docked Graph window."
+        )
         .def_prop_ro("viewport_state", &ui::SceneEditor::viewport_state, D(ui, SceneEditor, viewport_state))
         .def_prop_ro("selection_version", &ui::SceneEditor::selection_version, D(ui, SceneEditor, selection_version))
         .def(

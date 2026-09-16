@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <optional>
 #include <span>
 
 namespace falcor {
@@ -138,8 +139,8 @@ public:
         {
             return arg_block_segments.empty() ? 0 : arg_block_segments[0].data.size();
         }
-        /// Index of refraction in the interior of the material.
-        float3 ior;
+        /// Constant geometry cutout opacity, or empty if it requires runtime evaluation.
+        std::optional<float> cutout_opacity;
 
         // Description of argument block layout.
         std::map<std::string, ArgumentLayout, std::less<>> arg_block_layout;

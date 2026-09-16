@@ -8,6 +8,7 @@
 
 #include <sgl/device/fwd.h>
 
+#include <array>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -31,6 +32,10 @@ namespace falcor {
 class FALCOR_API DiscreteDistribution1D : public Object {
 public:
     FALCOR_STATIC_WRITE_TO_SHADER_CURSOR(DiscreteDistribution1D);
+
+    /// Slang type used by the native cursor-writer functional fallback.
+    static constexpr std::string_view slang_type_name = "DiscreteDistribution1D";
+    static constexpr std::array<std::string_view, 1> slangpy_imports() { return {"falcor2/utils.slang"}; }
 
     /// Construct a discrete distribution from a set of weights.
     /// @param device Device for buffer allocation.
@@ -94,6 +99,10 @@ class FALCOR_API AliasTable1D : public Object {
 public:
     FALCOR_STATIC_WRITE_TO_SHADER_CURSOR(AliasTable1D);
 
+    /// Slang type used by the native cursor-writer functional fallback.
+    static constexpr std::string_view slang_type_name = "AliasTable1D";
+    static constexpr std::array<std::string_view, 1> slangpy_imports() { return {"falcor2/utils.slang"}; }
+
     /// Alias table entry.
     struct Entry {
         /// Probability of the original index.
@@ -104,7 +113,7 @@ public:
 
     /// Construct a discrete distribution from a set of weights.
     /// @param device Device for buffer allocation.
-    /// @param func Non-negative weights defining the distribution.
+    /// @param func Finite, non-negative weights defining the distribution.
     /// @param label Debug label device resources.
     AliasTable1D(sgl::Device* device, std::span<const float> func, std::string_view label = {});
 

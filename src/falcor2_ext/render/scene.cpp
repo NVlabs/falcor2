@@ -11,17 +11,19 @@
 #include <string>
 
 #include "falcor2/render/scene.h"
-#include "falcor2/render/scene_options.h"
-#include "falcor2/render/scene_import.h"
+#include "falcor2/render/scene_config.h"
 #include "falcor2/render/scene_globals.h"
 #include "falcor2/render/scene_requirements.h"
+#include "falcor2/render/material_types.h"
 #include "falcor2/render/animation.h"
 #include "falcor2/render/component/transform_animation.h"
 #include "falcor2/render/geometry/geometry_group.h"
+#include "falcor2/render/material/emission_only_material.h"
 #include "falcor2/render/material/standard_material.h"
 #include "falcor2/render/material/standard_specgloss_material.h"
+#include "falcor2/render/material/unlit_material.h"
 #include "falcor2/render/material/mdl/mdl_material.h"
-#include "falcor2/render/material/materialx/materialx_material.h"
+#include "falcor2/render/material/mtlx/mtlx_material.h"
 #include "falcor2/render/component/camera.h"
 #include "falcor2/render/component/geometry_instance.h"
 #include "falcor2/render/component/light.h"
@@ -29,8 +31,6 @@
 #include "falcor2/importers/importer_types.h"
 
 #include "render/python_scene_object.h"
-
-#include "nbdictionary.h"
 
 #include <utility>
 
@@ -184,8 +184,17 @@ FALCOR_PY_EXPORT(render_scene)
 
     nb::enum_<shared::MaterialFlags>(m, "MaterialFlags", D_NA(MaterialFlags), nb::is_arithmetic(), nb::is_flag())
         .value("none", shared::MaterialFlags::none)
-        .value("double_sided", shared::MaterialFlags::double_sided)
-        .value("thin_walled", shared::MaterialFlags::thin_walled);
+        .value("two_sided", shared::MaterialFlags::two_sided)
+        .value("thin_walled", shared::MaterialFlags::thin_walled)
+        .value("unlit", shared::MaterialFlags::unlit);
+
+    nb::enum_<shared::OpacityFlags>(m, "OpacityFlags", D_NA(OpacityFlags), nb::is_arithmetic(), nb::is_flag())
+        .value("none", shared::OpacityFlags::none)
+        .value("enabled", shared::OpacityFlags::enabled)
+        .value("use_threshold", shared::OpacityFlags::use_threshold)
+        .value("evaluate_material", shared::OpacityFlags::evaluate_material);
+
+    nb::sgl_enum<AlphaMode>(m, "AlphaMode", D(AlphaMode));
 
     nb::enum_<shared::GeometryType>(m, "GeometryType", D_NA(GeometryType), nb::is_arithmetic())
         .value("triangle", shared::GeometryType::triangle)
@@ -218,6 +227,11 @@ FALCOR_PY_EXPORT(render_scene)
             "ray_tracing_pipeline_flags",
             &SceneRequirements::ray_tracing_pipeline_flags,
             D(SceneRequirements, ray_tracing_pipeline_flags)
+        )
+        .def_ro(
+            "requires_opacity_evaluation",
+            &SceneRequirements::requires_opacity_evaluation,
+            D(SceneRequirements, requires_opacity_evaluation)
         );
 
     nb::sgl_enum<SceneObjectKind>(m, "SceneObjectKind", D(SceneObjectKind));
@@ -243,6 +257,7 @@ FALCOR_PY_EXPORT(render_scene)
 
     nb::class_<Material, PyMaterial, SceneObject> material(m, "Material", D(Material));
     nb::sgl_enum_flags<Material::DirtyFlags>(material, "DirtyFlags");
+    reflection::bind<Material>(material);
     material
         .def(nb::init<>()) // __init__ is needed for Python-side inheritance
         .def_prop_rw(
@@ -361,74 +376,49 @@ FALCOR_PY_EXPORT(render_scene)
 
     bind_signal<SceneUpdatedSignal>(m, "SceneUpdatedSignal");
 
-    nb::class_<SceneOptions>(m, "SceneOptions", D(SceneOptions))
-        .def(nb::init<UVOrigin>(), "uv_origin"_a = UVOrigin::upper_left, D(SceneOptions, SceneOptions))
-        .DEF_RO(SceneOptions, uv_origin);
+    nb::class_<SceneConfig>(m, "SceneConfig", D(SceneConfig))
+        .def(nb::init<UVOrigin>(), "uv_origin"_a = UVOrigin::upper_left)
+        .DEF_RO(SceneConfig, uv_origin);
 
     nb::class_<Scene, Object>(m, "Scene", D(Scene))
-        .def(nb::init<ref<sgl::Device>, const SceneOptions&>(), "device"_a, "options"_a, D(Scene, Scene))
+        .def_static("create", &Scene::create, "device"_a, "config"_a = SceneConfig(), D(Scene, create))
         .def_static(
-            "create",
-            [](ref<sgl::Device> device, std::optional<UVOrigin> uv_origin)
-            {
-                return Scene::create(std::move(device), uv_origin);
-            },
-            "device"_a,
-            "uv_origin"_a.none() = nb::none(),
-            D(Scene, create)
-        )
-        .def_static(
-            "create",
-            [](ref<sgl::Device> device, const ImporterScene& importer_scene, std::optional<UVOrigin> uv_origin)
-            {
-                return Scene::create(std::move(device), importer_scene, uv_origin);
-            },
-            "device"_a,
-            "importer_scene"_a,
-            "uv_origin"_a.none() = nb::none(),
-            D(Scene, create_2)
-        )
-        .def_static(
-            "create",
-            [](ref<sgl::Device> device,
-               const Importer& importer,
-               std::optional<UVOrigin> uv_origin,
-               bool add_default_camera_best_view,
-               float camera_aspect)
-            {
-                return Scene::create(
-                    std::move(device),
-                    importer,
-                    uv_origin,
-                    add_default_camera_best_view,
-                    camera_aspect
-                );
-            },
-            "device"_a,
-            "importer"_a,
-            "uv_origin"_a.none() = nb::none(),
-            "add_default_camera_best_view"_a = false,
-            "camera_aspect"_a = 16.f / 9.f,
-            D(Scene, create_3)
-        )
-        .def_static(
-            "create",
-            [](ref<sgl::Device> device,
-               const std::filesystem::path& path,
-               bool recompute_normals,
-               std::optional<UVOrigin> uv_origin)
-            {
-                return Scene::create(std::move(device), path, recompute_normals, uv_origin);
-            },
+            "load",
+            &Scene::load,
             "device"_a,
             "path"_a,
-            "recompute_normals"_a = false,
-            "uv_origin"_a.none() = nb::none(),
-            D(Scene, create_4)
+            "import_options"_a.none() = nb::none(),
+            "config"_a.none() = nb::none(),
+            D(Scene, load)
         )
+        .def_static(
+            "from_importer_scene",
+            &Scene::from_importer_scene,
+            "device"_a,
+            "importer_scene"_a,
+            "config"_a.none() = nb::none(),
+            D(Scene, from_importer_scene)
+        )
+        .def_static(
+            "from_importer",
+            &Scene::from_importer,
+            "device"_a,
+            "importer"_a,
+            "config"_a.none() = nb::none(),
+            D(Scene, from_importer)
+        )
+        .def(
+            "append",
+            nb::overload_cast<const std::filesystem::path&, std::optional<ImportOptions>>(&Scene::append),
+            "path"_a,
+            "import_options"_a.none() = nb::none(),
+            D(Scene, append)
+        )
+        .def("append", nb::overload_cast<const ImporterScene&>(&Scene::append), "importer_scene"_a, D(Scene, append_2))
+        .def("append", nb::overload_cast<const Importer&>(&Scene::append), "importer"_a, D(Scene, append_3))
         .DEF_PROP_RO(Scene, device)
+        .DEF_PROP_RO(Scene, config)
         .DEF_PROP_RO(Scene, texture_manager)
-        .DEF_PROP_RO(Scene, options)
         .def("add_scene_globals", &Scene::add_scene_globals, "globals"_a, D(Scene, add_scene_globals))
         .def("remove_scene_globals", &Scene::remove_scene_globals, "globals"_a, D(Scene, remove_scene_globals))
         .def(
@@ -482,65 +472,42 @@ FALCOR_PY_EXPORT(render_scene)
             nb::sig("def create_geometry(self, cls: type[GeometryT], props: Properties | None = None) -> GeometryT")
         )
         .def("create_animation", &Scene::create_animation, D(Scene, create_animation))
-        .def("create_entity", &Scene::create_entity, "props"_a = Properties{}, D(Scene, create_entity))
+        .def("create_entity", &Scene::create_entity, "props"_a.none() = nb::none(), D(Scene, create_entity))
         .def("update", nb::overload_cast<>(&Scene::update), D(Scene, update))
         .def_prop_ro("update_flags", &Scene::update_flags, D(Scene, update_flags))
         .def_prop_ro("update_generation", &Scene::update_generation, D(Scene, update_generation))
         .def_prop_ro("updated", &Scene::updated, nb::rv_policy::reference_internal, D(Scene, updated))
-        .def_prop_ro(
-            "render_module",
-            [](Scene& self)
-            {
-                return self.render_module();
-            },
-            nb::rv_policy::reference_internal,
-            D(Scene, render_module)
-        )
+        .def_prop_ro("render_module", &Scene::render_module, nb::rv_policy::reference_internal, D(Scene, render_module))
         .def_prop_ro("requirements", &Scene::requirements, nb::rv_policy::reference_internal, D(Scene, requirements))
         .def_prop_ro("requirements_generation", &Scene::requirements_generation, D(Scene, requirements_generation))
         .def("bind", &Scene::bind, "globals"_a, "flags"_a = SceneBindFlags::all, D(Scene, bind))
         .def_prop_ro(
             "materials",
-            [](Scene& self) -> MaterialCollectionView&
-            {
-                return self.materials();
-            },
+            nb::overload_cast<>(&Scene::materials),
             nb::rv_policy::reference_internal,
             D(Scene, materials)
         )
         .def_prop_ro(
             "geometries",
-            [](Scene& self) -> GeometryCollectionView&
-            {
-                return self.geometries();
-            },
+            nb::overload_cast<>(&Scene::geometries),
             nb::rv_policy::reference_internal,
             D(Scene, geometries)
         )
         .def_prop_ro(
             "animations",
-            [](Scene& self) -> AnimationCollectionView&
-            {
-                return self.animations();
-            },
+            nb::overload_cast<>(&Scene::animations),
             nb::rv_policy::reference_internal,
             D(Scene, animations)
         )
         .def_prop_ro(
             "entities",
-            [](Scene& self) -> EntityCollectionView&
-            {
-                return self.entities();
-            },
+            nb::overload_cast<>(&Scene::entities),
             nb::rv_policy::reference_internal,
             D(Scene, entities)
         )
         .def_prop_ro(
             "components",
-            [](Scene& self) -> ComponentCollectionView&
-            {
-                return self.components();
-            },
+            nb::overload_cast<>(&Scene::components),
             nb::rv_policy::reference_internal,
             D(Scene, components)
         )
@@ -562,94 +529,31 @@ FALCOR_PY_EXPORT(render_scene)
     nb::class_<GeometryInstance, Component>(m, "GeometryInstance", D(GeometryInstance))
         .DEF_PROP_RW(GeometryInstance, geometry)
         .DEF_PROP_RW(GeometryInstance, materials, nb::rv_policy::reference_internal)
-        .def_prop_ro(
-            "geometry_instance_id",
-            [](const GeometryInstance& self)
-            {
-                return self.geometry_instance_id();
-            },
-            D(GeometryInstance, geometry_instance_id)
-        )
+        .DEF_PROP_RO(GeometryInstance, geometry_instance_id)
         .DEF_PROP_RO(GeometryInstance, geometry_instance_count);
+
+    nb::class_<EmissionOnlyMaterial, Material> emission_only_material(
+        m,
+        "EmissionOnlyMaterial",
+        D(EmissionOnlyMaterial)
+    );
+    reflection::bind<EmissionOnlyMaterial>(emission_only_material);
 
     nb::class_<StandardMaterial, Material> standard_material(m, "StandardMaterial", D(StandardMaterial));
     reflection::bind<StandardMaterial>(standard_material);
-    standard_material.def(
-        "get_this",
-        [](const StandardMaterial& self)
-        {
-            nb::dict result;
-            result["_type"] = self.slang_type_name();
-            result["base_color_texture"] = self._base_color_texture_handle();
-            result["base_color_factor"] = self._base_color_factor();
-            result["metallic_roughness_texture"] = self._metallic_roughness_texture_handle();
-            result["metallic_factor"] = self._metallic_factor();
-            result["roughness_factor"] = self._roughness_factor();
-            result["normal_texture"] = self._normal_texture_handle();
-            result["normal_texture_scale"] = self._normal_texture_scale();
-            result["emissive_factor"] = self._emissive_factor();
-            result["emissive_texture"] = self._emissive_texture_handle();
-            result["transmission_texture"] = self._transmission_texture_handle();
-            result["ior"] = self._ior();
-            result["transmission_factor"] = self._transmission_factor();
-            result["diffuse_transmission_factor"] = self._diffuse_transmission_factor();
-            result["specular_transmission_factor"] = self._specular_transmission_factor();
-            result["metallic_texture_channel"] = self._metallic_texture_channel();
-            result["roughness_texture_channel"] = self._roughness_texture_channel();
-            return result;
-        },
-        "Gets this material data as a dictionary matching write_to_cursor()."
-    );
+
+    nb::class_<UnlitMaterial, Material> unlit_material(m, "UnlitMaterial", D(UnlitMaterial));
+    reflection::bind<UnlitMaterial>(unlit_material);
 
     nb::class_<StandardSpecGlossMaterial, Material> standard_specgloss_material(
         m,
         "StandardSpecGlossMaterial",
-        D_NA(StandardSpecGlossMaterial)
+        D(StandardSpecGlossMaterial)
     );
     reflection::bind<StandardSpecGlossMaterial>(standard_specgloss_material);
-    standard_specgloss_material.def(
-        "get_this",
-        [](const StandardSpecGlossMaterial& self)
-        {
-            nb::dict result;
-            result["_type"] = self.slang_type_name();
-            result["diffuse_texture"] = self._diffuse_texture_handle();
-            result["diffuse_factor"] = self._diffuse_factor();
-            result["specular_glossiness_texture"] = self._specular_glossiness_texture_handle();
-            result["specular_factor"] = self._specular_factor();
-            result["glossiness_factor"] = self._glossiness_factor();
-            result["normal_texture"] = self._normal_texture_handle();
-            result["normal_texture_scale"] = self._normal_texture_scale();
-            result["emissive_factor"] = self._emissive_factor();
-            result["emissive_texture"] = self._emissive_texture_handle();
-            result["transmission_texture"] = self._transmission_texture_handle();
-            result["ior"] = self._ior();
-            result["transmission_factor"] = self._transmission_factor();
-            result["diffuse_transmission_factor"] = self._diffuse_transmission_factor();
-            result["specular_transmission_factor"] = self._specular_transmission_factor();
-            return result;
-        },
-        "Gets this material data as a dictionary matching write_to_cursor()."
-    );
 
     nb::class_<MDLMaterial, Material> mdl_material(m, "MDLMaterial", D_NA(MDLMaterial));
     reflection::bind<MDLMaterial>(mdl_material);
-    mdl_material.def(
-        "get_this",
-        [](const MDLMaterial& self)
-        {
-            nb::dict result;
-            result["_type"] = self.slang_type_name();
-            nb::dict data;
-            data["data"] = to_handle(self._mdl_data());
-            data["arg_block_offset"] = self._arg_block_offset();
-            data["texture_table_offset"] = self._texture_table_offset();
-            data["surface_scatter_bsdf_count"] = self._surface_scatter_bsdf_count();
-            result["data"] = std::move(data);
-            return result;
-        },
-        "Gets this material data as a dictionary matching write_to_cursor()."
-    );
     mdl_material.def(
         "build_texture_list",
         &MDLMaterial::build_texture_list,
@@ -657,27 +561,9 @@ FALCOR_PY_EXPORT(render_scene)
         "Valid after scene.update() / on_load_resources() has run."
     );
 
-    nb::class_<MaterialXMaterial, Material> materialx_material(m, "MaterialXMaterial", D(MaterialXMaterial));
-    reflection::bind<MaterialXMaterial>(materialx_material);
-    materialx_material.def(
-        "get_this",
-        [](const MaterialXMaterial& self)
-        {
-            nb::dict result;
-            result["_type"] = self.slang_type_name();
-            if (self._requires_data_buffer()) {
-                result["data_buffer"] = to_handle(self._data_buffer());
-            } else {
-                NBDictionary data_dict;
-                for (const auto& param : self._all_material_params())
-                    param.to_dictionary(data_dict);
-                result["data"] = data_dict.nbdict();
-            }
-            return result;
-        },
-        "Gets this material data as a dictionary matching write_to_cursor()."
-    );
-    materialx_material.def(
+    nb::class_<MaterialXMaterial, Material> mtlx_material(m, "MaterialXMaterial", D(MaterialXMaterial));
+    reflection::bind<MaterialXMaterial>(mtlx_material);
+    mtlx_material.def(
         "build_texture_list",
         &MaterialXMaterial::build_texture_list,
         "List the TextureHandle instances used by this material. "
@@ -692,14 +578,10 @@ FALCOR_PY_EXPORT(render_scene)
         .DEF_RO(CameraUniforms, image_u)
         .DEF_RO(CameraUniforms, image_v)
         .DEF_RO(CameraUniforms, image_w)
-        .def(
-            "get_uniforms",
-            [](CameraUniforms& self)
-            {
-                return NBDictionary::get_uniforms(self);
-            },
-            D_NA(CameraUniforms, get_uniforms)
-        );
+        .DEF_RO(CameraUniforms, aperture_radius)
+        .DEF_RO(CameraUniforms, focus_distance)
+        .def(nb::self == nb::self)
+        .def(nb::self != nb::self);
 
     nb::class_<Camera, Component> camera(m, "Camera", D(Camera));
     reflection::bind<Camera>(camera);
@@ -725,20 +607,12 @@ FALCOR_PY_EXPORT(render_scene)
         "height"_a,
         D(Camera, calc_clip_from_view)
     );
-    camera.def(
-        "get_uniforms",
-        [](Camera& self)
-        {
-            NBDictionary nb_dict;
-            return nb_dict.get_uniforms(self);
-        },
-        D_NA(Camera, get_uniforms)
-    );
-
     reflection::bind<Light>(m);
     reflection::bind<ConstantLight>(m);
     reflection::bind<DistantLight>(m);
     reflection::bind<PointLight>(m);
-    reflection::bind<SpotLight>(m);
+    reflection::bind<SphereLight>(m);
+    reflection::bind<DiskLight>(m);
+    reflection::bind<RectLight>(m);
     reflection::bind<EnvMapLight>(m);
 }

@@ -69,24 +69,26 @@ ImporterCameraCollection::ImporterCameraCollection(Importer& importer)
 
 ImporterCameraSelector ImporterCameraCollection::create(
     std::string name,
-    float focus_distance,
     float focal_length,
     float fstop,
+    float sensor_size_mm,
+    bool enable_depth_of_field,
+    float focus_distance,
     float2 depth_range,
     ImporterCamera::Projection projection,
-    ImporterCamera::FOVDirection fov_direction,
-    float sensor_size_mm
+    ImporterCamera::FOVDirection fov_direction
 )
 {
     ImporterCamera camera;
     camera.name = std::move(name);
-    camera.focus_distance = focus_distance;
     camera.focal_length = focal_length;
     camera.fstop = fstop;
+    camera.sensor_size_mm = sensor_size_mm;
+    camera.enable_depth_of_field = enable_depth_of_field;
+    camera.focus_distance = focus_distance;
     camera.depth_range = depth_range;
     camera.projection = projection;
     camera.fov_direction = fov_direction;
-    camera.sensor_size_mm = sensor_size_mm;
 
     ImporterCameraSelector selector;
     selector.id = m_importer.next_selector_id();
@@ -97,24 +99,26 @@ ImporterCameraSelector ImporterCameraCollection::create(
 ImporterCameraSelector ImporterCameraCollection::create_fov(
     std::string name,
     float fov_degrees,
-    float focus_distance,
     float fstop,
+    float sensor_size_mm,
+    bool enable_depth_of_field,
+    float focus_distance,
     float2 depth_range,
     ImporterCamera::Projection projection,
-    ImporterCamera::FOVDirection fov_direction,
-    float sensor_size_mm
+    ImporterCamera::FOVDirection fov_direction
 )
 {
     const float focal_length = ImporterCamera::focal_length_from_fov_degrees(fov_degrees, sensor_size_mm);
     return create(
         std::move(name),
-        focus_distance,
         focal_length,
         fstop,
+        sensor_size_mm,
+        enable_depth_of_field,
+        focus_distance,
         depth_range,
         projection,
-        fov_direction,
-        sensor_size_mm
+        fov_direction
     );
 }
 
@@ -141,24 +145,26 @@ ImporterNodeSelector ImporterNodeCollection::create(
 ImporterNodeSelector ImporterNodeCollection::create_camera(
     std::string name,
     float4x4 transform,
-    float focus_distance,
     float focal_length,
     float fstop,
+    float sensor_size_mm,
+    bool enable_depth_of_field,
+    float focus_distance,
     float2 depth_range,
     ImporterCamera::Projection projection,
-    ImporterCamera::FOVDirection fov_direction,
-    float sensor_size_mm
+    ImporterCamera::FOVDirection fov_direction
 )
 {
     ImporterCameraSelector camera = m_importer.cameras().create(
         name,
-        focus_distance,
         focal_length,
         fstop,
+        sensor_size_mm,
+        enable_depth_of_field,
+        focus_distance,
         depth_range,
         projection,
-        fov_direction,
-        sensor_size_mm
+        fov_direction
     );
     return create(std::move(name), transform, camera);
 }
@@ -167,23 +173,25 @@ ImporterNodeSelector ImporterNodeCollection::create_camera_fov(
     std::string name,
     float4x4 transform,
     float fov_degrees,
-    float focus_distance,
     float fstop,
+    float sensor_size_mm,
+    bool enable_depth_of_field,
+    float focus_distance,
     float2 depth_range,
     ImporterCamera::Projection projection,
-    ImporterCamera::FOVDirection fov_direction,
-    float sensor_size_mm
+    ImporterCamera::FOVDirection fov_direction
 )
 {
     ImporterCameraSelector camera = m_importer.cameras().create_fov(
         name,
         fov_degrees,
-        focus_distance,
         fstop,
+        sensor_size_mm,
+        enable_depth_of_field,
+        focus_distance,
         depth_range,
         projection,
-        fov_direction,
-        sensor_size_mm
+        fov_direction
     );
     return create(std::move(name), transform, camera);
 }

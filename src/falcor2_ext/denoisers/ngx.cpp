@@ -46,11 +46,11 @@ FALCOR_PY_EXPORT(denoisers_ngx)
             "target_width"_a,
             "target_height"_a,
             "quality"_a = QualityMode::quality,
-            D_NA(ngx, NGX, get_dlss_optimal_settings)
+            D(ngx, NGX, get_dlss_optimal_settings)
         )
         .def("create_dlss_rr_feature", &NGX::create_dlss_rr_feature, "desc"_a, D(ngx, NGX, create_dlss_rr_feature))
-        .def("create_dlss_sr_feature", &NGX::create_dlss_sr_feature, "desc"_a, D_NA(ngx, NGX, create_dlss_sr_feature))
-        .def("create_dlss_g_feature", &NGX::create_dlss_g_feature, "desc"_a, D_NA(ngx, NGX, create_dlss_g_feature));
+        .def("create_dlss_sr_feature", &NGX::create_dlss_sr_feature, "desc"_a, D(ngx, NGX, create_dlss_sr_feature))
+        .def("create_dlss_g_feature", &NGX::create_dlss_g_feature, "desc"_a, D(ngx, NGX, create_dlss_g_feature));
 
     ngx_module.def("get_vulkan_pre_device_info", &get_vulkan_pre_device_info, D(ngx, get_vulkan_pre_device_info));
 }

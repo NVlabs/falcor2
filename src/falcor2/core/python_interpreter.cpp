@@ -5,6 +5,7 @@
 
 #include "falcor2/core/error.h"
 
+#include <algorithm>
 #include <fstream>
 
 // On Windows, Python.h in debug mode tries to link against python3XX_d.lib
@@ -30,6 +31,76 @@ public:
 
 private:
     PyGILState_STATE m_state;
+};
+
+/// Convert a filesystem path to a Python Unicode string using the platform's
+/// native filesystem representation. Windows separators are normalized to
+/// forward slashes to preserve the existing Python path convention.
+static PyObject* python_unicode_from_path(const std::filesystem::path& path)
+{
+#if defined(_WIN32)
+    std::wstring value = path.native();
+    std::replace(value.begin(), value.end(), L'\\', L'/');
+    return PyUnicode_FromWideChar(value.data(), static_cast<Py_ssize_t>(value.size()));
+#else
+    const std::string& value = path.native();
+    return PyUnicode_DecodeFSDefaultAndSize(value.data(), static_cast<Py_ssize_t>(value.size()));
+#endif
+}
+
+class ScopedPythonSearchPaths {
+public:
+    explicit ScopedPythonSearchPaths(std::span<const std::filesystem::path> search_paths)
+    {
+        m_sys_path = PySys_GetObject("path");
+        if (!m_sys_path || !PyList_Check(m_sys_path))
+            throw PythonException("Python sys.path is not a list");
+
+        Py_INCREF(m_sys_path);
+        m_original_values = PySequence_List(m_sys_path);
+        if (!m_original_values) {
+            Py_DECREF(m_sys_path);
+            m_sys_path = nullptr;
+            std::string msg = PythonInterpreter::capture_python_error();
+            throw PythonException(msg);
+        }
+
+        for (auto it = search_paths.rbegin(); it != search_paths.rend(); ++it) {
+            PyObject* py_search_path = python_unicode_from_path(*it);
+            if (!py_search_path || PyList_Insert(m_sys_path, 0, py_search_path) != 0) {
+                Py_XDECREF(py_search_path);
+                std::string msg = PythonInterpreter::capture_python_error();
+                restore();
+                throw PythonException(msg);
+            }
+            Py_DECREF(py_search_path);
+        }
+    }
+
+    ~ScopedPythonSearchPaths() { restore(); }
+
+    ScopedPythonSearchPaths(const ScopedPythonSearchPaths&) = delete;
+    ScopedPythonSearchPaths& operator=(const ScopedPythonSearchPaths&) = delete;
+
+private:
+    void restore() noexcept
+    {
+        if (!m_sys_path)
+            return;
+
+        const Py_ssize_t size = PyList_Size(m_sys_path);
+        if (size < 0 || PyList_SetSlice(m_sys_path, 0, size, m_original_values) != 0)
+            PyErr_Clear();
+        if (PySys_SetObject("path", m_sys_path) != 0)
+            PyErr_Clear();
+        Py_DECREF(m_original_values);
+        Py_DECREF(m_sys_path);
+        m_original_values = nullptr;
+        m_sys_path = nullptr;
+    }
+
+    PyObject* m_sys_path{nullptr};
+    PyObject* m_original_values{nullptr};
 };
 
 // ----------------------------------------------------------------------------
@@ -68,6 +139,18 @@ PythonContext PythonInterpreter::create_context()
 {
     FALCOR_ASSERT(Py_IsInitialized());
     return PythonContext();
+}
+
+void PythonInterpreter::with_search_paths(
+    std::span<const std::filesystem::path> search_paths,
+    const std::function<void()>& callback
+)
+{
+    FALCOR_ASSERT(Py_IsInitialized());
+
+    GILGuard gil;
+    ScopedPythonSearchPaths scoped_search_paths(search_paths);
+    callback();
 }
 
 void PythonInterpreter::initialize()
@@ -294,29 +377,32 @@ void PythonContext::execute_string(const std::string& code)
     }
 }
 
-void PythonContext::execute_file(const std::filesystem::path& path, std::string_view module_name)
+void PythonContext::execute_file(
+    const std::filesystem::path& path,
+    std::string_view module_name,
+    std::span<const std::filesystem::path> search_paths
+)
 {
     FALCOR_ASSERT(Py_IsInitialized());
     FALCOR_ASSERT(m_globals);
-
-    std::string path_str = path.string();
 
     // Read the file with C++ streams to avoid CRT mismatch issues on Windows
     // debug builds (our code links debug CRT, Python links release CRT).
     std::error_code ec;
     auto file_size = std::filesystem::file_size(path, ec);
     if (ec)
-        throw PythonException(fmt::format("Cannot open file: {}", path_str));
+        throw PythonException(fmt::format("Cannot open file: {}", path));
     std::string code(file_size, '\0');
 
     std::ifstream ifs(path, std::ios::binary);
     if (!ifs) {
-        throw PythonException(fmt::format("Cannot open file: {}", path_str));
+        throw PythonException(fmt::format("Cannot open file: {}", path));
     }
     ifs.read(code.data(), static_cast<std::streamsize>(file_size));
     code.resize(static_cast<size_t>(ifs.gcount()));
 
     GILGuard gil;
+    ScopedPythonSearchPaths scoped_search_paths(search_paths);
 
     PyObject* globals = static_cast<PyObject*>(m_globals);
 
@@ -329,16 +415,16 @@ void PythonContext::execute_file(const std::filesystem::path& path, std::string_
     }
     Py_DECREF(py_module_name);
 
-    // Set __file__ with forward slashes for Python convention.
-    std::string generic_path_str = path.generic_string();
-    PyObject* py_path = PyUnicode_FromString(generic_path_str.c_str());
-    if (py_path) {
-        PyDict_SetItemString(globals, "__file__", py_path);
-        Py_DECREF(py_path);
+    PyObject* py_path = python_unicode_from_path(path);
+    if (!py_path || PyDict_SetItemString(globals, "__file__", py_path) != 0) {
+        Py_XDECREF(py_path);
+        std::string msg = PythonInterpreter::capture_python_error();
+        throw PythonException(msg);
     }
 
     // Compile with the filename for meaningful tracebacks.
-    PyObject* code_obj = Py_CompileString(code.c_str(), path_str.c_str(), Py_file_input);
+    PyObject* code_obj = Py_CompileStringObject(code.c_str(), py_path, Py_file_input, nullptr, -1);
+    Py_DECREF(py_path);
     if (!code_obj) {
         std::string msg = PythonInterpreter::capture_python_error();
         throw PythonException(msg);

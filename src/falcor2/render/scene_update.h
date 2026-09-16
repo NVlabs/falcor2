@@ -41,6 +41,7 @@ enum class SceneUpdateFlags {
     render_state = (1 << 4),
     requirements = (1 << 5),
     animation = (1 << 6),
+    emissive_geometry = (1 << 7),
 };
 FALCOR_ENUM_CLASS_OPERATORS(SceneUpdateFlags);
 SGL_ENUM_FLAGS_INFO(
@@ -54,6 +55,7 @@ SGL_ENUM_FLAGS_INFO(
         {SceneUpdateFlags::render_state, "render_state"},
         {SceneUpdateFlags::requirements, "requirements"},
         {SceneUpdateFlags::animation, "animation"},
+        {SceneUpdateFlags::emissive_geometry, "emissive_geometry"},
     }
 );
 SGL_ENUM_REGISTER(SceneUpdateFlags);

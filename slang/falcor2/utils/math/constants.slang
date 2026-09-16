@@ -32,6 +32,7 @@ public interface IMathConstants
     public static const This MAX;      // max value
     public static const This MIN;      // min positive value (normalized)
     public static const This TRUE_MIN; // min positive value
+    public static const This INFINITY; // positive infinity
     public static const This NAN;      // not a number
 };
 
@@ -71,6 +72,7 @@ public extension half : IMathConstants
     public static const half MAX = 65504.0h;
     public static const half MIN = 6.10351562e-05h;
     public static const half TRUE_MIN = 5.96046448e-08h;
+    public static const half INFINITY = 1.h / 0.h;
     public static const half NAN = 0.h / 0.h;
 };
 
@@ -82,6 +84,7 @@ public extension float : IMathConstants
     public static const float MAX = 3.402823466e+38f;
     public static const float MIN = 1.175494351e-38f;
     public static const float TRUE_MIN = 1.401298464e-45f;
+    public static const float INFINITY = 1.f / 0.f;
     public static const float NAN = 0.f / 0.f;
 };
 
@@ -93,5 +96,6 @@ public extension double : IMathConstants
     public static const double MAX = 1.7976931348623158e+308l;
     public static const double MIN = 2.2250738585072014e-308l;
     public static const double TRUE_MIN = 4.9406564584124654e-324l;
+    public static const double INFINITY = 1.l / 0.l;
     public static const double NAN = 0.l / 0.l;
 };

@@ -152,7 +152,7 @@ void SelectionOverlay::draw_overlay(
             sgl::ShaderCursor cursor = sgl::ShaderCursor(shader_object);
             scene->bind(cursor);
             cursor = cursor["g_selection_probe_params"];
-            camera->bind(cursor["camera"]);
+            cursor["camera"] = *camera;
             cursor["selection_bitmap"] = m_selection_bitmap_buffer;
             cursor["selection_bitmap_bit_count"] = bitmap_bit_count;
             cursor["selected_hit_texture"] = m_selected_hit_texture;
@@ -168,7 +168,7 @@ void SelectionOverlay::draw_overlay(
                 {
                     scene->bind(cursor);
                     cursor = cursor.find_entry_point(0);
-                    camera->bind(cursor["camera"]);
+                    cursor["camera"] = *camera;
                     cursor["selection_bitmap"] = m_selection_bitmap_buffer;
                     cursor["selection_bitmap_bit_count"] = bitmap_bit_count;
                     cursor["selected_hit_texture"] = m_selected_hit_texture;

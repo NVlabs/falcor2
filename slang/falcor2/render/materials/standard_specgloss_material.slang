@@ -23,6 +23,9 @@ public struct StandardSpecGlossMaterial : IMaterial
     public float16_t diffuse_transmission_factor;
     public float16_t specular_transmission_factor;
     public float3 emissive_factor;
+    public float3 volume_sigma_a;
+    public float3 volume_sigma_s;
+    public float volume_anisotropy;
 
     public MaterialInstance setup_material_instance<LodSampler : ILodSampler>(
         const SurfaceInteraction si,
@@ -35,7 +38,7 @@ public struct StandardSpecGlossMaterial : IMaterial
         // Build the material shading frame, applying the normal map unless the caller disabled it.
         if (normal_texture.is_valid() && stdmat::is_normal_mapping_enabled(hints)) {
             float3 normal
-                = normalize(normal_texture.sample(lod_sampler, si.uv, float4(0.0, 0.0, 1.0, 0.0)).xyz * 2.0 - 1.0);
+                = stdmat::decode_normal_map(normal_texture.sample(lod_sampler, si.uv, float4(0.0, 0.0, 1.0, 0.0)).xyz);
             normal = normalize(lerp(float3(0.0, 0.0, 1.0), normal, float(normal_texture_scale)));
             mi.shading_frame_ws = Frame(
                 si.shading_frame_ws.to_global(normal),
@@ -45,8 +48,8 @@ public struct StandardSpecGlossMaterial : IMaterial
         } else {
             mi.shading_frame_ws = si.shading_frame_ws;
         }
-        mi.shading_frame_ws
-            = stdmat::orient_shading_frame(si, mi.shading_frame_ws, header.flags & MaterialFlags::double_sided);
+        const bool orient_backface = is_set(header.flags, MaterialFlags::two_sided);
+        mi.shading_frame_ws = stdmat::orient_shading_frame(si, mi.shading_frame_ws, orient_backface);
         if (hints & MaterialInstanceHints::adjust_shading_normal) {
             adjust_shading_normal(mi.shading_frame_ws, si.front_normal_ws(), si.wi_ws);
         }
@@ -58,14 +61,14 @@ public struct StandardSpecGlossMaterial : IMaterial
         float3 specular = saturate(specular_glossiness.rgb);
         float glossiness = saturate(specular_glossiness.a);
 
-        float safe_ior = max(ior, 1e-3);
+        mi.interior_ior = max(ior, 1e-3);
 
         StandardBSDFData bsdf_data = {};
         bsdf_data.diffuse = diffuse;
         bsdf_data.specular = specular;
         bsdf_data.roughness = 1.0 - glossiness;
         bsdf_data.metallic = stdmat::get_metallic(diffuse, specular);
-        bsdf_data.eta = si.front_facing ? (si.ior / safe_ior) : (safe_ior / si.ior);
+        bsdf_data.eta = si.front_facing ? (si.exterior_ior / mi.interior_ior) : (mi.interior_ior / si.exterior_ior);
         bsdf_data.transmission
             = transmission_texture.sample(lod_sampler, si.uv, float4(1.0)).rgb * transmission_factor.xyz;
         bsdf_data.diffuse_transmission = saturate(diffuse_transmission_factor);
@@ -74,6 +77,9 @@ public struct StandardSpecGlossMaterial : IMaterial
         mi.bsdf_data = bsdf_data;
 
         mi.emissive_radiance = emissive_texture.sample(lod_sampler, si.uv, float4(1.0)).rgb * emissive_factor;
+        mi.volume_sigma_a = volume_sigma_a;
+        mi.volume_sigma_s = volume_sigma_s;
+        mi.volume_anisotropy = volume_anisotropy;
 
         return mi;
     }

@@ -24,23 +24,33 @@ public struct SpecularMicrofacetBRDF : IBSDF, IDifferentiable
 
     public bool has_lobe(const BSDFFlags lobe_type) { return (active_lobes & uint(lobe_type)) != 0; }
 
+
     [Differentiable]
-    public float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public override
+        float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    {
+        return eval_with_pdf(wi, wo, sg, bc).value;
+    }
+
+    [Differentiable]
+    public BSDFEval
+    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
     {
         if (min(wi.z, wo.z) < BSDF_MIN_COS_THETA)
-            return float3(0.0);
+            return BSDFEval();
         if (alpha == 0.0 || !has_lobe(BSDFFlags::glossy_reflection))
-            return float3(0.0);
+            return BSDFEval();
 
         float3 h = normalize(wi + wo);
         float wi_dot_h = dot(wi, h);
         if (wi_dot_h <= 0.0)
-            return float3(0.0);
+            return BSDFEval();
 
         float D = evalNdfGGX(alpha, h.z);
         float G = evalMaskingSmithGGXCorrelated(alpha, wi.z, wo.z);
         float3 F = eval_fresnel_schlick(albedo, float3(1.0), wi_dot_h);
-        return F * D * G * 0.25 / wi.z;
+        float pdf = evalPdfGGX_VNDF(alpha, wi, h) / (4.0 * wi_dot_h);
+        return BSDFEval(F * D * G * 0.25 / wi.z, pdf);
     }
 
     public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
@@ -86,24 +96,11 @@ public struct SpecularMicrofacetBRDF : IBSDF, IDifferentiable
         return true;
     }
 
-    public float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
-    {
-        if (min(wi.z, wo.z) < BSDF_MIN_COS_THETA)
-            return 0.0;
-        if (alpha == 0.0 || !has_lobe(BSDFFlags::glossy_reflection))
-            return 0.0;
-
-        float3 h = normalize(wi + wo);
-        float wi_dot_h = dot(wi, h);
-        if (wi_dot_h <= 0.0)
-            return 0.0;
-
-        return evalPdfGGX_VNDF(alpha, wi, h) / (4.0 * wi_dot_h);
-    }
 
     public AlbedoContributions eval_albedo(const float3 wi)
     {
-        float3 r = eval_fresnel_schlick(albedo, float3(1.0), wi.z);
+        bool has_reflection = has_lobe(alpha == 0.0 ? BSDFFlags::delta_reflection : BSDFFlags::glossy_reflection);
+        float3 r = has_reflection ? eval_fresnel_schlick(albedo, float3(1.0), wi.z) : float3(0.0);
         return AlbedoContributions(r, float3(1.0) - r, float3(0.0), float3(0.0));
     }
 
@@ -146,19 +143,28 @@ public struct SpecularMicrofacetBSDF : IBSDF, IDifferentiable
 
     public bool has_lobe(const BSDFFlags lobe_type) { return (active_lobes & uint(lobe_type)) != 0; }
 
+
     [Differentiable]
-    public float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public override
+        float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    {
+        return eval_with_pdf(wi, wo, sg, bc).value;
+    }
+
+    [Differentiable]
+    public BSDFEval
+    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
     {
         if (min(wi.z, abs(wo.z)) < BSDF_MIN_COS_THETA)
-            return float3(0.0);
+            return BSDFEval();
         if (alpha == 0.0)
-            return float3(0.0);
+            return BSDFEval();
 
         bool is_reflection = wo.z > 0.0;
         bool has_reflection = has_lobe(BSDFFlags::glossy_reflection);
         bool has_transmission = has_lobe(BSDFFlags::glossy_transmission);
         if ((is_reflection && !has_reflection) || (!is_reflection && !has_transmission))
-            return float3(0.0);
+            return BSDFEval();
 
         float3 h = normalize(wo + wi * (is_reflection ? 1.0 : eta));
         h *= sign(h.z);
@@ -166,26 +172,34 @@ public struct SpecularMicrofacetBSDF : IBSDF, IDifferentiable
         float wi_dot_h = dot(wi, h);
         float wo_dot_h = dot(wo, h);
         if (wi_dot_h <= 0.0)
-            return float3(0.0);
+            return BSDFEval();
         if (is_reflection && wo_dot_h <= 0.0)
-            return float3(0.0);
+            return BSDFEval();
         if (!is_reflection && wo_dot_h >= 0.0)
-            return float3(0.0);
+            return BSDFEval();
 
         float D = evalNdfGGX(alpha, h.z);
         float G = evalMaskingSmithGGXCorrelated(alpha, wi.z, abs(wo.z));
         float F = eval_fresnel_dielectric(eta, wi_dot_h);
+        float pdf = evalPdfGGX_VNDF(alpha, wi, h);
 
-        if (is_reflection)
-            return F * D * G * 0.25 / wi.z;
+        if (is_reflection) {
+            pdf /= 4.0 * wo_dot_h;
+            if (has_reflection && has_transmission)
+                pdf *= F;
+            return BSDFEval(F * D * G * 0.25 / wi.z, pdf);
+        }
 
         float sqrt_denom = wo_dot_h + eta * wi_dot_h;
         float denom = sqrt_denom * sqrt_denom;
         if (denom <= 0.0)
-            return float3(0.0);
+            return BSDFEval();
 
+        pdf *= abs(wo_dot_h) / denom;
+        if (has_reflection && has_transmission)
+            pdf *= 1.0 - F;
         float t = eta * eta * wi_dot_h * wo_dot_h / (wi.z * denom);
-        return transmission_albedo * (1.0 - F) * D * G * abs(t);
+        return BSDFEval(transmission_albedo * (1.0 - F) * D * G * abs(t), pdf);
     }
 
     public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
@@ -217,7 +231,7 @@ public struct SpecularMicrofacetBSDF : IBSDF, IDifferentiable
                 return false;
 
             sample.pdf = 0.0;
-            sample.weight = is_reflection ? float3(1.0) : transmission_albedo;
+            sample.weight = is_reflection ? float3(1.0) : transmission_albedo * eta * eta;
             if (!(has_reflection && has_transmission))
                 sample.weight *= is_reflection ? F : (1.0 - F);
             sample.flags = is_reflection ? BSDFFlags::delta_reflection : BSDFFlags::delta_transmission;
@@ -280,53 +294,19 @@ public struct SpecularMicrofacetBSDF : IBSDF, IDifferentiable
         return true;
     }
 
-    public float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
-    {
-        if (min(wi.z, abs(wo.z)) < BSDF_MIN_COS_THETA)
-            return 0.0;
-        if (alpha == 0.0)
-            return 0.0;
-
-        bool is_reflection = wo.z > 0.0;
-        bool has_reflection = has_lobe(BSDFFlags::glossy_reflection);
-        bool has_transmission = has_lobe(BSDFFlags::glossy_transmission);
-        if ((is_reflection && !has_reflection) || (!is_reflection && !has_transmission))
-            return 0.0;
-
-        float3 h = normalize(wo + wi * (is_reflection ? 1.0 : eta));
-        h *= sign(h.z);
-
-        float wi_dot_h = dot(wi, h);
-        float wo_dot_h = dot(wo, h);
-        if (wi_dot_h <= 0.0)
-            return 0.0;
-        if (is_reflection && wo_dot_h <= 0.0)
-            return 0.0;
-        if (!is_reflection && wo_dot_h >= 0.0)
-            return 0.0;
-
-        float F = eval_fresnel_dielectric(eta, wi_dot_h);
-        float result = evalPdfGGX_VNDF(alpha, wi, h);
-        if (is_reflection) {
-            result /= 4.0 * wo_dot_h;
-        } else {
-            float sqrt_denom = wo_dot_h + eta * wi_dot_h;
-            float denom = sqrt_denom * sqrt_denom;
-            if (denom <= 0.0)
-                return 0.0;
-            result *= abs(wo_dot_h) / denom;
-        }
-
-        if (has_reflection && has_transmission)
-            result *= is_reflection ? F : (1.0 - F);
-
-        return result;
-    }
 
     public AlbedoContributions eval_albedo(const float3 wi)
     {
+        bool has_reflection = has_lobe(alpha == 0.0 ? BSDFFlags::delta_reflection : BSDFFlags::glossy_reflection);
+        bool has_transmission = has_lobe(alpha == 0.0 ? BSDFFlags::delta_transmission : BSDFFlags::glossy_transmission);
         float3 r = eval_fresnel_dielectric(eta, wi.z);
-        return AlbedoContributions(float3(0.0), float3(0.0), float3(1.0) - r, r);
+        float3 t = (float3(1.0) - r) * transmission_albedo;
+        return AlbedoContributions(
+            has_reflection ? r : float3(0.0),
+            has_reflection ? float3(0.0) : r,
+            has_transmission ? t : float3(0.0),
+            has_transmission ? float3(1.0) - r - t : float3(1.0) - r
+        );
     }
 
     public RoughnessInformation eval_roughness(const float3 wi)

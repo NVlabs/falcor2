@@ -5,34 +5,106 @@
 
 #include "falcor2/render/entity.h"
 
+#include <sgl/device/cursor_utils.h>
 #include <sgl/math/matrix_math.h>
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace falcor {
 
-void CameraUniforms::to_dictionary(IDictionary& dict) const
+namespace {
+
+float focal_length_from_fov_y(float fov_y, float sensor_height)
 {
-    dict["dims"] = dims;
-    dict["position"] = position;
-    dict["image_u"] = image_u;
-    dict["image_v"] = image_v;
-    dict["image_w"] = image_w;
+    return sensor_height / (2.f * std::tan(sgl::math::radians(fov_y) * 0.5f));
 }
 
-void CameraUniforms::bind(sgl::ShaderCursor cursor) const
+float fov_y_from_focal_length(float focal_length, float sensor_height)
 {
-    cursor["dims"] = dims;
-    cursor["position"] = position;
-    cursor["image_u"] = image_u;
-    cursor["image_v"] = image_v;
-    cursor["image_w"] = image_w;
+    return sgl::math::degrees(2.f * std::atan(sensor_height / (2.f * focal_length)));
 }
+
+} // namespace
 
 Camera::~Camera() { }
 
+void Camera::set_focal_length(float length)
+{
+    length = std::clamp(length, std::numeric_limits<float>::min(), std::numeric_limits<float>::max());
+    if (length != m_focal_length) {
+        m_focal_length = length;
+        needs_recompute();
+        mark_dirty(DirtyFlags::render_state);
+    }
+}
+
+void Camera::set_fstop(float fstop)
+{
+    fstop = std::clamp(fstop, MIN_FSTOP, MAX_FSTOP);
+    if (fstop != m_fstop) {
+        m_fstop = fstop;
+        needs_recompute();
+        mark_dirty(DirtyFlags::render_state);
+    }
+}
+
+void Camera::set_sensor_height(float height)
+{
+    height = std::clamp(height, std::numeric_limits<float>::min(), std::numeric_limits<float>::max());
+    if (height != m_sensor_height) {
+        m_sensor_height = height;
+        needs_recompute();
+        mark_dirty(DirtyFlags::render_state);
+    }
+}
+
+void Camera::set_fov_y(float degrees)
+{
+    // Keep the physical conversion away from the singular endpoints. The closest
+    // float above zero underflows when converted from degrees to radians.
+    degrees = std::clamp(degrees, std::numeric_limits<float>::epsilon(), std::nextafter(MAX_FOV_Y, MIN_FOV_Y));
+    set_focal_length(focal_length_from_fov_y(degrees, m_sensor_height));
+}
+
+float Camera::fov_y() const
+{
+    return fov_y_from_focal_length(m_focal_length, m_sensor_height);
+}
+
+void Camera::set_enable_depth_of_field(bool enabled)
+{
+    if (enabled != m_enable_depth_of_field) {
+        m_enable_depth_of_field = enabled;
+        needs_recompute();
+        mark_dirty(DirtyFlags::render_state);
+    }
+}
+
+void Camera::set_focus_distance(float distance)
+{
+    distance = std::max(distance, 0.f);
+    if (distance != m_focus_distance) {
+        m_focus_distance = distance;
+        needs_recompute();
+        mark_dirty(DirtyFlags::render_state);
+    }
+}
+
+void Camera::set_depth_range(float2 depth_range)
+{
+    depth_range.x = std::max(depth_range.x, std::numeric_limits<float>::min());
+    depth_range.y = std::max(depth_range.y, std::nextafter(depth_range.x, std::numeric_limits<float>::infinity()));
+    if (depth_range != m_depth_range) {
+        m_depth_range = depth_range;
+        mark_dirty(DirtyFlags::render_state);
+    }
+}
+
 void Camera::set_width(int width)
 {
+    width = std::clamp(width, MIN_VIEWPORT_DIMENSION, MAX_VIEWPORT_DIMENSION);
     if (width != m_width) {
         m_width = width;
         needs_recompute();
@@ -42,42 +114,10 @@ void Camera::set_width(int width)
 
 void Camera::set_height(int height)
 {
+    height = std::clamp(height, MIN_VIEWPORT_DIMENSION, MAX_VIEWPORT_DIMENSION);
     if (height != m_height) {
         m_height = height;
         needs_recompute();
-        mark_dirty(DirtyFlags::render_state);
-    }
-}
-
-void Camera::set_fov_y(float degrees)
-{
-    if (degrees != m_fov_y) {
-        m_fov_y = degrees;
-        needs_recompute();
-        mark_dirty(DirtyFlags::render_state);
-    }
-}
-
-void Camera::set_focal_length(float length)
-{
-    if (length != m_focal_length) {
-        m_focal_length = length;
-        mark_dirty(DirtyFlags::render_state);
-    }
-}
-
-void Camera::set_focus_distance(float distance)
-{
-    if (distance != m_focus_distance) {
-        m_focus_distance = distance;
-        mark_dirty(DirtyFlags::render_state);
-    }
-}
-
-void Camera::set_fstop(float fstop)
-{
-    if (fstop != m_fstop) {
-        m_fstop = fstop;
         mark_dirty(DirtyFlags::render_state);
     }
 }
@@ -88,8 +128,7 @@ void Camera::recompute() const
         return;
 
     float aspect_ratio = static_cast<float>(m_width) / static_cast<float>(m_height);
-    float fov_rad = m_fov_y * (static_cast<float>(M_PI) / 180.0f);
-    float half_tan = std::tan(fov_rad * 0.5f);
+    float half_tan = m_sensor_height / (2.f * m_focal_length);
 
     float3 pos{0.f};
     float3 right{1.f, 0.f, 0.f};
@@ -111,6 +150,8 @@ void Camera::recompute() const
     m_uniforms.image_u = right * half_tan * aspect_ratio;
     m_uniforms.image_v = up * half_tan;
     m_uniforms.image_w = fwd;
+    m_uniforms.aperture_radius = m_enable_depth_of_field ? 0.5f * m_focal_length * 0.001f / m_fstop : 0.f;
+    m_uniforms.focus_distance = m_focus_distance;
 
     m_needs_recompute = false;
 }
@@ -155,20 +196,8 @@ float4x4 Camera::calc_clip_from_view(int width, int height) const
     FALCOR_ASSERT_GT(height, 0);
     recompute();
     float aspect_ratio = static_cast<float>(width) / static_cast<float>(height);
-    float fov_rad = m_fov_y * (static_cast<float>(M_PI) / 180.0f);
-    return sgl::math::perspective(fov_rad, aspect_ratio, 0.1f, 1000.0f);
-}
-
-void Camera::to_dictionary(IDictionary& dict)
-{
-    recompute();
-    m_uniforms.to_dictionary(dict);
-}
-
-void Camera::bind(sgl::ShaderCursor cursor) const
-{
-    recompute();
-    m_uniforms.bind(cursor);
+    float fov_rad = sgl::math::radians(fov_y());
+    return sgl::math::perspective(fov_rad, aspect_ratio, m_depth_range.x, m_depth_range.y);
 }
 
 void Camera::on_entity_transform_changed()
@@ -177,6 +206,8 @@ void Camera::on_entity_transform_changed()
     mark_dirty(DirtyFlags::render_state);
 }
 
+FALCOR_STATIC_ONCE(sgl::cursor_utils::register_cursor_writer<CameraUniforms>());
+FALCOR_STATIC_ONCE(sgl::cursor_utils::register_cursor_writer<Camera>());
 FALCOR_SCENE_REGISTER_COMPONENT(Camera);
 
 } // namespace falcor

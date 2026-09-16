@@ -9,24 +9,23 @@
 #include "falcor2/ui/selection_overlay.h"
 
 #include "falcor2/render/entity.h"
-#include "falcor2/render/component/camera.h"
-#include "falcor2/utils/aabb.h"
-
-#include <sgl/math/vector_math.h>
 
 namespace falcor::ui {
 
 SceneInteractionController::SceneInteractionController(
     ref<SceneEditor> scene_editor,
     ref<ScenePicker> scene_picker,
-    ref<SelectionOverlay> selection_overlay,
-    ref<CameraController> camera_controller
+    ref<SelectionOverlay> selection_overlay
 )
     : m_scene_editor(std::move(scene_editor))
     , m_scene_picker(std::move(scene_picker))
     , m_selection_overlay(std::move(selection_overlay))
-    , m_camera_controller(std::move(camera_controller))
 {
+}
+
+CameraController* SceneInteractionController::camera_controller() const
+{
+    return m_scene_editor ? m_scene_editor->camera_controller() : nullptr;
 }
 
 void SceneInteractionController::set_scene(ref<Scene> scene)
@@ -37,11 +36,6 @@ void SceneInteractionController::set_scene(ref<Scene> scene)
         if (m_selection_overlay)
             m_selection_overlay->clear_selection();
     }
-}
-
-void SceneInteractionController::set_reset_callback(ResetCallback callback)
-{
-    m_reset_callback = std::move(callback);
 }
 
 void SceneInteractionController::set_pointer_capture_callback(PointerCaptureCallback callback)
@@ -63,31 +57,33 @@ bool SceneInteractionController::has_pointer_capture()
 
 void SceneInteractionController::cancel_pointer_owner()
 {
-    if (m_camera_controller)
-        m_camera_controller->cancel_interaction();
+    if (CameraController* controller = camera_controller())
+        controller->cancel_interaction();
     set_pointer_owner(PointerOwner::none);
 }
 
 bool SceneInteractionController::handle_keyboard_event(const sgl::KeyboardEvent& event)
 {
-    if (!m_camera_controller)
+    CameraController* controller = camera_controller();
+    if (!controller)
         return false;
 
     // The camera always sees keyboard events so movement/modifier state stays coherent,
     // but it only consumes keys it actually owns in its current mode.
-    return m_camera_controller->handle_keyboard_event(event);
+    return controller->handle_keyboard_event(event);
 }
 
 bool SceneInteractionController::handle_mouse_event(const sgl::MouseEvent& event)
 {
-    if (!m_camera_controller)
-        return false;
-
     reconcile_pointer_owner();
 
+    CameraController* controller = camera_controller();
+    if (!controller)
+        return false;
+
     if (m_pointer_owner == PointerOwner::camera) {
-        m_camera_controller->handle_mouse_event(event);
-        if (!m_camera_controller->is_interacting())
+        controller->handle_mouse_event(event);
+        if (!controller->is_interacting())
             set_pointer_owner(PointerOwner::none);
         return true;
     }
@@ -95,20 +91,24 @@ bool SceneInteractionController::handle_mouse_event(const sgl::MouseEvent& event
     bool route_allowed = can_route_viewport_event(event);
     bool camera_handled = false;
     if (route_allowed) {
-        camera_handled = m_camera_controller->handle_mouse_event(event);
-        if (m_camera_controller->is_interacting())
+        camera_handled = controller->handle_mouse_event(event);
+        if (controller->is_interacting())
             set_pointer_owner(PointerOwner::camera);
     }
 
     // Handle picking on left-click in the viewport, but only if the camera
     // controller didn't just enter an active mode (e.g. Alt+LMB orbit).
-    if (route_allowed && !camera_handled && m_scene_picker && m_scene_editor && m_scene && event.is_button_down()
+    if (route_allowed && !camera_handled && m_scene_editor && m_scene && event.is_button_down()
         && event.button == sgl::MouseButton::left) {
         uint2 local_pos;
         if (m_scene_editor->can_pick_at(event.pos, local_pos)) {
-            Entity* entity = m_scene_picker->pick_entity(m_scene, local_pos);
-            m_scene_editor->set_selected_object(entity);
-            camera_handled = true;
+            Entity* entity = m_scene_editor->pick_gizmo_at(event.pos);
+            if (!entity && m_scene_picker)
+                entity = m_scene_picker->pick_entity(m_scene, local_pos);
+            if (entity || m_scene_picker) {
+                m_scene_editor->set_selected_object(entity);
+                camera_handled = true;
+            }
         }
     }
 
@@ -128,36 +128,6 @@ void SceneInteractionController::update_selection_overlay()
     }
 }
 
-bool SceneInteractionController::focus_on_selection(Camera* camera)
-{
-    if (!m_scene_editor || !m_camera_controller)
-        return false;
-
-    if (!m_scene_editor->selected_object())
-        return false;
-
-    Entity* entity = m_scene_editor->selected_object()->as<Entity>();
-    if (!entity)
-        return false;
-
-    AABB aabb = entity->world_aabb();
-    if (!aabb.is_valid())
-        return false;
-
-    float distance = sgl::math::length(aabb.size()) * 1.5f;
-    m_camera_controller->focus(aabb.center(), distance);
-    if (camera)
-        camera->entity()->set_world_transform(m_camera_controller->transform());
-    request_reset();
-    return true;
-}
-
-void SceneInteractionController::request_reset()
-{
-    if (m_reset_callback)
-        m_reset_callback();
-}
-
 void SceneInteractionController::set_pointer_owner(PointerOwner owner)
 {
     if (m_pointer_owner == owner)
@@ -170,7 +140,8 @@ void SceneInteractionController::set_pointer_owner(PointerOwner owner)
 
 void SceneInteractionController::reconcile_pointer_owner()
 {
-    if (m_pointer_owner == PointerOwner::camera && (!m_camera_controller || !m_camera_controller->is_interacting()))
+    CameraController* controller = camera_controller();
+    if (m_pointer_owner == PointerOwner::camera && (!controller || !controller->is_interacting()))
         set_pointer_owner(PointerOwner::none);
 }
 

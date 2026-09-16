@@ -4,14 +4,17 @@
 #include "testing.h"
 
 #include "falcor2/render/scene.h"
-#include "falcor2/render/scene_import.h"
 #include "falcor2/render/ray_tracing_setup.h"
+#include "falcor2/render/emissive_geometry_system.h"
+#include "falcor2/render/light_system.h"
 #include "falcor2/render/geometry/static_mesh_geometry.h"
 #include "falcor2/render/geometry/geometry_group.h"
 #include "falcor2/render/component/geometry_instance.h"
 #include "falcor2/render/component/camera.h"
 #include "falcor2/render/component/light.h"
+#include "falcor2/render/material/emission_only_material.h"
 #include "falcor2/render/material/standard_material.h"
+#include "falcor2/importers/importer.h"
 #include "falcor2/importers/importer_types.h"
 #include "falcor2/core/python_interpreter.h"
 
@@ -20,6 +23,7 @@
 #include <array>
 
 #include <filesystem>
+#include <fstream>
 
 using namespace falcor;
 
@@ -240,32 +244,32 @@ TEST_CASE_GPU("importer scene uv origin conversion and adoption")
 
     {
         auto scene = Scene::create(ref(ctx.device));
-        load_importer_scene(scene.get(), *importer_scene);
+        scene->append(*importer_scene);
 
-        CHECK(scene->options().uv_origin == UVOrigin::upper_left);
+        CHECK(scene->config().uv_origin == UVOrigin::upper_left);
         check_imported_uvs(scene.get(), float2(0.25f, 1.25f), float2(0.5f, 0.5f), float2(0.75f, -0.25f));
     }
 
     {
-        auto scene = Scene::create(ref(ctx.device), *importer_scene);
-        CHECK(scene->options().uv_origin == UVOrigin::lower_left);
+        auto scene = Scene::from_importer_scene(ref(ctx.device), *importer_scene);
+        CHECK(scene->config().uv_origin == UVOrigin::lower_left);
         check_imported_uvs(scene.get(), float2(0.25f, -0.25f), float2(0.5f, 0.5f), float2(0.75f, 1.25f));
     }
 
     {
-        auto scene = Scene::create(ref(ctx.device), *importer_scene);
-        CHECK(scene->options().uv_origin == UVOrigin::lower_left);
+        auto scene = Scene::from_importer_scene(ref(ctx.device), *importer_scene);
+        CHECK(scene->config().uv_origin == UVOrigin::lower_left);
         check_imported_uvs(scene.get(), float2(0.25f, -0.25f), float2(0.5f, 0.5f), float2(0.75f, 1.25f));
     }
 
     {
-        auto scene = Scene::create(ref(ctx.device), *importer_scene, UVOrigin::upper_left);
-        CHECK(scene->options().uv_origin == UVOrigin::upper_left);
+        auto scene = Scene::from_importer_scene(ref(ctx.device), *importer_scene, SceneConfig(UVOrigin::upper_left));
+        CHECK(scene->config().uv_origin == UVOrigin::upper_left);
         check_imported_uvs(scene.get(), float2(0.25f, 1.25f), float2(0.5f, 0.5f), float2(0.75f, -0.25f));
     }
 }
 
-TEST_CASE_GPU("importer scene dome light preserves environment map path")
+TEST_CASE_GPU("importer scene textured dome light preserves radiometry")
 {
     auto importer_scene = make_ref<ImporterScene>();
 
@@ -273,6 +277,7 @@ TEST_CASE_GPU("importer scene dome light preserves environment map path")
     dome_light.name = "Test Dome Light";
     dome_light.type = ImporterLight::Type::dome;
     dome_light.env_map_path = "data/assets/envmaps/aerodynamics_workshop_512.hdr";
+    dome_light.intensity = float3(0.25f, 0.5f, 0.75f);
     dome_light.exposure = 5.f;
     importer_scene->lights.push_back(dome_light);
 
@@ -282,13 +287,13 @@ TEST_CASE_GPU("importer scene dome light preserves environment map path")
     importer_scene->nodes.push_back(dome_node);
     importer_scene->root_nodes.push_back(0);
 
-    auto scene = Scene::create(ref(ctx.device));
-    load_importer_scene(scene.get(), *importer_scene);
+    auto scene = Scene::from_importer_scene(ref(ctx.device), *importer_scene);
 
     REQUIRE_EQ(scene->components().size(), 1);
     const auto* env_map_light = dynamic_cast<const EnvMapLight*>(scene->components()[0]);
     REQUIRE(env_map_light != nullptr);
     CHECK_EQ(env_map_light->env_map_path(), std::filesystem::path(dome_light.env_map_path));
+    CHECK_EQ(env_map_light->intensity(), dome_light.intensity);
     CHECK_EQ(env_map_light->exposure(), doctest::Approx(dome_light.exposure));
 }
 
@@ -309,8 +314,7 @@ TEST_CASE_GPU("importer scene textureless dome light becomes constant environmen
     importer_scene->nodes.push_back(dome_node);
     importer_scene->root_nodes.push_back(0);
 
-    auto scene = Scene::create(ref(ctx.device));
-    load_importer_scene(scene.get(), *importer_scene);
+    auto scene = Scene::from_importer_scene(ref(ctx.device), *importer_scene);
 
     REQUIRE_EQ(scene->components().size(), 1);
     const auto* constant_light = dynamic_cast<const ConstantLight*>(scene->components()[0]);
@@ -327,6 +331,7 @@ TEST_CASE_GPU("importer scene converts distant angular diameter to cone half ang
     importer_light.name = "Distant Light";
     importer_light.type = ImporterLight::Type::distant;
     importer_light.intensity = float3(2.f, 3.f, 4.f);
+    importer_light.exposure = 2.f;
     importer_light.degree_angular_diameter = 12.f;
     importer_scene->lights.push_back(importer_light);
 
@@ -336,14 +341,183 @@ TEST_CASE_GPU("importer scene converts distant angular diameter to cone half ang
     importer_scene->nodes.push_back(light_node);
     importer_scene->root_nodes.push_back(0);
 
-    auto scene = Scene::create(ref(ctx.device));
-    load_importer_scene(scene.get(), *importer_scene);
+    auto scene = Scene::from_importer_scene(ref(ctx.device), *importer_scene);
 
     REQUIRE_EQ(scene->components().size(), 1);
     const auto* distant_light = dynamic_cast<const DistantLight*>(scene->components()[0]);
     REQUIRE(distant_light != nullptr);
     CHECK_EQ(distant_light->radiance(), importer_light.intensity);
+    CHECK_EQ(distant_light->exposure(), doctest::Approx(importer_light.exposure));
     CHECK_EQ(distant_light->cutoff_angle(), doctest::Approx(6.f));
+}
+
+TEST_CASE_GPU("importer scene creates shaped point light")
+{
+    auto importer_scene = make_ref<ImporterScene>();
+
+    ImporterLight importer_light;
+    importer_light.name = "Spot Light";
+    importer_light.type = ImporterLight::Type::point;
+    importer_light.intensity = float3(2.f, 3.f, 4.f);
+    importer_light.exposure = 2.f;
+    importer_light.enable_shaping = true;
+    importer_light.shaping_cone_angle = 35.f;
+    importer_light.shaping_cone_softness = 3.f / 7.f;
+    importer_light.shaping_focus = 2.f;
+    importer_scene->lights.push_back(importer_light);
+
+    ImporterNode light_node;
+    light_node.name = importer_light.name;
+    light_node.light_index = 0;
+    importer_scene->nodes.push_back(light_node);
+    importer_scene->root_nodes.push_back(0);
+
+    auto scene = Scene::from_importer_scene(ref(ctx.device), *importer_scene);
+
+    REQUIRE_EQ(scene->components().size(), 1);
+    const auto* point_light = dynamic_cast<const PointLight*>(scene->components()[0]);
+    REQUIRE(point_light != nullptr);
+    REQUIRE(point_light->class_descriptor().base());
+    CHECK_EQ(point_light->class_descriptor().base()->name(), "Light");
+    CHECK_EQ(point_light->intensity(), importer_light.intensity);
+    CHECK_EQ(point_light->exposure(), doctest::Approx(importer_light.exposure));
+    CHECK(point_light->enable_shaping());
+    CHECK_EQ(point_light->shaping_cone_angle(), doctest::Approx(35.f));
+    CHECK_EQ(point_light->shaping_cone_softness(), doctest::Approx(3.f / 7.f));
+    CHECK_EQ(point_light->shaping_focus(), doctest::Approx(importer_light.shaping_focus));
+}
+
+TEST_CASE_GPU("importer scene preserves point light radiometry")
+{
+    auto importer_scene = make_ref<ImporterScene>();
+
+    ImporterLight importer_light;
+    importer_light.name = "Point Light";
+    importer_light.type = ImporterLight::Type::point;
+    importer_light.intensity = float3(2.f, 3.f, 4.f);
+    importer_light.exposure = 2.f;
+    importer_light.enable_color_temperature = true;
+    importer_light.color_temperature = 3000.f;
+    importer_scene->lights.push_back(importer_light);
+
+    ImporterNode light_node;
+    light_node.name = importer_light.name;
+    light_node.light_index = 0;
+    importer_scene->nodes.push_back(light_node);
+    importer_scene->root_nodes.push_back(0);
+
+    auto scene = Scene::from_importer_scene(ref(ctx.device), *importer_scene);
+
+    REQUIRE_EQ(scene->components().size(), 1);
+    const auto* point_light = dynamic_cast<const PointLight*>(scene->components()[0]);
+    REQUIRE(point_light != nullptr);
+    CHECK_EQ(point_light->intensity(), importer_light.intensity);
+    CHECK_EQ(point_light->exposure(), doctest::Approx(importer_light.exposure));
+    CHECK(point_light->enable_color_temperature());
+    CHECK_EQ(point_light->color_temperature(), doctest::Approx(importer_light.color_temperature));
+}
+
+TEST_CASE_GPU("importer scene creates shaped analytic sphere, disk, and rectangle lights")
+{
+    auto importer_scene = make_ref<ImporterScene>();
+
+    ImporterLight sphere;
+    sphere.name = "Sphere Light";
+    sphere.type = ImporterLight::Type::sphere;
+    sphere.intensity = float3(2.f, 3.f, 4.f);
+    sphere.exposure = 1.f;
+    sphere.radius = 0.75f;
+    sphere.enable_shaping = true;
+    sphere.shaping_cone_angle = 35.f;
+    sphere.shaping_cone_softness = 0.2f;
+    sphere.shaping_focus = 2.f;
+    sphere.enable_virtual_sphere_shrinking = true;
+    importer_scene->lights.push_back(sphere);
+
+    ImporterLight disk;
+    disk.name = "Shaped Disk Light";
+    disk.type = ImporterLight::Type::disk;
+    disk.intensity = float3(5.f, 6.f, 7.f);
+    disk.exposure = 2.f;
+    disk.radius = 1.25f;
+    disk.enable_shaping = true;
+    disk.shaping_cone_angle = 40.f;
+    disk.shaping_cone_softness = 0.25f;
+    disk.shaping_focus = 4.f;
+    importer_scene->lights.push_back(disk);
+
+    ImporterLight rect;
+    rect.name = "Rectangle Light";
+    rect.type = ImporterLight::Type::rectangular;
+    rect.intensity = float3(8.f, 9.f, 10.f);
+    rect.exposure = 3.f;
+    rect.width = 2.5f;
+    rect.height = 1.5f;
+    rect.enable_shaping = true;
+    rect.shaping_cone_angle = 50.f;
+    rect.shaping_cone_softness = 0.2f;
+    rect.shaping_focus = 1.5f;
+    importer_scene->lights.push_back(rect);
+
+    for (int light_index = 0; light_index < 3; ++light_index) {
+        ImporterNode light_node;
+        light_node.name = importer_scene->lights[light_index].name;
+        light_node.light_index = light_index;
+        importer_scene->nodes.push_back(light_node);
+        importer_scene->root_nodes.push_back(light_index);
+    }
+
+    auto scene = Scene::from_importer_scene(ref(ctx.device), *importer_scene);
+
+    REQUIRE_EQ(scene->components().size(), 3);
+    const SphereLight* sphere_light = scene->components().find<SphereLight>();
+    const DiskLight* disk_light = scene->components().find<DiskLight>();
+    const RectLight* rect_light = scene->components().find<RectLight>();
+
+    REQUIRE(sphere_light);
+    REQUIRE(sphere_light->class_descriptor().base());
+    CHECK_EQ(sphere_light->class_descriptor().base()->name(), "Light");
+    CHECK_EQ(sphere_light->radiance(), sphere.intensity);
+    CHECK_EQ(sphere_light->exposure(), doctest::Approx(sphere.exposure));
+    CHECK_EQ(sphere_light->radius(), doctest::Approx(sphere.radius));
+    CHECK(sphere_light->enable_virtual_sphere_shrinking());
+    CHECK(sphere_light->enable_shaping());
+    CHECK_EQ(sphere_light->shaping_cone_angle(), doctest::Approx(sphere.shaping_cone_angle));
+    CHECK_EQ(sphere_light->shaping_cone_softness(), doctest::Approx(sphere.shaping_cone_softness));
+    CHECK_EQ(sphere_light->shaping_focus(), doctest::Approx(sphere.shaping_focus));
+
+    REQUIRE(disk_light);
+    REQUIRE(disk_light->class_descriptor().base());
+    CHECK_EQ(disk_light->class_descriptor().base()->name(), "Light");
+    CHECK_EQ(disk_light->radiance(), disk.intensity);
+    CHECK_EQ(disk_light->exposure(), doctest::Approx(disk.exposure));
+    CHECK_EQ(disk_light->radius(), doctest::Approx(disk.radius));
+    CHECK(disk_light->enable_shaping());
+    CHECK_EQ(disk_light->shaping_cone_angle(), doctest::Approx(disk.shaping_cone_angle));
+    CHECK_EQ(disk_light->shaping_cone_softness(), doctest::Approx(disk.shaping_cone_softness));
+    CHECK_EQ(disk_light->shaping_focus(), doctest::Approx(disk.shaping_focus));
+
+    REQUIRE(rect_light);
+    REQUIRE(rect_light->class_descriptor().base());
+    CHECK_EQ(rect_light->class_descriptor().base()->name(), "Light");
+    CHECK_EQ(rect_light->radiance(), rect.intensity);
+    CHECK_EQ(rect_light->exposure(), doctest::Approx(rect.exposure));
+    CHECK_EQ(rect_light->width(), doctest::Approx(rect.width));
+    CHECK_EQ(rect_light->height(), doctest::Approx(rect.height));
+    CHECK(rect_light->enable_shaping());
+    CHECK_EQ(rect_light->shaping_cone_angle(), doctest::Approx(rect.shaping_cone_angle));
+    CHECK_EQ(rect_light->shaping_cone_softness(), doctest::Approx(rect.shaping_cone_softness));
+    CHECK_EQ(rect_light->shaping_focus(), doctest::Approx(rect.shaping_focus));
+
+    Properties properties = rect_light->properties();
+    CHECK_EQ(properties.get<float3>("radiance"), rect.intensity);
+    CHECK(properties.get<bool>("enable_shaping"));
+    CHECK_EQ(properties.get<float>("shaping_cone_angle"), doctest::Approx(rect.shaping_cone_angle));
+    CHECK_EQ(properties.get<float>("shaping_focus"), doctest::Approx(rect.shaping_focus));
+    CHECK_EQ(properties.get<float>("width"), doctest::Approx(rect.width));
+
+    Properties sphere_properties = sphere_light->properties();
+    CHECK(sphere_properties.get<bool>("enable_virtual_sphere_shrinking"));
 }
 
 TEST_CASE_GPU("importer scene uses default material for missing assignments")
@@ -380,7 +554,7 @@ TEST_CASE_GPU("importer scene uses default material for missing assignments")
     importer_scene->nodes.push_back(node);
     importer_scene->root_nodes.push_back(0);
 
-    auto scene = Scene::create(ref(ctx.device), *importer_scene);
+    auto scene = Scene::from_importer_scene(ref(ctx.device), *importer_scene);
 
     REQUIRE_EQ(scene->materials().size(), 1);
     CHECK(dynamic_cast<StandardMaterial*>(scene->materials()[0]) != nullptr);
@@ -411,7 +585,7 @@ TEST_CASE_GPU("importer material constructor creates and names live material")
     };
     importer_scene->materials.push_back(std::move(importer_material));
 
-    auto scene = Scene::create(ref(ctx.device), *importer_scene);
+    auto scene = Scene::from_importer_scene(ref(ctx.device), *importer_scene);
 
     CHECK(constructor_called);
     REQUIRE_EQ(scene->materials().size(), 1);
@@ -431,7 +605,7 @@ TEST_CASE_GPU("importer material constructor rejects null material")
     importer_scene->materials.push_back(std::move(importer_material));
 
     try {
-        Scene::create(ref(ctx.device), *importer_scene);
+        Scene::from_importer_scene(ref(ctx.device), *importer_scene);
         FAIL("Expected a null importer material constructor result to throw");
     } catch (const std::exception& e) {
         CHECK(
@@ -443,31 +617,107 @@ TEST_CASE_GPU("importer material constructor rejects null material")
 
 TEST_CASE_GPU("python importer material constructor runs from native scene load")
 {
-    auto python = PythonInterpreter::get().create_context();
-    const std::string project_path = testing::project_directory().generic_string();
-    python.execute_string(fmt::format("import sys\nsys.path.insert(0, r'{}')", project_path));
-
     const std::filesystem::path scene_path = testing::project_directory() / "data" / "scenes" / "checker-material.py";
-    auto scene = Scene::create(ref(ctx.device), scene_path);
+    auto scene = Scene::load(ref(ctx.device), scene_path);
 
-    Material* material = scene->materials().find("Material_MR");
+    Material* material = scene->materials().find("Red");
     REQUIRE(material != nullptr);
     CHECK_EQ(material->slang_type_name(), "CheckerMaterial");
 }
 
-TEST_CASE_GPU("importer scene camera becomes active and preserves vertical fov")
+TEST_CASE_GPU("native pyscene load resolves adjacent helper relative asset and callback")
+{
+    const std::filesystem::path scene_path
+        = testing::project_directory() / "tests" / "native" / "render" / "pyscene_native_loading.py";
+    ref<Importer> previous_importer = Importer::create();
+    ScopedCurrentImporter current_importer(previous_importer);
+
+    PythonContext observer = PythonInterpreter::get().create_context();
+    observer.execute_string("import sys\nsaved_sys_path = list(sys.path)");
+
+    ref<Scene> scene = Scene::load(ref(ctx.device), scene_path);
+
+    CHECK_EQ(Importer::get().get(), previous_importer.get());
+    observer.execute_string("assert sys.path == saved_sys_path");
+    REQUIRE(scene->active_camera() != nullptr);
+    CHECK_EQ(scene->active_camera()->name(), "PyScene Camera");
+    CHECK(scene->materials().find("/Root/Looks/Mat") != nullptr);
+    CHECK(scene->materials().find("PyScene Callback Material") != nullptr);
+}
+
+TEST_CASE_GPU("native pyscene append loads edits and callback observes existing scene")
+{
+    const std::filesystem::path scene_path
+        = testing::project_directory() / "tests" / "native" / "render" / "pyscene_native_loading.py";
+    ref<Scene> scene = Scene::create(ref(ctx.device));
+    Material* existing_material = scene->create_material<StandardMaterial>();
+    existing_material->set_name("Existing Material");
+
+    scene->append(scene_path);
+
+    CHECK_EQ(scene->materials().find("Existing Material"), existing_material);
+    REQUIRE(scene->active_camera() != nullptr);
+    CHECK_EQ(scene->active_camera()->name(), "PyScene Camera");
+    CHECK(scene->materials().find("/Root/Looks/Mat") != nullptr);
+    CHECK(scene->materials().find("PyScene Append Callback Observed Existing Material") != nullptr);
+}
+
+TEST_CASE_GPU("native pyscene load failure restores importer and Python search path")
+{
+    const std::filesystem::path scene_path
+        = testing::project_directory() / "tests" / "native" / "render" / "pyscene_native_loading_failure.py";
+    ref<Importer> previous_importer = Importer::create();
+    ScopedCurrentImporter current_importer(previous_importer);
+
+    PythonContext observer = PythonInterpreter::get().create_context();
+    observer.execute_string("import sys\nsaved_sys_path = list(sys.path)");
+
+    try {
+        Scene::load(ref(ctx.device), scene_path);
+        FAIL("Expected the failing PyScene to throw");
+    } catch (const PythonException& e) {
+        CHECK(std::string(e.what()).find("intentional native PyScene loading failure") != std::string::npos);
+    }
+
+    CHECK_EQ(Importer::get().get(), previous_importer.get());
+    observer.execute_string("assert sys.path == saved_sys_path");
+}
+
+TEST_CASE_GPU("scene from importer and append run loaded callbacks once")
+{
+    ref<Importer> importer = Importer::create();
+    importer->nodes().create("Recorded Node");
+    int callback_count = 0;
+    importer->on_scene_loaded(
+        [&](ref<Scene> scene)
+        {
+            ++callback_count;
+            CHECK(scene->entities().find("Recorded Node") != nullptr);
+        }
+    );
+
+    ref<Scene> loaded_scene = Scene::from_importer(ref(ctx.device), *importer);
+    CHECK_EQ(callback_count, 1);
+
+    ref<Scene> appended_scene = Scene::create(ref(ctx.device));
+    appended_scene->append(*importer);
+    CHECK_EQ(callback_count, 2);
+}
+
+TEST_CASE_GPU("importer scene camera becomes active and preserves projection properties")
 {
     auto importer_scene = make_ref<ImporterScene>();
 
     ImporterCamera importer_camera;
     importer_camera.name = "Test Camera";
-    importer_camera.focus_distance = 1.f;
     importer_camera.focal_length = 50.f;
     importer_camera.fstop = 8.f;
-    importer_camera.depth_range = float2(0.01f, 10000.f);
+    importer_camera.sensor_size_mm = 24.f;
+    importer_camera.enable_depth_of_field = true;
+    importer_camera.focus_distance = 0.f;
+    importer_camera.depth_range = float2(0.25f, 250.f);
     importer_camera.projection = ImporterCamera::Projection::perspective;
     importer_camera.fov_direction = ImporterCamera::FOVDirection::vertical;
-    importer_camera.sensor_size_mm = 24.f;
     importer_camera.focal_length = ImporterCamera::focal_length_from_fov_degrees(42.f, importer_camera.sensor_size_mm);
     importer_scene->cameras.push_back(importer_camera);
 
@@ -477,12 +727,17 @@ TEST_CASE_GPU("importer scene camera becomes active and preserves vertical fov")
     importer_scene->nodes.push_back(camera_node);
     importer_scene->root_nodes.push_back(0);
 
-    auto scene = Scene::create(ref(ctx.device));
-    load_importer_scene(scene.get(), *importer_scene);
+    auto scene = Scene::from_importer_scene(ref(ctx.device), *importer_scene);
 
     Camera* active_camera = scene->active_camera();
     REQUIRE(active_camera != nullptr);
+    CHECK_EQ(active_camera->focal_length(), importer_camera.focal_length);
+    CHECK_EQ(active_camera->fstop(), 8.f);
+    CHECK_EQ(active_camera->sensor_height(), importer_camera.sensor_size_mm);
+    CHECK(active_camera->enable_depth_of_field());
+    CHECK_EQ(active_camera->focus_distance(), 0.f);
     CHECK_EQ(active_camera->fov_y(), doctest::Approx(42.f));
+    CHECK_EQ(active_camera->depth_range(), importer_camera.depth_range);
 }
 
 TEST_CASE_GPU("importer scene camera converts horizontal fov with four by three sensor assumption")
@@ -502,14 +757,15 @@ TEST_CASE_GPU("importer scene camera converts horizontal fov with four by three 
     importer_scene->nodes.push_back(camera_node);
     importer_scene->root_nodes.push_back(0);
 
-    auto scene = Scene::create(ref(ctx.device));
-    load_importer_scene(scene.get(), *importer_scene);
+    auto scene = Scene::from_importer_scene(ref(ctx.device), *importer_scene);
 
     const float expected_vertical_fov
         = ImporterCamera::fov_degrees_from_focal_length(24.f, importer_camera.focal_length);
 
     Camera* active_camera = scene->active_camera();
     REQUIRE(active_camera != nullptr);
+    CHECK_EQ(active_camera->sensor_height(), 24.f);
+    CHECK_EQ(active_camera->focal_length(), importer_camera.focal_length);
     CHECK_EQ(active_camera->fov_y(), doctest::Approx(expected_vertical_fov));
 }
 
@@ -949,6 +1205,173 @@ TEST_CASE_GPU("geometry local aabb")
     CHECK(geom->local_aabb().max.y == doctest::Approx(2.f));
     CHECK(geom->local_aabb().min.z == doctest::Approx(-1.f));
     CHECK(geom->local_aabb().max.z == doctest::Approx(1.f));
+}
+
+TEST_CASE_GPU("geometry instance material slots can be assigned and cleared")
+{
+    auto scene = Scene::create(ref(ctx.device));
+
+    Entity* entity = scene->create_entity();
+    GeometryInstance* instance = entity->create_component<GeometryInstance>();
+    Geometry* geometry = scene->create_geometry<GeometryGroup>();
+    Material* first_material = scene->create_material<StandardMaterial>();
+    Material* third_material = scene->create_material<StandardMaterial>();
+
+    CHECK_EQ(instance->material_slot_count(), 0);
+
+    instance->set_geometry(geometry);
+    CHECK_EQ(instance->material_slot_count(), 1);
+
+    CHECK(instance->set_material(0, first_material));
+    REQUIRE_EQ(instance->materials().size(), 1);
+    CHECK_EQ(instance->materials()[0], first_material);
+    CHECK_FALSE(instance->set_material(0, first_material));
+
+    CHECK(instance->set_material(2, third_material));
+    REQUIRE_EQ(instance->materials().size(), 3);
+    CHECK_EQ(instance->materials()[0], first_material);
+    CHECK_EQ(instance->materials()[1], nullptr);
+    CHECK_EQ(instance->materials()[2], third_material);
+    CHECK_EQ(instance->material_slot_count(), 3);
+
+    CHECK(instance->set_material(0, nullptr));
+    CHECK_EQ(instance->materials()[0], nullptr);
+
+    CHECK_FALSE(instance->set_material(4, nullptr));
+    CHECK_EQ(instance->materials().size(), 3);
+}
+
+TEST_CASE_GPU("emissive triangle sampling spans sample batches")
+{
+    auto scene = Scene::create(ref(ctx.device));
+
+    Properties properties;
+    properties.set("emissive_factor", float3(1.f));
+    auto* material = scene->create_material<StandardMaterial>(properties);
+    auto* geometry
+        = create_triangle_geometry(scene, float3(0.f, 0.f, 0.f), float3(1.f, 0.f, 0.f), float3(0.f, 1.f, 0.f));
+
+    // StandardMaterial requests a padded 10,016 samples per triangle. The final
+    // triangle starts beyond the 1,048,576-sample batch boundary.
+    static constexpr uint32_t INSTANCE_COUNT = 106;
+    for (uint32_t i = 0; i < INSTANCE_COUNT; ++i) {
+        auto* instance = scene->create_entity()->create_component<GeometryInstance>();
+        instance->set_geometry(geometry);
+        instance->set_materials({material});
+    }
+
+    scene->update();
+
+    const auto* emissive_geometry_system = scene->_emissive_geometry_system();
+    CHECK_EQ(emissive_geometry_system->triangle_count(), INSTANCE_COUNT);
+    CHECK_EQ(emissive_geometry_system->active_triangle_count(), INSTANCE_COUNT);
+
+    const auto triangles = emissive_geometry_system->triangles();
+    const auto triangle_flux = emissive_geometry_system->triangle_flux();
+    const auto active_triangle_ids = emissive_geometry_system->active_triangle_ids();
+    REQUIRE_EQ(triangles.size(), INSTANCE_COUNT);
+    REQUIRE_EQ(triangle_flux.size(), INSTANCE_COUNT);
+    REQUIRE_EQ(active_triangle_ids.size(), INSTANCE_COUNT);
+    CHECK_GT(triangle_flux.front(), 0.f);
+    CHECK_EQ(static_cast<uint32_t>(active_triangle_ids.front()), 0u);
+
+    CHECK_EQ(emissive_geometry_system->triangles().data(), triangles.data());
+    CHECK_EQ(emissive_geometry_system->triangle_flux().data(), triangle_flux.data());
+    CHECK_EQ(emissive_geometry_system->active_triangle_ids().data(), active_triangle_ids.data());
+}
+
+TEST_CASE_GPU("imported planar area light geometry faces local negative Z")
+{
+    const std::filesystem::path path = testing::get_case_temp_directory() / "visible_planar_lights.usda";
+    {
+        std::ofstream file(path);
+        file << R"usd(#usda 1.0
+
+def RectLight "VisibleRect"
+{
+    bool inputs:enableColorTemperature = 1
+    float inputs:colorTemperature = 3000
+    float inputs:height = 2
+    float inputs:intensity = 4
+    float inputs:width = 3
+}
+
+def DiskLight "VisibleDisk"
+{
+    float inputs:intensity = 2
+    float inputs:radius = 1
+}
+)usd";
+    }
+
+    ImportOptions options;
+    options.force_rectangle_lights_to_geometry = true;
+    options.force_disk_lights_to_geometry = true;
+    const ref<ImporterScene> imported_scene = import_scene(path, options);
+    REQUIRE(imported_scene);
+    REQUIRE(imported_scene->lights.empty());
+    REQUIRE_EQ(imported_scene->meshes.size(), 2);
+
+    for (const ImporterMesh& mesh : imported_scene->meshes) {
+        const auto positions = mesh.position_stream();
+        const auto normals = mesh.normal_stream();
+        const auto tangents = mesh.tangent_stream();
+        const auto handedness = mesh.handedness_stream();
+        REQUIRE(positions.valid());
+        REQUIRE(normals.valid());
+        REQUIRE(tangents.valid());
+        REQUIRE(handedness.valid());
+        REQUIRE_EQ(positions.size, normals.size);
+        REQUIRE_EQ(positions.size, tangents.size);
+        REQUIRE_EQ(positions.size, handedness.size);
+        for (size_t vertex_index = 0; vertex_index < positions.size; ++vertex_index) {
+            CHECK_EQ(normals[vertex_index], float3(0.f, 0.f, -1.f));
+            CHECK_EQ(tangents[vertex_index], float3(1.f, 0.f, 0.f));
+            CHECK_EQ(handedness[vertex_index], -1.f);
+        }
+
+        REQUIRE_EQ(mesh.subgeometries.size(), 1);
+        for (const uint3 indices : mesh.subgeometries[0].indices) {
+            const float3 geometric_normal = sgl::math::normalize(
+                sgl::math::cross(
+                    positions[indices.y] - positions[indices.x],
+                    positions[indices.z] - positions[indices.x]
+                )
+            );
+            CHECK_EQ(geometric_normal.x, doctest::Approx(0.f));
+            CHECK_EQ(geometric_normal.y, doctest::Approx(0.f));
+            CHECK_EQ(geometric_normal.z, doctest::Approx(-1.f));
+        }
+    }
+
+    const ref<Scene> scene = Scene::from_importer_scene(ref(ctx.device), *imported_scene);
+    scene->update();
+
+    REQUIRE_EQ(scene->materials().size(), 2);
+    const EmissionOnlyMaterial* color_temperature_material = nullptr;
+    for (const Material* scene_material : scene->materials()) {
+        const auto* material = dynamic_cast<const EmissionOnlyMaterial*>(scene_material);
+        REQUIRE(material != nullptr);
+        if (material->enable_color_temperature())
+            color_temperature_material = material;
+    }
+    REQUIRE(color_temperature_material != nullptr);
+    CHECK_EQ(color_temperature_material->color_temperature(), doctest::Approx(3000.f));
+
+    REQUIRE(scene->_light_system());
+    CHECK_EQ(scene->_light_system()->light_count(), 0);
+    CHECK_EQ(scene->_light_system()->analytic_light_count(), 0);
+
+    const EmissiveGeometrySystem* emissive_geometry = scene->_emissive_geometry_system();
+    REQUIRE(emissive_geometry);
+    CHECK_EQ(emissive_geometry->triangle_count(), 2 + 64);
+    CHECK_EQ(emissive_geometry->active_triangle_count(), 2 + 64);
+    REQUIRE_EQ(emissive_geometry->triangles().size(), 2 + 64);
+    REQUIRE_EQ(emissive_geometry->triangle_flux().size(), 2 + 64);
+    for (size_t triangle_index = 0; triangle_index < emissive_geometry->triangles().size(); ++triangle_index) {
+        CHECK_EQ(emissive_geometry->triangles()[triangle_index].normal_ws, float3(0.f, 0.f, -1.f));
+        CHECK_GT(emissive_geometry->triangle_flux()[triangle_index], 0.f);
+    }
 }
 
 // ---------------------------------------------------------------------------

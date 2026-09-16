@@ -21,6 +21,9 @@ struct FALCOR_API SceneRequirements {
     /// Required ray-tracing pipeline flags.
     sgl::RayTracingPipelineFlags ray_tracing_pipeline_flags = sgl::RayTracingPipelineFlags::none;
 
+    /// True if any valid scene materials use alpha masking/blending.
+    bool requires_opacity_evaluation{false};
+
     auto operator<=>(const SceneRequirements&) const = default;
 };
 

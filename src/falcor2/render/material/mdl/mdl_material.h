@@ -38,6 +38,13 @@ public:
 
     virtual void on_load_resources() override;
     virtual void update(SceneUpdateContext& ctx) override;
+    virtual shared::MaterialFlags flags() const override
+    {
+        // MDL expressions may select transmissive lobes dynamically. Until host-side
+        // expression analysis is available, conservatively allow two-sided interaction.
+        return shared::MaterialFlags::two_sided;
+    }
+    virtual OpacityDesc opacity_desc() const override;
     virtual ref<sgl::SlangModule> required_module() const override;
 
     /// List the texture handles used by this material.
@@ -79,6 +86,22 @@ public:
                 reflection::on_change(&MDLMaterial::require_codegen)
             )
             .def_rw(
+                "mdl_geomprop_names",
+                &MDLMaterial::m_mdl_geomprop_names,
+                "Geometry stream names; texcoord_1 through texcoord_3 may supply secondary MDL texture spaces.",
+                reflection::default_value(detail::PropertyList::create(std::vector<std::string>{})),
+                reflection::on_change(&MDLMaterial::require_codegen),
+                reflection::UIFlags::advanced
+            )
+            .def_rw(
+                "mdl_geomprop_ids",
+                &MDLMaterial::m_mdl_geomprop_ids,
+                "Geometry provider IDs matching mdl_geomprop_names; UV0 is always built in.",
+                reflection::default_value(detail::PropertyList::create(std::vector<int64_t>{})),
+                reflection::on_change(&MDLMaterial::require_codegen),
+                reflection::UIFlags::advanced
+            )
+            .def_rw(
                 "debug_write_shader_path",
                 &MDLMaterial::m_debug_write_shader_path,
                 "Write the generated Slang shader to this path.",
@@ -93,12 +116,6 @@ public:
                 reflection::on_change(&MDLMaterial::require_codegen)
             );
     }
-
-    // Accessors for Python Material.get_this() only.
-    const ref<ManagedBuffer>& _mdl_data() const { return m_mdl_data; }
-    uint32_t _arg_block_offset() const { return m_arg_block_offset; }
-    uint32_t _texture_table_offset() const { return m_texture_table_offset; }
-    uint32_t _surface_scatter_bsdf_count() const { return m_result.surface_scatter_handle_count; }
 
 private:
     void require_codegen();
@@ -126,6 +143,9 @@ private:
     std::string m_mdl_material_name;
     bool m_mdl_class_compilation{true};
     bool m_learnable{false};
+    detail::PropertyList m_mdl_geomprop_names{detail::PropertyList::create(std::vector<std::string>{})};
+    detail::PropertyList m_mdl_geomprop_ids{detail::PropertyList::create(std::vector<int64_t>{})};
+    std::vector<std::optional<uint32_t>> m_texture_space_geomprop_ids;
     std::string m_debug_write_shader_path;
     std::string m_debug_load_shader_path;
     bool m_force_update{false};
@@ -166,9 +186,6 @@ private:
 
     /// Module with the MDL code
     ref<sgl::SlangModule> m_slang_module;
-
-    /// Header stuff
-    float m_ior{1.f};
 };
 
 } // namespace falcor

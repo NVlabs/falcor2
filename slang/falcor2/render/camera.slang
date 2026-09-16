@@ -3,6 +3,7 @@
 
 implementing render;
 
+import falcor2.utils;
 import slangpy;
 
 // Camera struct with dims for slangpy dispatch
@@ -14,17 +15,34 @@ public struct Camera
     public float3 image_u;
     public float3 image_v;
     public float3 image_w;
+    public float aperture_radius;
+    public float focus_distance;
 
-    public Ray get_ray(float2 uv)
+    private float3 get_unnormalized_ray_direction(float2 uv)
     {
         uv = uv * 2 - 1;
-        float3 dir = normalize(uv.x * image_u + uv.y * image_v + image_w);
-        return Ray(position, dir);
+        return uv.x * image_u + uv.y * image_v + image_w;
     }
 
-    public float2 project_world_to_pixel(float3 position_ws)
+    public Ray get_ray(float2 uv) { return Ray(position, normalize(get_unnormalized_ray_direction(uv))); }
+
+    /// Generate a ray through a uniformly sampled circular thin lens.
+    public Ray get_ray(float2 uv, float2 lens_sample)
     {
-        float3 offset_ws = position_ws - position;
+        if (aperture_radius <= 0.0 || focus_distance <= 0.0)
+            return get_ray(uv);
+
+        float3 unnormalized_dir = get_unnormalized_ray_direction(uv);
+        float3 focus_point = position + focus_distance * unnormalized_dir;
+        float2 aperture_sample = square_to_uniform_disk_concentric(lens_sample);
+        float3 lens_position = position
+            + aperture_radius * (aperture_sample.x * normalize(image_u) + aperture_sample.y * normalize(image_v));
+        return Ray(lens_position, normalize(focus_point - lens_position));
+    }
+
+    public float2 project_world_to_pixel(float3 pos_ws)
+    {
+        float3 offset_ws = pos_ws - position;
         float depth = dot(offset_ws, image_w);
         float safe_depth = abs(depth) > 1e-6 ? depth : (depth < 0.0 ? -1e-6 : 1e-6);
         float image_u_len_sq = max(dot(image_u, image_u), 1e-8);
@@ -35,10 +53,10 @@ public struct Camera
         return uv * float2(dims);
     }
 
-    public float2 get_motion_vector(Camera previous_camera, float3 position_ws)
+    public float2 get_motion_vector(Camera previous_camera, float3 pos_ws)
     {
-        float2 current_pixel = this.project_world_to_pixel(position_ws);
-        float2 previous_pixel = previous_camera.project_world_to_pixel(position_ws);
+        float2 current_pixel = this.project_world_to_pixel(pos_ws);
+        float2 previous_pixel = previous_camera.project_world_to_pixel(pos_ws);
         return previous_pixel - current_pixel;
     }
 };

@@ -195,7 +195,7 @@ class DLSSSuperResNode(RenderNode):
 
         return color_texture, guide_textures
 
-    def forward(
+    def _exec(
         self,
         color: Any,
         guides: dict[str, Any],

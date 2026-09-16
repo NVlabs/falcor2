@@ -9,6 +9,16 @@ bool is_normal_mapping_enabled(const MaterialInstanceHints hints)
     return !(hints & MaterialInstanceHints::disable_normal_mapping);
 }
 
+public float3 decode_normal_map(const float3 encoded)
+{
+    float3 normal = encoded * 2.0 - 1.0;
+    // BC5 samples return zero for the absent blue channel. Reconstruct the
+    // positive tangent-space Z component after filtering the stored XY pair.
+    if (encoded.z == 0.0)
+        normal.z = sqrt(saturate(1.0 - dot(normal.xy, normal.xy)));
+    return normalize(normal);
+}
+
 float get_metallic(const float3 diffuse, const float3 specular)
 {
     float d = luminance(diffuse);
@@ -22,10 +32,10 @@ float get_metallic(const float3 diffuse, const float3 specular)
     return saturate((root - b) * 12.5);
 }
 
-Frame orient_shading_frame(const SurfaceInteraction si, const Frame shading_frame_ws, const bool double_sided)
+Frame orient_shading_frame(const SurfaceInteraction si, const Frame shading_frame_ws, const bool orient_backface)
 {
     Frame result = shading_frame_ws;
-    if (!si.front_facing && double_sided)
+    if (!si.front_facing && orient_backface)
         result.normal = -result.normal;
     return result;
 }
