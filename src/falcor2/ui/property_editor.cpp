@@ -3,16 +3,22 @@
 
 #include "falcor2/ui/property_editor.h"
 
-#include "falcor2/core/reflected_object.h"
+#include "falcor2/core/logger.h"
+#include "falcor2/core/object.h"
 #include "falcor2/core/properties.h"
+#include "falcor2/core/reflected_object.h"
 #include "falcor2/core/types.h"
 #include "falcor2/core/reflection/metadata.h"
 #include "falcor2/core/reflection/property_range.h"
 
 #include <imgui.h>
 
+#include <algorithm>
 #include <array>
+#include <cmath>
+#include <exception>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -21,6 +27,61 @@
 #include <unordered_map>
 
 namespace falcor::ui {
+
+namespace detail {
+
+float property_drag_speed(
+    const reflection::PropertyDescriptor& desc,
+    bool is_floating_point,
+    double type_lowest,
+    double type_max
+)
+{
+    if (const reflection::UIDragSpeed* drag_speed = desc.ui_drag_speed())
+        return drag_speed->speed;
+
+    const float fallback = is_floating_point ? 0.01f : 1.f;
+    const reflection::ValueRange* value_range = desc.value_range();
+    if (!value_range || !std::isfinite(value_range->min) || !std::isfinite(value_range->max))
+        return fallback;
+
+    // Floating-point extrema are used as sentinels for half- or fully-unbounded ranges.
+    if (is_floating_point && (value_range->min <= type_lowest || value_range->max >= type_max))
+        return fallback;
+
+    const double min_value = std::clamp(value_range->min, type_lowest, type_max);
+    const double max_value = std::clamp(value_range->max, type_lowest, type_max);
+    if (min_value >= max_value)
+        return fallback;
+
+    const double target_speed = (max_value - min_value) / 400.0;
+    if (!std::isfinite(target_speed) || target_speed <= 0.0)
+        return fallback;
+
+    // Quantize to the nearest 1/2/5 multiple of a power of ten. Geometric
+    // midpoints keep the maximum relative error balanced between steps.
+    const double decade = std::pow(10.0, std::floor(std::log10(target_speed)));
+    const double normalized_speed = target_speed / decade;
+    double multiplier;
+    if (normalized_speed < std::sqrt(2.0))
+        multiplier = 1.0;
+    else if (normalized_speed < std::sqrt(10.0))
+        multiplier = 2.0;
+    else if (normalized_speed < std::sqrt(50.0))
+        multiplier = 5.0;
+    else
+        multiplier = 10.0;
+
+    double speed = multiplier * decade;
+    if (!is_floating_point)
+        speed = std::min(speed, 1.0);
+
+    if (!std::isfinite(speed) || speed > std::numeric_limits<float>::max())
+        return fallback;
+    return static_cast<float>(speed);
+}
+
+} // namespace detail
 
 // ----------------------------------------------------------------------------
 // PropertyLayoutCache
@@ -154,13 +215,6 @@ using EditorFn = bool (*)(
     PropertyEditorContext& ctx
 );
 
-/// Helper: get drag speed from UIDragSpeed metadata or return default.
-float get_drag_speed(const reflection::PropertyDescriptor& desc, float fallback = 1.0f)
-{
-    const reflection::UIDragSpeed* ds = desc.ui_drag_speed();
-    return ds ? ds->speed : fallback;
-}
-
 /// Helper: get min/max from ValueRange metadata.
 template<typename T>
 T range_cast(double value)
@@ -270,7 +324,7 @@ bool drag_editor(
     std::array<EditScalar, Traits::count> edit_value;
     Traits::load(value, edit_value);
 
-    float speed = get_drag_speed(desc, std::is_floating_point_v<EditScalar> ? 0.01f : 1.0f);
+    float speed = detail::property_drag_speed<EditScalar>(desc);
     EditScalar vmin, vmax;
     get_range<EditScalar>(desc, vmin, vmax);
     if (ImGui::DragScalarN(
@@ -335,7 +389,8 @@ bool matrix_editor(
 {
     using Scalar = typename T::value_type;
     T value = desc.get<T>(instance);
-    float speed = get_drag_speed(desc, 0.01f);
+    const reflection::UIDragSpeed* drag_speed = desc.ui_drag_speed();
+    float speed = drag_speed ? drag_speed->speed : 0.01f;
     bool changed = false;
 
     ImGui::Text("%s", label);
@@ -403,6 +458,63 @@ bool string_editor(
         return true;
     }
     return false;
+}
+
+bool reflected_object_editor(
+    const char* label,
+    const reflection::PropertyDescriptor& desc,
+    void* instance,
+    PropertyEditorContext& ctx
+)
+{
+    ref<ReflectedObject> object = desc.get<ref<ReflectedObject>>(instance);
+    bool changed = false;
+
+    const reflection::ReflectedObjectFactory* factory = desc.object_factory();
+    const bool has_factory_entries = factory && factory->count() > 0;
+
+    if (ImGui::CollapsingHeader(label)) {
+        ImGui::Indent();
+
+        if (has_factory_entries) {
+            std::optional<size_t> current_index = factory->find_index(object.get());
+            std::string preview = current_index ? std::string(factory->label(*current_index))
+                : object                        ? std::string(object->class_descriptor().name())
+                                                : "None";
+
+            if (ImGui::BeginCombo("Value", preview.c_str())) {
+                for (size_t index = 0; index < factory->count(); ++index) {
+                    ImGui::PushID(static_cast<int>(index));
+                    const bool selected = current_index && *current_index == index;
+                    const std::string entry_label(factory->label(index));
+                    if (ImGui::Selectable(entry_label.c_str(), selected) && !selected) {
+                        object = factory->create(index, instance);
+                        desc.set<ref<ReflectedObject>>(instance, object);
+                        current_index = index;
+                        changed = true;
+                    }
+                    if (selected)
+                        ImGui::SetItemDefaultFocus();
+                    ImGui::PopID();
+                }
+                ImGui::EndCombo();
+            }
+        }
+
+        if (object) {
+            ImGui::PushID(object.get());
+            changed |= properties_editor(*object, ctx);
+            ImGui::PopID();
+        } else if (!has_factory_entries) {
+            ImGui::BeginDisabled();
+            ImGui::TextUnformatted("None");
+            ImGui::EndDisabled();
+        }
+
+        ImGui::Unindent();
+    }
+
+    return changed;
 }
 
 /// Enum editor.
@@ -534,6 +646,7 @@ const DispatchTable& get_dispatch_table()
         t[std::type_index(typeid(float4x4))] = matrix_editor<float4x4>;
 
         t[std::type_index(typeid(std::string))] = string_editor;
+        t[std::type_index(typeid(ref<ReflectedObject>))] = reflected_object_editor;
 
         return t;
     }();
@@ -658,7 +771,13 @@ bool property_editor(const reflection::PropertyDescriptor& desc, void* instance,
     // Look up type dispatch.
     EditorFn fn = find_editor_fn(desc);
     if (fn) {
-        changed = fn(label, desc, instance, ctx);
+        try {
+            changed = fn(label, desc, instance, ctx);
+        } catch (const std::exception& e) {
+            sgl::log_warn("Property editor failed to edit '{}': {}", desc.name(), e.what());
+        } catch (...) {
+            sgl::log_warn("Property editor failed to edit '{}' with an unknown error", desc.name());
+        }
     } else {
         // Unsupported type: show a disabled text label.
         ImGui::BeginDisabled();
@@ -890,7 +1009,7 @@ bool properties_editor(Properties& properties)
             break;
         }
         case PropertyType::enum_: {
-            detail::PropertyEnumValue ev = properties.get<detail::PropertyEnumValue>(key);
+            falcor::detail::PropertyEnumValue ev = properties.get<falcor::detail::PropertyEnumValue>(key);
             ImGui::Text("%s: %lld", key.data(), static_cast<long long>(ev.value));
             break;
         }

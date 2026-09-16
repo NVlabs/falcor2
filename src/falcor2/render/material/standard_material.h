@@ -7,6 +7,7 @@
 #include "falcor2/render/texture_manager.h"
 
 #include "falcor2/core/types.h"
+#include "falcor2/render/material_types.h"
 
 namespace falcor {
 
@@ -32,11 +33,36 @@ public:
 
     virtual shared::MaterialFlags flags() const override;
 
+    virtual OpacityDesc opacity_desc() const override;
+
     /// Reflect this class.
     template<reflection::ClassReflector R>
     static void reflect(R& r)
     {
         r //
+            .def_rw(
+                "alpha_mode",
+                &StandardMaterial::m_alpha_mode,
+                "Alpha handling mode.",
+                reflection::default_value(AlphaMode::opaque),
+                reflection::on_change(&StandardMaterial::mark_dirty_properties)
+            )
+            .def_rw(
+                "alpha_factor",
+                &StandardMaterial::m_alpha_factor,
+                "Constant alpha factor.",
+                reflection::default_value(1.f),
+                reflection::value_range_unit(),
+                reflection::on_change(&StandardMaterial::mark_dirty_properties)
+            )
+            .def_rw(
+                "alpha_cutoff",
+                &StandardMaterial::m_alpha_cutoff,
+                "Alpha cutoff used for mask mode.",
+                reflection::default_value(0.5f),
+                reflection::value_range_unit(),
+                reflection::on_change(&StandardMaterial::mark_dirty_properties)
+            )
             .def_rw(
                 "base_color_texture",
                 &StandardMaterial::m_base_color_texture,
@@ -196,6 +222,30 @@ public:
                 reflection::on_change(&StandardMaterial::mark_dirty_properties)
             )
             .def_rw(
+                "volume_sigma_a",
+                &StandardMaterial::m_volume_sigma_a,
+                "Homogeneous volume absorption coefficient",
+                reflection::default_value(float3(0.f)),
+                reflection::value_range_positive(),
+                reflection::on_change(&StandardMaterial::mark_dirty_properties)
+            )
+            .def_rw(
+                "volume_sigma_s",
+                &StandardMaterial::m_volume_sigma_s,
+                "Homogeneous volume scattering coefficient",
+                reflection::default_value(float3(0.f)),
+                reflection::value_range_positive(),
+                reflection::on_change(&StandardMaterial::mark_dirty_properties)
+            )
+            .def_rw(
+                "volume_anisotropy",
+                &StandardMaterial::m_volume_anisotropy,
+                "Homogeneous volume Henyey-Greenstein anisotropy",
+                reflection::default_value(0.f),
+                reflection::value_range(-0.999, 0.999),
+                reflection::on_change(&StandardMaterial::mark_dirty_properties)
+            )
+            .def_rw(
                 "metallic_texture_channel",
                 &StandardMaterial::m_metallic_texture_channel,
                 "Channel index for metallic value in the texture.",
@@ -213,26 +263,6 @@ public:
             );
     }
 
-    // Accessors for Python Material.get_this() only.
-    const TextureHandle& _base_color_texture_handle() const { return m_base_color_texture_handle; }
-    float16_t4 _base_color_factor() const { return float16_t4(m_base_color_factor, 0.f); }
-    const TextureHandle& _metallic_roughness_texture_handle() const { return m_metallic_roughness_texture_handle; }
-    float16_t _metallic_factor() const { return m_metallic_factor; }
-    float16_t _roughness_factor() const { return m_roughness_factor; }
-    const TextureHandle& _normal_texture_handle() const { return m_normal_texture_handle; }
-    float16_t _normal_texture_scale() const { return m_normal_texture_scale; }
-    float3 _emissive_factor() const { return m_emissive_factor; }
-    const TextureHandle& _emissive_texture_handle() const { return m_emissive_texture_handle; }
-    const TextureHandle& _transmission_texture_handle() const { return m_transmission_texture_handle; }
-    float16_t _ior() const { return m_ior; }
-    float16_t4 _transmission_factor() const { return float16_t4(m_transmission_factor, 0.f); }
-    float16_t _diffuse_transmission_factor() const { return m_diffuse_transmission_factor; }
-    float16_t _specular_transmission_factor() const { return m_specular_transmission_factor; }
-    bool _double_sided() const { return m_double_sided; }
-    bool _thin_walled() const { return m_thin_walled; }
-    uint _metallic_texture_channel() const { return m_metallic_texture_channel; }
-    uint _roughness_texture_channel() const { return m_roughness_texture_channel; }
-
 private:
     void mark_dirty_resources() { mark_dirty(DirtyFlags::resources); }
     void mark_dirty_properties() { mark_dirty(DirtyFlags::properties); }
@@ -241,6 +271,9 @@ private:
     void write_to_cursor_impl(CursorT cursor) const;
 
     // Static properties.
+    AlphaMode m_alpha_mode{AlphaMode::opaque};
+    float m_alpha_factor{1.f};
+    float m_alpha_cutoff{0.5f};
     ref<sgl::Texture> m_base_color_texture;
     std::filesystem::path m_base_color_texture_path;
     float16_t3 m_base_color_factor{1.f, 1.f, 1.f};
@@ -262,6 +295,9 @@ private:
     float16_t m_specular_transmission_factor{0.f};
     bool m_double_sided{false};
     bool m_thin_walled{false};
+    float3 m_volume_sigma_a{0.f};
+    float3 m_volume_sigma_s{0.f};
+    float m_volume_anisotropy{0.f};
     uint m_metallic_texture_channel{0};
     uint m_roughness_texture_channel{1};
 

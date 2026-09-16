@@ -5,10 +5,56 @@
 
 #include "falcor2/importers/importer_types.h"
 
+#include <unordered_map>
+
 namespace nb = nanobind;
 using namespace nb::literals;
 
 namespace falcor {
+
+namespace {
+
+// ImporterMesh stream arrays are non-owning views into resizable vertex buffers. Track live Python views so the
+// topology-changing tangent operation introduced in !641 can fail safely until the buffers use allocation-owned
+// copy-on-write storage. The ndarray owner below also keeps the mesh alive for the duration of the view.
+std::unordered_map<ImporterMesh*, size_t> g_importer_mesh_view_counts;
+
+struct ImporterMeshViewLease {
+    ImporterMesh* mesh;
+    nb::object owner;
+};
+
+nb::capsule acquire_importer_mesh_view(ImporterMesh& mesh)
+{
+    ++g_importer_mesh_view_counts[&mesh];
+    auto* lease = new ImporterMeshViewLease{
+        .mesh = &mesh,
+        .owner = nb::cast(&mesh, nb::rv_policy::reference),
+    };
+    return nb::capsule(
+        lease,
+        [](void* value) noexcept
+        {
+            auto* lease = static_cast<ImporterMeshViewLease*>(value);
+            auto it = g_importer_mesh_view_counts.find(lease->mesh);
+            if (it != g_importer_mesh_view_counts.end() && --it->second == 0)
+                g_importer_mesh_view_counts.erase(it);
+            delete lease;
+        }
+    );
+}
+
+void check_no_importer_mesh_views(const ImporterMesh& mesh)
+{
+    auto it = g_importer_mesh_view_counts.find(const_cast<ImporterMesh*>(&mesh));
+    SGL_CHECK(
+        it == g_importer_mesh_view_counts.end(),
+        "Cannot generate tangents while NumPy vertex stream views are alive; release them and reacquire the streams "
+        "after tangent generation"
+    );
+}
+
+} // namespace
 
 inline nb::dlpack::dtype datatype_to_dtype(sgl::DataType data_type)
 {
@@ -57,14 +103,17 @@ std::optional<nb::ndarray<nb::numpy>> attrib_to_numpy(ImporterMesh& self, const 
     size_t component_size = data_type_size(attrib.type);
     size_t stride_in_components = stride / component_size;
     auto dtype = datatype_to_dtype(attrib.type);
+    nb::capsule owner = acquire_importer_mesh_view(self);
 
+    // TODO: The view owns the mesh but not this specific vector allocation. Other topology-changing operations such
+    // as deduplicate_vertices() can still invalidate it. Use allocation-owned copy-on-write storage for a full fix.
     if (attrib.num_components == 1) {
-        return nb::ndarray<nb::numpy>(base_address, {n}, {}, {static_cast<int64_t>(stride_in_components)}, dtype);
+        return nb::ndarray<nb::numpy>(base_address, {n}, owner, {static_cast<int64_t>(stride_in_components)}, dtype);
     } else {
         return nb::ndarray<nb::numpy>(
             base_address,
             {n, attrib.num_components},
-            {},
+            owner,
             {static_cast<int64_t>(stride_in_components), 1},
             dtype
         );
@@ -227,6 +276,8 @@ FALCOR_PY_EXPORT(importers_importer_types)
             [](ImporterMesh::Subgeometry& self)
             {
                 size_t n = self.indices.size();
+                // TODO: This view owns the subgeometry but not the vector allocation. Replacing indices or their
+                // containing topology can invalidate it; use allocation-owned copy-on-write storage.
                 return nb::ndarray<nb::numpy, const uint32_t>(reinterpret_cast<uint32_t*>(self.indices.data()), {n, 3});
             },
             nb::rv_policy::reference_internal,
@@ -243,7 +294,15 @@ FALCOR_PY_EXPORT(importers_importer_types)
         .DEF_PROP_RO(ImporterMesh, attributes, nb::rv_policy::reference_internal)
         .def("calculate_local_aabb", &ImporterMesh::calculate_local_aabb, D(ImporterMesh, calculate_local_aabb))
         .def("add_normals_from_faces", &ImporterMesh::add_normals_from_faces, D(ImporterMesh, add_normals_from_faces))
-        .def("add_tangents_from_uvs", &ImporterMesh::add_tangents_from_uvs, D(ImporterMesh, add_tangents_from_uvs))
+        .def(
+            "add_tangents_from_uvs",
+            [](ImporterMesh& self)
+            {
+                check_no_importer_mesh_views(self);
+                self.add_tangents_from_uvs();
+            },
+            D(ImporterMesh, add_tangents_from_uvs)
+        )
         .def(
             "add_tangents_from_normals",
             &ImporterMesh::add_tangents_from_normals,
@@ -265,7 +324,6 @@ FALCOR_PY_EXPORT(importers_importer_types)
                 return attrib_to_numpy(self, attrib);
             },
             "attrib"_a,
-            nb::rv_policy::reference_internal,
             "Get numpy array for vertex attribute stream with proper type conversion."
         )
         .def(
@@ -280,7 +338,6 @@ FALCOR_PY_EXPORT(importers_importer_types)
             },
             "semantic"_a,
             "index"_a = 0,
-            nb::rv_policy::reference_internal,
             "Find and return numpy array for vertex attribute stream by semantic."
         )
         .def(
@@ -294,7 +351,6 @@ FALCOR_PY_EXPORT(importers_importer_types)
                 return attrib_to_numpy(self, *attrib);
             },
             "name"_a,
-            nb::rv_policy::reference_internal,
             "Find and return numpy array for vertex attribute stream by name."
         )
         .def_prop_ro(
@@ -303,7 +359,7 @@ FALCOR_PY_EXPORT(importers_importer_types)
             {
                 return attrib_to_numpy(self, self.position_attribute());
             },
-            nb::rv_policy::reference_internal,
+            nb::rv_policy::automatic,
             "Vertex positions as ndarray (N, 3)."
         )
         .def_prop_ro(
@@ -312,7 +368,7 @@ FALCOR_PY_EXPORT(importers_importer_types)
             {
                 return attrib_to_numpy(self, self.normal_attribute());
             },
-            nb::rv_policy::reference_internal,
+            nb::rv_policy::automatic,
             "Vertex normals as ndarray (N, 3)."
         )
         .def_prop_ro(
@@ -321,7 +377,7 @@ FALCOR_PY_EXPORT(importers_importer_types)
             {
                 return attrib_to_numpy(self, self.tangent_attribute());
             },
-            nb::rv_policy::reference_internal,
+            nb::rv_policy::automatic,
             "Vertex tangents as ndarray (N, 3)."
         )
         .def_prop_ro(
@@ -330,7 +386,7 @@ FALCOR_PY_EXPORT(importers_importer_types)
             {
                 return attrib_to_numpy(self, self.handedness_attribute());
             },
-            nb::rv_policy::reference_internal,
+            nb::rv_policy::automatic,
             "Vertex handedness as ndarray (N)."
         )
         .def_prop_ro(
@@ -339,7 +395,7 @@ FALCOR_PY_EXPORT(importers_importer_types)
             {
                 return attrib_to_numpy(self, self.color_attribute());
             },
-            nb::rv_policy::reference_internal,
+            nb::rv_policy::automatic,
             "Vertex colors as ndarray (N, 3) or (N, 4)."
         )
         .def(
@@ -358,7 +414,6 @@ FALCOR_PY_EXPORT(importers_importer_types)
                 }
             },
             "idx"_a = 0,
-            nb::rv_policy::reference_internal,
             "Vertex texture coordinates as ndarray (N, 2)."
         );
 
@@ -376,8 +431,21 @@ FALCOR_PY_EXPORT(importers_importer_types)
 
     nb::sgl_enum<falcor::TextureFilterMode>(m, "TextureFilterMode", D(TextureFilterMode));
     nb::sgl_enum<falcor::TextureWrapMode>(m, "TextureWrapMode", D(TextureWrapMode));
-    nb::sgl_enum<falcor::AlphaMode>(m, "AlphaMode", D(AlphaMode));
-
+    nb::class_<falcor::ImporterAsset>(m, "ImporterAsset", D(ImporterAsset))
+        .def(nb::init<>())
+        .DEF_RW(ImporterAsset, path)
+        .def_prop_ro(
+            "data",
+            [](falcor::ImporterAsset& self)
+            {
+                size_t n = self.data.size();
+                // TODO: This view does not own the vector allocation. Replacing its containing scene storage can
+                // invalidate it; use allocation-owned copy-on-write storage.
+                return nb::ndarray<nb::numpy, const uint8_t>(self.data.data(), {n}, {}, {1});
+            },
+            nb::rv_policy::reference_internal,
+            D(ImporterAsset, data)
+        );
     nb::class_<falcor::ImporterTexture>(m, "ImporterTexture", D(ImporterTexture))
         .def(nb::init<>())
         .DEF_RW(ImporterTexture, source_name)
@@ -394,6 +462,8 @@ FALCOR_PY_EXPORT(importers_importer_types)
             [](falcor::ImporterTexture& self)
             {
                 size_t n = self.texture_data.size();
+                // TODO: This view does not own the vector allocation. Replacing its containing scene storage can
+                // invalidate it; use allocation-owned copy-on-write storage.
                 return nb::ndarray<nb::numpy, const uint8_t>(self.texture_data.data(), {n}, {}, {1});
             },
             nb::rv_policy::reference_internal,
@@ -408,13 +478,14 @@ FALCOR_PY_EXPORT(importers_importer_types)
     nb::class_<ImporterCamera> importer_camera(m, "ImporterCamera", D(ImporterCamera));
     importer_camera //
         .DEF_RW(ImporterCamera, name)
-        .DEF_RW(ImporterCamera, focus_distance)
         .DEF_RW(ImporterCamera, focal_length)
         .DEF_RW(ImporterCamera, fstop)
+        .DEF_RW(ImporterCamera, sensor_size_mm)
+        .DEF_RW(ImporterCamera, enable_depth_of_field)
+        .DEF_RW(ImporterCamera, focus_distance)
         .DEF_RW(ImporterCamera, depth_range)
         .DEF_RW(ImporterCamera, projection)
-        .DEF_RW(ImporterCamera, fov_direction)
-        .DEF_RW(ImporterCamera, sensor_size_mm);
+        .DEF_RW(ImporterCamera, fov_direction);
 
     nb::sgl_enum<ImporterCamera::Projection>(importer_camera, "Projection", D(ImporterCamera, Projection));
     nb::sgl_enum<ImporterCamera::FOVDirection>(importer_camera, "FOVDirection", D(ImporterCamera, FOVDirection));
@@ -425,10 +496,18 @@ FALCOR_PY_EXPORT(importers_importer_types)
         .DEF_RW(ImporterLight, type)
         .DEF_RW(ImporterLight, intensity)
         .DEF_RW(ImporterLight, exposure)
+        .DEF_RW(ImporterLight, enable_color_temperature)
+        .DEF_RW(ImporterLight, color_temperature)
+        .DEF_RW(ImporterLight, geometry_visible)
         .DEF_RW(ImporterLight, degree_angular_diameter)
         .DEF_RW(ImporterLight, width)
         .DEF_RW(ImporterLight, height)
         .DEF_RW(ImporterLight, radius)
+        .DEF_RW(ImporterLight, enable_virtual_sphere_shrinking)
+        .DEF_RW(ImporterLight, enable_shaping)
+        .DEF_RW(ImporterLight, shaping_cone_angle)
+        .DEF_RW(ImporterLight, shaping_cone_softness)
+        .DEF_RW(ImporterLight, shaping_focus)
         .DEF_RW(ImporterLight, env_map_path);
 
     nb::sgl_enum<ImporterLight::Type>(importer_light, "Type", D(ImporterLight, Type));
@@ -491,10 +570,13 @@ FALCOR_PY_EXPORT(importers_importer_types)
             }
         );
 
+    // TODO: These writable vector properties return references to elements whose addresses can change when the
+    // vectors are replaced or resized. Stable element ownership is needed before retained Python references are safe.
     nb::class_<ImporterScene, Object>(m, "ImporterScene", D(ImporterScene))
         .def(nb::init<>())
         .DEF_RW(ImporterScene, uv_origin)
         .DEF_RW(ImporterScene, materials, nb::rv_policy::reference_internal)
+        .DEF_RW(ImporterScene, assets, nb::rv_policy::reference_internal)
         .DEF_RW(ImporterScene, textures, nb::rv_policy::reference_internal)
         .DEF_RW(ImporterScene, meshes, nb::rv_policy::reference_internal)
         .DEF_RW(ImporterScene, nodes, nb::rv_policy::reference_internal)

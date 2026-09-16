@@ -9,6 +9,8 @@
 #include <sgl/core/platform.h>
 #include <sgl/math/vector_math.h>
 
+#include <array>
+#include <cstdint>
 #include <fstream>
 
 using namespace falcor;
@@ -121,6 +123,132 @@ TEST_CASE("GltfImporter - Basic Loading")
     );
 }
 
+TEST_CASE("GltfImporter - Mixed Authored Tangents Are Regenerated")
+{
+    const std::filesystem::path path = testing::get_case_temp_directory() / "mixed_tangents.gltf";
+    const std::filesystem::path buffer_path = path.parent_path() / "mixed_tangents.bin";
+    {
+        const std::array<float, 18> positions = {
+            0.f,
+            0.f,
+            0.f,
+            1.f,
+            0.f,
+            0.f,
+            0.f,
+            1.f,
+            0.f,
+            1.f,
+            0.f,
+            0.f,
+            1.f,
+            1.f,
+            0.f,
+            0.f,
+            1.f,
+            0.f,
+        };
+        const std::array<float, 18> normals = {
+            0.f,
+            0.f,
+            1.f,
+            0.f,
+            0.f,
+            1.f,
+            0.f,
+            0.f,
+            1.f,
+            0.f,
+            0.f,
+            1.f,
+            0.f,
+            0.f,
+            1.f,
+            0.f,
+            0.f,
+            1.f,
+        };
+        const std::array<float, 12> uvs = {0.f, 0.f, 1.f, 0.f, 0.f, 1.f, 1.f, 0.f, 1.f, 1.f, 0.f, 1.f};
+        const std::array<float, 12> authored_tangents = {
+            7.f,
+            8.f,
+            9.f,
+            -1.f,
+            7.f,
+            8.f,
+            9.f,
+            -1.f,
+            7.f,
+            8.f,
+            9.f,
+            -1.f,
+        };
+        const std::array<uint16_t, 6> indices = {0, 1, 2, 0, 1, 2};
+
+        std::ofstream file(buffer_path, std::ios::binary | std::ios::trunc);
+        file.write(reinterpret_cast<const char*>(positions.data()), positions.size() * sizeof(float));
+        file.write(reinterpret_cast<const char*>(normals.data()), normals.size() * sizeof(float));
+        file.write(reinterpret_cast<const char*>(uvs.data()), uvs.size() * sizeof(float));
+        file.write(reinterpret_cast<const char*>(authored_tangents.data()), authored_tangents.size() * sizeof(float));
+        file.write(reinterpret_cast<const char*>(indices.data()), indices.size() * sizeof(uint16_t));
+        REQUIRE(file.good());
+    }
+    {
+        std::ofstream file(path, std::ios::trunc);
+        file << R"json({
+  "asset": { "version": "2.0" },
+  "scene": 0,
+  "scenes": [{ "nodes": [0] }],
+  "nodes": [{ "mesh": 0 }],
+  "meshes": [{
+    "primitives": [
+      { "attributes": { "POSITION": 0, "NORMAL": 2, "TEXCOORD_0": 4, "TANGENT": 6 }, "indices": 7 },
+      { "attributes": { "POSITION": 1, "NORMAL": 3, "TEXCOORD_0": 5 }, "indices": 8 }
+    ]
+  }],
+  "buffers": [{
+    "byteLength": 252,
+    "uri": "mixed_tangents.bin"
+  }],
+  "bufferViews": [
+    { "buffer": 0, "byteOffset": 0, "byteLength": 72 },
+    { "buffer": 0, "byteOffset": 72, "byteLength": 72 },
+    { "buffer": 0, "byteOffset": 144, "byteLength": 48 },
+    { "buffer": 0, "byteOffset": 192, "byteLength": 48 },
+    { "buffer": 0, "byteOffset": 240, "byteLength": 6 },
+    { "buffer": 0, "byteOffset": 246, "byteLength": 6 }
+  ],
+  "accessors": [
+    { "bufferView": 0, "byteOffset": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 0], "max": [1, 1, 0] },
+    { "bufferView": 0, "byteOffset": 36, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 0], "max": [1, 1, 0] },
+    { "bufferView": 1, "byteOffset": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+    { "bufferView": 1, "byteOffset": 36, "componentType": 5126, "count": 3, "type": "VEC3" },
+    { "bufferView": 2, "byteOffset": 0, "componentType": 5126, "count": 3, "type": "VEC2" },
+    { "bufferView": 2, "byteOffset": 24, "componentType": 5126, "count": 3, "type": "VEC2" },
+    { "bufferView": 3, "componentType": 5126, "count": 3, "type": "VEC4" },
+    { "bufferView": 4, "componentType": 5123, "count": 3, "type": "SCALAR" },
+    { "bufferView": 5, "componentType": 5123, "count": 3, "type": "SCALAR" }
+  ]
+})json";
+    }
+
+    GltfImporter importer;
+    ref<ImporterScene> scene = importer.load_scene(path);
+    REQUIRE(scene);
+    REQUIRE_EQ(scene->meshes.size(), 1);
+
+    const ImporterMesh& mesh = scene->meshes.front();
+    REQUIRE_EQ(mesh.vertex_count(), 4);
+    const auto tangents = mesh.tangent_stream();
+    const auto handedness = mesh.handedness_stream();
+    REQUIRE(tangents.valid());
+    REQUIRE(handedness.valid());
+    for (size_t vertex_index = 0; vertex_index < mesh.vertex_count(); ++vertex_index) {
+        CHECK(sgl::math::length(tangents[vertex_index]) == doctest::Approx(1.f));
+        CHECK((handedness[vertex_index] == 1.f || handedness[vertex_index] == -1.f));
+    }
+}
+
 TEST_CASE("GltfImporter - Invalid File")
 {
     auto importer = make_ref<GltfImporter>();
@@ -160,10 +288,13 @@ TEST_CASE("GltfImporter - camera stores vertical sensor size and focal length")
 
     const auto& camera = scene->cameras[0];
     CHECK_EQ(camera.name, "AuthoredCamera");
+    CHECK(camera.focal_length == doctest::Approx(ImporterCamera::focal_length_from_fov_degrees(45.f, 24.f)));
+    CHECK_EQ(camera.fstop, 8.f);
+    CHECK_EQ(camera.sensor_size_mm, 24.f);
+    CHECK_EQ(camera.vertical_sensor_size_mm(), 24.f);
+    CHECK_FALSE(camera.enable_depth_of_field);
     CHECK_EQ(camera.projection, ImporterCamera::Projection::perspective);
     CHECK_EQ(camera.fov_direction, ImporterCamera::FOVDirection::vertical);
-    CHECK_EQ(camera.sensor_size_mm, 24.f);
-    CHECK(camera.focal_length == doctest::Approx(ImporterCamera::focal_length_from_fov_degrees(45.f, 24.f)));
     CHECK(camera.vertical_fov_degrees() == doctest::Approx(45.f));
     CHECK_EQ(camera.depth_range, float2(0.25f, 250.f));
 }
@@ -368,15 +499,14 @@ TEST_CASE("GltfImporter - Embedded Textures")
 TEST_CASE("GltfImporter - File Textures")
 {
     auto importer = make_ref<GltfImporter>();
-    auto sample_file
-        = testing::project_directory() / "data" / "assets" / "kronos" / "DamagedHelmet" / "glTF" / "DamagedHelmet.gltf";
+    auto sample_file = testing::project_directory() / "data" / "assets" / "kronos" / "TextureTransformTest" / "glTF"
+        / "TextureTransformTest.gltf";
 
-    if (std::filesystem::exists(sample_file)) {
-        auto scene = importer->load_scene(sample_file);
+    REQUIRE(std::filesystem::exists(sample_file));
+    auto scene = importer->load_scene(sample_file);
 
-        REQUIRE(scene != nullptr);
-        REQUIRE_EQ(scene->textures.size(), 5);
-    }
+    REQUIRE(scene != nullptr);
+    REQUIRE_EQ(scene->textures.size(), 5);
 }
 
 TEST_CASE("GltfImporter - Flattened Node Hierarchy")

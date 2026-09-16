@@ -8,6 +8,9 @@
 #include "falcor2/core/types.h"
 #include "falcor2/core/enum.h"
 
+#include <bit>
+#include <limits>
+
 namespace falcor {
 
 enum class PackOptions {
@@ -265,6 +268,38 @@ inline float unpack_unorm16(uint32_t packed)
 inline float2 unpack_unorm2x16(uint32_t packed)
 {
     return float2(unpack_unorm16(packed), unpack_unorm16(packed >> 16));
+}
+
+// ----------------------------------------------------------------------------
+// 16-bit unsigned floating point
+// ----------------------------------------------------------------------------
+
+/// Pack a finite non-negative float as an unsigned E8M8 value, rounding upward.
+/// Values that exceed the finite encoding range are encoded as 0xffff.
+/// @param value Finite non-negative float value.
+/// @return Packed value in the low 16 bits.
+inline uint32_t pack_ufloat_e8m8_round_up(float value)
+{
+    if (value <= 0.f)
+        return 0;
+
+    const uint32_t bits = std::bit_cast<uint32_t>(value);
+    uint32_t packed = bits >> 15;
+    if ((bits & 0x7fff) != 0)
+        ++packed;
+    return packed <= 0xfeff ? packed : 0xffff;
+}
+
+/// Unpack an unsigned E8M8 value to float.
+/// Reserved encodings greater than 0xfeff are decoded as the maximum finite float.
+/// @param packed Packed value in the low 16 bits.
+/// @return Unpacked non-negative float value.
+inline float unpack_ufloat_e8m8(uint32_t packed)
+{
+    packed &= 0xffffu;
+    if (packed > 0xfeff)
+        return std::numeric_limits<float>::max();
+    return std::bit_cast<float>(packed << 15);
 }
 
 // ----------------------------------------------------------------------------

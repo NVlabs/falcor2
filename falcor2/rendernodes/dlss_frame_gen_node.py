@@ -191,8 +191,8 @@ class DLSSFrameGenNode(RenderNode):
         camera_desc.camera_up = spy.math.normalize(uniforms.image_v)
         camera_desc.camera_right = spy.math.normalize(uniforms.image_u)
         camera_desc.camera_fwd = spy.math.normalize(uniforms.image_w)
-        camera_desc.camera_near = 0.1
-        camera_desc.camera_far = 1000.0
+        camera_desc.camera_near = camera.depth_range.x
+        camera_desc.camera_far = camera.depth_range.y
         camera_desc.camera_fov = radians(float(camera.fov_y))
         camera_desc.camera_aspect_ratio = float(render_width) / float(render_height)
         camera_desc.color_buffers_hdr = True
@@ -204,7 +204,7 @@ class DLSSFrameGenNode(RenderNode):
         self._previous_clip_from_world = clip_from_world
         return camera_desc
 
-    def forward(
+    def _exec(
         self,
         backbuffer: Any,
         guides: dict[str, Any],

@@ -10,11 +10,15 @@ public struct PythonMaterialSampleInstance : IMaterialInstance
     public Frame shading_frame_ws;
     public LambertDiffuseBRDF brdf;
 
-    public float3 eval<S : ISampleGenerator>(const SurfaceInteraction si, const float3 wo_ws, inout S sg)
+    public BSDFEval eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both, S : ISampleGenerator>(
+        const SurfaceInteraction si,
+        const float3 wo_ws,
+        inout S sg
+    )
     {
         float3 wi_ls = shading_frame_ws.to_local(si.wi_ws);
         float3 wo_ls = shading_frame_ws.to_local(wo_ws);
-        return brdf.eval(wi_ls, wo_ls, sg, BSDFContext());
+        return brdf.eval_with_pdf(wi_ls, wo_ls, sg, BSDFContext());
     }
 
     public bool sample<S : ISampleGenerator>(const SurfaceInteraction si, inout S sg, out MaterialSample sample)
@@ -30,19 +34,13 @@ public struct PythonMaterialSampleInstance : IMaterialInstance
         return valid;
     }
 
-    public float eval_pdf(const SurfaceInteraction si, const float3 wo_ws)
-    {
-        float3 wi_ls = shading_frame_ws.to_local(si.wi_ws);
-        float3 wo_ls = shading_frame_ws.to_local(wo_ws);
-        return brdf.eval_pdf(wi_ls, wo_ls, BSDFContext());
-    }
-
     public MaterialProperties collect_properties(const SurfaceInteraction si)
     {
         float3 wi_ls = shading_frame_ws.to_local(si.wi_ws);
         let albedo = brdf.eval_albedo(wi_ls);
 
         MaterialProperties result = {};
+        result.material_color = albedo.reflection;
         result.guide_normal = shading_frame_ws.normal;
         result.diffuse_reflection_albedo = albedo.reflection;
         return result;
@@ -73,6 +71,15 @@ public struct PythonMaterialSample : IMaterial
     public MaterialHeader header;
     public TextureHandle textures[2];
     public int texture_index;
+
+    public override float eval_opacity<TLodSampler : ILodSampler>(
+        const SurfaceInteraction si,
+        const TLodSampler lod_sampler,
+        const MaterialInstanceHints hints = MaterialInstanceHints::none
+    )
+    {
+        return 0.25;
+    }
 
     float3 get_albedo<TLodSampler : ILodSampler>(SurfaceInteraction si, TLodSampler lod_sampler, int index)
     {

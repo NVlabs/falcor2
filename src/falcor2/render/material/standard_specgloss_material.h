@@ -7,6 +7,7 @@
 #include "falcor2/render/texture_manager.h"
 
 #include "falcor2/core/types.h"
+#include "falcor2/render/material_types.h"
 
 namespace falcor {
 
@@ -32,11 +33,36 @@ public:
 
     virtual shared::MaterialFlags flags() const override;
 
+    virtual OpacityDesc opacity_desc() const override;
+
     /// Reflect this class.
     template<reflection::ClassReflector R>
     static void reflect(R& r)
     {
         r //
+            .def_rw(
+                "alpha_mode",
+                &StandardSpecGlossMaterial::m_alpha_mode,
+                "Alpha handling mode.",
+                reflection::default_value(AlphaMode::opaque),
+                reflection::on_change(&StandardSpecGlossMaterial::mark_dirty_properties)
+            )
+            .def_rw(
+                "alpha_factor",
+                &StandardSpecGlossMaterial::m_alpha_factor,
+                "Constant alpha factor.",
+                reflection::default_value(1.f),
+                reflection::value_range_unit(),
+                reflection::on_change(&StandardSpecGlossMaterial::mark_dirty_properties)
+            )
+            .def_rw(
+                "alpha_cutoff",
+                &StandardSpecGlossMaterial::m_alpha_cutoff,
+                "Alpha cutoff used for mask mode.",
+                reflection::default_value(0.5f),
+                reflection::value_range_unit(),
+                reflection::on_change(&StandardSpecGlossMaterial::mark_dirty_properties)
+            )
             .def_rw(
                 "diffuse_texture",
                 &StandardSpecGlossMaterial::m_diffuse_texture,
@@ -195,26 +221,32 @@ public:
                 "Thin-walled material",
                 reflection::default_value(false),
                 reflection::on_change(&StandardSpecGlossMaterial::mark_dirty_properties)
+            )
+            .def_rw(
+                "volume_sigma_a",
+                &StandardSpecGlossMaterial::m_volume_sigma_a,
+                "Homogeneous volume absorption coefficient",
+                reflection::default_value(float3(0.f)),
+                reflection::value_range_positive(),
+                reflection::on_change(&StandardSpecGlossMaterial::mark_dirty_properties)
+            )
+            .def_rw(
+                "volume_sigma_s",
+                &StandardSpecGlossMaterial::m_volume_sigma_s,
+                "Homogeneous volume scattering coefficient",
+                reflection::default_value(float3(0.f)),
+                reflection::value_range_positive(),
+                reflection::on_change(&StandardSpecGlossMaterial::mark_dirty_properties)
+            )
+            .def_rw(
+                "volume_anisotropy",
+                &StandardSpecGlossMaterial::m_volume_anisotropy,
+                "Homogeneous volume Henyey-Greenstein anisotropy",
+                reflection::default_value(0.f),
+                reflection::value_range(-0.999, 0.999),
+                reflection::on_change(&StandardSpecGlossMaterial::mark_dirty_properties)
             );
     }
-
-    // Accessors for Python Material.get_this() only.
-    const TextureHandle& _diffuse_texture_handle() const { return m_diffuse_texture_handle; }
-    float16_t4 _diffuse_factor() const { return float16_t4(m_diffuse_factor, 0.f); }
-    const TextureHandle& _specular_glossiness_texture_handle() const { return m_specular_glossiness_texture_handle; }
-    float16_t4 _specular_factor() const { return float16_t4(m_specular_factor, 0.f); }
-    float16_t _glossiness_factor() const { return m_glossiness_factor; }
-    const TextureHandle& _normal_texture_handle() const { return m_normal_texture_handle; }
-    float16_t _normal_texture_scale() const { return m_normal_texture_scale; }
-    float3 _emissive_factor() const { return m_emissive_factor; }
-    const TextureHandle& _emissive_texture_handle() const { return m_emissive_texture_handle; }
-    const TextureHandle& _transmission_texture_handle() const { return m_transmission_texture_handle; }
-    float16_t _ior() const { return m_ior; }
-    float16_t4 _transmission_factor() const { return float16_t4(m_transmission_factor, 0.f); }
-    float16_t _diffuse_transmission_factor() const { return m_diffuse_transmission_factor; }
-    float16_t _specular_transmission_factor() const { return m_specular_transmission_factor; }
-    bool _double_sided() const { return m_double_sided; }
-    bool _thin_walled() const { return m_thin_walled; }
 
 private:
     void mark_dirty_resources() { mark_dirty(DirtyFlags::resources); }
@@ -224,6 +256,9 @@ private:
     void write_to_cursor_impl(CursorT cursor) const;
 
     // Static properties.
+    AlphaMode m_alpha_mode{AlphaMode::opaque};
+    float m_alpha_factor{1.f};
+    float m_alpha_cutoff{0.5f};
     ref<sgl::Texture> m_diffuse_texture;
     std::filesystem::path m_diffuse_texture_path;
     float16_t3 m_diffuse_factor{1.f, 1.f, 1.f};
@@ -245,6 +280,9 @@ private:
     float16_t m_specular_transmission_factor{0.f};
     bool m_double_sided{false};
     bool m_thin_walled{false};
+    float3 m_volume_sigma_a{0.f};
+    float3 m_volume_sigma_s{0.f};
+    float m_volume_anisotropy{0.f};
 
     TextureHandle m_diffuse_texture_handle;
     TextureHandle m_specular_glossiness_texture_handle;

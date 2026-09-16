@@ -7,10 +7,10 @@ module material_sphere_tracer;
 __exported import falcor2.render;
 __exported import falcor2.utils;
 
-import falcor2.render.materials.materialx.materialx_test_geomprop_provider;
+import falcor2.render.materials.mtlx.test_geomprop_provider;
 import sgl.device.print;
 
-static LightSampler<false, true, false> light_sampler;
+static UniformLightSampler light_sampler;
 static const int MAX_BOUNCES = 32;
 static const int RUSSIAN_ROULETTE_START_BOUNCE = 4;
 static const float RUSSIAN_ROULETTE_MIN_SURVIVAL = 0.05;
@@ -211,9 +211,9 @@ float3 dense_env_texel_probe_direction(const int index, const int env_width, con
 
 public struct AnalyticSphereLodSampler : ILodSampler
 {
-    bool valid;
-    float2 duv_dx;
-    float2 duv_dy;
+    bool valid = {};
+    float2 duv_dx = {};
+    float2 duv_dy = {};
 
     public __generic<T : ITexelElement> T sample(Texture2D<T> texture, SamplerState sampler, float2 uv)
     {
@@ -330,7 +330,7 @@ AnalyticSphereLodSampler make_analytic_sphere_lod_sampler(
     return sampler;
 }
 
-SurfaceInteraction setup_sphere_surface_interaction(const Ray ray, const float t)
+public SurfaceInteraction setup_sphere_surface_interaction(const Ray ray, const float t)
 {
     let P_ws = ray.origin + ray.dir * t;
     let Ng_ws = normalize(P_ws);
@@ -338,30 +338,27 @@ SurfaceInteraction setup_sphere_surface_interaction(const Ray ray, const float t
     SurfaceInteraction si;
     si.position_ws = P_ws;
     si.wi_ws = -ray.dir;
-    // Compute UVs from the geometric normal before flipping N/Ng for
-    // backfacing hits, so transmitted paths see the expected local hemisphere.
     let front_facing = dot(-ray.dir, Ng_ws) >= 0.0;
-    let shading_N_ws = front_facing ? Ng_ws : -Ng_ws;
     si.uv = map_to_sphere_uv(Ng_ws);
-    si.normal_ws = shading_N_ws;
-    si.shading_frame_ws = Frame(shading_N_ws);
+    si.normal_ws = Ng_ws;
+    si.shading_frame_ws = Frame(Ng_ws);
     si.front_facing = front_facing;
-    si.ior = 1.0;
+    si.exterior_ior = 1.0;
     return si;
 }
 
-SurfaceInteraction setup_eval_plot_surface_interaction(const float3 view_direction_ws)
+SurfaceInteraction setup_eval_plot_surface_interaction(const float3 view_dir_ws)
 {
     let Ng_ws = float3(0.0, 0.0, 1.0);
 
     SurfaceInteraction si;
     si.position_ws = Ng_ws;
-    si.wi_ws = normalize(view_direction_ws);
+    si.wi_ws = normalize(view_dir_ws);
     si.uv = map_to_sphere_uv(Ng_ws);
     si.normal_ws = Ng_ws;
     si.shading_frame_ws = Frame(Ng_ws);
     si.front_facing = dot(si.wi_ws, Ng_ws) >= 0.0;
-    si.ior = 1.0;
+    si.exterior_ior = 1.0;
     return si;
 }
 
@@ -369,14 +366,6 @@ float3 offset_sphere_scatter_origin(const SurfaceInteraction si, const float3 wo
 {
     let orientation = (dot(wo_ws, si.normal_ws) >= 0.0) ? 1.0 : -1.0;
     return offset_ray_origin(si.position_ws, si.normal_ws * orientation);
-}
-
-bool analytic_sphere_environment_visible(const SurfaceInteraction si, const float3 dir_ws)
-{
-    let dir = normalize(dir_ws);
-    Ray shadow_ray = Ray(offset_ray_origin(si.position_ws, dir), dir);
-    float t;
-    return !intersect_sphere(shadow_ray, float3(0.0), 1.0, t, false);
 }
 
 float3 eval_environment_miss(
@@ -387,13 +376,9 @@ float3 eval_environment_miss(
     const uint direct_lighting_mode
 )
 {
-    DirectionSample light_sample = {};
-    light_sample.dir_ws = dir_ws;
-    light_sample.distance = float.MAX;
-    light_sample.emitter_type = EmitterType::environment;
-
-    float3 env_radiance = g_scene.light_system.eval_environment_direction(previous_si, light_sample);
-    float env_pdf = light_sampler.eval_direction_pdf(previous_si, light_sample);
+    LightSampleContext light_ctx = LightSampleContext(previous_si);
+    float3 env_radiance = g_scene.light_system.eval_environment_radiance(light_ctx, dir_ws);
+    float env_pdf = light_sampler.eval_environment_pdf(light_ctx, dir_ws);
     let use_sample_mis = direct_lighting_uses_mis(direct_lighting_mode) && !previous_delta && previous_pdf > 0.0;
     float w = use_sample_mis ? mis_heuristic(1, previous_pdf, 1, env_pdf) : 1.0;
     return env_radiance * w * direct_lighting_direct_hit_scale(direct_lighting_mode);
@@ -401,6 +386,167 @@ float3 eval_environment_miss(
 
 extern struct Material : IMaterial;
 extern struct SampleGenerator : ISampleGenerator;
+
+struct AnalyticSphereTraceParams
+{
+    SphereTraceCamera camera;
+    float2 uv;
+    float2 image_size;
+    uint opacity_seed;
+    bool backface_cull;
+    bool use_analytic_texture_filtering;
+    float texture_filter_width_scale;
+};
+
+public bool should_cull_analytic_sphere_backfaces(const MaterialFlags material_flags)
+{
+    return !is_set(material_flags, MaterialFlags::two_sided);
+}
+
+struct AnalyticSphereHit
+{
+    SurfaceInteraction si = {};
+    AnalyticSphereLodSampler lod_sampler = {};
+};
+
+struct AnalyticSphereMissParams
+{
+    Ray ray;
+    float3 throughput;
+    SurfaceInteraction previous_si;
+    float previous_pdf;
+    float3 background_color;
+    uint direct_lighting_mode;
+    bool previous_delta;
+    bool has_previous_scatter;
+};
+
+bool is_analytic_sphere_hit_valid(
+    IMaterial material,
+    const MaterialHeader material_header,
+    const SurfaceInteraction si,
+    const AnalyticSphereLodSampler lod_sampler,
+    const uint stochastic_seed
+)
+{
+    const OpacityFlags opacity_flags = material_header.opacity_flags;
+    if ((opacity_flags & OpacityFlags::enabled) == OpacityFlags::none)
+        return true;
+
+    float opacity;
+    if ((opacity_flags & OpacityFlags::evaluate_material) != OpacityFlags::none) {
+        opacity = material.eval_opacity(si, lod_sampler);
+    } else {
+        opacity = material_header.opacity_factor;
+        const TextureHandle<float4> opacity_texture = TextureHandle<float4>(material_header.opacity_texture);
+        if (opacity_texture.is_valid()) {
+            opacity *= opacity_texture.sample(lod_sampler, si.uv, float4(1.0))[material_header.opacity_texture_channel];
+        }
+    }
+    opacity = saturate(opacity);
+
+    if ((opacity_flags & OpacityFlags::use_threshold) != OpacityFlags::none)
+        return opacity >= material_header.opacity_threshold;
+
+    const float sample = (jenkins_hash(stochastic_seed) >> 8) * 0x1p-24;
+    return sample < opacity;
+}
+
+bool intersect_analytic_sphere_candidate(
+    const Ray ray,
+    const AnalyticSphereTraceParams params,
+    const int bounce,
+    out float t,
+    out AnalyticSphereHit hit
+)
+{
+    hit = {};
+
+    if (!intersect_sphere(ray, float3(0.0), 1.0, t, params.backface_cull))
+        return false;
+
+    hit.si = setup_sphere_surface_interaction(ray, t);
+    hit.lod_sampler = make_lod0_sphere_lod_sampler();
+    if (bounce == 0) {
+        hit.lod_sampler = make_analytic_sphere_lod_sampler(
+            params.camera,
+            params.uv,
+            params.image_size,
+            ray,
+            t,
+            params.use_analytic_texture_filtering,
+            params.texture_filter_width_scale
+        );
+    }
+
+    return true;
+}
+
+bool intersect_analytic_sphere(
+    const Ray ray,
+    IMaterial material,
+    const MaterialHeader material_header,
+    const AnalyticSphereTraceParams params,
+    const int bounce,
+    out AnalyticSphereHit hit
+)
+{
+    Ray query_ray = ray;
+
+    // A ray can encounter the analytic sphere at most twice. Rejected opacity
+    // candidates continue traversal without consuming a scattering bounce.
+    for (int candidate_index = 0; candidate_index < 2; ++candidate_index) {
+        float t;
+        if (!intersect_analytic_sphere_candidate(query_ray, params, bounce, t, hit))
+            return false;
+
+        uint opacity_seed = jenkins_hash(params.opacity_seed ^ uint(bounce));
+        opacity_seed = jenkins_hash(opacity_seed ^ uint(candidate_index));
+        if (is_analytic_sphere_hit_valid(material, material_header, hit.si, hit.lod_sampler, opacity_seed))
+            return true;
+
+        query_ray.t_min = t + 1e-4;
+    }
+
+    return false;
+}
+
+bool analytic_sphere_environment_visible(
+    const SurfaceInteraction si,
+    const float3 dir_ws,
+    IMaterial material,
+    const MaterialHeader material_header,
+    const AnalyticSphereTraceParams trace_params,
+    const int bounce
+)
+{
+    const float3 dir = normalize(dir_ws);
+    Ray shadow_ray = Ray(offset_ray_origin(si.position_ws, dir), dir);
+    AnalyticSphereTraceParams visibility_params = trace_params;
+    visibility_params.opacity_seed = jenkins_hash(trace_params.opacity_seed ^ 0x8da6b343u);
+    visibility_params.use_analytic_texture_filtering = false;
+    AnalyticSphereHit hit;
+    return !intersect_analytic_sphere(shadow_ray, material, material_header, visibility_params, bounce, hit);
+}
+
+float3 eval_analytic_sphere_miss(const AnalyticSphereMissParams params)
+{
+    if (!params.has_previous_scatter)
+        return params.background_color;
+
+    if (direct_lighting_uses_direct_hits(params.direct_lighting_mode)) {
+        float3 contribution = params.throughput
+            * eval_environment_miss(
+                                  params.previous_si,
+                                  params.ray.dir,
+                                  params.previous_pdf,
+                                  params.previous_delta,
+                                  params.direct_lighting_mode
+            );
+        return is_finite_float3(contribution) ? contribution : float3(0.0);
+    }
+    return float3(0.0);
+}
 
 struct KahanSummer
 {
@@ -455,6 +601,7 @@ void material_visualizer_store_path_log4(uniform WTensor<float, 1> path_log, uin
 void sphere_tracing_kernel(
     uint3 tid: SV_DispatchThreadID,
     uniform Material material,
+    uniform uint material_id,
     uniform uint2 camera_size,
     uniform uint2 pixel_offset,
     uniform uint sample_index_offset,
@@ -478,6 +625,7 @@ void sphere_tracing_kernel(
 
     set_print_enabled(false);
 
+    let material_header = g_scene.material_system.get_material_data(MaterialID(material_id)).header;
     let camera = SphereTraceCamera();
     const uint2 pixel = pixel_offset + tid.xy;
     if (pixel.x >= camera_size.x || pixel.y >= camera_size.y) {
@@ -504,41 +652,35 @@ void sphere_tracing_kernel(
         var previous_pdf = 0.0;
         var previous_delta = false;
         var has_previous_scatter = false;
+        AnalyticSphereTraceParams trace_params = {
+            camera,
+            uv,
+            float2(float(camera_size.x), float(camera_size.y)),
+            block_cipher_tea(interleave_32bit(pixel), global_sample_index).y,
+            should_cull_analytic_sphere_backfaces(material_header.flags),
+            use_analytic_texture_filtering,
+            texture_filter_width_scale,
+        };
 
         for (int bounce = 0; bounce < MAX_BOUNCES; ++bounce) {
-            float t;
-            bool hit = intersect_sphere(ray, float3(0), 1, t, false);
-            if (!hit) {
-                if (bounce == 0 || !has_previous_scatter) {
-                    color.add(background_color);
-                } else if (use_direct_hits) {
-                    float3 contribution = throughput
-                        * eval_environment_miss(
-                                              previous_si,
-                                              ray.dir,
-                                              previous_pdf,
-                                              previous_delta,
-                                              direct_lighting_mode
-                        );
-                    if (is_finite_float3(contribution))
-                        color.add(contribution);
-                }
+            AnalyticSphereHit hit;
+            if (!intersect_analytic_sphere(ray, material, material_header, trace_params, bounce, hit)) {
+                let miss = eval_analytic_sphere_miss( {
+                    ray,
+                    throughput,
+                    previous_si,
+                    previous_pdf,
+                    background_color,
+                    direct_lighting_mode,
+                    previous_delta,
+                    has_previous_scatter,
+                });
+                color.add(miss);
                 break;
             }
 
-            let si = setup_sphere_surface_interaction(ray, t);
-            var lod_sampler = make_lod0_sphere_lod_sampler();
-            if (bounce == 0) {
-                lod_sampler = make_analytic_sphere_lod_sampler(
-                    camera,
-                    uv,
-                    float2(float(camera_size.x), float(camera_size.y)),
-                    ray,
-                    t,
-                    use_analytic_texture_filtering,
-                    texture_filter_width_scale
-                );
-            }
+            let si = hit.si;
+            let lod_sampler = hit.lod_sampler;
             let material_instance = material.setup_material_instance(si, lod_sampler, MaterialInstanceHints::none);
 
             let emitted_radiance = material_instance.eval_emissive_radiance();
@@ -549,15 +691,20 @@ void sphere_tracing_kernel(
             }
 
             if (use_nee) {
-                DirectionSample light_sample = {};
-                float3 light_weight = {};
-                if (light_sampler.sample_direction(si, sg, light_sample, light_weight)
-                    && analytic_sphere_environment_visible(si, light_sample.dir_ws)) {
-                    float bsdf_pdf = material_instance.eval_pdf(si, light_sample.dir_ws);
-                    float3 bsdf_eval = material_instance.eval(si, light_sample.dir_ws, sg);
-                    if (bsdf_pdf > 0.0 && is_nonzero_finite_float3(bsdf_eval)) {
-                        float w = use_mis ? mis_heuristic(1, light_sample.pdf, 1, bsdf_pdf) : 1;
-                        float3 contribution = throughput * light_weight * bsdf_eval * w
+                LightSample light_sample = {};
+                if (light_sampler.sample(LightSampleContext(si), sg, light_sample)
+                    && analytic_sphere_environment_visible(
+                        si,
+                        light_sample.dir_ws,
+                        material,
+                        material_header,
+                        trace_params,
+                        bounce
+                    )) {
+                    const BSDFEval bsdf = material_instance.eval_with_pdf(si, light_sample.dir_ws, sg);
+                    if ((!use_mis || bsdf.pdf > 0.0) && is_nonzero_finite_float3(bsdf.value)) {
+                        float w = use_mis ? mis_heuristic(1, light_sample.pdf, 1, bsdf.pdf) : 1;
+                        float3 contribution = throughput * light_sample.weight * bsdf.value * w
                             * direct_lighting_nee_scale(direct_lighting_mode);
                         if (is_finite_float3(contribution))
                             color.add(contribution);
@@ -615,6 +762,7 @@ void sphere_tracing_kernel(
 void material_visualizer_path_log_kernel(
     uint3 tid: SV_DispatchThreadID,
     uniform Material material,
+    uniform uint material_id,
     uniform int max_bounces,
     uniform uint2 camera_size,
     uniform uint2 pixel,
@@ -637,6 +785,7 @@ void material_visualizer_path_log_kernel(
     const bool use_direct_hits = direct_lighting_uses_direct_hits(direct_lighting_mode);
     const bool use_mis = direct_lighting_uses_mis(direct_lighting_mode);
     const SphereTraceCamera camera = SphereTraceCamera();
+    const MaterialHeader material_header = g_scene.material_system.get_material_data(MaterialID(material_id)).header;
     const float2 image_size = float2(float(camera_size.x), float(camera_size.y));
     var sg = SampleGenerator(pixel, sample_index);
 
@@ -660,8 +809,18 @@ void material_visualizer_path_log_kernel(
     material_visualizer_store_path_log4(path_log, 3u, float4(ray.origin, 0.0));
     material_visualizer_store_path_log4(path_log, 4u, float4(ray.dir, 0.0));
 
-    float t;
-    bool hit = intersect_sphere(ray, float3(0.0), 1.0, t, false);
+    AnalyticSphereTraceParams trace_params = {
+        camera,
+        uv,
+        image_size,
+        block_cipher_tea(interleave_32bit(pixel), sample_index).y,
+        should_cull_analytic_sphere_backfaces(material_header.flags),
+        use_analytic_texture_filtering,
+        texture_filter_width_scale,
+    };
+    AnalyticSphereHit sphere_hit;
+    bool hit = intersect_analytic_sphere(ray, material, material_header, trace_params, 0, sphere_hit);
+    const float t = hit ? length(sphere_hit.si.position_ws - ray.origin) : 0.0;
     material_visualizer_store_path_log4(path_log, 5u, float4(hit ? 1.0 : 0.0, t, 0.0, 0.0));
 
     if (!hit || bounce_count <= 0) {
@@ -669,17 +828,8 @@ void material_visualizer_path_log_kernel(
         return;
     }
 
-    const SurfaceInteraction si = setup_sphere_surface_interaction(ray, t);
-    var lod_sampler = make_lod0_sphere_lod_sampler();
-    lod_sampler = make_analytic_sphere_lod_sampler(
-        camera,
-        uv,
-        image_size,
-        ray,
-        t,
-        use_analytic_texture_filtering,
-        texture_filter_width_scale
-    );
+    const SurfaceInteraction si = sphere_hit.si;
+    const AnalyticSphereLodSampler lod_sampler = sphere_hit.lod_sampler;
     let material_instance = material.setup_material_instance(si, lod_sampler, MaterialInstanceHints::none);
 
     material_visualizer_store_path_log4(path_log, 6u, float4(0.0, 0.0, si.front_facing ? 1.0 : 0.0, 0.0));
@@ -687,50 +837,48 @@ void material_visualizer_path_log_kernel(
     material_visualizer_store_path_log4(path_log, 8u, float4(si.normal_ws, 0.0));
     material_visualizer_store_path_log4(path_log, 9u, float4(si.shading_frame_ws.normal, 0.0));
     material_visualizer_store_path_log4(path_log, 10u, float4(si.wi_ws, 0.0));
-    material_visualizer_store_path_log4(path_log, 11u, float4(si.uv, si.ior, 0.0));
+    material_visualizer_store_path_log4(path_log, 11u, float4(si.uv, si.exterior_ior, 0.0));
 
     const float3 emitted_radiance = material_instance.eval_emissive_radiance();
     if (is_finite_float3(emitted_radiance))
         radiance += throughput * max(emitted_radiance, float3(0.0));
 
     if (use_nee) {
-        DirectionSample light_sample = {};
-        float3 light_weight = {};
-        const bool sampled_light = light_sampler.sample_direction(si, sg, light_sample, light_weight);
-        const bool visible = sampled_light && analytic_sphere_environment_visible(si, light_sample.dir_ws);
-        var bsdf_pdf = 0.0;
-        var bsdf_eval = float3(0.0);
+        LightSample light_sample = {};
+        const bool sampled_light = light_sampler.sample(LightSampleContext(si), sg, light_sample);
+        const bool visible = sampled_light
+            && analytic_sphere_environment_visible(si, light_sample.dir_ws, material, material_header, trace_params, 0);
+        var bsdf = BSDFEval();
         if (sampled_light) {
-            bsdf_pdf = material_instance.eval_pdf(si, light_sample.dir_ws);
-            bsdf_eval = material_instance.eval(si, light_sample.dir_ws, sg);
+            bsdf = material_instance.eval_with_pdf(si, light_sample.dir_ws, sg);
         }
-        const float mis_weight = sampled_light && use_mis ? mis_heuristic(1, light_sample.pdf, 1, bsdf_pdf) : 1.0;
+        const float mis_weight = sampled_light && use_mis ? mis_heuristic(1, light_sample.pdf, 1, bsdf.pdf) : 1.0;
         const float direct_weight = mis_weight * direct_lighting_nee_scale(direct_lighting_mode);
         var direct_contribution = float3(0.0);
-        if (visible && bsdf_pdf > 0.0 && is_nonzero_finite_float3(bsdf_eval)) {
-            direct_contribution = throughput * light_weight * bsdf_eval * direct_weight;
+        if (visible && (!use_mis || bsdf.pdf > 0.0) && is_nonzero_finite_float3(bsdf.value)) {
+            direct_contribution = throughput * light_sample.weight * bsdf.value * direct_weight;
             if (is_finite_float3(direct_contribution))
                 radiance += direct_contribution;
         }
 
         material_visualizer_store_path_log4(path_log, 13u, float4(light_sample.dir_ws, sampled_light ? 1.0 : 0.0));
-        material_visualizer_store_path_log4(path_log, 14u, float4(light_weight, 0.0));
+        material_visualizer_store_path_log4(path_log, 14u, float4(light_sample.weight, 0.0));
         material_visualizer_store_path_log4(
             path_log,
             15u,
-            float4(light_sample.pdf, bsdf_pdf, visible ? 1.0 : 0.0, direct_weight)
+            float4(light_sample.pdf, bsdf.pdf, visible ? 1.0 : 0.0, direct_weight)
         );
-        material_visualizer_store_path_log4(path_log, 16u, float4(bsdf_eval, 0.0));
+        material_visualizer_store_path_log4(path_log, 16u, float4(bsdf.value, 0.0));
         material_visualizer_store_path_log4(path_log, 17u, float4(direct_contribution, 0.0));
         print(
             "material_env sampled={} vis={} dir={} weight={} lpdf={} beval={} bpdf={} mis={} contrib={}",
             sampled_light,
             visible,
             light_sample.dir_ws,
-            light_weight,
+            light_sample.weight,
             light_sample.pdf,
-            bsdf_eval,
-            bsdf_pdf,
+            bsdf.value,
+            bsdf.pdf,
             direct_weight,
             direct_contribution
         );
@@ -767,8 +915,9 @@ void material_visualizer_path_log_kernel(
             Ray next_ray = Ray(offset_sphere_scatter_origin(si, sample.wo_ws), normalize(sample.wo_ws));
             material_visualizer_store_path_log4(path_log, 21u, float4(next_ray.dir, 0.0));
             if (bounce_count > 1) {
-                float next_t;
-                const bool next_hit = intersect_sphere(next_ray, float3(0.0), 1.0, next_t, false);
+                AnalyticSphereHit next_sphere_hit;
+                const bool next_hit
+                    = intersect_analytic_sphere(next_ray, material, material_header, trace_params, 1, next_sphere_hit);
                 if (!next_hit) {
                     const float3 miss_contribution = throughput
                         * eval_environment_miss(si,
@@ -817,7 +966,6 @@ void sphere_tracing_scene_material_kernel(
 
     let material = g_scene.material_system.get_material(MaterialID(material_id));
     let material_header = g_scene.material_system.get_material_data(MaterialID(material_id)).header;
-    let cull_backfaces = (material_header.flags & MaterialFlags::thin_walled) == MaterialFlags::none;
     let camera = SphereTraceCamera();
     const uint2 pixel = pixel_offset + tid.xy;
     if (pixel.x >= camera_size.x || pixel.y >= camera_size.y) {
@@ -844,41 +992,35 @@ void sphere_tracing_scene_material_kernel(
         var previous_pdf = 0.0;
         var previous_delta = false;
         var has_previous_scatter = false;
+        AnalyticSphereTraceParams trace_params = {
+            camera,
+            uv,
+            float2(float(camera_size.x), float(camera_size.y)),
+            block_cipher_tea(interleave_32bit(pixel), global_sample_index).y,
+            should_cull_analytic_sphere_backfaces(material_header.flags),
+            use_analytic_texture_filtering,
+            texture_filter_width_scale,
+        };
 
         for (int bounce = 0; bounce < MAX_BOUNCES; ++bounce) {
-            float t;
-            bool hit = intersect_sphere(ray, float3(0), 1, t, cull_backfaces);
-            if (!hit) {
-                if (bounce == 0 || !has_previous_scatter) {
-                    color.add(background_color);
-                } else if (use_direct_hits) {
-                    float3 contribution = throughput
-                        * eval_environment_miss(
-                                              previous_si,
-                                              ray.dir,
-                                              previous_pdf,
-                                              previous_delta,
-                                              direct_lighting_mode
-                        );
-                    if (is_finite_float3(contribution))
-                        color.add(contribution);
-                }
+            AnalyticSphereHit hit;
+            if (!intersect_analytic_sphere(ray, material, material_header, trace_params, bounce, hit)) {
+                let miss = eval_analytic_sphere_miss( {
+                    ray,
+                    throughput,
+                    previous_si,
+                    previous_pdf,
+                    background_color,
+                    direct_lighting_mode,
+                    previous_delta,
+                    has_previous_scatter,
+                });
+                color.add(miss);
                 break;
             }
 
-            let si = setup_sphere_surface_interaction(ray, t);
-            var lod_sampler = make_lod0_sphere_lod_sampler();
-            if (bounce == 0) {
-                lod_sampler = make_analytic_sphere_lod_sampler(
-                    camera,
-                    uv,
-                    float2(float(camera_size.x), float(camera_size.y)),
-                    ray,
-                    t,
-                    use_analytic_texture_filtering,
-                    texture_filter_width_scale
-                );
-            }
+            let si = hit.si;
+            let lod_sampler = hit.lod_sampler;
             let material_instance = material.setup_material_instance(si, lod_sampler, MaterialInstanceHints::none);
 
             let emitted_radiance = material_instance.eval_emissive_radiance();
@@ -889,15 +1031,20 @@ void sphere_tracing_scene_material_kernel(
             }
 
             if (use_nee) {
-                DirectionSample light_sample = {};
-                float3 light_weight = {};
-                if (light_sampler.sample_direction(si, sg, light_sample, light_weight)
-                    && analytic_sphere_environment_visible(si, light_sample.dir_ws)) {
-                    float bsdf_pdf = material_instance.eval_pdf(si, light_sample.dir_ws);
-                    float3 bsdf_eval = material_instance.eval(si, light_sample.dir_ws, sg);
-                    if (bsdf_pdf > 0.0 && is_nonzero_finite_float3(bsdf_eval)) {
-                        float w = use_mis ? mis_heuristic(1, light_sample.pdf, 1, bsdf_pdf) : 1;
-                        float3 contribution = throughput * light_weight * bsdf_eval * w
+                LightSample light_sample = {};
+                if (light_sampler.sample(LightSampleContext(si), sg, light_sample)
+                    && analytic_sphere_environment_visible(
+                        si,
+                        light_sample.dir_ws,
+                        material,
+                        material_header,
+                        trace_params,
+                        bounce
+                    )) {
+                    const BSDFEval bsdf = material_instance.eval_with_pdf(si, light_sample.dir_ws, sg);
+                    if ((!use_mis || bsdf.pdf > 0.0) && is_nonzero_finite_float3(bsdf.value)) {
+                        float w = use_mis ? mis_heuristic(1, light_sample.pdf, 1, bsdf.pdf) : 1;
+                        float3 contribution = throughput * light_sample.weight * bsdf.value * w
                             * direct_lighting_nee_scale(direct_lighting_mode);
                         if (is_finite_float3(contribution))
                             color.add(contribution);
@@ -955,6 +1102,7 @@ void sphere_tracing_scene_material_kernel(
 void sphere_tracing_first_hit_aov_kernel(
     uint3 tid: SV_DispatchThreadID,
     uniform Material material,
+    uniform uint material_id,
     uniform uint2 camera_size,
     uniform uint2 pixel_offset,
     uniform uint sample_index_offset,
@@ -984,6 +1132,7 @@ void sphere_tracing_first_hit_aov_kernel(
 
     set_print_enabled(false);
 
+    let material_header = g_scene.material_system.get_material_data(MaterialID(material_id)).header;
     let camera = SphereTraceCamera();
     const uint2 pixel = pixel_offset + tid.xy;
     if (pixel.x >= camera_size.x || pixel.y >= camera_size.y) {
@@ -1021,33 +1170,38 @@ void sphere_tracing_first_hit_aov_kernel(
         var has_previous_scatter = false;
         var first_sample_may_hit_ibl = false;
         var first_sample_non_delta_reflection = false;
+        AnalyticSphereTraceParams trace_params = {
+            camera,
+            uv,
+            float2(float(camera_size.x), float(camera_size.y)),
+            block_cipher_tea(interleave_32bit(pixel), global_sample_index).y,
+            should_cull_analytic_sphere_backfaces(material_header.flags),
+            use_analytic_texture_filtering,
+            texture_filter_width_scale,
+        };
 
         for (int bounce = 0; bounce < MAX_BOUNCES; ++bounce) {
-            float t;
-            bool hit = intersect_sphere(ray, float3(0), 1, t, false);
-            if (!hit) {
-                if (bounce == 0 || !has_previous_scatter) {
-                    let contribution = background_color;
-                    beauty.add(contribution);
-                } else if (use_direct_hits) {
-                    float3 contribution = throughput
-                        * eval_environment_miss(
-                                              previous_si,
-                                              ray.dir,
-                                              previous_pdf,
-                                              previous_delta,
-                                              direct_lighting_mode
-                        );
-                    if (is_finite_float3(contribution)) {
-                        beauty.add(contribution);
-                        if (bounce == 1 && first_sample_may_hit_ibl) {
-                            if (first_sample_non_delta_reflection)
-                                first_hit_non_delta_ibl_batch.add(contribution);
-                            else
-                                secondary_transport_batch.add(contribution);
-                        } else {
-                            secondary_transport_batch.add(contribution);
-                        }
+            AnalyticSphereHit hit;
+            if (!intersect_analytic_sphere(ray, material, material_header, trace_params, bounce, hit)) {
+                let miss = eval_analytic_sphere_miss( {
+                    ray,
+                    throughput,
+                    previous_si,
+                    previous_pdf,
+                    background_color,
+                    direct_lighting_mode,
+                    previous_delta,
+                    has_previous_scatter,
+                });
+                beauty.add(miss);
+                if (has_previous_scatter) {
+                    if (bounce == 1 && first_sample_may_hit_ibl) {
+                        if (first_sample_non_delta_reflection)
+                            first_hit_non_delta_ibl_batch.add(miss);
+                        else
+                            secondary_transport_batch.add(miss);
+                    } else {
+                        secondary_transport_batch.add(miss);
                     }
                 }
                 break;
@@ -1056,19 +1210,8 @@ void sphere_tracing_first_hit_aov_kernel(
             if (bounce > 0)
                 first_sample_may_hit_ibl = false;
 
-            let si = setup_sphere_surface_interaction(ray, t);
-            var lod_sampler = make_lod0_sphere_lod_sampler();
-            if (bounce == 0) {
-                lod_sampler = make_analytic_sphere_lod_sampler(
-                    camera,
-                    uv,
-                    float2(float(camera_size.x), float(camera_size.y)),
-                    ray,
-                    t,
-                    use_analytic_texture_filtering,
-                    texture_filter_width_scale
-                );
-            }
+            let si = hit.si;
+            let lod_sampler = hit.lod_sampler;
             let material_instance = material.setup_material_instance(si, lod_sampler, MaterialInstanceHints::none);
 
             let emitted_radiance = material_instance.eval_emissive_radiance();
@@ -1084,15 +1227,20 @@ void sphere_tracing_first_hit_aov_kernel(
             }
 
             if (use_nee) {
-                DirectionSample light_sample = {};
-                float3 light_weight = {};
-                if (light_sampler.sample_direction(si, sg, light_sample, light_weight)
-                    && analytic_sphere_environment_visible(si, light_sample.dir_ws)) {
-                    float bsdf_pdf = material_instance.eval_pdf(si, light_sample.dir_ws);
-                    float3 bsdf_eval = material_instance.eval(si, light_sample.dir_ws, sg);
-                    if (bsdf_pdf > 0.0 && is_nonzero_finite_float3(bsdf_eval)) {
-                        float w = use_mis ? mis_heuristic(1, light_sample.pdf, 1, bsdf_pdf) : 1;
-                        float3 contribution = throughput * light_weight * bsdf_eval * w
+                LightSample light_sample = {};
+                if (light_sampler.sample(LightSampleContext(si), sg, light_sample)
+                    && analytic_sphere_environment_visible(
+                        si,
+                        light_sample.dir_ws,
+                        material,
+                        material_header,
+                        trace_params,
+                        bounce
+                    )) {
+                    const BSDFEval bsdf = material_instance.eval_with_pdf(si, light_sample.dir_ws, sg);
+                    if ((!use_mis || bsdf.pdf > 0.0) && is_nonzero_finite_float3(bsdf.value)) {
+                        float w = use_mis ? mis_heuristic(1, light_sample.pdf, 1, bsdf.pdf) : 1;
+                        float3 contribution = throughput * light_sample.weight * bsdf.value * w
                             * direct_lighting_nee_scale(direct_lighting_mode);
                         if (is_finite_float3(contribution)) {
                             beauty.add(contribution);
@@ -1315,12 +1463,11 @@ void dense_env_direct_kernel(
         float3 wo_ws = float3(0.0);
         float3 weighted_env_radiance = float3(0.0);
         if (use_env_importance) {
-            DirectionSample light_sample = {};
-            float3 light_weight = {};
-            if (!light_sampler.sample_environment_direction(si, sg, light_sample, light_weight))
+            LightSample light_sample = {};
+            if (!light_sampler.sample(LightSampleContext(si), sg, light_sample))
                 continue;
             wo_ws = light_sample.dir_ws;
-            weighted_env_radiance = light_weight / float(clamped_light_count);
+            weighted_env_radiance = light_sample.weight / float(clamped_light_count);
         } else {
             let env_index = clamped_tile_start + i;
             wo_ws = use_env_tile ? dense_env_texel_probe_direction(env_index, clamped_env_width, clamped_env_height)
@@ -1424,7 +1571,7 @@ void explicit_direct_kernel(
 void eval_plot_kernel(
     uint3 tid: SV_DispatchThreadID,
     uniform Material material,
-    uniform float3 view_direction_ws,
+    uniform float3 view_dir_ws,
     uniform bool use_analytic_texture_filtering,
     uniform float texture_filter_width_scale,
     uniform RWTexture2D<float4> result
@@ -1457,7 +1604,7 @@ void eval_plot_kernel(
         return;
     }
 
-    let si = setup_eval_plot_surface_interaction(view_direction_ws);
+    let si = setup_eval_plot_surface_interaction(view_dir_ws);
     let lod_sampler = make_analytic_sphere_lod_sampler(
         camera,
         center_uv,
@@ -1740,16 +1887,6 @@ void material_instance_eval_sample_consistency_kernel(
             continue;
         }
 
-        if (sample.has_flag(BSDFFlags::delta)) {
-            if (is_finite_float3(sample.weight)) {
-                let delta_luma = dot(max(sample.weight, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
-                sum_delta_weight_luma += delta_luma;
-                max_delta_weight_luma = max(max_delta_weight_luma, delta_luma);
-            }
-            counters.add(2, 1);
-            continue;
-        }
-
         if (sample.pdf < 0.0 || any(sample.weight < 0.0)) {
             counters.add(3, 1);
             continue;
@@ -1757,6 +1894,18 @@ void material_instance_eval_sample_consistency_kernel(
 
         if (!is_finite_float(sample.pdf) || !is_finite_float3(sample.weight) || !is_finite_float3(sample.wo_ws)) {
             counters.add(5, 1);
+            continue;
+        }
+
+        if (sample.has_flag(BSDFFlags::delta)) {
+            if (sample.pdf != 0.0) {
+                counters.add(3, 1);
+                continue;
+            }
+            let delta_luma = dot(max(sample.weight, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
+            sum_delta_weight_luma += delta_luma;
+            max_delta_weight_luma = max(max_delta_weight_luma, delta_luma);
+            counters.add(2, 1);
             continue;
         }
 
@@ -1983,7 +2132,7 @@ void material_instance_pdf_grid_kernel(
 void full_sphere_eval_pdf_kernel(
     uint3 tid: SV_DispatchThreadID,
     uniform Material material,
-    uniform float3 view_direction_ws,
+    uniform float3 view_dir_ws,
     uniform bool use_analytic_texture_filtering,
     uniform float texture_filter_width_scale,
     uniform uint pdf_integration_res,
@@ -2011,7 +2160,7 @@ void full_sphere_eval_pdf_kernel(
         return;
     }
 
-    let si = setup_eval_plot_surface_interaction(view_direction_ws);
+    let si = setup_eval_plot_surface_interaction(view_dir_ws);
     let lod_sampler = make_analytic_sphere_lod_sampler(
         camera,
         center_uv,
@@ -2057,7 +2206,7 @@ void full_sphere_sample_histogram_kernel(
     uniform uint sample_count,
     uniform uint samples_per_thread,
     uniform uint seed,
-    uniform float3 view_direction_ws,
+    uniform float3 view_dir_ws,
     uniform bool use_analytic_texture_filtering,
     uniform float texture_filter_width_scale,
     uniform AtomicTensor<uint, 2> histogram,
@@ -2081,7 +2230,7 @@ void full_sphere_sample_histogram_kernel(
         return;
     }
 
-    let si = setup_eval_plot_surface_interaction(view_direction_ws);
+    let si = setup_eval_plot_surface_interaction(view_dir_ws);
     let lod_sampler = make_analytic_sphere_lod_sampler(
         camera,
         center_uv,
@@ -2105,7 +2254,7 @@ void full_sphere_sample_histogram_kernel(
             break;
 
         // Keep the TEA8 + Numerical Recipes LCG stream stable for full-sphere
-        // MX139 histogram probes.
+        // MTLX histogram probes.
         var sg = SampleGenerator(block_cipher_tea(seed, sample_index, 8).x);
 
         MaterialSample sample = {};
@@ -2125,6 +2274,10 @@ void full_sphere_sample_histogram_kernel(
         }
 
         if (sample.has_flag(BSDFFlags::delta)) {
+            if (sample.pdf != 0.0) {
+                counters.add(3, 1);
+                continue;
+            }
             let delta_luma = dot(max(sample.weight, float3(0.0)), float3(0.2126, 0.7152, 0.0722));
             delta_sum += delta_luma;
             delta_max = max(delta_max, delta_luma);

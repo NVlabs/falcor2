@@ -18,8 +18,7 @@
             "./external/slangpy/external/vcpkg-triplets"
         ],
         "overlay-ports": [
-            "./external/vcpkg_overlays",
-            "./external/slangpy/external/vcpkg-overlays"
+            "./external/vcpkg_overlays"
         ]
     }
 }

@@ -27,7 +27,6 @@ if str(DATA_SCENES_DIR) not in sys.path:
 
 from checker_material_support import CheckerMaterial
 
-
 DATA_DIR = Path(__file__).parent.parent.parent.parent / "data"
 
 
@@ -41,7 +40,7 @@ def test_materialx_discovery_uses_highest_priority_resolver_root(tmp_path: Path)
         high_root / "material.mtlx",
     )
     shutil.copyfile(
-        DATA_DIR / "internal/materialx/double_sided_checker.mtlx",
+        DATA_DIR / "assets/test_mtlx_opacity/opacity_test.mtlx",
         low_root / "material.mtlx",
     )
 
@@ -53,6 +52,64 @@ def test_materialx_discovery_uses_highest_priority_resolver_root(tmp_path: Path)
     assert "white" in names
     assert "green" in names
     assert "red" in names
+
+
+def test_materialx_class_compilation_properties() -> None:
+    device_type = next(
+        (
+            device_type
+            for device_type in helpers.DEFAULT_DEVICE_TYPES
+            if device_type != spy.DeviceType.cuda
+        ),
+        None,
+    )
+    if device_type is None:
+        pytest.skip("MaterialXMaterial requires a non-CUDA device")
+
+    device = helpers.get_device(device_type)
+    scene = f2.Scene.create(device)
+    document = """<materialx version="1.39" colorspace="lin_rec709">
+  <standard_surface name="surface" type="surfaceshader" />
+  <surfacematerial name="M" type="material">
+    <input name="surfaceshader" type="surfaceshader" nodename="surface" />
+  </surfacematerial>
+</materialx>"""
+
+    def make_props(editable_params: str | None = None, surface_base: float = 0.25) -> f2.Properties:
+        props = f2.Properties()
+        props["mtlx_buffer"] = document
+        props["mtlx_node_name"] = "M"
+        props["mtlx_class_compilation"] = True
+        props["inputs:surface_base"] = surface_base
+        if editable_params is not None:
+            props["mtlx_editable_params"] = editable_params
+        return props
+
+    class_props = make_props()
+    material = scene.create_material(f2.MaterialXMaterial, class_props)
+    assert material.mtlx_class_compilation
+    assert "inputs:surface_base" in material
+    assert material["inputs:surface_base"] == pytest.approx(0.25)
+
+    wildcard_props = make_props("*", surface_base=0.75)
+    wildcard_material = scene.create_material(f2.MaterialXMaterial, wildcard_props)
+    assert wildcard_material["inputs:surface_base"] == pytest.approx(0.75)
+
+    scene.update()
+    assert material.required_module().name == wildcard_material.required_module().name
+
+    subset_material = scene.create_material(
+        f2.MaterialXMaterial, make_props("surface_base", surface_base=0.5)
+    )
+    assert subset_material["inputs:surface_base"] == pytest.approx(0.5)
+    assert "inputs:surface_base_color" not in subset_material
+
+    matching_subset = scene.create_material(
+        f2.MaterialXMaterial, make_props("surface_base", surface_base=0.125)
+    )
+    scene.update()
+    assert subset_material.required_module().name == matching_subset.required_module().name
+    assert subset_material.required_module().name != material.required_module().name
 
 
 class BSDFFlags(IntFlag):
@@ -98,6 +155,7 @@ MATERIALX_TILED_BRASS_PROPERTIES = {
 
 
 MATERIALX_TILED_BRASS_BSDF_MIX_EXPECTED_RESULTS = {
+    "opacity": 1.0,
     "sample": {
         "wo_ws": spy.float3(-0.022421893, 0.9994462, 0.024587013),
         "pdf": 52.19148254394531,
@@ -105,11 +163,13 @@ MATERIALX_TILED_BRASS_BSDF_MIX_EXPECTED_RESULTS = {
         "flags": 2,
     },
     "eval": spy.float3(52.730022, 29.559902, 9.580754),
+    "eval_pdf": 89.8514023,
     "collect_properties": {
+        "material_color": spy.float3(0.03386597, 0.01901918, 0.00621708),
         "emission": spy.float3(0, 0, 0),
+        "metallic": 0.0,
         "roughness": 0.02977316826581955,
         "guide_normal": spy.float3(0, 1, 0),
-        "flags": 0,
         "diffuse_reflection_albedo": spy.float3(0.03386597, 0.01901918, 0.00621708),
         "diffuse_transmission_albedo": spy.float3(0, 0, 0),
         "specular_reflection_albedo": spy.float3(0.53486705, 0.3003822, 0.09819043),
@@ -172,6 +232,7 @@ SCENE_MATERIALS = [
             "scale": 8.0,
         },
         {
+            "opacity": 1.0,
             "sample": {
                 "wo_ws": spy.float3(-0.19386107, 0.9628616, -0.1879241),
                 "pdf": 0.30648836493492126,
@@ -179,6 +240,7 @@ SCENE_MATERIALS = [
                 "flags": 1,
             },
             "eval": spy.float3(0.2928450, 0.19735223, 0.07639437),
+            "eval_pdf": 0.318309873,
             "collect_properties": {
                 "roughness": 0.0,
                 "guide_normal": spy.float3(0, 1, 0),
@@ -195,6 +257,7 @@ SCENE_MATERIALS = [
         PythonMaterialSample,
         {},
         {
+            "opacity": 0.25,
             "sample": {
                 "wo_ws": spy.float3(-0.19386107, 0.9628616, -0.1879241),
                 "pdf": 0.30648836493492126,
@@ -202,7 +265,10 @@ SCENE_MATERIALS = [
                 "flags": 1,
             },
             "eval": spy.float3(0.31830987, 0, 0.31830987),
+            "eval_pdf": 0.318309873,
             "collect_properties": {
+                "material_color": spy.float3(1, 0, 1),
+                "metallic": 0.0,
                 "roughness": 0.0,
                 "guide_normal": spy.float3(0, 1, 0),
                 "diffuse_reflection_albedo": spy.float3(1, 0, 1),
@@ -229,8 +295,12 @@ SCENE_MATERIALS = [
             "ior": 1.5,
         },
         {
+            "opacity": 1.0,
             "eval": spy.float3(0.27920887, 0.15188491, 0.088222936),
+            "eval_pdf": 0.341449767,
             "collect_properties": {
+                "material_color": spy.float3(0.8, 0.4, 0.2),
+                "metallic": 0.0,
                 "roughness": 0.6,
                 "guide_normal": spy.float3(0, 1, 0),
                 "diffuse_reflection_albedo": spy.float3(0.8, 0.4, 0.2),
@@ -275,8 +345,12 @@ SCENE_MATERIALS = [
             "thin_walled": True,
         },
         {
+            "opacity": 1.0,
             "eval": spy.float3(0.11459155, 0.11459155, 0.11459155),
+            "eval_pdf": 0.119356081,
             "collect_properties": {
+                "material_color": spy.float3(0.8, 0.8, 0.8),
+                "metallic": 0.0,
                 "roughness": 0.5,
                 "guide_normal": spy.float3(0, 1, 0),
                 "diffuse_reflection_albedo": spy.float3(0.2, 0.2, 0.2),
@@ -322,7 +396,9 @@ SCENE_MATERIALS = [
             "ior": 1.5,
         },
         {
+            "opacity": 1.0,
             "eval": spy.float3(1.2834091, 0.62578905, 0.29697904),
+            "eval_pdf": 1.71562791,
             "collect_properties": {
                 "roughness": 0.35,
                 "guide_normal": spy.float3(0, 1, 0),
@@ -366,6 +442,7 @@ SCENE_MATERIALS = [
             "mdl_class_compilation": False,
         },
         {
+            "opacity": 1.0,
             "sample": {
                 "wo_ws": spy.float3(0.04189388, 0.90362144, -0.42627868),
                 "pdf": 2.1251282691955566,
@@ -373,7 +450,10 @@ SCENE_MATERIALS = [
                 "flags": 2,
             },
             "eval": spy.float3(0.0028125402, 0.0028125402, 0.0028125402),
+            "eval_pdf": 4.77464819,
             "collect_properties": {
+                "material_color": spy.float3(0, 0, 0),
+                "metallic": 0.0,
                 "roughness": 0.21119996905326843,
                 "guide_normal": spy.float3(-7.437747e-05, 1, 0.000107270644),
                 "diffuse_reflection_albedo": spy.float3(0, 0, 0),
@@ -398,8 +478,12 @@ SCENE_MATERIALS = [
             "learnable": True,
         },
         {
+            "opacity": 1.0,
             "eval": spy.float3(26.002197, 26.002197, 26.002197),
+            "eval_pdf": 30.7740364,
             "collect_properties": {
+                "material_color": spy.float3(0, 0, 0),
+                "metallic": 0.0,
                 "roughness": 0.21159996092319489,
                 "guide_normal": spy.float3(-0.00092971936, 0.9999986, 0.0013408844),
                 "diffuse_reflection_albedo": spy.float3(0, 0, 0),
@@ -418,6 +502,130 @@ MATERIALX_CUDA_SKIP_REASON = (
     "MaterialXMaterial is disabled on CUDA while pathological NVRTC 12.6 compile times "
     "are investigated."
 )
+
+
+_MATERIALX_LARGE_EDITABLE_DATA_DOCUMENT = """\
+<materialx version="1.39">
+  <gltf_pbr name="shader" type="surfaceshader" nodedef="ND_gltf_pbr_surfaceshader">
+    <input name="base_color" type="color3" nodename="base_color_image" output="outcolor" />
+    <input name="metallic" type="float" nodename="metallic_extract" />
+    <input name="roughness" type="float" nodename="roughness_extract" />
+    <input name="occlusion" type="float" nodename="occlusion_extract" />
+    <input name="transmission" type="float" value="0" />
+    <input name="specular" type="float" value="1" />
+    <input name="specular_color" type="color3" value="1, 1, 1" />
+    <input name="ior" type="float" value="1.5" />
+    <input name="alpha" type="float" value="1" />
+    <input name="alpha_mode" type="integer" value="0" />
+    <input name="alpha_cutoff" type="float" value="0.5" />
+    <input name="iridescence" type="float" value="0" />
+    <input name="iridescence_ior" type="float" value="1.3" />
+    <input name="iridescence_thickness" type="float" value="100" />
+    <input name="sheen_color" type="color3" value="0, 0, 0" />
+    <input name="sheen_roughness" type="float" value="0" />
+    <input name="clearcoat" type="float" value="0" />
+    <input name="clearcoat_roughness" type="float" value="0" />
+    <input name="emissive" type="color3" nodename="emissive_image" output="outcolor" />
+    <input name="emissive_strength" type="float" value="1" />
+    <input name="thickness" type="float" value="0" />
+    <input name="attenuation_color" type="color3" value="1, 1, 1" />
+    <input name="anisotropy_strength" type="float" value="0" />
+    <input name="anisotropy_rotation" type="float" value="0" />
+    <input name="dispersion" type="float" value="0" />
+    <input name="normal" type="vector3" nodename="normal_image" />
+  </gltf_pbr>
+  <gltf_colorimage name="base_color_image" type="multioutput">
+    <input name="file" type="filename" value="" colorspace="srgb_texture" />
+    <output name="outcolor" type="color3" />
+    <output name="outa" type="float" />
+  </gltf_colorimage>
+  <gltf_colorimage name="emissive_image" type="multioutput">
+    <input name="file" type="filename" value="" colorspace="srgb_texture" />
+    <output name="outcolor" type="color3" />
+    <output name="outa" type="float" />
+  </gltf_colorimage>
+  <gltf_image name="orm_image" type="vector3">
+    <input name="file" type="filename" value="" />
+  </gltf_image>
+  <extract name="metallic_extract" type="float">
+    <input name="in" type="vector3" nodename="orm_image" />
+    <input name="index" type="integer" value="2" />
+  </extract>
+  <extract name="roughness_extract" type="float">
+    <input name="in" type="vector3" nodename="orm_image" />
+    <input name="index" type="integer" value="1" />
+  </extract>
+  <extract name="occlusion_extract" type="float">
+    <input name="in" type="vector3" nodename="orm_image" />
+    <input name="index" type="integer" value="0" />
+  </extract>
+  <gltf_normalmap name="normal_image" type="vector3">
+    <input name="file" type="filename" value="" />
+  </gltf_normalmap>
+  <surfacematerial name="material" type="material">
+    <input name="surfaceshader" type="surfaceshader" nodename="shader" />
+  </surfacematerial>
+</materialx>
+"""
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_materialx_editable_data_buffer_uses_packed_reflected_stride(
+    device_type: spy.DeviceType, tmp_path: Path
+) -> None:
+    shader_path = tmp_path / f"large_editable_data_{device_type.name}.slang"
+    device = helpers.get_device(device_type, use_cache=False)
+    try:
+        scene = f2.Scene.create(device)
+        material = scene.create_material(
+            f2.MaterialXMaterial,
+            f2.Properties(
+                {
+                    "mtlx_buffer": _MATERIALX_LARGE_EDITABLE_DATA_DOCUMENT,
+                    "mtlx_node_name": "material",
+                    "mtlx_editable_params": "*",
+                    "debug_write_shader_path": str(shader_path),
+                }
+            ),
+        )
+
+        scene.update()
+
+        assert material.slang_type_name
+        shader = shader_path.read_text(encoding="utf-8")
+        assert "BufferHandle data_buffer" in shader
+        assert "data_buffer.load<" in shader
+
+        module_name = next(
+            line.removeprefix("module ").removesuffix(";")
+            for line in shader.splitlines()
+            if line.startswith("module ")
+        )
+        data_name = next(
+            line.split()[2]
+            for line in shader.splitlines()
+            if line.startswith("    public struct ") and "_Data" in line
+        )
+        module = device.load_module_from_source(module_name, shader)
+        buffer_type = module.layout.find_type_by_name(f"StructuredBuffer<mtlx::{data_name}>")
+        assert buffer_type is not None
+        data_layout = module.layout.get_type_layout(buffer_type).element_type_layout
+
+        padding = 0
+        previous_end = 0
+        for field in data_layout.fields:
+            assert field.offset >= previous_end
+            padding += field.offset - previous_end
+            previous_end = field.offset + field.type_layout.size
+        assert data_layout.stride >= previous_end
+        padding += data_layout.stride - previous_end
+
+        expected_stride = 464 if device_type == spy.DeviceType.cuda else 448
+        expected_padding = 16 if device_type == spy.DeviceType.cuda else 0
+        assert data_layout.stride == expected_stride
+        assert padding == expected_padding
+    finally:
+        device.close()
 
 
 def _is_materialx_on_cuda(device_type: spy.DeviceType, material_type: type) -> bool:
@@ -449,7 +657,7 @@ def create_scene_material(
     )
 
 
-def test_discover_materialx_renderable_elements_defaults_to_mx139() -> None:
+def test_discover_materialx_renderable_elements_defaults_to_mtlx() -> None:
     materialx_root = DATA_DIR.parent / "external/MaterialX"
     material_path = (
         materialx_root
@@ -480,22 +688,6 @@ def test_discover_materialx_renderable_elements_includes_output_types() -> None:
     assert element_types["dielectric_bsdf/layer_RT_out"] == "surfaceshader"
 
 
-@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
-def test_materialx_rejects_cuda_by_default(device_type: spy.DeviceType) -> None:
-    if device_type != spy.DeviceType.cuda:
-        pytest.skip("CUDA-only MaterialX guard test.")
-
-    device = helpers.get_device(device_type)
-    scene = f2.Scene.create(device)
-
-    with pytest.raises(Exception) as exc_info:
-        scene.create_material("MaterialXMaterial", f2.Properties())
-
-    message = str(exc_info.value)
-    assert "MaterialXMaterial is disabled on CUDA" in message
-    assert "NVRTC 12.6" in message
-
-
 def _float3_array(value: Any) -> np.ndarray:
     return np.array([float(value.x), float(value.y), float(value.z)], dtype=np.float32)
 
@@ -516,8 +708,8 @@ def assert_valid_sample_result(sample: dict[str, Any]) -> None:
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
-def test_materialx_mx139_tiled_brass_scene_material_successor(
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_materialx_mtlx_tiled_brass_scene_material_successor(
     device_type: spy.DeviceType,
 ) -> None:
     _skip_materialx_on_cuda(device_type, f2.MaterialXMaterial)
@@ -592,7 +784,7 @@ def test_materialx_mx139_tiled_brass_scene_material_successor(
     extra_cursor = extra_results.cursor()
     extra_cursor.load()
     extra = extra_cursor[0].read()
-    # Current MX139 Tiled Brass reduces to the coat and metal BSDFs.
+    # Current MTLX Tiled Brass reduces to the coat and metal BSDFs.
     assert extra["bsdf_count"] == 2
     for bsdf_index in range(extra["bsdf_count"]):
         _assert_finite_float3(extra["bsdf_N"][bsdf_index])
@@ -748,6 +940,176 @@ def test_scene_material_codegen(
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_scene_material_opacity_dispatch(device_type: spy.DeviceType) -> None:
+    device = helpers.get_device(device_type)
+    scene = f2.Scene.create(device)
+    material = scene.create_material(PythonMaterialSample)
+    scene.update()
+
+    module, helper = load_scene_sampling_module(device, scene)
+    opacity_func = module["material_eval_opacity_simple"].as_func().write(helper.bind_scene)
+    uvs = np.array([(0.5, 0.5)], dtype=np.float32)
+    wi = np.array([(0.0, 1.0, 0.0)], dtype=np.float32)
+    opacity = cast(spy.Tensor, opacity_func(material, uvs, wi))
+    opacity_cursor = opacity.cursor()
+    opacity_cursor.load()
+
+    assert opacity_cursor[0].read() == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_mdl_material_opacity_evaluation(device_type: spy.DeviceType) -> None:
+    # TODO: Test fails on CUDA due to Slang codegen issue.
+    # https://github.com/shader-slang/slang/issues/11658
+    if device_type == spy.DeviceType.cuda:
+        pytest.skip("Stochastic opacity evaluation fails on CUDA due to Slang codegen issue")
+    device = helpers.get_device(device_type)
+    scene = f2.Scene.create(device)
+    mdl_path = DATA_DIR / "assets/test_mdl_opacity"
+
+    def create_material(name: str, opacity: float | None = None) -> f2.Material:
+        props = f2.Properties()
+        props["mdl_library_path"] = str(mdl_path)
+        props["mdl_material_name"] = f"opacity_test::{name}"
+        props["mdl_class_compilation"] = True
+        if opacity is not None:
+            props["opacity"] = opacity
+        return scene.create_material("MDLMaterial", props)
+
+    constant_materials = [
+        create_material("opaque"),
+        create_material("transparent"),
+        create_material("constant_half"),
+        create_material("parameterized", 0.25),
+    ]
+    textured_material = create_material("textured")
+    scene.update()
+
+    assert scene.requirements.requires_opacity_evaluation
+    module, helper = load_scene_sampling_module(device, scene)
+    opacity_func = module["material_eval_opacity_simple"].as_func().write(helper.bind_scene)
+    uvs = np.array([(0.5, 0.5)], dtype=np.float32)
+    wi = np.array([(0.0, 1.0, 0.0)], dtype=np.float32)
+
+    for material, expected in zip(constant_materials, (1.0, 0.0, 0.5, 0.25)):
+        opacity = cast(spy.Tensor, opacity_func(material, uvs, wi))
+        opacity_cursor = opacity.cursor()
+        opacity_cursor.load()
+        assert opacity_cursor[0].read() == pytest.approx(expected)
+
+    texture_uvs = np.array(
+        [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)],
+        dtype=np.float32,
+    )
+    texture_wi = np.repeat(wi, len(texture_uvs), axis=0)
+    texture_opacity = cast(spy.Tensor, opacity_func(textured_material, texture_uvs, texture_wi))
+    texture_opacity_cursor = texture_opacity.cursor()
+    texture_opacity_cursor.load()
+
+    expected_texture_opacity = (0.0, 64.0 / 255.0, 128.0 / 255.0, 1.0)
+    for index, expected in enumerate(expected_texture_opacity):
+        assert texture_opacity_cursor[index].read() == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_materialx_material_opacity_evaluation(device_type: spy.DeviceType) -> None:
+    # TODO: Test fails on CUDA due to Slang codegen issue.
+    # https://github.com/shader-slang/slang/issues/11658
+    if device_type == spy.DeviceType.cuda:
+        pytest.skip("Stochastic opacity evaluation fails on CUDA due to Slang codegen issue")
+    device = helpers.get_device(device_type)
+    scene = f2.Scene.create(device)
+    materialx_root = DATA_DIR / "assets/test_mtlx_opacity"
+    props = f2.Properties()
+    props["mtlx_basepath"] = str(materialx_root)
+    props["mtlx_path"] = "opacity_test.mtlx"
+    props["mtlx_node_name"] = "M"
+    props["mtlx_editable_params"] = " surface_opacity, diffuse_color, surface_opacity "
+    props["inputs:surface_opacity"] = 0.25
+    material = scene.create_material(f2.MaterialXMaterial, props)
+
+    complete_props = f2.Properties()
+    complete_props["mtlx_basepath"] = str(materialx_root)
+    complete_props["mtlx_path"] = "opacity_test.mtlx"
+    complete_props["mtlx_node_name"] = "M"
+    complete_props["mtlx_editable_params"] = "*"
+    complete_material = scene.create_material(f2.MaterialXMaterial, complete_props)
+
+    invalid_props = f2.Properties()
+    invalid_props["mtlx_basepath"] = str(materialx_root)
+    invalid_props["mtlx_path"] = "opacity_test.mtlx"
+    invalid_props["mtlx_node_name"] = "M"
+    invalid_props["mtlx_editable_params"] = "surface_opacity,*"
+    with pytest.raises(Exception) as exc_info:
+        scene.create_material(f2.MaterialXMaterial, invalid_props)
+    assert "'*' must be used by itself" in str(exc_info.value)
+
+    textured_props = f2.Properties()
+    textured_props["mtlx_basepath"] = str(materialx_root)
+    textured_props["mtlx_path"] = "opacity_test.mtlx"
+    textured_props["mtlx_node_name"] = "Textured"
+    textured_material = scene.create_material(f2.MaterialXMaterial, textured_props)
+
+    luminance_props = f2.Properties()
+    luminance_props["mtlx_basepath"] = str(materialx_root)
+    luminance_props["mtlx_path"] = "opacity_luminance.mtlx"
+    luminance_props["mtlx_node_name"] = "M"
+    luminance_material = scene.create_material(f2.MaterialXMaterial, luminance_props)
+    scene.update()
+
+    assert "inputs:surface_opacity" in material
+    assert "inputs:diffuse_color" in material
+    assert "inputs:emission_color" not in material
+    assert "inputs:surface_opacity" in complete_material
+    assert "inputs:diffuse_color" in complete_material
+    assert "inputs:emission_color" in complete_material
+    assert scene.requirements.requires_opacity_evaluation
+    texture_handles = textured_material.build_texture_list()
+    assert len(texture_handles) == 1
+    assert texture_handles[0].is_valid()
+    assert texture_handles[0].is_finalized()
+    module, helper = load_scene_sampling_module(device, scene)
+    opacity_func = module["material_eval_opacity_simple"].as_func().write(helper.bind_scene)
+    uvs = np.array([(0.5, 0.5)], dtype=np.float32)
+    wi = np.array([(0.0, 1.0, 0.0)], dtype=np.float32)
+
+    for expected in (0.25, 0.75):
+        material["inputs:surface_opacity"] = expected
+        scene.update()
+        opacity = cast(spy.Tensor, opacity_func(material, uvs, wi))
+        opacity_cursor = opacity.cursor()
+        opacity_cursor.load()
+        assert opacity_cursor[0].read() == pytest.approx(expected)
+
+    material.mtlx_layering_mode = f2.MaterialXLayeringMode.closure_tree
+    scene.update()
+    module, helper = load_scene_sampling_module(device, scene)
+    opacity_func = module["material_eval_opacity_simple"].as_func().write(helper.bind_scene)
+    opacity = cast(spy.Tensor, opacity_func(material, uvs, wi))
+    opacity_cursor = opacity.cursor()
+    opacity_cursor.load()
+    assert opacity_cursor[0].read() == pytest.approx(0.75)
+
+    luminance_opacity = cast(spy.Tensor, opacity_func(luminance_material, uvs, wi))
+    luminance_opacity_cursor = luminance_opacity.cursor()
+    luminance_opacity_cursor.load()
+    assert luminance_opacity_cursor[0].read() == pytest.approx(0.0)
+
+    texture_uvs = np.array(
+        [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)],
+        dtype=np.float32,
+    )
+    texture_wi = np.repeat(wi, len(texture_uvs), axis=0)
+    texture_opacity = cast(spy.Tensor, opacity_func(textured_material, texture_uvs, texture_wi))
+    texture_opacity_cursor = texture_opacity.cursor()
+    texture_opacity_cursor.load()
+
+    expected_texture_opacity = (0.0, 64.0 / 255.0, 128.0 / 255.0, 1.0)
+    for index, expected in enumerate(expected_texture_opacity):
+        assert texture_opacity_cursor[index].read() == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_scene_material_texture_lists(device_type: spy.DeviceType) -> None:
     device = helpers.get_device(device_type)
     textured_material_types = (f2.MaterialXMaterial, f2.MDLMaterial)
@@ -785,6 +1147,9 @@ def test_scene_material_cursor_writers(device_type: spy.DeviceType) -> None:
                 "base_color_factor": spy.float3(0.25, 0.5, 0.75),
                 "metallic_factor": 0.125,
                 "roughness_factor": 0.625,
+                "volume_sigma_a": spy.float3(0.1, 0.2, 0.3),
+                "volume_sigma_s": spy.float3(0.4, 0.5, 0.6),
+                "volume_anisotropy": 0.25,
             }
         ),
     )
@@ -795,6 +1160,9 @@ def test_scene_material_cursor_writers(device_type: spy.DeviceType) -> None:
                 "diffuse_factor": spy.float3(0.25, 0.5, 0.75),
                 "specular_factor": spy.float3(0.125, 0.25, 0.5),
                 "glossiness_factor": 0.625,
+                "volume_sigma_a": spy.float3(0.2, 0.3, 0.4),
+                "volume_sigma_s": spy.float3(0.5, 0.6, 0.7),
+                "volume_anisotropy": -0.25,
             }
         ),
     )
@@ -815,6 +1183,9 @@ def test_scene_material_cursor_writers(device_type: spy.DeviceType) -> None:
     )
     assert float(standard_result["metallic_factor"]) == pytest.approx(0.125)
     assert float(standard_result["roughness_factor"]) == pytest.approx(0.625)
+    assert _float3_array(standard_result["volume_sigma_a"]) == pytest.approx([0.1, 0.2, 0.3])
+    assert _float3_array(standard_result["volume_sigma_s"]) == pytest.approx([0.4, 0.5, 0.6])
+    assert float(standard_result["volume_anisotropy"]) == pytest.approx(0.25)
 
     spec_gloss_cursor = material_cursor(scene.render_module.layout, "StandardSpecGlossMaterial")
     spec_gloss_cursor[0] = spec_gloss
@@ -826,6 +1197,9 @@ def test_scene_material_cursor_writers(device_type: spy.DeviceType) -> None:
         np.array([0.125, 0.25, 0.5], dtype=np.float32)
     )
     assert float(spec_gloss_result["glossiness_factor"]) == pytest.approx(0.625)
+    assert _float3_array(spec_gloss_result["volume_sigma_a"]) == pytest.approx([0.2, 0.3, 0.4])
+    assert _float3_array(spec_gloss_result["volume_sigma_s"]) == pytest.approx([0.5, 0.6, 0.7])
+    assert float(spec_gloss_result["volume_anisotropy"]) == pytest.approx(-0.25)
 
     required_module = python_material.required_module()
     assert required_module is not None
@@ -835,6 +1209,132 @@ def test_scene_material_cursor_writers(device_type: spy.DeviceType) -> None:
     assert python_result["texture_index"] == 3
 
 
+def _read_interior_medium(module: spy.Module, helper: Any, material: f2.Material) -> dict[str, Any]:
+    func = module["material_interior_medium_simple"].as_func().write(helper.bind_scene)
+    uvs = np.array([(0.5, 0.5)], dtype=np.float32)
+    wi = np.array([(0.0, 1.0, 0.0)], dtype=np.float32)
+    result = cast(spy.Tensor, func(material, uvs, wi))
+    cursor = result.cursor()
+    cursor.load()
+    return cast(dict[str, Any], cursor[0].read())
+
+
+def _assert_interior_medium(
+    result: dict[str, Any], sigma_a: Any, sigma_s: Any, anisotropy: float
+) -> None:
+    assert _float3_array(result["sigma_a"]) == pytest.approx(sigma_a, rel=2e-3, abs=1e-5)
+    assert _float3_array(result["sigma_s"]) == pytest.approx(sigma_s, rel=2e-3, abs=1e-5)
+    assert float(result["anisotropy"]) == pytest.approx(anisotropy, rel=2e-3, abs=1e-5)
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_material_interior_medium(device_type: spy.DeviceType) -> None:
+    device = helpers.get_device(device_type)
+    scene = f2.Scene.create(device)
+
+    standard = scene.create_material(
+        f2.StandardMaterial,
+        f2.Properties(
+            {
+                "volume_sigma_a": spy.float3(0.1, 0.2, 0.3),
+                "volume_sigma_s": spy.float3(0.4, 0.5, 0.6),
+                "volume_anisotropy": 0.25,
+            }
+        ),
+    )
+    spec_gloss = scene.create_material(
+        f2.StandardSpecGlossMaterial,
+        f2.Properties(
+            {
+                "volume_sigma_a": spy.float3(0.2, 0.3, 0.4),
+                "volume_sigma_s": spy.float3(0.5, 0.6, 0.7),
+                "volume_anisotropy": -0.25,
+            }
+        ),
+    )
+    thin_walled = scene.create_material(
+        f2.StandardMaterial,
+        f2.Properties(
+            {
+                "thin_walled": True,
+                "volume_sigma_a": spy.float3(1.0),
+                "volume_sigma_s": spy.float3(1.0),
+                "volume_anisotropy": 0.5,
+            }
+        ),
+    )
+
+    sigma_a = np.array([0.15, 0.3, 0.6], dtype=np.float32)
+    sigma_s = np.array([0.05, 0.1, 0.2], dtype=np.float32)
+    depth = 2.0
+    openpbr = scene.create_material(
+        "OpenPBRMaterial",
+        f2.Properties(
+            {
+                "transmission_weight": 1.0,
+                "transmission_color": spy.float3(*np.exp(-(sigma_a + sigma_s) * depth)),
+                "transmission_depth": depth,
+                "transmission_scatter": spy.float3(*(sigma_s * depth)),
+                "transmission_scatter_anisotropy": 0.4,
+            }
+        ),
+    )
+    openpbr_zero_depth = scene.create_material(
+        "OpenPBRMaterial",
+        f2.Properties(
+            {
+                "transmission_weight": 1.0,
+                "transmission_color": spy.float3(0.5),
+                "transmission_depth": 0.0,
+            }
+        ),
+    )
+
+    scene.update()
+    module, helper = load_scene_sampling_module(device, scene)
+
+    _assert_interior_medium(
+        _read_interior_medium(module, helper, standard), [0.1, 0.2, 0.3], [0.4, 0.5, 0.6], 0.25
+    )
+    _assert_interior_medium(
+        _read_interior_medium(module, helper, spec_gloss), [0.2, 0.3, 0.4], [0.5, 0.6, 0.7], -0.25
+    )
+    _assert_interior_medium(
+        _read_interior_medium(module, helper, thin_walled), [1, 1, 1], [1, 1, 1], 0.5
+    )
+    _assert_interior_medium(_read_interior_medium(module, helper, openpbr), sigma_a, sigma_s, 0.4)
+    _assert_interior_medium(
+        _read_interior_medium(module, helper, openpbr_zero_depth), [0, 0, 0], [0, 0, 0], 0.0
+    )
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_mdl_material_interior_medium(device_type: spy.DeviceType) -> None:
+    device = helpers.get_device(device_type)
+    scene = f2.Scene.create(device)
+    material = scene.create_material(
+        "MDLMaterial",
+        f2.Properties(
+            {
+                "mdl_library_path": str(DATA_DIR / "assets/mdl_sdk_examples"),
+                "mdl_material_name": "tutorials::example_volume",
+                "mdl_class_compilation": False,
+            }
+        ),
+    )
+    scene.update()
+
+    module, helper = load_scene_sampling_module(device, scene)
+    extinction = -np.log(0.234) / 0.36
+    scatter_color = np.array([0.368, 0.691, 0.603], dtype=np.float32)
+    _assert_interior_medium(
+        _read_interior_medium(module, helper, material),
+        extinction * (1.0 - scatter_color),
+        extinction * scatter_color,
+        0.0,
+    )
+
+
 @pytest.mark.slow
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 @pytest.mark.parametrize("test_material", SCENE_MATERIALS)
@@ -842,7 +1342,7 @@ def test_scene_material_sampler(
     device_type: spy.DeviceType, test_material: SceneMaterialTestDesc
 ) -> None:
     """
-    Test individual scene materials using get_this().
+    Test individual scene materials using cursor-writer binding.
     """
 
     _skip_materialx_on_cuda(device_type, test_material.scene_material_type)
@@ -891,6 +1391,16 @@ def test_scene_material_sampler(
     eval_cursor.load()
     result = eval_cursor[0].read()
     assert_expected_subset("eval", result, test_material)
+
+    # Test opacity
+    signature = "material_eval_opacity_simple"
+    material_eval_opacity = module[signature].as_func().write(helper.bind_scene)
+    opacity_results = cast(spy.Tensor, material_eval_opacity(material, uvs, wi))
+    opacity_cursor = opacity_results.cursor()
+    opacity_cursor.load()
+    result = opacity_cursor[0].read()
+    assert np.isfinite(result)
+    assert_expected_subset("opacity", result, test_material)
 
     # Test collect_properties
     signature = "material_collect_properties_simple"
@@ -986,21 +1496,39 @@ def test_scene_material_sampler_batch(device_type: spy.DeviceType) -> None:
         assert_valid_sample_result(result)
         assert_expected_subset("sample", result, test_material)
 
-    # Test eval
-    signature = "material_eval_system<TinyUniformSampleGenerator>"
-    material_eval = (
+    # Test eval and PDF
+    signature = "material_eval_with_pdf_system<TinyUniformSampleGenerator>"
+    material_eval_with_pdf = (
         module[signature]
         .as_func()
         .type_conformances(type_conformances)
         .write(helper.bind_scene)
         .map(spy.uint3, int, spy.float2, spy.float3, spy.float3)
     )
-    eval_results = cast(spy.Tensor, material_eval(seed, material_ids_np, uvs, wi, wo))
+    eval_results = cast(spy.Tensor, material_eval_with_pdf(seed, material_ids_np, uvs, wi, wo))
     eval_cursor = eval_results.cursor()
     eval_cursor.load()
     for i, test_material in enumerate(active_scene_materials):
         result: dict[str, Any] = eval_cursor[i * samples_per_material].read()  # type: ignore
-        assert_expected_subset("eval", result, test_material)
+        assert_expected_subset("eval", result["value"], test_material)
+        assert_expected_subset("eval_pdf", result["pdf"], test_material)
+
+    # Test opacity
+    signature = "material_eval_opacity_system"
+    material_eval_opacity = (
+        module[signature]
+        .as_func()
+        .type_conformances(type_conformances)
+        .write(helper.bind_scene)
+        .map(int, spy.float2, spy.float3)
+    )
+    opacity_results = cast(spy.Tensor, material_eval_opacity(material_ids_np, uvs, wi))
+    opacity_cursor = opacity_results.cursor()
+    opacity_cursor.load()
+    for i, test_material in enumerate(active_scene_materials):
+        result: float = opacity_cursor[i * samples_per_material].read()
+        assert np.isfinite(result)
+        assert_expected_subset("opacity", result, test_material)
 
     # Test collect_properties
     signature = "material_collect_properties_system"

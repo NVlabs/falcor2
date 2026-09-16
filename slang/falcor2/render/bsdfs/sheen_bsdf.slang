@@ -7,17 +7,20 @@ implementing render;
 /// all energy which is not reflected will be transmitted as a Dirac impulse
 public struct SheenBSDF : IBSDF
 {
+    static const float C_MIN_ROUGHNESS = 0.005;
+    static const float C_MAX_ROUGHNESS = 1.0;
+
     /// Sheen reflectivity.
     public float3 color = {};
-    /// Surface roughness (max 1.0).
-    public float roughness = {};
+    /// Surface roughness in [C_MIN_ROUGHNESS, C_MAX_ROUGHNESS].
+    public float roughness = C_MIN_ROUGHNESS;
 
     public __init() { }
 
     public __init(float3 color, float roughness)
     {
         this.color = color;
-        this.roughness = roughness;
+        this.roughness = clamp(roughness, C_MIN_ROUGHNESS, C_MAX_ROUGHNESS);
     }
 
     float sheen_D(float n_dot_h)
@@ -56,10 +59,12 @@ public struct SheenBSDF : IBSDF
         return 1.0 / (1.0 + pow(lambda(n_dot_o), 1.0 + 2.0 * pow(1.0 - n_dot_o, 8.0)) + lambda(n_dot_i));
     }
 
-    public float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+
+    public BSDFEval
+    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
     {
         if (min(wi.z, wo.z) < BSDF_MIN_COS_THETA)
-            return float3(0.0);
+            return BSDFEval();
 
         float3 wh = normalize(wi + wo);
         float n_dot_h = wh.z;
@@ -68,7 +73,7 @@ public struct SheenBSDF : IBSDF
         // We multiply by wo.z
         float3 Fr = D * G(wo.z, wi.z) * color / (4.0 * wi.z);
 
-        return Fr;
+        return BSDFEval(Fr, float.INV_PI* wo.z);
     }
 
     public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
@@ -92,26 +97,19 @@ public struct SheenBSDF : IBSDF
             return true;
         }*/
 
-        // The paper recommends cosine sampling.
+        // Estevez and Kulla found uniform hemisphere sampling more effective for this grazing distribution. Preserve
+        // the legacy cosine-weighted proposal here; eval_pdf() must match it.
         sample.wo = square_to_cosine_hemisphere_concentric(next_float2(sg));
         sample.pdf = square_to_cosine_hemisphere_concentric_pdf(sample.wo);
 
         if (min(wi.z, sample.wo.z) < BSDF_MIN_COS_THETA)
             return false;
 
-        sample.flags = BSDFFlags::diffuse_reflection;
+        sample.flags = BSDFFlags::glossy_reflection;
         sample.weight = (eval(wi, sample.wo, sg, bc) / (float.INV_PI* sample.wo.z));
         return true;
     }
 
-    public float eval_pdf(const float3 wi, const float3 wo, BSDFContext bc)
-    {
-        if (min(wi.z, wo.z) < BSDF_MIN_COS_THETA)
-            return 0.0;
-
-        float3 albedo_t = eval_albedo(wi).transmission;
-        return float.INV_PI * wo.z;
-    }
 
     public AlbedoContributions eval_albedo(const float3 wi)
     {

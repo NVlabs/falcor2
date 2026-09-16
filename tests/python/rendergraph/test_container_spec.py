@@ -4,6 +4,7 @@
 import pytest
 import slangpy as spy
 
+import falcor2.rendergraph.container as container_module
 import falcor2.testing.helpers as helpers
 from falcor2.rendergraph import Container, ContainerSpec, container_torch, AUTO
 from falcor2.rendergraph.image_format import (
@@ -13,6 +14,19 @@ from falcor2.rendergraph.image_format import (
 )
 
 ALL_DEVICE_TYPES = helpers.DEFAULT_DEVICE_TYPES
+
+
+def test_utils_module_cache_is_cleared_when_device_closes() -> None:
+    device = helpers.get_device(ALL_DEVICE_TYPES[0], use_cache=False)
+
+    try:
+        module = container_module._utils_module(device)
+        assert container_module._utils_module(device) is module
+        assert device in container_module._UTILS_MODULE_CACHE
+    finally:
+        device.close()
+
+    assert device not in container_module._UTILS_MODULE_CACHE
 
 
 @pytest.mark.parametrize("device_type", ALL_DEVICE_TYPES)

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Mapping
 
 import slangpy as spy
@@ -23,6 +24,13 @@ OUTPUT_SPEC_ATTRIBUTE = "OutputSpec"
 _FORMATS_BY_NAME = {output_format.name: output_format for output_format in spy.Format}
 
 
+class OutputOperation(Enum):
+    """Operation used when writing an output value."""
+
+    write = "write"
+    increment = "increment"
+
+
 @dataclass(frozen=True)
 class OutputSpec:
     """Description of one reflected output target."""
@@ -30,6 +38,7 @@ class OutputSpec:
     name: str
     format: spy.Format
     clear_value: spy.float4 | spy.int4 | spy.uint4
+    operation: OutputOperation = OutputOperation.write
 
 
 @dataclass(frozen=True)
@@ -42,6 +51,7 @@ class _ReflectedOutput:
     enabled: bool
     storage_type: str | None = None
     write_expr: str | None = None
+    direct_binding: bool = False
 
 
 class OutputPrelude:
@@ -84,6 +94,11 @@ class OutputPrelude:
                     "must provide format and clear value arguments."
                 )
             output_format = _format_from_attribute(attribute.argument_value_string(0))
+            operation = (
+                _operation_from_attribute(attribute.argument_value_string(2))
+                if attribute.argument_count >= 3
+                else OutputOperation.write
+            )
             specs.append(
                 OutputSpec(
                     name=function.name,
@@ -92,6 +107,7 @@ class OutputPrelude:
                         output_format,
                         attribute.argument_value_string(1),
                     ),
+                    operation=operation,
                 )
             )
         return tuple(specs)
@@ -179,10 +195,15 @@ class OutputPrelude:
                 self._block_var_name,
                 name,
                 targets.get(name),
+                (self._specs[name].operation if name in self._specs else OutputOperation.write),
             )
             for name in output_names
         ]
         enabled_outputs = [output for output in outputs if output.enabled]
+        # Vulkan reflection drops read/write resources nested in a parameter block.
+        # Bind incrementing outputs directly because they require both access modes.
+        block_outputs = [output for output in enabled_outputs if not output.direct_binding]
+        direct_outputs = [output for output in enabled_outputs if output.direct_binding]
 
         lines = []
 
@@ -193,15 +214,24 @@ class OutputPrelude:
                 "{",
             ]
         )
-        for output in enabled_outputs:
+        for output in block_outputs:
             assert output.storage_type is not None
             lines.append(f"    public {output.storage_type} {output.name};")
         lines.extend(["}", ""])
 
-        if enabled_outputs:
+        if block_outputs:
             lines.extend(
                 [
                     f"public ParameterBlock<{self._block_type_name}> {self._block_var_name};",
+                    "",
+                ]
+            )
+
+        for output in direct_outputs:
+            assert output.storage_type is not None
+            lines.extend(
+                [
+                    f"public {output.storage_type} {self._block_var_name}_{output.name};",
                     "",
                 ]
             )
@@ -258,10 +288,16 @@ class OutputPrelude:
         if not any(container is not None for container in targets.values()):
             return
 
-        block = cursor[self._block_var_name]
+        block = None
         for name, container in targets.items():
             if container is None:
                 continue
+            spec = self._specs.get(name)
+            if spec is not None and spec.operation == OutputOperation.increment:
+                cursor[f"{self._block_var_name}_{name}"] = Container.to_render_layout(container)
+                continue
+            if block is None:
+                block = cursor[self._block_var_name]
             block[name] = Container.to_render_layout(container)
 
 
@@ -301,6 +337,7 @@ def _reflect_output(
     block_var_name: str,
     name: str,
     container: object | None,
+    operation: OutputOperation,
 ) -> _ReflectedOutput:
     function: SlangFunction = module.layout.require_function_by_name_in_type(interface_type, name)
     if not function.static or function.have_return_value or len(function.parameters) != 2:
@@ -320,7 +357,7 @@ def _reflect_output(
             enabled=False,
         )
 
-    storage_type, write_expr = _storage_type_and_write_expr(
+    storage_type, write_expr, direct_binding = _storage_type_and_write_expr(
         container=container,
         block_var_name=block_var_name,
         name=function.name,
@@ -328,6 +365,7 @@ def _reflect_output(
         coord_type=coord_parameter.type.full_name,
         value_name=value_parameter.name,
         value_type=value_parameter.type.full_name,
+        operation=operation,
     )
     return _ReflectedOutput(
         name=function.name,
@@ -338,6 +376,7 @@ def _reflect_output(
         enabled=True,
         storage_type=storage_type,
         write_expr=write_expr,
+        direct_binding=direct_binding,
     )
 
 
@@ -350,23 +389,46 @@ def _storage_type_and_write_expr(
     coord_type: str,
     value_name: str,
     value_type: str,
-) -> tuple[str, str]:
-    block_field = f"{block_var_name}.{name}"
+    operation: OutputOperation,
+) -> tuple[str, str, bool]:
+    direct_binding = operation == OutputOperation.increment
+    block_field = f"{block_var_name}_{name}" if direct_binding else f"{block_var_name}.{name}"
     if isinstance(container, spy.Texture):
         if container.type != spy.TextureType.texture_2d:
             raise TypeError(f"Unsupported texture type for output prelude: {container.type!r}")
+        if operation == OutputOperation.increment:
+            if container.format != spy.Format.r32_uint:
+                raise TypeError("Incrementing texture outputs require r32_uint format.")
+            write_expr = (
+                f"{block_field}[{coord_name}] = " f"{block_field}[{coord_name}] + {value_name};"
+            )
+            storage_type = f'[format("r32ui")] RWTexture2D<{value_type}>'
+        else:
+            write_expr = f"{block_field}[{coord_name}] = {value_name};"
+            storage_type = f"RWTexture2D<{value_type}>"
         return (
-            f"RWTexture2D<{value_type}>",
-            f"{block_field}[{coord_name}] = {value_name};",
+            storage_type,
+            write_expr,
+            direct_binding,
         )
 
     if isinstance(container, spy.Tensor) or container_torch.is_torch_tensor(container):
         _, dims = Container.format_and_dims(container)
         dimension_count = len(dims)
+        index_expr = _tensor_index_expr(coord_name, coord_type, dimension_count)
+        if operation == OutputOperation.increment:
+            storage_type = f"RWTensor<{value_type}, {dimension_count}>"
+            write_expr = (
+                f"{block_field}.store({index_expr}, "
+                f"{block_field}.load({index_expr}) + {value_name});"
+            )
+        else:
+            storage_type = f"WTensor<{value_type}, {dimension_count}>"
+            write_expr = f"{block_field}.store({index_expr}, {value_name});"
         return (
-            f"WTensor<{value_type}, {dimension_count}>",
-            f"{block_field}.store({_tensor_index_expr(coord_name, coord_type, dimension_count)}, "
-            f"{value_name});",
+            storage_type,
+            write_expr,
+            direct_binding,
         )
 
     raise TypeError(f"Unsupported container type for output prelude: {type(container)!r}")
@@ -409,6 +471,13 @@ def _format_from_attribute(value: str) -> spy.Format:
         return _FORMATS_BY_NAME[value]
     except KeyError as exc:
         raise ValueError(f"Unknown output format '{value}'.") from exc
+
+
+def _operation_from_attribute(value: str) -> OutputOperation:
+    try:
+        return OutputOperation(value)
+    except ValueError as exc:
+        raise ValueError(f"Unknown output operation '{value}'.") from exc
 
 
 def _clear_value_from_attribute(

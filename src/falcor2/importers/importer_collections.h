@@ -107,13 +107,14 @@ public:
     /// that references this camera.
     ImporterCameraSelector create(
         std::string name,
-        float focus_distance = 1.f,
         float focal_length = 50.f,
         float fstop = 8.f,
+        float sensor_size_mm = 24.f,
+        bool enable_depth_of_field = false,
+        float focus_distance = 1.f,
         float2 depth_range = float2(0.01f, 10000.f),
         ImporterCamera::Projection projection = ImporterCamera::Projection::perspective,
-        ImporterCamera::FOVDirection fov_direction = ImporterCamera::FOVDirection::vertical,
-        float sensor_size_mm = 24.f
+        ImporterCamera::FOVDirection fov_direction = ImporterCamera::FOVDirection::vertical
     );
 
     /// Record an edit that creates a camera from a field of view.
@@ -123,12 +124,13 @@ public:
     ImporterCameraSelector create_fov(
         std::string name,
         float fov_degrees = 70.f,
-        float focus_distance = 1.f,
         float fstop = 8.f,
+        float sensor_size_mm = 24.f,
+        bool enable_depth_of_field = false,
+        float focus_distance = 1.f,
         float2 depth_range = float2(0.01f, 10000.f),
         ImporterCamera::Projection projection = ImporterCamera::Projection::perspective,
-        ImporterCamera::FOVDirection fov_direction = ImporterCamera::FOVDirection::vertical,
-        float sensor_size_mm = 24.f
+        ImporterCamera::FOVDirection fov_direction = ImporterCamera::FOVDirection::vertical
     );
 
 private:
@@ -162,13 +164,14 @@ public:
     ImporterNodeSelector create_camera(
         std::string name = "Camera",
         float4x4 transform = float4x4::identity(),
-        float focus_distance = 1.f,
         float focal_length = 50.f,
         float fstop = 8.f,
+        float sensor_size_mm = 24.f,
+        bool enable_depth_of_field = false,
+        float focus_distance = 1.f,
         float2 depth_range = float2(0.01f, 10000.f),
         ImporterCamera::Projection projection = ImporterCamera::Projection::perspective,
-        ImporterCamera::FOVDirection fov_direction = ImporterCamera::FOVDirection::vertical,
-        float sensor_size_mm = 24.f
+        ImporterCamera::FOVDirection fov_direction = ImporterCamera::FOVDirection::vertical
     );
 
     /// Record edits that create a field-of-view camera and its node.
@@ -179,12 +182,13 @@ public:
         std::string name = "Camera",
         float4x4 transform = float4x4::identity(),
         float fov_degrees = 70.f,
-        float focus_distance = 1.f,
         float fstop = 8.f,
+        float sensor_size_mm = 24.f,
+        bool enable_depth_of_field = false,
+        float focus_distance = 1.f,
         float2 depth_range = float2(0.01f, 10000.f),
         ImporterCamera::Projection projection = ImporterCamera::Projection::perspective,
-        ImporterCamera::FOVDirection fov_direction = ImporterCamera::FOVDirection::vertical,
-        float sensor_size_mm = 24.f
+        ImporterCamera::FOVDirection fov_direction = ImporterCamera::FOVDirection::vertical
     );
 
 private:

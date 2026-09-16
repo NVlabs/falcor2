@@ -4,20 +4,19 @@
 implementing render;
 
 
-/// Isotropic phase function.
-/// f_p(wi, wo) = 1 / 4PI
+/// Isotropic phase function representing uniform scattering over the sphere.
+/// Its value and sampling density are constant at 1 / (4 * pi), independent of direction.
 public struct IsotropicPhaseFunction : IPhaseFunction
 {
     public __init() { }
 
     public float3 eval(const float3 wi, const float3 wo) { return float.INV_FOUR_PI; }
 
-    public bool
-    sample<S : ISampleGenerator>(const float3 wi, out float3 wo, out float pdf, out float3 weight, inout S sg)
+    public bool sample<S : ISampleGenerator>(const float3 wi, inout S sg, out PhaseFunctionSample sample)
     {
-        wo = square_to_uniform_sphere(next_float2(sg));
-        pdf = float.INV_FOUR_PI;
-        weight = 1.f;
+        sample.wo_ws = square_to_uniform_sphere(next_float2(sg));
+        sample.pdf = float.INV_FOUR_PI;
+        sample.weight = 1.0;
         return true;
     }
 

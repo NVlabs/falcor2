@@ -8,6 +8,7 @@
 #include "falcor2/core/any.h"
 #include "falcor2/core/properties.h"
 #include "falcor2/core/reflection/metadata.h"
+#include "falcor2/core/reflection/reflected_object_factory.h"
 
 #include <concepts>
 #include <functional>
@@ -154,6 +155,9 @@ public:
     /// Convenience: returns the UIEditor metadata, or nullptr.
     const UIEditor* ui_editor() const { return find_metadata<UIEditor>(); }
 
+    /// Factory providing concrete types for a reflected-object property, or nullptr.
+    const ReflectedObjectFactory* object_factory() const { return m_object_factory.get(); }
+
 protected:
     PropertyDescriptor(std::string name, bool read_only, std::vector<Any> metadata)
         : m_name(std::move(name))
@@ -161,6 +165,8 @@ protected:
         , m_metadata(std::move(metadata))
     {
     }
+
+    void set_object_factory(ref<ReflectedObjectFactory> factory) { m_object_factory = std::move(factory); }
 
     /// Copy the current value into caller-provided storage.
     /// The caller must ensure out points to valid memory for the property's type.
@@ -174,6 +180,7 @@ protected:
     std::string m_name;
     bool m_read_only;
     std::vector<Any> m_metadata;
+    ref<ReflectedObjectFactory> m_object_factory;
 };
 
 // ----------------------------------------------------------------------------

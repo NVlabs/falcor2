@@ -1,33 +1,33 @@
 {
   "test_render_kronos_sample_assets[DeviceType.d3d12][angle_0]": {
-    "reference": "ca884eb8172c1c310b1827a7a46929e0c496064174bd17620a6558bd2d68f603"
+    "reference": "b3d83647b18eabbde3765e45aa6404f0a854acee7c4650cef52a9c22811244c2"
   },
   "test_render_kronos_sample_assets[DeviceType.d3d12][angle_180]": {
-    "reference": "bd56d74927d1654d3cbb8c18e36cdcfcb4f8ead2c59fb5493acc6416c7724ac5"
+    "reference": "dc963149918d006543ce2be95d645e04bcd35fc3ed37ea4142362319a8138cea"
   },
   "test_render_kronos_sample_assets[DeviceType.vulkan][angle_0]": {
-    "reference": "6cb0907c3c71c55e91fe511dfc85a23df49de1a356b8e31a4ca98c8b36cc7de4"
+    "reference": "7d5cfa8a907c10c6fbabfbfb8aa32a24a1c1f171d8040f118e23f851de1c95be"
   },
   "test_render_kronos_sample_assets[DeviceType.vulkan][angle_180]": {
-    "reference": "91df06adc8c697601ca445f22a7626691ddb53ff259f1ccc3daa06c83e9a7ed9"
+    "reference": "eeaba9b8c8c748e3026f597781d1c182831ac5ef565f1ea71c3003fdc54014ee"
   },
   "test_mis[DeviceType.d3d12][angle_0]": {
-    "reference": "ae85cd65d644ce0511bd7a2c2705becc52fc68541c57c2d583c44d2efa9194bc"
+    "reference": "ecfcff9b989609cbd4802895882e60b4dcd9701dcf235c02cad3e189d568dc64"
   },
   "test_mis[DeviceType.vulkan][angle_0]": {
-    "reference": "3ae3aaccf990dd9f4f40d78244d1df0dbc4681fab361e4a06eb2970f9d52bbfb"
+    "reference": "d8f42b0cf84dd23f7cd317bdd602acfe6cffc7222218c0ee00e881005ec8c7f2"
   },
   "test_ray_tracing_pipeline[DeviceType.d3d12][angle_0]": {
-    "reference": "712c93d1b67a621d2c5a1a8b5be3603d7c71f01c19cebfab92569593086caab3"
+    "reference": "493b78f907ba4c698b86ea6b4df9f1d63c6b0e23e85eca27b1bcb362454e83e1"
   },
   "test_ray_tracing_pipeline[DeviceType.vulkan][angle_0]": {
-    "reference": "a8e4112d62a5227d253709c01f704e046644beedef166068a3682b2031556c7d"
+    "reference": "4567a8914476cb3d15d47503444cc428a20a110aa1afe3b67f4fc32bf7e60373"
   },
   "test_render_kronos_sample_assets[DeviceType.d3d12][guide_depth]": {
     "reference": "d7adbe41724152b348c3639105ad52bde032ddc1f10532da567025a391bfa831"
   },
   "test_render_kronos_sample_assets[DeviceType.d3d12][guide_albedo]": {
-    "reference": "fe8586d32ad26dbf0dcd6d2efc94afee9f64bc637a3cc9d288a309f2032fe90a"
+    "reference": "a5f348f414c911fb468e23b46d81f9b1de9cd9fe6652b5022049f44aaa22d710"
   },
   "test_render_kronos_sample_assets[DeviceType.d3d12][guide_position]": {
     "reference": "db991667b47ae092294c3d1ef69e21c064780a39e6b7f8de449bb82415f50300"
@@ -42,28 +42,28 @@
     "reference": "f60f1ad91e8a73fdedbf9e43d505e8ef5def5b0c0bbe4b672c186e84a828b283"
   },
   "test_render_kronos_sample_assets[DeviceType.d3d12][guide_shading_normal]": {
-    "reference": "0918a27eb574dd00f2b32f735b9ab31a25507bed232ac23630b7d4901287a6da"
+    "reference": "806949d6d9b454c9f3aabf57b3436bcd90294fbe273b8fc640ec5cb46e62856b"
   },
   "test_render_kronos_sample_assets[DeviceType.d3d12][guide_specular]": {
     "reference": "28715024636e6e74515e821569b265a1d76120867c825d7ae8e4e3d18519f1b6"
   },
   "test_render_kronos_sample_assets[DeviceType.d3d12][guide_metallic]": {
-    "reference": "bcaa98ef2084328536b896244463586397c35cd47cce189bde7fc4f50227c5d7"
+    "reference": "469ea23f703118eaae75f025528620bad228c32ff840f759dd2bee5f6d0d862b"
   },
   "test_render_kronos_sample_assets[DeviceType.d3d12][guide_roughness]": {
-    "reference": "e69bf5c7c0a987611bee546916b6183c0320dd1e57af577ebc90f98fee42be84"
+    "reference": "1692501dfb10e0fd7b415399dfc83be045a24bdf4a3f01ba615d96c3490465c0"
   },
   "test_render_kronos_sample_assets[DeviceType.d3d12][angle_320]": {
-    "reference": "c3e6f0453140af3ff71ac7ae0c82e86dc5a9d1558e4c02c5881717301ea64441"
+    "reference": "89621fd18b923a775101fa0bd4603396db87c04f2e1e155bea2d21f282aaca5e"
   },
   "test_render_kronos_sample_assets[DeviceType.d3d12][angle_40]": {
-    "reference": "a5b541010520002eeaba3e9c392ab61fe77982920892a45407e3827d1f44c42b"
+    "reference": "23a68c2c677a5258f3755f1a0ada098eab60342481839cbf71319ee98f367a50"
   },
   "test_render_kronos_sample_assets[DeviceType.vulkan][guide_depth]": {
     "reference": "b7cbe96667ab452c5571da8537a4d5b6912b76761b7ae647c17b69db9046a759"
   },
   "test_render_kronos_sample_assets[DeviceType.vulkan][guide_albedo]": {
-    "reference": "fe72c3f29df149fdfb009fad6a2961ae09ecfaf2c92a7ec841e5f287c4110040"
+    "reference": "68d24e8455a99e5f7f501469c4751e191adf604e0d3ddbce06ed69b1e62fc716"
   },
   "test_render_kronos_sample_assets[DeviceType.vulkan][guide_position]": {
     "reference": "a5d14112818fe1433c2e322af15e59d59c8cbb3cbfde34a4243a6ef22cb32889"
@@ -78,55 +78,55 @@
     "reference": "d751ba085be4ed0159bf224bfdd7e672590032ecfaa935fa53e864414c4afadf"
   },
   "test_render_kronos_sample_assets[DeviceType.vulkan][guide_shading_normal]": {
-    "reference": "d93a0039900b121225ec5c30cdadbc5b7a11d03bbd43f476b43783534770048c"
+    "reference": "afbb798146b74a721a2e5689cfb004e31a28e13c02aadb23c155a0a3b5b63ce7"
   },
   "test_render_kronos_sample_assets[DeviceType.vulkan][guide_specular]": {
     "reference": "28715024636e6e74515e821569b265a1d76120867c825d7ae8e4e3d18519f1b6"
   },
   "test_render_kronos_sample_assets[DeviceType.vulkan][guide_metallic]": {
-    "reference": "cfa90b4860fe970bab62cb3894b0f0229bbe4ba9793c572b37f5ebd0fbd645b2"
+    "reference": "48140d821da38ebc87784636d37acd31c906aeb67f9a77357bbabc24f0ac8917"
   },
   "test_render_kronos_sample_assets[DeviceType.vulkan][guide_roughness]": {
-    "reference": "a5deda4f49b32d3f1cd233365c0b6c33a4b279f76ad15724419fdc3b42e53b87"
+    "reference": "b56153dc07436f582dd158afb4b942347d6b71f0a32704c86ee417408765c238"
   },
   "test_render_kronos_sample_assets[DeviceType.vulkan][angle_320]": {
-    "reference": "8991a3c4f1fad4ed4c7f39eb3b639bf8c42efe131f7ab3f959d74ffa28da2b31"
+    "reference": "02d610798ba7e65a2879b802a205a2cc18ceacf2faacc430e94b771076d04da3"
   },
   "test_render_kronos_sample_assets[DeviceType.vulkan][angle_40]": {
-    "reference": "46e7042277b6f255310bbf3c3bbd0f70dfd6e1c15d1c2bdc7aad5d8655b6a463"
+    "reference": "4c3600a17e488461d34bddc1a1185df386f328cc5435c5eac0988ff216c46a95"
   },
   "test_mis[DeviceType.d3d12][angle_180]": {
-    "reference": "a98ae5662c0b7f3fdb532b759077aa9a0d463a270dc89e4088f90e415f9a9450"
+    "reference": "6beda99406c7818c3a8757a5ac3544bd9f1d2e1e5577fd81ef65e0ad88c4061f"
   },
   "test_mis[DeviceType.vulkan][angle_180]": {
-    "reference": "6814a15ea7286b3c2f4ad658a40f176a4be757ca02e64e58c5401a0b66c174be"
+    "reference": "995e204425966540b3efcda6e78bbf31202598d00d505ef6762a336463d7371e"
   },
   "test_ray_tracing_pipeline[DeviceType.d3d12][angle_180]": {
-    "reference": "d162bcf93166418e73ea08ab8ba305510ac49ae67c4906302b848c9f7c17b723"
+    "reference": "c6a1768125364c29c788b396b076950cc05107cd192a457d64c4960f04601725"
   },
   "test_ray_tracing_pipeline[DeviceType.vulkan][angle_180]": {
-    "reference": "77fad2e7c57cf1f2dc9966007feca6b50554b91436dbb5b11e0550a26a392240"
+    "reference": "a73c1975f1c8d6048094d2f2789e8da6b9dfae7dc8dff9f3d979baef5c8fa68c"
   },
   "test_mis[DeviceType.cuda][angle_0]": {
-    "reference": "4cfc5ca97d36a1e29b48b51babbda6145c8cf5e9dfa5b05ed8eabfa18caef143"
+    "reference": "630cd96c0f9449cd668715dbab812d4f0433df52c69a61a248aea2b045a7d314"
   },
   "test_mis[DeviceType.cuda][angle_180]": {
-    "reference": "ad0276bff57883c69bc78c82e050c8c5e93d665890f478adb155d7733b3b5c69"
+    "reference": "9f3fe7137608c718e83f51f0059b26e87c890f18b1ad6610b824a49d87e537ef"
   },
   "test_ray_tracing_pipeline[DeviceType.cuda][angle_0]": {
-    "reference": "4cfc5ca97d36a1e29b48b51babbda6145c8cf5e9dfa5b05ed8eabfa18caef143"
+    "reference": "e1b34ea5c3ce29dd406152ff0036054d13abbdaa2ddcc283fce28953b289706f"
   },
   "test_ray_tracing_pipeline[DeviceType.cuda][angle_180]": {
-    "reference": "ad0276bff57883c69bc78c82e050c8c5e93d665890f478adb155d7733b3b5c69"
+    "reference": "15f469a240514e3e652c4c05215ce3518bd4d8013403dc3f578876007bb7e155"
   },
   "test_render_kronos_sample_assets[DeviceType.cuda][angle_0]": {
-    "reference": "fd4beada4bfe78fd9dcb4af5a26774e07b5204084aa959447d2d79db948cf5ea"
+    "reference": "8bcb38e7717ab81f1992d7f02cc60f861b8aa5aabd4af8044959532c85ea6e58"
   },
   "test_render_kronos_sample_assets[DeviceType.cuda][guide_depth]": {
     "reference": "47198cd76c20452fd724d9e5957359abc1df9570d670fca4647a036bcbedf8f7"
   },
   "test_render_kronos_sample_assets[DeviceType.cuda][guide_albedo]": {
-    "reference": "5664b79a5ea3630e0a456639c7dee521b7d0fc87db22a07fbef01241a8555adb"
+    "reference": "598aa4e8511c586a704706b978576f0d4a848a8a37f83007b91dd7a7cba45d1c"
   },
   "test_render_kronos_sample_assets[DeviceType.cuda][guide_position]": {
     "reference": "0b64a752fd690408687ce60b25ed525af22a690bb1a58e2d710195457b3e7b3a"
@@ -141,24 +141,24 @@
     "reference": "4df2cb24e1c1df2dac7b359012767464347908ac9adb48ff317b9eaaa23a6995"
   },
   "test_render_kronos_sample_assets[DeviceType.cuda][guide_shading_normal]": {
-    "reference": "4ae9c3c0e37c201cdf98537670ad97d8642a7f0705cc87501f3f64b5d2942bd6"
+    "reference": "f7b3fa0920a634ed6d5f0107a0dcde5d6a2cd6e6d521e64b513d6518036753b4"
   },
   "test_render_kronos_sample_assets[DeviceType.cuda][guide_specular]": {
     "reference": "579297ef47b7b498e2a82485b5dc8ab2425645f3e085c4a72af2518f7bb28c88"
   },
   "test_render_kronos_sample_assets[DeviceType.cuda][guide_metallic]": {
-    "reference": "096da02d9716b70000c18ef0c6a2ac8d8b24101fdf94465a9e7cd99b374259c6"
+    "reference": "0b589c66efc3a4b9143d61f5001491f4c53e00c83e3daf83903bf6c2258962c4"
   },
   "test_render_kronos_sample_assets[DeviceType.cuda][guide_roughness]": {
-    "reference": "f391674629ec84df9097175630c66adc13667817b7cf7118162e2309a4b9ebd9"
+    "reference": "98c7c81a80bfb1746ff0ed7185ef09a4b11d1b535fc0de170619f50963f8c305"
   },
   "test_render_kronos_sample_assets[DeviceType.cuda][angle_180]": {
-    "reference": "8910d45bf142ac8af943a2c8ad86b3c52a7c4f5bd67498cf8a7560e02f522ca9"
+    "reference": "4d9c2fb72382f50882a5cc8c34ebfcb901f724bf1c1964586c67344414b918bd"
   },
   "test_render_kronos_sample_assets[DeviceType.cuda][angle_320]": {
-    "reference": "5d76da78078cdaf671c2ffe78d309b039a97dcc98e3717efccb2aff6d82a0617"
+    "reference": "307ec0f8d7fd9a88ecab800c2dcca375a195449953fbe5d0e712546fde31e9fc"
   },
   "test_render_kronos_sample_assets[DeviceType.cuda][angle_40]": {
-    "reference": "faec9fe166eff45d495404ed4b0d6c23f6ed56f198b92d64449ecb4eb2bc9fe8"
+    "reference": "ced9c50fcd060b64b217b623b3f3f21b85249eb45f192dadf95c71222ea8e9ca"
   }
 }

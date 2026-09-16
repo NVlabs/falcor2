@@ -25,6 +25,12 @@ class Scene;
 struct ImportOptions {
     /// Recompute mesh normals and tangents after asset import.
     bool recompute_normals = false;
+    /// Force rectangular analytic lights to emissive triangle geometry regardless of source visibility.
+    bool force_rectangle_lights_to_geometry = false;
+    /// Force disk analytic lights to emissive triangle geometry regardless of source visibility.
+    bool force_disk_lights_to_geometry = false;
+    /// Force sphere analytic lights to emissive triangle geometry regardless of source visibility.
+    bool force_sphere_lights_to_geometry = false;
 };
 
 /// Native importer edit stream used to build ImporterScene instances.
@@ -35,8 +41,8 @@ struct ImportOptions {
 /// edits in order.
 class FALCOR_API Importer : public Object {
 public:
-    /// Callback invoked after a Python scene creates the live render Scene.
-    using SceneCreatedCallback = std::function<void(ref<Scene>)>;
+    /// Callback invoked after importer data is loaded into a live render Scene.
+    using SceneLoadedCallback = std::function<void(ref<Scene>)>;
 
     /// Create an empty importer with the specified default import options.
     explicit Importer(ImportOptions default_import_options = {});
@@ -75,10 +81,10 @@ public:
     /// The asset is not loaded until build_importer_scene applies the edit.
     void import_asset(const std::filesystem::path& path);
 
-    /// Register a callback to run after a Python scene has created the live render Scene.
-    void on_scene_created(SceneCreatedCallback callback);
-    /// Run scene-created callbacks in registration order.
-    void run_scene_created_callbacks(ref<Scene> scene) const;
+    /// Register a callback to run after importer data is loaded into a live render Scene.
+    void on_scene_loaded(SceneLoadedCallback callback);
+    /// Run scene-loaded callbacks in registration order.
+    void run_scene_loaded_callbacks(ref<Scene> scene) const;
 
     /// Build a fresh ImporterScene by applying all recorded edits in order.
     ref<ImporterScene> build_importer_scene() const;
@@ -101,7 +107,7 @@ private:
     ImporterNodeCollection m_nodes;
     ImporterMaterialCollection m_materials;
     std::vector<std::unique_ptr<ImporterEdit>> m_edits;
-    std::vector<SceneCreatedCallback> m_scene_created_callbacks;
+    std::vector<SceneLoadedCallback> m_scene_loaded_callbacks;
     uint32_t m_next_selector_id = 1;
 
     FALCOR_NON_COPYABLE_AND_MOVABLE(Importer);

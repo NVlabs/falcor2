@@ -29,6 +29,7 @@ void StandardSpecGlossMaterial::on_load_resources()
     } else {
         m_diffuse_texture_handle = {};
     }
+
     if (m_specular_glossiness_texture) {
         m_specular_glossiness_texture_handle = m_scene->texture_manager()->register_texture({
             .texture = m_specular_glossiness_texture,
@@ -41,6 +42,7 @@ void StandardSpecGlossMaterial::on_load_resources()
     } else {
         m_specular_glossiness_texture_handle = {};
     }
+
     if (m_normal_texture) {
         m_normal_texture_handle = m_scene->texture_manager()->register_texture({
             .texture = m_normal_texture,
@@ -54,6 +56,7 @@ void StandardSpecGlossMaterial::on_load_resources()
     } else {
         m_normal_texture_handle = {};
     }
+
     if (m_emissive_texture) {
         m_emissive_texture_handle = m_scene->texture_manager()->register_texture({
             .texture = m_emissive_texture,
@@ -66,6 +69,7 @@ void StandardSpecGlossMaterial::on_load_resources()
     } else {
         m_emissive_texture_handle = {};
     }
+
     if (m_transmission_texture) {
         m_transmission_texture_handle = m_scene->texture_manager()->register_texture({
             .texture = m_transmission_texture,
@@ -88,17 +92,33 @@ void StandardSpecGlossMaterial::update(SceneUpdateContext& ctx)
 shared::MaterialFlags StandardSpecGlossMaterial::flags() const
 {
     shared::MaterialFlags result = shared::MaterialFlags::none;
-    if (m_double_sided)
-        result |= shared::MaterialFlags::double_sided;
+    if (m_double_sided || m_diffuse_transmission_factor > 0.h || m_specular_transmission_factor > 0.h)
+        result |= shared::MaterialFlags::two_sided;
     if (m_thin_walled)
         result |= shared::MaterialFlags::thin_walled;
     return result;
 }
 
+Material::OpacityDesc StandardSpecGlossMaterial::opacity_desc() const
+{
+    shared::OpacityFlags opacity_flags = shared::OpacityFlags::none;
+    if (m_alpha_mode == AlphaMode::mask)
+        opacity_flags = shared::OpacityFlags::enabled | shared::OpacityFlags::use_threshold;
+    else if (m_alpha_mode == AlphaMode::blend)
+        opacity_flags = shared::OpacityFlags::enabled;
+
+    return {
+        .flags = opacity_flags,
+        .texture_handle = m_diffuse_texture_handle,
+        .texture_channel = 3,
+        .factor = m_alpha_factor,
+        .threshold = m_alpha_cutoff,
+    };
+}
+
 template<typename CursorT>
 void StandardSpecGlossMaterial::write_to_cursor_impl(CursorT cursor) const
 {
-    cursor["header"]["flags"] = uint(flags());
     cursor["diffuse_texture"] = m_diffuse_texture_handle;
     cursor["specular_glossiness_texture"] = m_specular_glossiness_texture_handle;
     cursor["normal_texture"] = m_normal_texture_handle;
@@ -113,6 +133,9 @@ void StandardSpecGlossMaterial::write_to_cursor_impl(CursorT cursor) const
     cursor["transmission_factor"] = float16_t4(m_transmission_factor, 0.f);
     cursor["diffuse_transmission_factor"] = m_diffuse_transmission_factor;
     cursor["specular_transmission_factor"] = m_specular_transmission_factor;
+    cursor["volume_sigma_a"] = m_volume_sigma_a;
+    cursor["volume_sigma_s"] = m_volume_sigma_s;
+    cursor["volume_anisotropy"] = m_volume_anisotropy;
 }
 
 template void StandardSpecGlossMaterial::write_to_cursor_impl(sgl::BufferElementCursor cursor) const;

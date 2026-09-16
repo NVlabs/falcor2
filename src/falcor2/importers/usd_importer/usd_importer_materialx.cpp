@@ -73,7 +73,7 @@ std::filesystem::path resolve_path(const UsdPrim& prim, const std::string& asset
     return asset_path;
 }
 
-std::vector<std::string> get_materialx_material_names(const std::filesystem::path& file_path)
+std::vector<std::string> get_mtlx_material_names(const std::filesystem::path& file_path)
 {
     std::vector<std::string> material_names;
     if (file_path.empty())
@@ -138,7 +138,7 @@ size_t process_mtlx_references(const pxr::UsdStageRefPtr& stage)
             std::vector<std::string> material_names;
             const std::filesystem::path resolved_asset_path = resolve_path(prim, asset_path);
             try {
-                material_names = get_materialx_material_names(resolved_asset_path);
+                material_names = get_mtlx_material_names(resolved_asset_path);
             } catch (const mx::Exception& e) {
                 sgl::log_warn(
                     "Failed to parse MaterialX reference '{}' (resolved '{}'): {}",

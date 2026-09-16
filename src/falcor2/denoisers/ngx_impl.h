@@ -61,7 +61,7 @@ public:
 
 protected:
     /// NVIDIA-assigned application ID used by all NGX backend initializers.
-    static constexpr uint64_t k_application_id = 231313132ull;
+    static constexpr uint64_t APPLICATION_ID = 231313132ull;
 
     /// Convert a filesystem path to the wide string form expected by NGX.
     static std::wstring to_wstring_path(const std::filesystem::path& path);

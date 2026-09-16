@@ -2,7 +2,6 @@ set(FALCOR_PACKAGE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../falcor2)
 
 set(falcor2_ext_sources
     falcor2_ext.cpp
-    nbdictionary.h
     core/any.cpp
     core/any.h
     core/asset_resolver.cpp
@@ -16,6 +15,8 @@ set(falcor2_ext_sources
     core/signal.h
     core/reflection/python_class_reflection.h
     core/reflection/python_class_reflection.cpp
+    core/reflection/python_object_factory.h
+    core/reflection/python_object_factory.cpp
     core/reflection/python_property_descriptor.h
     core/reflection/python_property_descriptor.cpp
     denoisers/ngx.cpp
@@ -28,14 +29,16 @@ set(falcor2_ext_sources
     importers/importer_types.cpp
     importers/usd_importer.cpp
     render/mesh.cpp
+    render/light_sampler.cpp
     render/ray_tracing_setup.cpp
     render/mdl_discovery.cpp
-    render/materialx_codegen.cpp
+    render/mtlx_codegen.cpp
     render/python_scene_object.h
     render/scene.cpp
     render/texture_manager.cpp
     render/transform.cpp
     ui/camera_controller.cpp
+    ui/property_editor.cpp
     ui/scene_editor.cpp
     ui/scene_interaction_controller.cpp
     ui/scene_picker.cpp
@@ -51,6 +54,7 @@ set(falcor2_ext_sources
 if(FALCOR_BUILD_TESTS)
     list(APPEND falcor2_ext_sources
         testing/nanobind_reflector.cpp
+        testing/reflection.cpp
     )
 endif()
 
@@ -92,7 +96,7 @@ add_custom_target(
 
 add_dependencies(falcor2_ext
     falcor2_ext_build_dir
-    falcor2_copy_materialx_1_39
+    falcor2_copy_mtlx
 )
 
 # Generate main stub file.

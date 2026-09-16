@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 import slangpy as spy
 import falcor2 as f2
+import falcor2.testing.helpers as helpers
 
 DATA = Path(__file__).parent.parent.parent.parent / "data"
 
@@ -597,7 +598,7 @@ def test_scene_structure_matches_json(test_file: str):
         pytest.skip(f"JSON reference not found: {json_path}")
 
     # Load the scene using the importer
-    scene = importers.import_scene(model_path)
+    scene = f2.import_scene(model_path)
     assert scene is not None, f"Failed to load scene: {model_path}"
 
     # Load the expected JSON structure
@@ -790,18 +791,32 @@ def test_gltf_double_sided_materials():
     ), "SingleSidedMaterial should have doubleSided=False"
 
 
-def test_alpha_mode_enum_values():
-    """Test that AlphaMode enum is properly exposed."""
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_gltf_scene_alpha_mask_material_mapping(device_type: spy.DeviceType) -> None:
+    scene_path = DATA / "assets/kronos/AlphaBlendModeTest/glTF/AlphaBlendModeTest.gltf"
+    if not scene_path.exists():
+        pytest.skip(f"Test file not found: {scene_path}")
 
-    alpha_mode = f2.AlphaMode
-    assert hasattr(alpha_mode, "opaque"), "AlphaMode should have opaque"
-    assert hasattr(alpha_mode, "mask"), "AlphaMode should have mask"
-    assert hasattr(alpha_mode, "blend"), "AlphaMode should have blend"
+    device = helpers.get_device(device_type)
+    scene = f2.Scene.load(device, scene_path)
+    scene.update()
+    materials = {material.name: material for material in scene.materials}
 
-    # Test enum values
-    assert alpha_mode.opaque.value == 0, "AlphaMode.opaque should be 0"
-    assert alpha_mode.mask.value == 1, "AlphaMode.mask should be 1"
-    assert alpha_mode.blend.value == 2, "AlphaMode.blend should be 2"
+    expected_cutoffs = {
+        "MatCutoff25": 0.25,
+        "MatCutoff75": 0.75,
+        "MatCutoffDefault": 0.5,
+    }
+    for name, cutoff in expected_cutoffs.items():
+        material = materials[name]
+        assert material["alpha_mode"] == f2.AlphaMode.mask
+        assert material["alpha_cutoff"] == pytest.approx(cutoff)
+        assert material["alpha_factor"] == pytest.approx(1.0)
+        assert material["base_color_texture_path"] != ""
+
+    assert materials["MatBlend"]["alpha_mode"] == f2.AlphaMode.blend
+    assert materials["MatOpaque"]["alpha_mode"] == f2.AlphaMode.opaque
+    assert scene.requirements.requires_opacity_evaluation
 
 
 if __name__ == "__main__":

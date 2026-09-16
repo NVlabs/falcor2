@@ -77,6 +77,9 @@ public struct DiscreteDistribution1D
 /// Uses the alias method for O(1) sampling after O(n) preprocessing.
 public struct AliasTable1D
 {
+    /// Largest representable float below one.
+    static const float MAX_SAMPLE = 0x1.fffffep-1;
+
     /// Alias table entry.
     public struct Entry
     {
@@ -146,6 +149,7 @@ public struct AliasTable1D
         } else {
             u /= entry.prob;
         }
+        u = min(u, MAX_SAMPLE);
         pdf = pdf_buffer[index];
         return size > 0;
     }

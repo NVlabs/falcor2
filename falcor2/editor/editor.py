@@ -4,12 +4,33 @@
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any, Callable, Optional
+from weakref import ReferenceType, ref
 
 import slangpy as spy
 import falcor2 as f2
 
 from falcor2.editor.scene_shader import SceneShaderHelper
+from falcor2.editor.graph_settings import GraphSettingsPanel
 from falcor2.rendergraph import is_torch_tensor, torch_to_slangpy
+from falcor2.rendergraph.render_node import RenderNode
+
+
+_active_editor: ReferenceType["Editor"] | None = None
+
+
+def _get_active_editor() -> Optional["Editor"]:
+    return _active_editor() if _active_editor is not None else None
+
+
+def _set_active_editor(editor: "Editor") -> None:
+    global _active_editor
+    _active_editor = ref(editor)
+
+
+def _clear_active_editor(editor: "Editor") -> None:
+    global _active_editor
+    if _get_active_editor() is editor:
+        _active_editor = None
 
 
 class RenderMode(IntEnum):
@@ -19,7 +40,7 @@ class RenderMode(IntEnum):
     geometry_type = 3
     geometry_instance_id = 4
     primitive_index = 5
-    position_ws = 6
+    pos_ws = 6
     normal_ws = 7
     front_facing = 8
     texcoord = 9
@@ -90,6 +111,11 @@ class Editor:
 
         # Scene editor components
         self._scene_editor = f2.ui.SceneEditor()
+        self._render_node: ReferenceType[RenderNode] | None = None
+        self._graph_settings_panel = GraphSettingsPanel(
+            self._scene_editor,
+            self._get_render_node,
+        )
         self._scene_editor.camera_controller = self._camera_controller
         self._scene_editor.add_help_section(
             "Application",
@@ -97,7 +123,6 @@ class Editor:
                 ("F5", "Toggle scene editor"),
                 ("F6", "Toggle profiler"),
                 ("F12", "Cycle render mode"),
-                ("F", "Focus camera on selection"),
                 ("Escape", "Close application"),
             ],
         )
@@ -107,7 +132,6 @@ class Editor:
             self._scene_editor,
             self._scene_picker,
             self._selection_overlay,
-            self._camera_controller,
         )
         self._interaction_controller.pointer_capture_callback = self._on_camera_capture
         self._scene: Optional[f2.Scene] = None
@@ -129,6 +153,7 @@ class Editor:
         # Set initial scene.
         self.scene = scene
         self._start_mcp_bridge()
+        _set_active_editor(self)
 
     @classmethod
     def create(
@@ -184,10 +209,17 @@ class Editor:
 
     def close(self):
         self._closed = True
+        _clear_active_editor(self)
         self._stop_mcp_bridge()
         self._end_profile_frame()
         self._wait_for_device()
         self.window.close()
+
+    def _set_render_node(self, node: RenderNode) -> None:
+        self._render_node = ref(node)
+
+    def _get_render_node(self) -> RenderNode | None:
+        return self._render_node() if self._render_node is not None else None
 
     def _on_camera_capture(self, captured: bool) -> None:
         self.window.cursor_mode = spy.CursorMode.disabled if captured else spy.CursorMode.normal
@@ -204,6 +236,7 @@ class Editor:
         # Process window events
         self.window.process_events()
         if self.window.should_close() or self._closed:
+            _clear_active_editor(self)
             self._stop_mcp_bridge()
             self._wait_for_device()
             return False
@@ -422,7 +455,7 @@ class Editor:
 
         self._get_viewer_function(self._scene, "render_debug_no_ids").dispatch(
             thread_count=spy.uint3(self._camera.width, self._camera.height, 1),
-            camera=self._camera.get_uniforms(),
+            camera=self._camera,
             render_mode=int(self._render_mode),
             color_output=self._output.color_target,
         )
@@ -534,10 +567,6 @@ class Editor:
             elif event.key == spy.KeyCode.f6:
                 self._toggle_profiler()
                 return
-            elif event.key == spy.KeyCode.f and self._camera is not None:
-                self._interaction_controller.focus_on_selection(self._camera)
-                return
-
         if self.on_keyboard_event is not None:
             self.on_keyboard_event(event)
 

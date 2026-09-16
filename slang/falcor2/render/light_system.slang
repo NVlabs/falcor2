@@ -15,11 +15,6 @@ public struct LightSystem
     public LightID environment_light_id;
     /// Number of environment lights, stored contiguously starting at environment_light_id.
     public uint environment_light_count;
-    /// Alias table used for selecting analytic lights.
-    public AliasTable1D analytic_light_selection_distribution;
-    /// Alias table used for selecting environment lights by emitted power.
-    public AliasTable1D environment_light_selection_distribution;
-
     /// Returns true if the scene has analytic lights.
     public bool has_any_analytic_lights() { return analytic_light_count > 0; }
 
@@ -37,12 +32,11 @@ public struct LightSystem
     public ILight get_environment_light(uint index) { return get_light(LightID(uint(environment_light_id) + index)); }
 
     /// Evaluate the sum of all environment lights along a direction.
-    public float3
-    eval_environment_direction<Interaction : IInteraction>(const Interaction ref, const DirectionSample sample)
+    public float3 eval_environment_radiance(const LightSampleContext ctx, const float3 dir_ws)
     {
         float3 radiance = {};
         for (uint index = 0; index < environment_light_count; ++index)
-            radiance += get_environment_light(index).eval_direction(ref, sample);
+            radiance += get_environment_light(index).eval_environment_radiance(ctx, dir_ws);
         return radiance;
     }
 };

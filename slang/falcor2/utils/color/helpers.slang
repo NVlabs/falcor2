@@ -10,6 +10,23 @@ public float luminance(float3 rgb)
     return dot(rgb, float3(0.2126, 0.7152, 0.0722));
 }
 
+/// Non-negative finite luminance of an RGB value in Rec.709.
+///
+/// Non-finite and negative channels are treated as zero. If the weighted sum
+/// overflows, the result is also zero. This is intended for statistics and
+/// importance calculations where invalid radiance must not poison an
+/// accumulation.
+public float safe_luminance(float3 rgb)
+{
+    float3 safe_rgb = float3(
+        isfinite(rgb.x) ? max(rgb.x, 0.f) : 0.f,
+        isfinite(rgb.y) ? max(rgb.y, 0.f) : 0.f,
+        isfinite(rgb.z) ? max(rgb.z, 0.f) : 0.f
+    );
+    float result = luminance(safe_rgb);
+    return isfinite(result) ? result : 0.f;
+}
+
 /// Transform RGB in Rec.709 to CIE XYZ.
 [Differentiable]
 public float3 rgb_to_xyz_rec709(float3 c)

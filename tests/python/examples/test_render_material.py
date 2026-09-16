@@ -65,6 +65,69 @@ def test_materialx_representative_options_do_not_warn() -> None:
     assert materialx_suite.warning_messages(options) == []
 
 
+def test_materialx_entry_filters_support_exact_and_glob_matches() -> None:
+    entries = (
+        RenderEntry(
+            entry_id="materialx:first",
+            label="shader_ops:mix_surface_with_opacity/out",
+            material_class="MaterialXMaterial",
+            properties={},
+            output=RenderOutput(kind="material"),
+            provider="materialx",
+        ),
+        RenderEntry(
+            entry_id="materialx:second",
+            label="shader_ops:mix_surface_with_emission/out",
+            material_class="MaterialXMaterial",
+            properties={},
+            output=RenderOutput(kind="material"),
+            provider="materialx",
+        ),
+        RenderEntry(
+            entry_id="materialx:third",
+            label="standard_surface:gold",
+            material_class="MaterialXMaterial",
+            properties={},
+            output=RenderOutput(kind="material"),
+            provider="materialx",
+        ),
+    )
+
+    exact = materialx_suite.filter_materialx_entries(
+        entries, ("shader_ops:mix_surface_with_opacity/out",)
+    )
+    glob = materialx_suite.filter_materialx_entries(entries, ("shader_ops:*", "*:gold"))
+
+    assert [entry.entry_id for entry in exact] == ["materialx:first"]
+    assert [entry.entry_id for entry in glob] == [
+        "materialx:first",
+        "materialx:second",
+        "materialx:third",
+    ]
+
+
+def test_materialx_entry_filter_rejects_no_matches() -> None:
+    entry = RenderEntry(
+        entry_id="materialx:first",
+        label="shader_ops:mix_surface_with_opacity/out",
+        material_class="MaterialXMaterial",
+        properties={},
+        output=RenderOutput(kind="material"),
+        provider="materialx",
+    )
+
+    with pytest.raises(ValueError, match="No MaterialX entries matched --filter"):
+        materialx_suite.filter_materialx_entries((entry,), ("standard_surface:*",))
+
+
+def test_materialx_filter_cli_is_repeatable() -> None:
+    args = materialx_suite.build_arg_parser().parse_args(
+        ["--filter", "shader_ops:*opacity*", "--filter", "standard_surface:gold"]
+    )
+
+    assert args.entry_filters == ["shader_ops:*opacity*", "standard_surface:gold"]
+
+
 def test_render_run_exit_code_reports_failures(tmp_path: Path) -> None:
     result = RenderRunResult(
         output_dir=tmp_path,

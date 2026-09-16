@@ -86,6 +86,51 @@ FALCOR_STATIC_ONCE(register_type<LayoutTestClass>());
 
 TEST_SUITE_BEGIN("ui");
 
+TEST_CASE("PropertyEditor: drag speed follows property range")
+{
+    SUBCASE("floating-point ranges use nice decimal steps")
+    {
+        StoredPropertyDescriptor<float> unit("unit", 0.5f, false, value_range(0.0, 1.0));
+        StoredPropertyDescriptor<float> angle("angle", 45.f, false, value_range(0.0, 180.0));
+        StoredPropertyDescriptor<float> focal_length("focal_length", 50.f, false, value_range(1.0, 500.0));
+        StoredPropertyDescriptor<float16_t> half("half", float16_t(0.5f), false, value_range(0.0, 1.0));
+
+        CHECK(ui::detail::property_drag_speed<float>(unit) == doctest::Approx(0.002f));
+        CHECK(ui::detail::property_drag_speed<float>(angle) == doctest::Approx(0.5f));
+        CHECK(ui::detail::property_drag_speed<float>(focal_length) == doctest::Approx(1.f));
+        // Half values are promoted to float while being edited.
+        CHECK(ui::detail::property_drag_speed<float>(half) == doctest::Approx(0.002f));
+    }
+
+    SUBCASE("integer range speeds never exceed one")
+    {
+        StoredPropertyDescriptor<int> channel("channel", 0, false, value_range(0, 3));
+        StoredPropertyDescriptor<int> priority("priority", 0, false, value_range(0, 255));
+        StoredPropertyDescriptor<int> resolution("resolution", 1920, false, value_range(1, 16384));
+
+        CHECK(ui::detail::property_drag_speed<int>(channel) == doctest::Approx(0.01f));
+        CHECK(ui::detail::property_drag_speed<int>(priority) == doctest::Approx(0.5f));
+        CHECK(ui::detail::property_drag_speed<int>(resolution) == doctest::Approx(1.f));
+    }
+
+    SUBCASE("explicit speed takes precedence")
+    {
+        StoredPropertyDescriptor<float> value("value", 0.5f, false, value_range(0.0, 1.0), ui_drag_speed(0.025f));
+        CHECK(ui::detail::property_drag_speed<float>(value) == doctest::Approx(0.025f));
+    }
+
+    SUBCASE("unbounded ranges use fixed defaults")
+    {
+        StoredPropertyDescriptor<float> no_range("no_range", 0.f, false);
+        StoredPropertyDescriptor<float> positive("positive", 0.f, false, value_range_positive());
+        StoredPropertyDescriptor<int> no_integer_range("no_integer_range", 0, false);
+
+        CHECK(ui::detail::property_drag_speed<float>(no_range) == doctest::Approx(0.01f));
+        CHECK(ui::detail::property_drag_speed<float>(positive) == doctest::Approx(0.01f));
+        CHECK(ui::detail::property_drag_speed<int>(no_integer_range) == doctest::Approx(1.f));
+    }
+}
+
 TEST_CASE("PropertyLayout: ungrouped properties at root")
 {
     const auto& cd = get_class_descriptor(typeid(LayoutTestClass));

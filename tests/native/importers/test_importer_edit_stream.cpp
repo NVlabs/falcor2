@@ -21,6 +21,11 @@ std::filesystem::path cornell_box_path()
     return testing::project_directory() / "data" / "assets" / "cornell-box" / "usdpreviewsurface" / "cornell-box.usda";
 }
 
+std::filesystem::path avocado_glb_path()
+{
+    return testing::project_directory() / "data" / "assets" / "kronos" / "Avocado" / "glTF-Binary" / "Avocado.glb";
+}
+
 std::filesystem::path animation_test_path(std::string_view filename)
 {
     return testing::project_directory() / "data" / "assets" / "animation_test" / std::filesystem::path(filename);
@@ -35,6 +40,8 @@ std::filesystem::path box_glb_path()
 {
     return testing::project_directory() / "data" / "assets" / "kronos" / "Box" / "glTF-Binary" / "Box.glb";
 }
+
+constexpr char BOX_MATERIAL_NAME[] = "Red";
 
 void touch_file(const std::filesystem::path& path)
 {
@@ -122,6 +129,7 @@ TEST_CASE("Importer edit stream - set environment creates dome light node")
     CHECK_EQ(light.name, "TestEnv");
     CHECK_EQ(light.type, ImporterLight::Type::dome);
     CHECK_EQ(light.env_map_path, std::filesystem::canonical(environment_map_path()).string());
+    CHECK_EQ(light.intensity, float3(1.f));
     CHECK_EQ(light.exposure, 5.f);
 
     const ImporterNode& node = scene->nodes[0];
@@ -320,13 +328,14 @@ TEST_CASE("Importer edit stream - camera selector resolves into camera node")
 
     ImporterCameraSelector camera_selector = importer->cameras().create(
         "Camera",
-        2.f,
         35.f,
         4.f,
+        36.f,
+        true,
+        2.f,
         float2(0.1f, 500.f),
         ImporterCamera::Projection::orthographic,
-        ImporterCamera::FOVDirection::horizontal,
-        36.f
+        ImporterCamera::FOVDirection::horizontal
     );
     ImporterNodeSelector node_selector = importer->nodes().create("CameraNode", float4x4::identity(), camera_selector);
 
@@ -343,13 +352,14 @@ TEST_CASE("Importer edit stream - camera selector resolves into camera node")
 
     const ImporterCamera& camera = scene->cameras[0];
     CHECK_EQ(camera.name, "Camera");
-    CHECK_EQ(camera.focus_distance, 2.f);
     CHECK_EQ(camera.focal_length, 35.f);
     CHECK_EQ(camera.fstop, 4.f);
+    CHECK_EQ(camera.sensor_size_mm, 36.f);
+    CHECK(camera.enable_depth_of_field);
+    CHECK_EQ(camera.focus_distance, 2.f);
     CHECK_EQ(camera.depth_range, float2(0.1f, 500.f));
     CHECK_EQ(camera.projection, ImporterCamera::Projection::orthographic);
     CHECK_EQ(camera.fov_direction, ImporterCamera::FOVDirection::horizontal);
-    CHECK_EQ(camera.sensor_size_mm, 36.f);
 
     const ImporterNode& node = scene->nodes[0];
     CHECK_EQ(node.name, "CameraNode");
@@ -373,12 +383,13 @@ TEST_CASE("Importer edit stream - camera create_fov derives focal length")
     ImporterCameraSelector camera_selector = importer->cameras().create_fov(
         "FovCamera",
         45.f,
-        3.f,
         5.6f,
+        24.f,
+        false,
+        3.f,
         float2(0.25f, 250.f),
         ImporterCamera::Projection::perspective,
-        ImporterCamera::FOVDirection::vertical,
-        24.f
+        ImporterCamera::FOVDirection::vertical
     );
     importer->nodes().create("FovCameraNode", float4x4::identity(), camera_selector);
 
@@ -388,12 +399,13 @@ TEST_CASE("Importer edit stream - camera create_fov derives focal length")
 
     const ImporterCamera& camera = scene->cameras[0];
     CHECK_EQ(camera.name, "FovCamera");
-    CHECK_EQ(camera.focus_distance, 3.f);
+    CHECK(camera.focal_length == doctest::Approx(ImporterCamera::focal_length_from_fov_degrees(45.f, 24.f)));
     CHECK_EQ(camera.fstop, 5.6f);
+    CHECK_EQ(camera.sensor_size_mm, 24.f);
+    CHECK_FALSE(camera.enable_depth_of_field);
+    CHECK_EQ(camera.focus_distance, 3.f);
     CHECK_EQ(camera.depth_range, float2(0.25f, 250.f));
     CHECK_EQ(camera.fov_direction, ImporterCamera::FOVDirection::vertical);
-    CHECK_EQ(camera.sensor_size_mm, 24.f);
-    CHECK(camera.focal_length == doctest::Approx(ImporterCamera::focal_length_from_fov_degrees(45.f, 24.f)));
 }
 
 TEST_CASE("Importer edit stream - node create_camera creates camera and node")
@@ -404,13 +416,14 @@ TEST_CASE("Importer edit stream - node create_camera creates camera and node")
     ImporterNodeSelector node_selector = importer->nodes().create_camera(
         "View",
         transform,
-        2.f,
         35.f,
         4.f,
+        36.f,
+        false,
+        2.f,
         float2(0.1f, 500.f),
         ImporterCamera::Projection::orthographic,
-        ImporterCamera::FOVDirection::horizontal,
-        36.f
+        ImporterCamera::FOVDirection::horizontal
     );
 
     CHECK(node_selector.id != 0);
@@ -432,12 +445,13 @@ TEST_CASE("Importer edit stream - node create_camera_fov creates camera and node
         "Camera",
         float4x4::identity(),
         45.f,
-        1.f,
         8.f,
+        24.f,
+        false,
+        1.f,
         float2(0.01f, 10000.f),
         ImporterCamera::Projection::perspective,
-        ImporterCamera::FOVDirection::vertical,
-        24.f
+        ImporterCamera::FOVDirection::vertical
     );
 
     CHECK(node_selector.id != 0);
@@ -555,6 +569,56 @@ TEST_CASE("Importer edit stream - import_asset imports cornell box at build time
     check_all_meshes_have_recomputed_frames(scene);
 }
 
+TEST_CASE("Importer edit stream - material selector replaces imported material")
+{
+    ref<Importer> importer = Importer::create();
+    importer->import_asset(box_glb_path());
+
+    Properties props;
+    props.set("roughness_factor", 0.25f);
+    props.set("_scene_material_type", "IgnoredMaterialType");
+    importer->materials()[BOX_MATERIAL_NAME].replace("StandardMaterial", props);
+
+    ref<ImporterScene> scene = importer->build_importer_scene();
+
+    auto material_it = std::find_if(
+        scene->materials.begin(),
+        scene->materials.end(),
+        [](const ImporterMaterial& material)
+        {
+            return material.name == BOX_MATERIAL_NAME;
+        }
+    );
+    REQUIRE(material_it != scene->materials.end());
+    CHECK_EQ(material_it->params.get<std::string>("_scene_material_type"), "StandardMaterial");
+    CHECK_EQ(material_it->params.get<float>("roughness_factor"), 0.25f);
+
+    bool has_material_binding = false;
+    for (const ImporterMesh& mesh : scene->meshes) {
+        has_material_binding |= std::any_of(
+            mesh.subgeometries.begin(),
+            mesh.subgeometries.end(),
+            [](const ImporterMesh::Subgeometry& subgeometry)
+            {
+                return subgeometry.material_name == BOX_MATERIAL_NAME;
+            }
+        );
+    }
+    CHECK(has_material_binding);
+
+    ref<ImporterScene> rebuilt_scene = importer->build_importer_scene();
+    auto rebuilt_material_it = std::find_if(
+        rebuilt_scene->materials.begin(),
+        rebuilt_scene->materials.end(),
+        [](const ImporterMaterial& material)
+        {
+            return material.name == BOX_MATERIAL_NAME;
+        }
+    );
+    REQUIRE(rebuilt_material_it != rebuilt_scene->materials.end());
+    CHECK_EQ(rebuilt_material_it->params.get<std::string>("_scene_material_type"), "StandardMaterial");
+}
+
 TEST_CASE("Importer edit stream - material selector replaces every match")
 {
     ImporterBuildContext context;
@@ -612,12 +676,63 @@ TEST_CASE("Importer edit stream - empty material selection is a no-op")
     CHECK(scene->materials.empty());
 }
 
+TEST_CASE("Importer edit stream - material selector records constructor replacement")
+{
+    ref<Importer> importer = Importer::create();
+    importer->import_asset(box_glb_path());
+
+    Properties props;
+    props.set("value", 7);
+    props.set("_scene_material_type", "IgnoredMaterialType");
+    ImporterMaterial::Constructor constructor = [](Scene&, const ImporterMaterial&) -> Material*
+    {
+        return nullptr;
+    };
+    importer->materials()[BOX_MATERIAL_NAME].replace(constructor, props);
+
+    ref<ImporterScene> scene = importer->build_importer_scene();
+    auto material_it = std::find_if(
+        scene->materials.begin(),
+        scene->materials.end(),
+        [](const ImporterMaterial& material)
+        {
+            return material.name == BOX_MATERIAL_NAME;
+        }
+    );
+    REQUIRE(material_it != scene->materials.end());
+    CHECK(static_cast<bool>(material_it->constructor));
+    CHECK_EQ(material_it->params.get<int>("value"), 7);
+    CHECK_FALSE(material_it->params.has_property("_scene_material_type"));
+    CHECK(material_it->output_to_material_network.empty());
+}
+
 TEST_CASE("Importer edit stream - material selector validates input")
 {
     ref<Importer> importer = Importer::create();
     CHECK_THROWS(importer->materials().find(""));
     CHECK_THROWS(importer->materials().find("Material").replace(""));
     CHECK_THROWS(importer->materials().find("Material").replace(ImporterMaterial::Constructor{}));
+}
+
+TEST_CASE("Importer edit stream - import_asset carries recompute normal options to build")
+{
+    const std::filesystem::path avocado = avocado_glb_path();
+    REQUIRE(std::filesystem::exists(avocado));
+
+    ref<ImporterScene> direct_scene = import_scene(avocado);
+    REQUIRE(direct_scene);
+
+    ImportOptions options;
+    options.recompute_normals = true;
+    ref<Importer> importer = Importer::create(options);
+    importer->import_asset(avocado);
+
+    ref<ImporterScene> recomputed_scene = importer->build_importer_scene();
+    REQUIRE(recomputed_scene);
+
+    REQUIRE_EQ(recomputed_scene->meshes.size(), direct_scene->meshes.size());
+    CHECK(any_mesh_normal_differs(direct_scene, recomputed_scene));
+    check_all_meshes_have_recomputed_frames(recomputed_scene);
 }
 
 TEST_CASE("Importer edit stream - import_asset preserves imported animation name")

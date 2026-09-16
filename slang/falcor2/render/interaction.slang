@@ -36,8 +36,8 @@ public struct SurfaceInteraction : ISurfaceInteraction
 
     /// Texture coordinates.
     public float2 uv = {};
-    /// Index of refraction for the medium on the front-facing side (i.e. "outside" the material at the hit).
-    public float ior = 1.0;
+    /// Index of refraction for the medium on the front-facing, exterior side of the material at the hit.
+    public float exterior_ior = 1.0;
 
     public __init() { }
 

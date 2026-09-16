@@ -16,7 +16,7 @@ public SurfaceInteraction setup_surface_interaction(float2 uv, float3 wi)
     result.shading_frame_ws = Frame(float3(0, 1, 0));
     result.normal_ws = result.shading_frame_ws.normal;
     result.front_facing = dot(result.wi_ws, result.normal_ws) >= 0;
-    result.ior = 1.0;
+    result.exterior_ior = 1.0;
 
     return result;
 }
@@ -28,6 +28,20 @@ material_eval<SampleGenerator : ISampleGenerator>(uint3 seeds, IMaterial materia
     let lod_sampler = ExplicitLodSampler(0);
     let material_instance = material.setup_material_instance(si, lod_sampler, MaterialInstanceHints::none);
     return material_instance.eval(si, wo, sg);
+}
+
+/// Evaluate the material value and PDF together, sharing work between the two results.
+public BSDFEval material_eval_with_pdf<SampleGenerator : ISampleGenerator>(
+    uint3 seeds,
+    IMaterial material,
+    SurfaceInteraction si,
+    float3 wo
+)
+{
+    var sg = SampleGenerator(seeds.xy, seeds.z);
+    let lod_sampler = ExplicitLodSampler(0);
+    let material_instance = material.setup_material_instance(si, lod_sampler, MaterialInstanceHints::none);
+    return material_instance.eval_with_pdf(si, wo, sg);
 }
 
 public MaterialSample
@@ -49,6 +63,20 @@ public float material_eval_pdf(IMaterial material, SurfaceInteraction si, float3
     let lod_sampler = ExplicitLodSampler(0);
     let material_instance = material.setup_material_instance(si, lod_sampler, MaterialInstanceHints::none);
     return material_instance.eval_pdf(si, wo);
+}
+
+public float material_interior_ior(IMaterial material, SurfaceInteraction si)
+{
+    let lod_sampler = ExplicitLodSampler(0);
+    let material_instance = material.setup_material_instance(si, lod_sampler, MaterialInstanceHints::none);
+    return material_instance.get_interior_ior();
+}
+
+public HomogeneousMediumProperties material_interior_medium(IMaterial material, SurfaceInteraction si)
+{
+    let lod_sampler = ExplicitLodSampler(0);
+    let material_instance = material.setup_material_instance(si, lod_sampler, MaterialInstanceHints::none);
+    return material_instance.get_interior_medium();
 }
 
 public MaterialProperties material_collect_properties(IMaterial material, SurfaceInteraction si)
@@ -77,6 +105,11 @@ public float3 material_eval_emissive_radiance(IMaterial material, SurfaceInterac
     return material.eval_emissive_radiance(si, lod_sampler, MaterialInstanceHints(hints));
 }
 
+public float material_eval_opacity(IMaterial material, SurfaceInteraction si)
+{
+    return material.eval_opacity(si, ExplicitLodSampler(0));
+}
+
 public ExtraBsdfProperties material_collect_extra_bsdf_properties(IMaterial material, SurfaceInteraction si, float3 wo)
 {
     let lod_sampler = ExplicitLodSampler(0);
@@ -89,12 +122,18 @@ public ExtraBsdfProperties material_collect_extra_bsdf_properties(IMaterial mate
     return result;
 }
 
-// _simple variants: work on individual materials via get_this()
+// _simple variants: work on individual materials via cursor-writer binding.
 
 public float3 material_eval_simple<
     SampleGenerator : ISampleGenerator>(uint3 seeds, IMaterial material, float2 uv, float3 wi, float3 wo)
 {
     return material_eval<SampleGenerator>(seeds, material, setup_surface_interaction(uv, wi), wo);
+}
+
+public BSDFEval material_eval_with_pdf_simple<
+    SampleGenerator : ISampleGenerator>(uint3 seeds, IMaterial material, float2 uv, float3 wi, float3 wo)
+{
+    return material_eval_with_pdf<SampleGenerator>(seeds, material, setup_surface_interaction(uv, wi), wo);
 }
 
 public MaterialSample
@@ -106,6 +145,16 @@ material_sample_simple<SampleGenerator : ISampleGenerator>(uint3 seeds, IMateria
 public float material_eval_pdf_simple(IMaterial material, float2 uv, float3 wi, float3 wo)
 {
     return material_eval_pdf(material, setup_surface_interaction(uv, wi), wo);
+}
+
+public float material_interior_ior_simple(IMaterial material, float2 uv, float3 wi)
+{
+    return material_interior_ior(material, setup_surface_interaction(uv, wi));
+}
+
+public HomogeneousMediumProperties material_interior_medium_simple(IMaterial material, float2 uv, float3 wi)
+{
+    return material_interior_medium(material, setup_surface_interaction(uv, wi));
 }
 
 public MaterialProperties material_collect_properties_simple(IMaterial material, float2 uv, float3 wi)
@@ -127,6 +176,11 @@ public float3 material_eval_emission_simple(IMaterial material, float2 uv, float
 public float3 material_eval_emissive_radiance_simple(IMaterial material, float2 uv, float3 wi, uint hints)
 {
     return material_eval_emissive_radiance(material, setup_surface_interaction(uv, wi), hints);
+}
+
+public float material_eval_opacity_simple(IMaterial material, float2 uv, float3 wi)
+{
+    return material_eval_opacity(material, setup_surface_interaction(uv, wi));
 }
 
 public ExtraBsdfProperties
@@ -153,6 +207,14 @@ public float3 material_eval_system<
     return material_eval<SampleGenerator>(seeds, material, setup_surface_interaction(uv, wi), wo);
 }
 
+public BSDFEval material_eval_with_pdf_system<
+    SampleGenerator : ISampleGenerator>(uint3 seeds, uint32_t material_id, float2 uv, float3 wi, float3 wo)
+{
+    // material_id must be within buffer boundaries
+    let material = g_scene.get_material(MaterialID(material_id));
+    return material_eval_with_pdf<SampleGenerator>(seeds, material, setup_surface_interaction(uv, wi), wo);
+}
+
 public MaterialSample
 material_sample_system<SampleGenerator : ISampleGenerator>(uint3 seeds, uint32_t material_id, float2 uv, float3 wi)
 {
@@ -166,6 +228,20 @@ public float material_eval_pdf_system(uint32_t material_id, float2 uv, float3 wi
     // material_id must be within buffer boundaries
     let material = g_scene.get_material(MaterialID(material_id));
     return material_eval_pdf(material, setup_surface_interaction(uv, wi), wo);
+}
+
+public HomogeneousMediumProperties material_interior_medium_system(uint32_t material_id, float2 uv, float3 wi)
+{
+    // material_id must be within buffer boundaries
+    let material = g_scene.get_material(MaterialID(material_id));
+    return material_interior_medium(material, setup_surface_interaction(uv, wi));
+}
+
+public float material_eval_opacity_system(uint32_t material_id, float2 uv, float3 wi)
+{
+    // material_id must be within buffer boundaries
+    let material = g_scene.get_material(MaterialID(material_id));
+    return material_eval_opacity(material, setup_surface_interaction(uv, wi));
 }
 
 public MaterialProperties material_collect_properties_system(uint32_t material_id, float2 uv, float3 wi)

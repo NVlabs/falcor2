@@ -5,6 +5,8 @@
 
 #include "falcor2/render/scene.h"
 
+#include <algorithm>
+
 namespace falcor {
 
 GeometryInstance::~GeometryInstance() { }
@@ -23,6 +25,28 @@ void GeometryInstance::set_materials(const std::vector<Material*>& materials)
         m_materials = materials;
         mark_dirty(Component::DirtyFlags::render_state);
     }
+}
+
+size_t GeometryInstance::material_slot_count() const
+{
+    size_t slot_count = std::max(m_materials.size(), size_t(geometry_instance_count()));
+    return m_geometry ? std::max(slot_count, size_t(1)) : slot_count;
+}
+
+bool GeometryInstance::set_material(size_t slot_index, Material* material)
+{
+    if (slot_index < m_materials.size()) {
+        if (m_materials[slot_index] == material)
+            return false;
+    } else {
+        if (!material)
+            return false;
+        m_materials.resize(slot_index + 1, nullptr);
+    }
+
+    m_materials[slot_index] = material;
+    mark_dirty(Component::DirtyFlags::render_state);
+    return true;
 }
 
 shared::GeometryInstanceID GeometryInstance::geometry_instance_id() const

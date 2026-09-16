@@ -10,6 +10,7 @@
 #include "falcor2/utils/aabb.h"
 #include "falcor2/importers/fwd.h"
 #include "falcor2/render/fwd.h"
+#include "falcor2/render/material_types.h"
 
 #include "sgl/core/data_type.h"
 
@@ -151,6 +152,8 @@ struct ImporterVertexStreamRO {
 
 /// Mesh data imported from a file. Represents a set of buffers containing
 /// vertex data, and a set of subgeometries with indices into the vertex data.
+/// Operations that change the vertex layout or topology invalidate previously acquired streams, pointers, NumPy
+/// views, and references to subgeometry indices. Reacquire them after the operation completes.
 class FALCOR_API ImporterMesh {
 public:
     /// Mesh name.
@@ -194,7 +197,9 @@ public:
     /// Generate normals for mesh vertices based on face geometry.
     void add_normals_from_faces();
 
-    /// Generate tangents for mesh vertices using UV coordinates and MikkTSpace algorithm.
+    /// Generate tangents using UV coordinates and MikkTSpace, splitting vertices as required by its per-corner output.
+    /// Existing vertices are never merged; exact compaction remains a separate operation. This may rewrite indices
+    /// and invalidates previously acquired mesh views as described by ImporterMesh.
     void add_tangents_from_uvs();
 
     /// Generate tangents for mesh vertices using normals (orthonormal basis).
@@ -318,10 +323,6 @@ public:
     /// returns the starting vertex index.
     size_t allocate_vertices(size_t count, bool init_to_zero = false);
 
-    /// Get a hash value for a vertex at given index based on its attribute values, correctly
-    /// skipping over any padding between elements.
-    size_t hash_vertex(size_t vertex_index);
-
     /// Current vertex count.
     size_t vertex_count() const { return m_vertex_count; }
 
@@ -363,6 +364,8 @@ public:
     ImporterVertexStreamRO<float3> color_stream() const { return get_stream<float3>(m_colors); }
 
 private:
+    void apply_vertex_remap(const VertexRemap& remap);
+
     // Current vertex count
     size_t m_vertex_count = 0;
 
@@ -495,26 +498,6 @@ SGL_ENUM_INFO(
 );
 SGL_ENUM_REGISTER(TextureWrapMode);
 
-/// Alpha modes for material transparency (from glTF spec)
-enum class AlphaMode {
-    /// The alpha value is ignored and the rendered output is fully opaque.
-    opaque = 0,
-    /// The rendered output is either fully opaque or fully transparent depending on the alpha value and the
-    /// specified alpha cutoff value.
-    mask = 1,
-    // The alpha value is used to composite the source and destination areas.
-    blend = 2,
-};
-SGL_ENUM_INFO(
-    AlphaMode,
-    {
-        {AlphaMode::opaque, "opaque"},
-        {AlphaMode::mask, "mask"},
-        {AlphaMode::blend, "blend"},
-    }
-);
-SGL_ENUM_REGISTER(AlphaMode);
-
 struct FALCOR_API ImporterTexture {
     // Source channels (rgb, r, g, b etc) read from the texture.
     std::string source_name;
@@ -537,6 +520,14 @@ struct FALCOR_API ImporterTexture {
     TextureWrapMode wrap_t = TextureWrapMode::repeat;
 
     auto operator<=>(const ImporterTexture&) const = default;
+};
+
+/// Asset data embedded in an imported container.
+struct FALCOR_API ImporterAsset {
+    /// Resolved asset path.
+    std::filesystem::path path;
+    /// Encoded asset bytes.
+    std::vector<uint8_t> data;
 };
 
 /// Prototype for instancing more complex objects than simple meshes.
@@ -696,20 +687,22 @@ struct FALCOR_API ImporterCamera {
 
     /// Camera name.
     std::string name;
-    /// Focus distance.
-    float focus_distance = 1.f;
     /// Focal length (millimeters).
     float focal_length = 50.f;
     /// F-stop value.
     float fstop = 8.f;
+    /// Sensor size (millimeters) in fov_direction.
+    float sensor_size_mm = 24.f;
+    /// Whether thin-lens depth of field is enabled.
+    bool enable_depth_of_field = false;
+    /// Focus distance.
+    float focus_distance = 1.f;
     /// Depth range (near, far).
     float2 depth_range = float2(0.01f, 10000.f);
     /// Projection type.
     Projection projection = Projection::perspective;
-    /// Field of view direction.
+    /// Axis to which sensor_size_mm and fov_degrees() apply. Focal length is axis-independent.
     FOVDirection fov_direction = FOVDirection::vertical;
-    /// Sensor size (millimeters) in fov_direction.
-    float sensor_size_mm = 24.f;
 
     /// Calculate focal length from a field of view and sensor size.
     static float focal_length_from_fov_degrees(float fov_degrees, float sensor_size_mm);
@@ -719,6 +712,13 @@ struct FALCOR_API ImporterCamera {
 
     /// Calculate this camera's field of view along fov_direction.
     float fov_degrees() const;
+
+    /// Normalize the directional sensor size to the vertical film-fit model used by Camera.
+    ///
+    /// If this camera stores a horizontal sensor size, the vertical sensor size
+    /// is derived from the supplied horizontal-to-vertical sensor ratio. The
+    /// default ratio is the 4:3 sensor assumption used by pyscene scene conversion.
+    float vertical_sensor_size_mm(float horizontal_to_vertical_sensor_ratio = 4.f / 3.f) const;
 
     /// Calculate this camera's vertical field of view.
     ///
@@ -741,7 +741,7 @@ struct FALCOR_API ImporterLight {
         sphere,
         /// Sphere with zero radius.
         point,
-        /// Disk at the origin, in XY plane, emitting along the -Z axis.
+        /// Disk at the origin, in XY plane, emitting along the -Z axis, optionally with a spot profile.
         disk,
         /// Environment map.
         /// Top pole is aligned with +Y axis, matching OpenEXR latlong specification.
@@ -769,9 +769,16 @@ struct FALCOR_API ImporterLight {
     /// Light type.
     Type type;
     /// Light intensity.
-    float3 intensity;
+    float3 intensity = float3(1.f);
     /// Light exposure in stops.
     float exposure = 0.f;
+    /// Whether the color temperature multiplier is enabled.
+    bool enable_color_temperature = false;
+    /// Color temperature in Kelvin.
+    float color_temperature = 6500.f;
+
+    /// Whether the source scene requests render-visible geometry for this light.
+    bool geometry_visible = false;
 
     /// Angular diameter in degrees (for distant lights).
     float degree_angular_diameter = 0.53f;
@@ -783,6 +790,16 @@ struct FALCOR_API ImporterLight {
 
     /// Radius (for sphere/disk lights).
     float radius = 1.f;
+    /// Whether a sphere light keeps its sampled radius smaller than the receiver distance.
+    bool enable_virtual_sphere_shrinking = false;
+    /// Whether the light uses an angular emission profile.
+    bool enable_shaping = false;
+    /// Outer half-angle in degrees for directional emission shaping.
+    float shaping_cone_angle = 90.f;
+    /// Fraction of the cone occupied by the smooth falloff.
+    float shaping_cone_softness = 0.f;
+    /// Off-axis cosine power exponent used to focus emission.
+    float shaping_focus = 0.f;
 
     /// Environment map path (for dome lights).
     std::string env_map_path;
@@ -801,6 +818,8 @@ public:
 
     /// Material array.
     std::vector<ImporterMaterial> materials;
+    /// Embedded asset array.
+    std::vector<ImporterAsset> assets;
     /// Texture array.
     std::vector<ImporterTexture> textures;
     /// Mesh array.

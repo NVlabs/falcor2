@@ -99,15 +99,21 @@ public void branchless_ONB(float3 normal, out float3 tangent, out float3 bitange
     bitangent = float3(b, sign + normal.y * normal.y * a, -normal.y);
 }
 
-public void adjust_shading_normal(inout Frame sf, const float3 geometric_normal, const float3 view_dir)
+float3 adjust_shading_normal_impl(
+    const float3 shading_normal,
+    const float3 geometric_normal,
+    const float3 view_dir,
+    out bool was_adjusted
+)
 {
-    // Note: sd.V and Ng below always lie on the same side (as the front-facing flag is computed based on sd.V).
-    // The shading normal sf.N may lie on either side depending on whether we're shading the front or back.
-    // We orient Ns to lie on the same side as sd.V and Ng for the computations below.
+    was_adjusted = false;
+
+    // The shading normal Ns may lie on either side depending on whether we're shading the front or back.
+    // We orient Ns to lie on the same side as the view direction and Ng for the computations below.
     // The final adjusted normal is oriented to lie on the same side as the original shading normal.
     float3 Ng = geometric_normal;
-    float sign_N = dot(sf.normal, Ng) >= 0.f ? 1.f : -1.f;
-    float3 Ns = sign_N * sf.normal;
+    float sign_N = dot(shading_normal, Ng) >= 0.f ? 1.f : -1.f;
+    float3 Ns = sign_N * shading_normal;
 
     // Blend the shading normal towards the geometric normal at grazing angles.
     // This is to avoid the view vector from becoming back-facing.
@@ -115,6 +121,26 @@ public void adjust_shading_normal(inout Frame sf, const float3 geometric_normal,
     float cos_theta = dot(view_dir, Ns);
     if (cos_theta <= COS_THETA_THRESHOLD) {
         float t = saturate(cos_theta * (1.f / COS_THETA_THRESHOLD));
-        sf = Frame(normalize(sign_N * lerp(Ng, Ns, t)), sf.tangent, sf.handedness_sign());
+        was_adjusted = true;
+        return normalize(sign_N * lerp(Ng, Ns, t));
     }
+
+    return shading_normal;
+}
+
+/// Adjusts a unit-length shading normal to avoid invalid reflection directions.
+/// The geometric normal and view direction must be unit length and lie in the same hemisphere.
+/// The result remains on the shading normal's authored side of the geometric normal.
+public float3 adjust_shading_normal(const float3 shading_normal, const float3 geometric_normal, const float3 view_dir)
+{
+    bool was_adjusted;
+    return adjust_shading_normal_impl(shading_normal, geometric_normal, view_dir, was_adjusted);
+}
+
+public void adjust_shading_normal(inout Frame sf, const float3 geometric_normal, const float3 view_dir)
+{
+    bool was_adjusted;
+    const float3 adjusted_normal = adjust_shading_normal_impl(sf.normal, geometric_normal, view_dir, was_adjusted);
+    if (was_adjusted)
+        sf = Frame(adjusted_normal, sf.tangent, sf.handedness_sign());
 }

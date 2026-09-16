@@ -99,10 +99,7 @@ class DlssRrViewer:
         self._pipeline.path_tracer.max_depth = 3
         self._pipeline.path_tracer.enable_nee = True
         self._pipeline.path_tracer.enable_mis = True
-        self._pipeline.path_tracer.enable_analytic_lights = True
-        self._pipeline.path_tracer.enable_environment_light = True
-        self._pipeline.path_tracer.enable_emissive_triangles = True
-        self._pipeline.path_tracer.env_map_as_background = False
+        self._pipeline.path_tracer.use_background_color = False
 
         self._display_output: spy.Texture | None = None
         self._view_module = None
@@ -118,12 +115,17 @@ class DlssRrViewer:
         self._view_name = names[(index + 1) % len(names)]
         print(f"DLSS-RR view: {self._view_name}")
 
-    def render(self, scene: f2.Scene) -> spy.Texture | None:
+    def render(self, scene: f2.Scene, *, delta_time: float) -> spy.Texture | None:
         camera = scene.active_camera
         if camera is None:
             return None
 
-        dlss_output, guides = self._pipeline(scene, camera, output_guides=True)
+        dlss_output, guides = self._pipeline(
+            scene,
+            camera,
+            output_guides=True,
+            delta_time=delta_time,
+        )
         if self._view_name == "dlss_output":
             return dlss_output
         buffers = dict(guides)
@@ -182,7 +184,7 @@ def main() -> None:
     device_type = getattr(spy.DeviceType, args.device_type)
     device = create_ngx_ready_device(device_type)
 
-    scene = f2.Scene.create(device, args.scene_path)
+    scene = f2.Scene.load(device, args.scene_path)
     viewer = DlssRrViewer(device)
 
     editor = Editor.create(
@@ -200,7 +202,7 @@ def main() -> None:
 
     while editor.update():
         if editor.needs_render:
-            image = viewer.render(scene)
+            image = viewer.render(scene, delta_time=editor.dt)
             editor.present(image)
 
 

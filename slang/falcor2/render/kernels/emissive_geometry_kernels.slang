@@ -138,6 +138,7 @@ void setup_triangle_sampling(
 }
 
 [shader("compute")]
+[WaveSize(32)]
 [numthreads(128, 1, 1)]
 void compute_triangle_max_emission(
     uint tid: SV_DispatchThreadID,
@@ -147,12 +148,17 @@ void compute_triangle_max_emission(
     StructuredBuffer<uint2> sample_grid,
     uniform uint triangle_count,
     uniform uint thread_count,
-    uniform uint64_t total_sample_count,
+    uniform uint64_t first_sample,
+    uniform uint batch_sample_count,
     RWStructuredBuffer<uint> max_emission
 )
 {
-    uint64_t sample_index = tid;
-    while (sample_index < total_sample_count) {
+    if (tid >= thread_count)
+        return;
+
+    uint64_t sample_index = first_sample + tid;
+    uint64_t last_sample = first_sample + batch_sample_count;
+    while (sample_index < last_sample) {
         // Binary search to find the triangle this sample belongs to.
         uint triangle_index = upper_bound(sample_offset, 0, triangle_count, sample_index) - 1;
         EmissiveTriangle triangle = detail::unpack_emissive_triangle(triangles[triangle_index]);
@@ -210,6 +216,7 @@ void compute_triangle_max_emission_factor(
 }
 
 [shader("compute")]
+[WaveSize(32)]
 [numthreads(128, 1, 1)]
 void accumulate_triangle_emission(
     uint tid: SV_DispatchThreadID,
@@ -220,12 +227,17 @@ void accumulate_triangle_emission(
     StructuredBuffer<float> emission_factor,
     uniform uint triangle_count,
     uniform uint thread_count,
-    uniform uint64_t total_sample_count,
+    uniform uint64_t first_sample,
+    uniform uint batch_sample_count,
     RWStructuredBuffer<uint64_t> accumulated_emission
 )
 {
-    uint64_t sample_index = tid;
-    while (sample_index < total_sample_count) {
+    if (tid >= thread_count)
+        return;
+
+    uint64_t sample_index = first_sample + tid;
+    uint64_t last_sample = first_sample + batch_sample_count;
+    while (sample_index < last_sample) {
         // Binary search to find the triangle this sample belongs to.
         uint triangle_index = upper_bound(sample_offset, 0, triangle_count, sample_index) - 1;
         EmissiveTriangle triangle = detail::unpack_emissive_triangle(triangles[triangle_index]);
@@ -284,6 +296,7 @@ void finalize_triangle_emission(
         accumulated_emission[triangle_index * 3 + 2]
     );
 
+    // Materials report radiant exitance. Store its area-averaged RGB value for this triangle.
     float3 emission = float3(total / count) / emission_factor[triangle_index];
     triangle_emission[triangle_index] = float4(emission, 0.0);
 }
@@ -365,6 +378,7 @@ public void update_triangle(
         triangle.normal_ws = float3(0.0, 0.0, 0.0);
     } else {
         triangle.area_ws = length(cross(edge0, edge1)) / 2;
+        // A one-sided Lambertian emitter's total flux is its area times radiant exitance.
         float3 emission = triangle_emission[triangle_index].xyz;
         flux = triangle.area_ws * luminance(emission);
     }

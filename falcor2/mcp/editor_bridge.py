@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 from falcor2.mcp.bridge import Bridge, JsonObject
 from falcor2.mcp.screenshot import capture_editor_screenshot
+from falcor2.mcp.scene_inspection import scene_to_dict
 
 
 def create_editor_bridge(
@@ -39,7 +40,24 @@ def create_editor_bridge(
             workspace_root=bridge.workspace_root,
         ),
     )
+    bridge.register_handler(
+        "falcor2.app.inspect_scene",
+        lambda params: _inspect_editor_scene(editor, params),
+    )
     return bridge
+
+
+def _inspect_editor_scene(editor: Any, params: JsonObject) -> JsonObject:
+    scene = editor.scene
+    if scene is None:
+        raise ValueError("the editor does not have a loaded scene")
+    pattern = params.get("node_name_pattern")
+    if pattern is not None and (not isinstance(pattern, str) or not pattern):
+        raise ValueError("node_name_pattern must be a non-empty string when provided")
+    case_sensitive = params.get("case_sensitive", False)
+    if not isinstance(case_sensitive, bool):
+        raise ValueError("case_sensitive must be a boolean")
+    return scene_to_dict(scene, node_name_pattern=pattern, case_sensitive=case_sensitive)
 
 
 def _editor_status(editor: Any, bridge: Bridge) -> JsonObject:

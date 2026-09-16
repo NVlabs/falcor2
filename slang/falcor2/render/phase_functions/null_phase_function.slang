@@ -3,20 +3,19 @@
 
 implementing render;
 
+/// Invalid phase-function sentinel used when a medium has no phase function.
+/// It evaluates to zero, has zero sampling density, and cannot produce a sample.
 public struct NullPhaseFunction : IPhaseFunction
 {
     public __init() { }
 
-    public float3 eval(const float3 wi_ws, const float3 wo_ws) { return 0.f; }
+    public float3 eval(const float3 wi_ws, const float3 wo_ws) { return 0.0; }
 
-    public bool
-    sample<S : ISampleGenerator>(const float3 wi_ws, out float3 wo_ws, out float pdf, out float3 weight, inout S sg)
+    public bool sample<S : ISampleGenerator>(const float3 wi_ws, inout S sg, out PhaseFunctionSample sample)
     {
-        wo_ws = -wi_ws;
-        pdf = 1.f;
-        weight = 1.f;
-        return true;
+        sample = {};
+        return false;
     }
 
-    public float eval_pdf(const float3 wi_ws, const float3 wo_ws) { return 0.f; }
+    public float eval_pdf(const float3 wi_ws, const float3 wo_ws) { return 0.0; }
 };

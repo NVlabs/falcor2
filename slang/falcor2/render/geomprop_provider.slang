@@ -12,13 +12,6 @@ public enum class GeomPropSpace : uint {
     world = 2,
 };
 
-static const float4x4 k_geomprop_identity4x4 = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
-
-public float4x4 geomprop_identity4x4()
-{
-    return k_geomprop_identity4x4;
-}
-
 public interface IGeomPropProvider
 {
     public static int get_int(SurfaceInteraction si, uint id);
@@ -40,7 +33,7 @@ public struct DummyGeomPropProvider : IGeomPropProvider
     public static float4 get_float4(SurfaceInteraction si, uint id) { return float4(si.uv, 0.0, 0.0); }
     public static float4x4 get_space_transform(SurfaceInteraction si, GeomPropSpace to_space, GeomPropSpace from_space)
     {
-        return geomprop_identity4x4();
+        return float4x4.identity();
     }
 };
 

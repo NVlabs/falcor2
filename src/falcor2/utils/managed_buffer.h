@@ -4,7 +4,6 @@
 #pragma once
 
 #include "falcor2/core/object.h"
-#include "falcor2/utils/idictionary.h"
 #include "falcor2/utils/buffer_handle.h"
 
 #include <sgl/device/device.h>

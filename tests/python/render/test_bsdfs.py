@@ -4,10 +4,11 @@
 """Chi-square, eval/sample consistency, and reciprocity tests for BSDF implementations."""
 
 import enum
+from dataclasses import dataclass
 import numpy as np
 import slangpy as spy
 import pytest
-from typing import Any, Optional
+from typing import Any, Literal, Optional, cast
 import falcor2 as f2  # for LUT bindings
 import falcor2.testing.helpers as helpers
 
@@ -72,6 +73,7 @@ class BSDFFlags(enum.IntFlag):
 WI_NORMAL = spy.float3(0.0, 0.0, 1.0)
 WI_30DEG = spy.float3(0.5, 0.0, 0.866025)
 WI_60DEG = spy.float3(0.866025, 0.0, 0.5)
+WI_GRAZING = spy.float3(0.994987, 0.0, 0.1)
 
 BSDF_CONFIGS = [
     # --- Lambertian diffuse BRDF ---
@@ -311,7 +313,7 @@ BSDF_CONFIGS = [
     ),
     # --- MaterialX 1.39 Burley diffuse BSDF ---
     (
-        "mx139::MxBurleyDiffuseBSDF",
+        "mtlx::MxBurleyDiffuseBSDF",
         {"albedo_value": [0.8, 0.4, 0.2], "roughness": 0.5},
         [WI_NORMAL, WI_30DEG],
         None,
@@ -319,7 +321,7 @@ BSDF_CONFIGS = [
     ),
     # --- MaterialX 1.39 Oren-Nayar diffuse BSDF ---
     (
-        "mx139::MxOrenNayarDiffuseBSDF",
+        "mtlx::MxOrenNayarDiffuseBSDF",
         {"albedo_value": [0.6, 0.6, 0.6], "roughness": 0.35, "energy_compensation": True},
         [WI_NORMAL, WI_30DEG],
         None,
@@ -327,7 +329,7 @@ BSDF_CONFIGS = [
     ),
     # --- MaterialX 1.39 translucent BSDF ---
     (
-        "mx139::MxTranslucentBSDF",
+        "mtlx::MxTranslucentBSDF",
         {"albedo_value": [0.7, 0.5, 0.3]},
         [WI_NORMAL, WI_30DEG],
         None,
@@ -335,7 +337,7 @@ BSDF_CONFIGS = [
     ),
     # --- MaterialX 1.39 subsurface diffuse fallback BSDF ---
     (
-        "mx139::MxSubsurfaceDiffuseFallbackBSDF",
+        "mtlx::MxSubsurfaceDiffuseFallbackBSDF",
         {"albedo_value": [0.55, 0.35, 0.25]},
         [WI_NORMAL, WI_30DEG],
         None,
@@ -343,7 +345,7 @@ BSDF_CONFIGS = [
     ),
     # --- MaterialX 1.39 sheen BSDF ---
     (
-        "mx139::MxSheenBSDF",
+        "mtlx::MxSheenBSDF",
         {
             "tint": [0.8, 0.4, 0.2],
             "base_roughness": 0.5,
@@ -357,9 +359,51 @@ BSDF_CONFIGS = [
         # Reciprocity fails consistently across backends (max error ~1.0), indicating the Conty-Kulla visibility term is not symmetric.
         SkipFlags.RECIPROCITY,
     ),
+    # --- MaterialX 1.39 Zeltner sheen BSDF (specification analytic fit) ---
+    *[
+        (
+            "mtlx::MxSheenBSDF",
+            {
+                "tint": [0.8, 0.4, 0.2],
+                "base_roughness": roughness,
+                "sheen_alpha": roughness,
+                "Emiss": 1.0,
+                "sheen_mode": 1,
+                "backfacing": False,
+            },
+            [WI_30DEG],
+            None,
+            # The specified view-dependent LTC approximation is non-reciprocal.
+            SkipFlags.RECIPROCITY,
+        )
+        for roughness in (0.5, 0.01)
+    ],
+    # --- MaterialX 1.39 Zeltner sheen BSDF (comparison LUT) ---
+    *[
+        (
+            "mtlx::MxSheenLutBSDF",
+            {
+                "tint": [0.8, 0.4, 0.2],
+                "base_roughness": roughness,
+                "sheen_alpha": roughness,
+                "Emiss": 1.0,
+                "sheen_mode": 1,
+                "backfacing": False,
+            },
+            # The retained paper table is sparse in its first roughness row
+            # and represents many non-grazing entries as an exactly zero lobe.
+            # Use a populated view entry so the boundary distribution is
+            # nonzero and therefore statistically testable.
+            [WI_30DEG if roughness == 0.5 else WI_GRAZING],
+            None,
+            # The specified view-dependent LTC approximation is non-reciprocal.
+            SkipFlags.RECIPROCITY,
+        )
+        for roughness in (0.5, 0.01)
+    ],
     # --- MaterialX 1.39 conductor BSDF ---
     (
-        "mx139::MxConductorBSDF",
+        "mtlx::MxConductorBSDF",
         {
             "roughness_xy": [0.3, 0.3],
             "fresnel": {
@@ -376,7 +420,7 @@ BSDF_CONFIGS = [
     ),
     # --- MaterialX 1.39 Airy conductor BSDF ---
     (
-        "mx139::MxConductorAiryBSDF",
+        "mtlx::MxConductorAiryBSDF",
         {
             "roughness_xy": [0.3, 0.3],
             "fresnel": {
@@ -392,7 +436,7 @@ BSDF_CONFIGS = [
     ),
     # --- MaterialX 1.39 conductor BSDF (non-LUT compensation) ---
     (
-        "mx139::MxConductorTurquinAnalyticCompensationBSDF",
+        "mtlx::MxConductorTurquinAnalyticCompensationBSDF",
         {
             "roughness_xy": [0.3, 0.3],
             "fresnel": {
@@ -406,7 +450,7 @@ BSDF_CONFIGS = [
     ),
     # --- MaterialX 1.39 scratch conductor BSDF ---
     (
-        "mx139::MxScratchConductorBSDF",
+        "mtlx::MxScratchConductorBSDF",
         {
             "inner": {
                 "D": {"alpha": [0.25, 0.25]},
@@ -420,13 +464,13 @@ BSDF_CONFIGS = [
         },
         [WI_NORMAL],
         None,
-        # Scratch sampling returns selected-branch pdf/weight values, while eval_pdf()
-        # reports the masked mixture of scratch and unscratched conductor lobes.
+        # Scratch sampling retains a selected-branch weight that is not eval()/eval_pdf().
+        # The dedicated test below checks its masked mixture PDF independently.
         SkipFlags.CHI2 | SkipFlags.SAMPLE_CONSISTENCY | SkipFlags.RECIPROCITY,
     ),
     # --- MaterialX 1.39 dielectric BSDF ---
     (
-        "mx139::MxDielectricBSDF",
+        "mtlx::MxDielectricBSDF",
         {
             "roughness_xy": [0.3, 0.3],
             "fresnel": {"eta": 1.5},
@@ -445,7 +489,7 @@ BSDF_CONFIGS = [
     ),
     # --- MaterialX 1.39 Airy dielectric BSDF ---
     (
-        "mx139::MxDielectricAiryBSDF",
+        "mtlx::MxDielectricAiryBSDF",
         {
             "roughness_xy": [0.3, 0.3],
             "fresnel": {
@@ -466,7 +510,7 @@ BSDF_CONFIGS = [
     ),
     # --- MaterialX 1.39 generalized Schlick BSDF ---
     (
-        "mx139::MxGeneralizedSchlickBSDF",
+        "mtlx::MxGeneralizedSchlickBSDF",
         {
             "roughness_xy": [0.3, 0.3],
             "fresnel": {
@@ -488,7 +532,7 @@ BSDF_CONFIGS = [
     ),
     # --- MaterialX 1.39 generalized Schlick color82 BSDF ---
     (
-        "mx139::MxGeneralizedSchlickColor82BSDF",
+        "mtlx::MxGeneralizedSchlickColor82BSDF",
         {
             "roughness_xy": [0.3, 0.3],
             "fresnel": {
@@ -509,7 +553,7 @@ BSDF_CONFIGS = [
     ),
     # --- MaterialX 1.39 generalized Schlick Airy BSDF ---
     (
-        "mx139::MxGeneralizedSchlickAiryBSDF",
+        "mtlx::MxGeneralizedSchlickAiryBSDF",
         {
             "roughness_xy": [0.3, 0.3],
             "fresnel": {
@@ -533,7 +577,7 @@ BSDF_CONFIGS = [
     ),
     # --- MaterialX 1.39 Chiang hair BSDF ---
     (
-        "mx139::MxChiangHairBSDF",
+        "mtlx::MxChiangHairBSDF",
         {
             "tint_R": [1.0, 0.85, 0.7],
             "tint_TT": [0.8, 0.45, 0.22],
@@ -612,33 +656,37 @@ def _make_params(skip_flag: SkipFlags = SkipFlags.NONE) -> list[Any]:
 
 
 # ---------------------------------------------------------------------------
-# Helper to load the test module
+# Fixtures for device-owned test resources
 # ---------------------------------------------------------------------------
 
-_MODULE_CACHE: dict[spy.DeviceType, spy.Module] = {}
-_MX139_LUT_BINDINGS_CACHE: dict[spy.DeviceType, dict[str, Any]] = {}
+
+def _bsdf_resource_scope(fixture_name: str, config: pytest.Config) -> Literal["function", "module"]:
+    return "function" if config.getoption("--device-cache-policy") == "test" else "module"
 
 
-def _get_module(device: spy.Device, device_type: spy.DeviceType) -> spy.Module:
-    if device_type not in _MODULE_CACHE:
-        _MODULE_CACHE[device_type] = spy.Module(device.load_module("render/bsdf_tests.slang"))
-    return _MODULE_CACHE[device_type]
+@dataclass(frozen=True)
+class _BSDFResources:
+    device: spy.Device
+    module: spy.Module
 
 
-def _get_mx139_lut_bindings(device: spy.Device, device_type: spy.DeviceType) -> dict[str, Any]:
-    if device_type not in _MX139_LUT_BINDINGS_CACHE:
-        _MX139_LUT_BINDINGS_CACHE[device_type] = f2.create_materialx_mx139_lut_bindings(device)
-    return _MX139_LUT_BINDINGS_CACHE[device_type]
-
-
-@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
-def test_anisotropic_ggx_policy_preserves_default_and_allows_clamping(
-    device_type: spy.DeviceType,
-) -> None:
+@pytest.fixture(scope=_bsdf_resource_scope, params=helpers.DEFAULT_DEVICE_TYPES)
+def _bsdf_resources(request: pytest.FixtureRequest) -> _BSDFResources:
+    device_type = cast(spy.DeviceType, request.param)
     device = helpers.get_device(device_type)
-    module = _get_module(device, device_type)
+    module = spy.Module(device.load_module("render/bsdf_tests.slang"))
+    return _BSDFResources(device=device, module=module)
 
-    result = module["bsdf_tests::test_anisotropic_ggx_policy"]()
+
+@pytest.fixture(scope=_bsdf_resource_scope)
+def _mtlx_lut_bindings(_bsdf_resources: _BSDFResources) -> dict[str, Any]:
+    return f2.create_mtlx_lut_bindings(_bsdf_resources.device)
+
+
+def test_anisotropic_ggx_policy_preserves_default_and_allows_clamping(
+    _bsdf_resources: _BSDFResources,
+) -> None:
+    result = _bsdf_resources.module["bsdf_tests::test_anisotropic_ggx_policy"]()
 
     assert result.x == pytest.approx(1.0)
     assert result.y == pytest.approx(0.0)
@@ -646,16 +694,41 @@ def test_anisotropic_ggx_policy_preserves_default_and_allows_clamping(
     assert result.w == pytest.approx(1.0)
 
 
-@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
-def test_mx139_beer_delta_transmission(device_type: spy.DeviceType) -> None:
-    device = helpers.get_device(device_type)
-    module = _get_module(device, device_type)
-    global_bindings = _get_mx139_lut_bindings(device, device_type)
+@pytest.mark.parametrize(
+    ("bsdf", "wi"),
+    [
+        ({"diffuse": [0.8, 0.4, 0.2], "specular": [0.08, 0.2, 0.6], "roughness": 0.7}, WI_NORMAL),
+        ({"diffuse": [1.0, 0.8, 0.2], "specular": [0.9, 0.6, 0.2], "roughness": 0.2}, WI_GRAZING),
+    ],
+)
+def test_diffuse_specular_albedo(
+    _bsdf_resources: _BSDFResources,
+    bsdf: dict[str, Any],
+    wi: spy.float3,
+) -> None:
+    result = _bsdf_resources.module["bsdf_tests::test_diffuse_specular_albedo"](bsdf=bsdf, wi=wi)
 
-    kernel = module["bsdf_tests::test_mx139_beer_delta_transmission"].as_func().set(global_bindings)
+    assert np.asarray(result) == pytest.approx([0.0, 0.0, 0.0, 0.0], abs=2e-6)
+
+
+def test_mtlx_mix_preserves_absorption_side(_bsdf_resources: _BSDFResources) -> None:
+    result = _bsdf_resources.module["bsdf_tests::test_mtlx_mix_albedo_contributions"]()
+
+    assert np.asarray(result) == pytest.approx([0.0, 0.0, 0.35, 0.65])
+
+
+def test_mtlx_beer_delta_transmission(
+    _bsdf_resources: _BSDFResources,
+    _mtlx_lut_bindings: dict[str, Any],
+) -> None:
+    kernel = (
+        _bsdf_resources.module["bsdf_tests::test_mtlx_beer_delta_transmission"]
+        .as_func()
+        .set(_mtlx_lut_bindings)
+    )
     result = kernel(
         bsdf={"inner": {"absorption": [0.25, 0.5, 0.75], "pathshortening": 0.0}},
-        wi=spy.float3(0.0, 0.0, -1.0),
+        wi=WI_NORMAL,
     )
 
     assert result.x == pytest.approx(1.0)
@@ -663,34 +736,233 @@ def test_mx139_beer_delta_transmission(device_type: spy.DeviceType) -> None:
     assert result.z == pytest.approx(float(np.exp(-0.25)))
     assert result.w == pytest.approx(float(np.exp(-0.75)))
 
+    rejected = kernel(
+        bsdf={"inner": {"absorption": [0.25, 0.5, 0.75], "pathshortening": 0.0}},
+        wi=-WI_NORMAL,
+    )
+    assert rejected.x == pytest.approx(0.0)
+
+
+def test_standard_bsdf_diffuse_transmission_support(_bsdf_resources: _BSDFResources) -> None:
+    result = _bsdf_resources.module["bsdf_tests::test_standard_bsdf_diffuse_transmission_support"](
+        data={
+            "diffuse": [0.0, 0.0, 0.0],
+            "specular": [0.0, 0.0, 0.0],
+            "roughness": 0.5,
+            "metallic": 0.0,
+            "eta": 1.0 / 1.5,
+            "transmission": [0.25, 0.5, 1.0],
+            "diffuse_transmission": 1.0,
+            "specular_transmission": 0.0,
+            "thin_walled": True,
+        }
+    )
+
+    assert result.x == pytest.approx(0.25 / np.pi)
+    assert result.y == pytest.approx(0.25)
+    assert result.z == pytest.approx(1.0)
+    assert result.w == pytest.approx(0.25)
+
+
+def test_specular_microfacet_smooth_transmission(_bsdf_resources: _BSDFResources) -> None:
+    result = _bsdf_resources.module["bsdf_tests::test_specular_microfacet_smooth_transmission"](
+        bsdf={
+            "transmission_albedo": [0.9, 0.8, 0.7],
+            "alpha": 0.0,
+            "eta": 1.0 / 1.5,
+            "active_lobes": int(BSDFFlags.delta_reflection | BSDFFlags.delta_transmission),
+        }
+    )
+
+    assert result.x == pytest.approx(1.0)
+    assert result.y == pytest.approx(0.0)
+    assert result.z == pytest.approx(0.9 / 1.5**2)
+    assert result.w == pytest.approx(0.7 / 1.5**2)
+
+
+def test_specular_microfacet_albedo(_bsdf_resources: _BSDFResources) -> None:
+    brdf_kernel = _bsdf_resources.module["bsdf_tests::test_specular_microfacet_brdf_albedo"]
+    disabled_brdf = brdf_kernel(
+        bsdf={"albedo": [0.04, 0.2, 0.8], "alpha": 0.3, "active_lobes": int(BSDFFlags.none)},
+        channel=1,
+    )
+    assert np.asarray(disabled_brdf) == pytest.approx([0.0, 1.0, 0.0, 0.0])
+
+    bsdf_kernel = _bsdf_resources.module["bsdf_tests::test_specular_microfacet_bsdf_albedo"]
+    common = {
+        "transmission_albedo": [0.9, 0.8, 0.7],
+        "alpha": 0.0,
+        "eta": 1.0 / 1.5,
+    }
+    r = 0.04
+    tint = 0.8
+    expected = {
+        BSDFFlags.delta_reflection
+        | BSDFFlags.delta_transmission: [r, 0.0, (1.0 - r) * tint, (1.0 - r) * (1.0 - tint)],
+        BSDFFlags.delta_reflection: [r, 0.0, 0.0, 1.0 - r],
+        BSDFFlags.delta_transmission: [0.0, r, (1.0 - r) * tint, (1.0 - r) * (1.0 - tint)],
+    }
+    for active_lobes, albedo in expected.items():
+        result = bsdf_kernel(bsdf={**common, "active_lobes": int(active_lobes)}, channel=1)
+        assert np.asarray(result) == pytest.approx(albedo)
+        assert sum(result) == pytest.approx(1.0)
+
+
+def test_pbrt_dielectric_event_support_and_albedo(_bsdf_resources: _BSDFResources) -> None:
+    result = _bsdf_resources.module["bsdf_tests::test_pbrt_dielectric_event_support"](
+        bsdf={"D": {"alpha": [0.0, 0.0]}, "eta": 1.5}
+    )
+
+    # Transmission-only total internal reflection and reflection-only F=0
+    # have no enabled physical event in PBRT's masked probability model.
+    assert result.x == pytest.approx(0.0)
+    assert result.y == pytest.approx(0.0)
+
+    # The context-free property assumes incidence from air into eta=1.5.
+    assert result.z == pytest.approx(0.0891867, rel=1e-5)
+    assert result.w == pytest.approx(1.0 - result.z)
+
+
+def test_pbrt_dielectric_transmission_scaling(_bsdf_resources: _BSDFResources) -> None:
+    result = _bsdf_resources.module["bsdf_tests::test_pbrt_dielectric_transmission_scaling"](
+        smooth_bsdf={"D": {"alpha": [0.0, 0.0]}, "eta": 1.5},
+        rough_bsdf={"D": {"alpha": [0.3, 0.3]}, "eta": 1.5},
+    )
+
+    expected_scale = (1.0 / 1.5) ** 2
+    assert result.x == pytest.approx(1.0)
+    assert result.y == pytest.approx(expected_scale)
+    assert result.z == pytest.approx(expected_scale, rel=1e-5)
+    assert result.w == pytest.approx(expected_scale, rel=1e-5)
+
+
+def test_mtlx_generalized_schlick_colored_branch_probability(
+    _bsdf_resources: _BSDFResources,
+    _mtlx_lut_bindings: dict[str, Any],
+) -> None:
+    """Colored R/T sampling follows MaterialX's luminance balance policy."""
+    color0 = [0.2, 0.5, 0.8]
+    p_reflect = float(np.dot(color0, [0.2126, 0.7152, 0.0722]))
+    fresnel = {
+        "F0": color0,
+        "F90": [1.0, 1.0, 1.0],
+        "exponent": 5.0,
+        "eta": 1.78878850537961,
+        "tir_cos": 0.0,
+    }
+
+    def bindings(reflection: float, transmission: float) -> dict[str, Any]:
+        return {
+            "roughness_xy": [0.3, 0.3],
+            "fresnel": fresnel,
+            "reflection_tint": [reflection] * 3,
+            "transmission_tint": [transmission] * 3,
+            "backfacing": False,
+        }
+
+    kernel = (
+        _bsdf_resources.module[
+            "bsdf_tests::test_controlled_bsdf_sample<mtlx::MxGeneralizedSchlickBSDF>"
+        ]
+        .as_func()
+        .set(_mtlx_lut_bindings)
+    )
+
+    reflected = kernel(
+        bsdf=bindings(1.0, 1.0),
+        wi=WI_NORMAL,
+        random=[0.0, 0.0, p_reflect * 0.5],
+    )
+    reflected_only = kernel(
+        bsdf=bindings(1.0, 0.0),
+        wi=WI_NORMAL,
+        random=[0.0, 0.0, 0.0],
+    )
+    transmitted = kernel(
+        bsdf=bindings(1.0, 1.0),
+        wi=WI_NORMAL,
+        random=[0.0, 0.0, (1.0 + p_reflect) * 0.5],
+    )
+    transmitted_only = kernel(
+        bsdf=bindings(0.0, 1.0),
+        wi=WI_NORMAL,
+        random=[0.0, 0.0, 0.0],
+    )
+
+    for result in (reflected, reflected_only, transmitted, transmitted_only):
+        assert result.x == pytest.approx(1.0)
+        assert result.z == pytest.approx(result.w, rel=1e-6)
+
+    assert reflected.y > 0.0
+    assert reflected_only.y > 0.0
+    assert transmitted.y < 0.0
+    assert transmitted_only.y < 0.0
+    assert reflected.z / reflected_only.z == pytest.approx(p_reflect, rel=1e-6)
+    assert transmitted.z / transmitted_only.z == pytest.approx(1.0 - p_reflect, rel=1e-6)
+
+
+@pytest.mark.parametrize(
+    "family,expected_events",
+    [
+        ("conductor", 1.0),
+        ("dielectric", 3.0),
+        ("generalized_schlick", 3.0),
+    ],
+)
+def test_mtlx_retroreflection(
+    _bsdf_resources: _BSDFResources,
+    _mtlx_lut_bindings: dict[str, Any],
+    family: str,
+    expected_events: float,
+) -> None:
+    eval_pdf_kernel = (
+        _bsdf_resources.module[f"bsdf_tests::test_mtlx_{family}_retroreflection_eval_pdf"]
+        .as_func()
+        .set(_mtlx_lut_bindings)
+    )
+    eval_pdf_result = eval_pdf_kernel()
+
+    assert eval_pdf_result.x == pytest.approx(0.0, abs=1e-6)
+    assert eval_pdf_result.y == pytest.approx(0.0, abs=1e-6)
+    assert eval_pdf_result.z > 0.0
+    assert eval_pdf_result.w > 0.0
+
+    sample_kernel = (
+        _bsdf_resources.module[f"bsdf_tests::test_mtlx_{family}_retroreflection_sample"]
+        .as_func()
+        .set(_mtlx_lut_bindings)
+    )
+    sample_result = sample_kernel()
+
+    assert sample_result.x == pytest.approx(0.0, abs=1e-6)
+    assert sample_result.y == pytest.approx(0.0, abs=1e-5)
+    assert sample_result.z == pytest.approx(0.0, abs=1e-6)
+    assert sample_result.w == expected_events
+
 
 # ---------------------------------------------------------------------------
 # Chi-square tests
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 @pytest.mark.parametrize("bsdf_type,bsdf_bindings,wi,bc", _make_params(SkipFlags.CHI2))
 def test_bsdf_chi2(
-    device_type: spy.DeviceType,
+    _bsdf_resources: _BSDFResources,
+    _mtlx_lut_bindings: dict[str, Any],
     bsdf_type: str,
     bsdf_bindings: dict[str, Any],
     wi: spy.float3,
     bc: Optional[dict[str, float]],
 ) -> None:
     """Chi-square test: sample() distribution matches eval_pdf()."""
-    device = helpers.get_device(device_type)
-    module = _get_module(device, device_type)
-    global_bindings = _get_mx139_lut_bindings(device, device_type)
-
     test = BSDFChiSquareTest(
-        device=device,
-        module=module,
+        device=_bsdf_resources.device,
+        module=_bsdf_resources.module,
         bsdf_type=bsdf_type,
         bsdf_bindings=bsdf_bindings,
         wi=wi,
         bc=bc,
-        global_bindings=global_bindings,
+        global_bindings=_mtlx_lut_bindings,
     )
     assert test.run(), test.messages
 
@@ -700,35 +972,58 @@ def test_bsdf_chi2(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 @pytest.mark.parametrize(
     "bsdf_type,bsdf_bindings,wi,bc", _make_params(SkipFlags.SAMPLE_CONSISTENCY)
 )
 def test_bsdf_eval_sample_consistency(
-    device_type: spy.DeviceType,
+    _bsdf_resources: _BSDFResources,
+    _mtlx_lut_bindings: dict[str, Any],
     bsdf_type: str,
     bsdf_bindings: dict[str, Any],
     wi: spy.float3,
     bc: Optional[dict[str, float]],
 ) -> None:
     """Verify eval()/eval_pdf() == weight from sample()."""
-    device = helpers.get_device(device_type)
-    module = _get_module(device, device_type)
-    global_bindings = _get_mx139_lut_bindings(device, device_type)
-
     test = BSDFEvalSampleConsistencyTest(
-        device=device,
-        module=module,
+        device=_bsdf_resources.device,
+        module=_bsdf_resources.module,
         bsdf_type=bsdf_type,
         bsdf_bindings=bsdf_bindings,
         wi=wi,
         bc=bc,
-        global_bindings=global_bindings,
+        global_bindings=_mtlx_lut_bindings,
     )
     assert test.run(), test.messages
 
 
-@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_mtlx_scratch_conductor_pdf_consistency(
+    _bsdf_resources: _BSDFResources,
+    _mtlx_lut_bindings: dict[str, Any],
+) -> None:
+    """Verify Scratch sampling reports the masked mixture PDF used for MIS."""
+    test = BSDFEvalSampleConsistencyTest(
+        device=_bsdf_resources.device,
+        module=_bsdf_resources.module,
+        bsdf_type="mtlx::MxScratchConductorBSDF",
+        bsdf_bindings={
+            "inner": {
+                "D": {"alpha": [0.25, 0.25]},
+                "eta": [0.2, 0.5, 1.0],
+                "k": [3.0, 2.0, 1.5],
+                "scratchdirection": [1.0, 0.0, 0.0],
+                "depth": 0.35,
+                "mask": [0.35, 0.35, 0.35],
+                "phongCoefficient": 100.0,
+            }
+        },
+        wi=WI_NORMAL,
+        sample_count=10000,
+        global_bindings=_mtlx_lut_bindings,
+    )
+    # The selected-branch weight is intentionally not the collapsed eval()/eval_pdf() ratio.
+    assert test.run(weight_tol=float("inf")), test.messages
+
+
 @pytest.mark.parametrize(
     "wi",
     [
@@ -737,28 +1032,24 @@ def test_bsdf_eval_sample_consistency(
     ],
 )
 def test_pbrt_dielectric_near_smooth_eval_sample_consistency(
-    device_type: spy.DeviceType,
+    _bsdf_resources: _BSDFResources,
+    _mtlx_lut_bindings: dict[str, Any],
     wi: spy.float3,
 ) -> None:
     """Near-smooth PBRT dielectric samples must report the same PDF as eval_pdf()."""
-    device = helpers.get_device(device_type)
-    module = _get_module(device, device_type)
-    global_bindings = _get_mx139_lut_bindings(device, device_type)
-
     test = BSDFEvalSampleConsistencyTest(
-        device=device,
-        module=module,
+        device=_bsdf_resources.device,
+        module=_bsdf_resources.module,
         bsdf_type="PBRTDielectricBSDF",
         bsdf_bindings={"D": {"alpha": [0.002, 0.002]}, "eta": 1.0 / 1.48},
         wi=wi,
         bc={"ior_i": 1.0, "ior_t": 1.48},
         sample_count=100000,
-        global_bindings=global_bindings,
+        global_bindings=_mtlx_lut_bindings,
     )
     assert test.run(), test.messages
 
 
-@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 @pytest.mark.parametrize(
     "sample_lobe_types_hint",
     [
@@ -767,17 +1058,14 @@ def test_pbrt_dielectric_near_smooth_eval_sample_consistency(
     ],
 )
 def test_pbrt_dielectric_lobe_sampling_hint_eval_sample_consistency(
-    device_type: spy.DeviceType,
+    _bsdf_resources: _BSDFResources,
+    _mtlx_lut_bindings: dict[str, Any],
     sample_lobe_types_hint: BSDFFlags,
 ) -> None:
     """Restricted sampling hints must report coherent hint-conditioned PDFs."""
-    device = helpers.get_device(device_type)
-    module = _get_module(device, device_type)
-    global_bindings = _get_mx139_lut_bindings(device, device_type)
-
     test = BSDFEvalSampleConsistencyTest(
-        device=device,
-        module=module,
+        device=_bsdf_resources.device,
+        module=_bsdf_resources.module,
         bsdf_type="PBRTDielectricBSDF",
         bsdf_bindings={"D": {"alpha": [0.3, 0.3]}, "eta": 1.0 / 1.5},
         wi=WI_30DEG,
@@ -787,7 +1075,7 @@ def test_pbrt_dielectric_lobe_sampling_hint_eval_sample_consistency(
             "sample_lobe_types_hint": sample_lobe_types_hint,
         },
         sample_count=100000,
-        global_bindings=global_bindings,
+        global_bindings=_mtlx_lut_bindings,
     )
     assert test.run(), test.messages
 
@@ -797,31 +1085,27 @@ def test_pbrt_dielectric_lobe_sampling_hint_eval_sample_consistency(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 @pytest.mark.parametrize(
     "bsdf_type,bsdf_bindings,wi,bc",
     _make_params(SkipFlags.RECIPROCITY),
 )
 def test_bsdf_reciprocity(
-    device_type: spy.DeviceType,
+    _bsdf_resources: _BSDFResources,
+    _mtlx_lut_bindings: dict[str, Any],
     bsdf_type: str,
     bsdf_bindings: dict[str, Any],
     wi: spy.float3,
     bc: Optional[dict[str, float]],
 ) -> None:
     """Verify Helmholtz reciprocity: f(wi,wo) = f(wo,wi)."""
-    device = helpers.get_device(device_type)
-    module = _get_module(device, device_type)
-    global_bindings = _get_mx139_lut_bindings(device, device_type)
-
     test = BSDFReciprocityTest(
-        device=device,
-        module=module,
+        device=_bsdf_resources.device,
+        module=_bsdf_resources.module,
         bsdf_type=bsdf_type,
         bsdf_bindings=bsdf_bindings,
         wi=wi,
         bc=bc,
-        global_bindings=global_bindings,
+        global_bindings=_mtlx_lut_bindings,
     )
     assert test.run(), test.messages
 

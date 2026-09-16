@@ -30,8 +30,9 @@ namespace falcor::reflection {
 class PythonPropertyDescriptor : public PropertyDescriptor {
 public:
     /// Construct from a Python PythonPropertyInfo object.
-    /// The info object must have: name, getter, setter (or None), value_type, enum_type,
-    /// doc, default_value, value_range, ui_flags, ui_label, ui_group, ui_drag_speed, ui_enable_if.
+    /// The info object must have: name, getter, setter (or None), value_type, object_factories,
+    /// doc, has_default_value, default_value, value_range, ui_flags, ui_label, ui_group,
+    /// ui_drag_speed, ui_enable_if, on_change.
     explicit PythonPropertyDescriptor(nb::object info);
 
     // PropertyDescriptor interface
@@ -64,15 +65,22 @@ private:
     /// Call the Python setter on the instance with a Python value.
     void py_set(void* instance, nb::handle value) const;
 
+    /// Validate a Python value against the declared reflected-object type and nullability.
+    void validate_reflected_object(nb::handle value) const;
+
     /// The Python PythonPropertyInfo (kept alive to prevent GC of getter/setter).
     nb::object m_info;
 
     /// Cached Python callables.
     nb::object m_getter;
-    nb::object m_setter; // may be nb::none()
+    nb::object m_setter;    // may be nb::none()
+    nb::object m_on_change; // may be nb::none()
 
     /// Default value as Python object (may be nb::none()).
     nb::object m_default_value;
+
+    /// Whether the property has a default value. The value itself may be None.
+    bool m_has_default_value{false};
 
     /// Type map entry for the property's C++ type, or nullptr for unsupported types.
     const PropertyTypeMapEntry* m_type_entry{nullptr};
@@ -80,8 +88,11 @@ private:
     /// Whether this is an enum property.
     bool m_is_enum{false};
 
-    /// Python enum type (only set if m_is_enum).
-    nb::object m_enum_type;
+    /// Whether this property stores a native ReflectedObject reference.
+    bool m_is_reflected_object{false};
+
+    /// Canonical Python value type.
+    nb::object m_value_type;
 
     FALCOR_NON_COPYABLE_AND_MOVABLE(PythonPropertyDescriptor);
 };

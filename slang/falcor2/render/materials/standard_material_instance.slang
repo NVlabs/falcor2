@@ -7,7 +7,11 @@ public struct StandardMaterialInstance : IMaterialInstance
 {
     public Frame shading_frame_ws;
     public StandardBSDFData bsdf_data;
-    public float3 emissive_radiance;
+    public float3 emissive_radiance = {};
+    public float interior_ior = 1.0;
+    public float3 volume_sigma_a = {};
+    public float3 volume_sigma_s = {};
+    public float volume_anisotropy = 0.0;
 
     private StandardBSDF make_bsdf(const SurfaceInteraction si)
     {
@@ -15,15 +19,20 @@ public struct StandardMaterialInstance : IMaterialInstance
         return StandardBSDF(wi_ls, bsdf_data);
     }
 
-    public float3 eval<S : ISampleGenerator>(const SurfaceInteraction si, const float3 wo_ws, inout S sg)
+
+    public BSDFEval eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both, S : ISampleGenerator>(
+        const SurfaceInteraction si,
+        const float3 wo_ws,
+        inout S sg
+    )
     {
         float3 wi_ls = shading_frame_ws.to_local(si.wi_ws);
         float3 wo_ls = shading_frame_ws.to_local(wo_ws);
         if (!stdmat::is_valid_hemisphere_reflection_or_transmission(si, shading_frame_ws, wi_ls, wo_ls, wo_ws))
-            return float3(0.0);
+            return BSDFEval();
 
         StandardBSDF bsdf = StandardBSDF(wi_ls, bsdf_data);
-        return bsdf.eval(wi_ls, wo_ls, sg, BSDFContext());
+        return bsdf.eval_with_pdf(wi_ls, wo_ls, sg, BSDFContext());
     }
 
     public bool sample<S : ISampleGenerator>(const SurfaceInteraction si, inout S sg, out MaterialSample sample)
@@ -47,29 +56,29 @@ public struct StandardMaterialInstance : IMaterialInstance
         );
     }
 
-    public float eval_pdf(const SurfaceInteraction si, const float3 wo_ws)
-    {
-        float3 wi_ls = shading_frame_ws.to_local(si.wi_ws);
-        float3 wo_ls = shading_frame_ws.to_local(wo_ws);
-        if (!stdmat::is_valid_hemisphere_reflection_or_transmission(si, shading_frame_ws, wi_ls, wo_ls, wo_ws))
-            return 0.0;
-
-        StandardBSDF bsdf = StandardBSDF(wi_ls, bsdf_data);
-        return bsdf.eval_pdf(wi_ls, wo_ls, BSDFContext());
-    }
 
     public MaterialProperties collect_properties(const SurfaceInteraction si)
     {
         MaterialProperties result = {};
 
+        float metallic = saturate(bsdf_data.metallic);
+
         // Convert perceptual roughness to the guide value used by downstream denoisers.
         float alpha = bsdf_data.roughness * bsdf_data.roughness;
         float roughness = alpha < STANDARD_MIN_GGX_ALPHA ? 0.0 : bsdf_data.roughness;
 
-        // Split the material into the guide albedo buckets expected by the renderer.
+        // Recover the authored base color. StandardMaterial stores the dielectric
+        // contribution premultiplied by (1 - metallic), while a fully metallic
+        // material stores its base color in the specular contribution.
+        result.material_color
+            = saturate(metallic < 0.999 ? bsdf_data.diffuse / max(1.0 - metallic, 1e-3) : bsdf_data.specular);
+
         result.emission = emissive_radiance;
+        result.metallic = metallic;
         result.roughness = roughness;
         result.guide_normal = shading_frame_ws.normal;
+
+        // Split the material into the guide albedo buckets expected by the renderer.
         result.diffuse_reflection_albedo
             = (1.0 - bsdf_data.diffuse_transmission) * (1.0 - bsdf_data.specular_transmission) * bsdf_data.diffuse;
         result.diffuse_transmission_albedo
@@ -77,19 +86,8 @@ public struct StandardMaterialInstance : IMaterialInstance
         result.specular_reflection_albedo = (1.0 - bsdf_data.specular_transmission) * bsdf_data.specular;
         result.specular_transmission_albedo = bsdf_data.specular_transmission * bsdf_data.specular;
         result.specular_reflectance = bsdf_data.specular;
-        if (bsdf_data.diffuse_transmission > 0.0 || bsdf_data.specular_transmission > 0.0)
-            result.flags = MaterialProperties::Flags::is_transmissive;
 
         return result;
-    }
-
-    public override float3 eval_material_color(const SurfaceInteraction si)
-    {
-        // Give us some form of 'color' even for materials that are purely specular,
-        // to help guide denoisers and other post-processes.
-        float metallic = saturate(bsdf_data.metallic);
-        float3 dielectric_color = metallic < 0.999 ? bsdf_data.diffuse / max(1.0 - metallic, 1e-3) : bsdf_data.specular;
-        return saturate(lerp(dielectric_color, bsdf_data.specular, metallic));
     }
 
     public override Optional<ExtraBsdfProperties>
@@ -151,5 +149,10 @@ public struct StandardMaterialInstance : IMaterialInstance
 
     public override float3 eval_emissive_radiance() { return emissive_radiance; }
 
-    public override bool is_thin_walled() { return bsdf_data.thin_walled; }
+    public override float get_interior_ior() { return interior_ior; }
+
+    public override HomogeneousMediumProperties get_interior_medium()
+    {
+        return { volume_sigma_a, volume_sigma_s, volume_anisotropy };
+    }
 };

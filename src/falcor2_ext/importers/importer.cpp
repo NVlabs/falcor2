@@ -56,7 +56,10 @@ FALCOR_PY_EXPORT(importers_importer)
 
     nb::class_<ImportOptions>(m, "ImportOptions", D(ImportOptions))
         .def(nb::init<>())
-        .DEF_RW(ImportOptions, recompute_normals);
+        .DEF_RW(ImportOptions, recompute_normals)
+        .DEF_RW(ImportOptions, force_rectangle_lights_to_geometry)
+        .DEF_RW(ImportOptions, force_disk_lights_to_geometry)
+        .DEF_RW(ImportOptions, force_sphere_lights_to_geometry);
 
     nb::class_<ImporterSelector>(m, "ImporterSelector", D(ImporterSelector))
         .def(nb::init<>())
@@ -112,13 +115,14 @@ FALCOR_PY_EXPORT(importers_importer)
             "create",
             &ImporterCameraCollection::create,
             "name"_a,
-            "focus_distance"_a = 1.f,
             "focal_length"_a = 50.f,
             "fstop"_a = 8.f,
+            "sensor_size_mm"_a = 24.f,
+            "enable_depth_of_field"_a = false,
+            "focus_distance"_a = 1.f,
             "depth_range"_a = float2(0.01f, 10000.f),
             "projection"_a = ImporterCamera::Projection::perspective,
             "fov_direction"_a = ImporterCamera::FOVDirection::vertical,
-            "sensor_size_mm"_a = 24.f,
             D(ImporterCameraCollection, create)
         )
         .def(
@@ -126,12 +130,13 @@ FALCOR_PY_EXPORT(importers_importer)
             &ImporterCameraCollection::create_fov,
             "name"_a,
             "fov_degrees"_a = 70.f,
-            "focus_distance"_a = 1.f,
             "fstop"_a = 8.f,
+            "sensor_size_mm"_a = 24.f,
+            "enable_depth_of_field"_a = false,
+            "focus_distance"_a = 1.f,
             "depth_range"_a = float2(0.01f, 10000.f),
             "projection"_a = ImporterCamera::Projection::perspective,
             "fov_direction"_a = ImporterCamera::FOVDirection::vertical,
-            "sensor_size_mm"_a = 24.f,
             D(ImporterCameraCollection, create_fov)
         );
 
@@ -160,13 +165,14 @@ FALCOR_PY_EXPORT(importers_importer)
             &ImporterNodeCollection::create_camera,
             "name"_a = "Camera",
             "transform"_a = float4x4::identity(),
-            "focus_distance"_a = 1.f,
             "focal_length"_a = 50.f,
             "fstop"_a = 8.f,
+            "sensor_size_mm"_a = 24.f,
+            "enable_depth_of_field"_a = false,
+            "focus_distance"_a = 1.f,
             "depth_range"_a = float2(0.01f, 10000.f),
             "projection"_a = ImporterCamera::Projection::perspective,
             "fov_direction"_a = ImporterCamera::FOVDirection::vertical,
-            "sensor_size_mm"_a = 24.f,
             D(ImporterNodeCollection, create_camera)
         )
         .def(
@@ -175,12 +181,13 @@ FALCOR_PY_EXPORT(importers_importer)
             "name"_a = "Camera",
             "transform"_a = float4x4::identity(),
             "fov_degrees"_a = 70.f,
-            "focus_distance"_a = 1.f,
             "fstop"_a = 8.f,
+            "sensor_size_mm"_a = 24.f,
+            "enable_depth_of_field"_a = false,
+            "focus_distance"_a = 1.f,
             "depth_range"_a = float2(0.01f, 10000.f),
             "projection"_a = ImporterCamera::Projection::perspective,
             "fov_direction"_a = ImporterCamera::FOVDirection::vertical,
-            "sensor_size_mm"_a = 24.f,
             D(ImporterNodeCollection, create_camera_fov)
         );
 
@@ -198,6 +205,14 @@ FALCOR_PY_EXPORT(importers_importer)
         .def("add_search_path", &Importer::add_search_path, "path"_a, D(Importer, add_search_path))
         .def("add_search_paths", &Importer::add_search_paths, "paths"_a, D(Importer, add_search_paths))
         .def("import_asset", &Importer::import_asset, "path"_a, D(Importer, import_asset))
-        .def("on_scene_created", &Importer::on_scene_created, "callback"_a, D(Importer, on_scene_created))
+        .def("on_scene_loaded", &Importer::on_scene_loaded, "callback"_a, D(Importer, on_scene_loaded))
+        .def(
+            "run_scene_loaded_callbacks",
+            &Importer::run_scene_loaded_callbacks,
+            "scene"_a,
+            D(Importer, run_scene_loaded_callbacks)
+        )
         .def("build_importer_scene", &Importer::build_importer_scene, D(Importer, build_importer_scene));
+
+    m.def("import_scene", &import_scene, "path"_a, "import_options"_a = ImportOptions(), D(import_scene));
 }

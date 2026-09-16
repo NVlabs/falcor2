@@ -29,4 +29,8 @@ class TypeRegistry;
 
 class DynamicPropertySet;
 
+// reflected_object_factory.h
+
+class ReflectedObjectFactory;
+
 } // namespace falcor::reflection

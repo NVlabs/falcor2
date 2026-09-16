@@ -14,8 +14,7 @@
 #include "falcor2/render/animation.h"
 #include "falcor2/render/entity.h"
 #include "falcor2/render/component.h"
-#include "falcor2/render/scene_options.h"
-#include "falcor2/render/scene_import.h"
+#include "falcor2/render/scene_config.h"
 #include "falcor2/render/hit_group_policy.h"
 #include "falcor2/render/render_scene.h"
 
@@ -24,6 +23,7 @@
 #include "falcor2/core/properties.h"
 #include "falcor2/core/signal.h"
 #include "falcor2/importers/fwd.h"
+#include "falcor2/importers/importer.h"
 #include "falcor2/importers/importer_types.h"
 
 #include <sgl/device/fwd.h>
@@ -96,55 +96,57 @@ using SceneUpdatedSignal = Signal<void(SceneUpdateFlags)>;
 class FALCOR_API Scene : public Object {
     FALCOR_OBJECT(Scene)
 public:
-    /// Constructor.
-    /// @param device The device to use for rendering.
-    /// @param options Scene creation options.
-    Scene(ref<sgl::Device> device, const SceneOptions& options);
-
     /// Destructor.
     virtual ~Scene() override;
 
     /// Create an empty scene.
     /// @param device The device to use for rendering.
-    /// @param uv_origin Optional target scene texture coordinate origin. If unset, defaults to upper_left.
+    /// @param config Immutable live-scene configuration.
     /// @return The created scene.
-    static ref<Scene> create(ref<sgl::Device> device, std::optional<UVOrigin> uv_origin = {});
+    static ref<Scene> create(ref<sgl::Device> device, const SceneConfig& config = {});
 
-    /// Create a scene from an importer scene.
+    /// Load a scene from a file.
     /// @param device The device to use for rendering.
-    /// @param importer_scene The importer scene to create the scene from.
-    /// @param uv_origin Optional target scene texture coordinate origin. If unset, uses importer_scene.uv_origin.
+    /// @param path Path to the scene file to load.
+    /// @param import_options Optional import behavior. If unset, uses default import options.
+    /// @param config Optional live-scene configuration. If unset, uses the imported scene's preferred UV origin.
+    /// @return The loaded scene.
+    static ref<Scene> load(
+        ref<sgl::Device> device,
+        const std::filesystem::path& path,
+        std::optional<ImportOptions> import_options = {},
+        std::optional<SceneConfig> config = {}
+    );
+
+    /// Create a scene from imported CPU-side scene data.
+    /// @param device The device to use for rendering.
+    /// @param importer_scene Imported scene data to load.
+    /// @param config Optional live-scene configuration. If unset, uses importer_scene.uv_origin.
     /// @return The created scene.
-    static ref<Scene>
-    create(ref<sgl::Device> device, const ImporterScene& importer_scene, std::optional<UVOrigin> uv_origin = {});
+    static ref<Scene> from_importer_scene(
+        ref<sgl::Device> device,
+        const ImporterScene& importer_scene,
+        std::optional<SceneConfig> config = {}
+    );
 
     /// Create a scene from the edits recorded by an importer.
     /// @param device The device to use for rendering.
-    /// @param importer The importer whose recorded edits and scene-created callbacks to apply.
-    /// @param uv_origin Optional target scene texture coordinate origin. If unset, uses importer scene convention.
-    /// @param add_default_camera_best_view If true, add a best-view camera when the built importer scene has none.
-    /// @param camera_aspect Aspect ratio used when adding the best-view camera.
+    /// @param importer The importer whose recorded edits and loaded callbacks to apply.
+    /// @param config Optional live-scene configuration. If unset, uses the importer scene's preferred UV origin.
     /// @return The created scene.
-    static ref<Scene> create(
-        ref<sgl::Device> device,
-        const Importer& importer,
-        std::optional<UVOrigin> uv_origin = {},
-        bool add_default_camera_best_view = false,
-        float camera_aspect = 16.f / 9.f
-    );
+    static ref<Scene>
+    from_importer(ref<sgl::Device> device, const Importer& importer, std::optional<SceneConfig> config = {});
 
-    /// Create a scene by loading from a file.
-    /// @param device The device to use for rendering.
-    /// @param path Path to the scene file to load.
-    /// @param recompute_normals If true, recompute normals for all meshes.
-    /// @param uv_origin Optional target scene texture coordinate origin. If unset, uses imported scene convention.
-    /// @return The created scene.
-    static ref<Scene> create(
-        ref<sgl::Device> device,
-        const std::filesystem::path& path,
-        bool recompute_normals = false,
-        std::optional<UVOrigin> uv_origin = {}
-    );
+    /// Append a scene file to this live scene.
+    /// @param path Path to the scene file to append.
+    /// @param import_options Optional import behavior. If unset, uses default import options.
+    void append(const std::filesystem::path& path, std::optional<ImportOptions> import_options = {});
+
+    /// Append imported CPU-side scene data to this live scene.
+    void append(const ImporterScene& importer_scene);
+
+    /// Build and append importer edits, then run loaded callbacks.
+    void append(const Importer& importer);
 
     /// The devce device used for creating resources and executing rendering commands.
     sgl::Device* device() const { return m_device; }
@@ -155,8 +157,8 @@ public:
     /// The texture manager responsible for loading, caching, and managing scene textures.
     TextureManager* texture_manager() const { return m_texture_manager.get(); }
 
-    /// Scene creation options.
-    const SceneOptions& options() const { return m_options; }
+    /// Immutable live-scene configuration.
+    const SceneConfig& config() const { return m_config; }
 
     /// Add scene globals to the scene.
     /// Scene globals are shader globals that are set on the scene and automatically bound when rendering.
@@ -344,6 +346,14 @@ public:
     RenderScene* _render_scene() { return m_render_scene; }
     const RenderScene* _render_scene() const { return m_render_scene; }
 
+    // Get internal light data for renderer-owned sampling strategies and tests.
+    LightSystem* _light_system() { return m_light_system; }
+    const LightSystem* _light_system() const { return m_light_system; }
+
+    // Get internal emissive geometry data so it can be tested
+    EmissiveGeometrySystem* _emissive_geometry_system() { return m_emissive_geometry_system; }
+    const EmissiveGeometrySystem* _emissive_geometry_system() const { return m_emissive_geometry_system; }
+
     /// Add an existing object to the scene and register it with the appropriate collection.
     /// @tparam T The type of object to add.
     /// @param object The object to add.
@@ -431,13 +441,16 @@ public:
     void _handle_removed_objects();
 
 private:
+    /// Construct a scene with a fully resolved configuration.
+    Scene(ref<sgl::Device> device, const SceneConfig& config);
+
     /// Garbage collect refcounted scene globals with no remaining external owners.
     void run_garbage_collect();
 
     ref<sgl::Device> m_device;
 
-    /// Resolved scene creation options.
-    SceneOptions m_options;
+    /// Resolved immutable live-scene configuration.
+    const SceneConfig m_config;
 
     /// Collection of all materials.
     MaterialCollection m_material_collection;

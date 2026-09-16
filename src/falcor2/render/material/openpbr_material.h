@@ -39,7 +39,20 @@ public:
     virtual void update(SceneUpdateContext& ctx) override;
     virtual shared::MaterialFlags flags() const override
     {
-        return m_geometry_thin_walled ? shared::MaterialFlags::thin_walled : shared::MaterialFlags::none;
+        // OpenPBR inputs may select transmissive lobes dynamically. Conservatively allow
+        // two-sided interaction until host-side material capability analysis is available.
+        shared::MaterialFlags result = shared::MaterialFlags::two_sided;
+        if (m_geometry_thin_walled)
+            result |= shared::MaterialFlags::thin_walled;
+        return result;
+    }
+    virtual OpacityDesc opacity_desc() const override;
+
+    /// Reflect this class.
+    template<reflection::ClassReflector R>
+    static void reflect(R& r)
+    {
+        FALCOR_UNUSED(r);
     }
 
 public:
@@ -72,6 +85,8 @@ private:
         ior,
         /// Generic attribute in [0, +inf) range.
         positive,
+        /// Signed unit attribute in [-1, 1] range.
+        signed_unit,
     };
 
     using AttributeValue = std::variant<float, float3>;
@@ -111,6 +126,7 @@ private:
     static constexpr auto GROUP_SPECULAR = "Specular";
     static constexpr auto GROUP_COAT = "Coat";
     static constexpr auto GROUP_FUZZ = "Fuzz";
+    static constexpr auto GROUP_TRANSMISSION = "Transmission";
     static constexpr auto GROUP_THIN_FILM = "Thin Film";
     static constexpr auto GROUP_EMISSION = "Emission";
     static constexpr auto GROUP_GEOMETRY = "Geometry";
@@ -148,11 +164,11 @@ private:
         AttributeInfo{"fuzz_color", "fuzz_color", "Color", GROUP_FUZZ, AttributeType::float3, AttributeKind::color, AttributeFlags::none, float3(1.f)},
         AttributeInfo{"fuzz_roughness", "fuzz_roughness", "Roughness", GROUP_FUZZ, AttributeType::float_, AttributeKind::weight, AttributeFlags::none, 0.5f},
         // Transmission / volume
-        // float transmission_weight;
-        // vec3 transmission_color;
-        // float transmission_depth;
-        // vec3 transmission_scatter;
-        // float transmission_scatter_anisotropy;
+        AttributeInfo{"transmission_weight", "transmission_weight", "Weight", GROUP_TRANSMISSION, AttributeType::float_, AttributeKind::weight, AttributeFlags::none, 0.f},
+        AttributeInfo{"transmission_color", "transmission_color", "Color", GROUP_TRANSMISSION, AttributeType::float3, AttributeKind::color, AttributeFlags::none, float3(1.f)},
+        AttributeInfo{"transmission_depth", "transmission_depth", "Depth", GROUP_TRANSMISSION, AttributeType::float_, AttributeKind::positive, AttributeFlags::none, 0.f},
+        AttributeInfo{"transmission_scatter", "transmission_scatter", "Scatter", GROUP_TRANSMISSION, AttributeType::float3, AttributeKind::color, AttributeFlags::none, float3(0.f)},
+        AttributeInfo{"transmission_scatter_anisotropy", "transmission_scatter_anisotropy", "Scatter Anisotropy", GROUP_TRANSMISSION, AttributeType::float_, AttributeKind::signed_unit, AttributeFlags::none, 0.f},
         // float transmission_dispersion_scale;
         // float transmission_dispersion_abbe_number;
         // Thin-film
@@ -175,6 +191,12 @@ private:
     std::array<Attribute, ATTRIBUTE_COUNT> m_attributes;
     ref<sgl::Buffer> m_attributes_buffer;
 
+    ref<sgl::Texture> m_opacity_texture;
+    std::filesystem::path m_opacity_texture_path;
+    uint32_t m_opacity_texture_channel{3};
+    float m_opacity_factor{1.f};
+    float m_opacity_threshold{0.f};
+    TextureHandle m_opacity_texture_handle;
     ref<sgl::Texture> m_normal_texture;
     std::filesystem::path m_normal_texture_path;
     float m_normal_texture_scale{1.f};

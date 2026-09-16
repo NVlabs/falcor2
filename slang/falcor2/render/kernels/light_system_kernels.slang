@@ -3,10 +3,10 @@
 
 import falcor2.render;
 
-/// Compute the emitted power of each environment light.
+/// Compute the power estimate of each component light for importance sampling.
 [shader("compute")]
 [numthreads(32, 1, 1)]
-void compute_environment_light_powers(
+void compute_light_powers(
     uint3 tid: SV_DispatchThreadID,
     uniform LightSystem light_system,
     uniform uint light_count,
@@ -16,5 +16,5 @@ void compute_environment_light_powers(
     if (tid.x >= light_count)
         return;
 
-    powers[tid.x] = light_system.get_environment_light(tid.x).emitted_power();
+    powers[tid.x] = light_system.get_light(LightID(tid.x)).power_estimate();
 }

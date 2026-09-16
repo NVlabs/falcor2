@@ -17,8 +17,8 @@ import falcor2.testing.helpers as helpers
 PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
 DATA = PROJECT_ROOT / "data"
 CORNELL_BOX = DATA / "assets" / "cornell-box" / "usdpreviewsurface" / "cornell-box.usda"
-DAMAGED_HELMET = DATA / "assets" / "kronos" / "DamagedHelmet" / "glTF" / "DamagedHelmet.gltf"
 BOX_GLB = DATA / "assets" / "kronos" / "Box" / "glTF-Binary" / "Box.glb"
+BOX_MATERIAL_NAME = "Red"
 ENV_MAP = DATA / "assets" / "envmaps" / "aerodynamics_workshop_512.hdr"
 DATA_CHECKER_MATERIAL_SCENE = PROJECT_ROOT / "data" / "scenes" / "checker-material.py"
 DATA_SCENES_DIR = DATA_CHECKER_MATERIAL_SCENE.parent
@@ -47,12 +47,13 @@ def test_collection_bindings_record_camera_node_and_environment(tmp_path: Path) 
 
     camera = importer.cameras.create(
         name="Camera",
-        focus_distance=2.0,
         focal_length=35.0,
         fstop=4.0,
+        sensor_size_mm=36.0,
+        enable_depth_of_field=True,
+        focus_distance=2.0,
         projection=f2.ImporterCamera.Projection.orthographic,
         fov_direction=f2.ImporterCamera.FOVDirection.horizontal,
-        sensor_size_mm=36.0,
     )
     importer.nodes.create(name="CameraNode", camera=camera)
     importer.env.set(path=env_path, exposure=5.0, name="Environment")
@@ -62,6 +63,10 @@ def test_collection_bindings_record_camera_node_and_environment(tmp_path: Path) 
     assert len(scene.nodes) == 2
     assert len(scene.lights) == 1
     assert scene.cameras[0].focal_length == 35.0
+    assert scene.cameras[0].fstop == 4.0
+    assert scene.cameras[0].sensor_size_mm == 36.0
+    assert scene.cameras[0].enable_depth_of_field is True
+    assert scene.cameras[0].focus_distance == 2.0
     assert scene.cameras[0].projection == f2.ImporterCamera.Projection.orthographic
     assert scene.nodes[0].name == "CameraNode"
     assert scene.nodes[0].camera_index == 0
@@ -77,13 +82,14 @@ def test_node_collection_create_camera_creates_camera_and_node() -> None:
     node = importer.nodes.create_camera(
         name="View",
         transform=transform.matrix,
-        focus_distance=2.0,
         focal_length=35.0,
         fstop=4.0,
+        sensor_size_mm=36.0,
+        enable_depth_of_field=True,
+        focus_distance=2.0,
         depth_range=spy.float2(0.1, 500.0),
         projection=f2.ImporterCamera.Projection.orthographic,
         fov_direction=f2.ImporterCamera.FOVDirection.horizontal,
-        sensor_size_mm=36.0,
     )
     importer.nodes.create(name="Child", parent=node)
 
@@ -92,13 +98,14 @@ def test_node_collection_create_camera_creates_camera_and_node() -> None:
     assert len(scene.cameras) == 1
     assert len(scene.nodes) == 2
     assert scene.cameras[0].name == "View"
-    assert scene.cameras[0].focus_distance == 2.0
     assert scene.cameras[0].focal_length == 35.0
     assert scene.cameras[0].fstop == 4.0
+    assert scene.cameras[0].sensor_size_mm == 36.0
+    assert scene.cameras[0].enable_depth_of_field is True
+    assert scene.cameras[0].focus_distance == 2.0
     assert scene.cameras[0].depth_range == spy.float2(0.1, 500.0)
     assert scene.cameras[0].projection == f2.ImporterCamera.Projection.orthographic
     assert scene.cameras[0].fov_direction == f2.ImporterCamera.FOVDirection.horizontal
-    assert scene.cameras[0].sensor_size_mm == 36.0
     assert scene.nodes[0].name == "View"
     assert scene.nodes[0].camera_index == 0
     assert scene.nodes[0].transform == transform.matrix
@@ -116,10 +123,12 @@ def test_node_collection_create_camera_fov_uses_defaults_and_derives_focal_lengt
     assert len(scene.cameras) == 1
     assert len(scene.nodes) == 1
     assert scene.cameras[0].name == "Camera"
-    assert scene.cameras[0].sensor_size_mm == 24.0
     assert scene.cameras[0].focal_length == pytest.approx(
         24.0 / (2.0 * math.tan(math.radians(45.0) * 0.5))
     )
+    assert scene.cameras[0].fstop == 8.0
+    assert scene.cameras[0].sensor_size_mm == 24.0
+    assert scene.cameras[0].enable_depth_of_field is False
     assert scene.nodes[0].name == "Camera"
     assert scene.nodes[0].camera_index == 0
     assert scene.nodes[0].transform == spy.float4x4.identity()
@@ -128,8 +137,16 @@ def test_node_collection_create_camera_fov_uses_defaults_and_derives_focal_lengt
 def test_importer_create_accepts_import_options() -> None:
     options = f2.ImportOptions()
     assert options.recompute_normals is False
+    assert options.force_rectangle_lights_to_geometry is False
+    assert options.force_disk_lights_to_geometry is False
+    assert options.force_sphere_lights_to_geometry is False
 
     options.recompute_normals = True
+    options.force_rectangle_lights_to_geometry = True
+    options.force_disk_lights_to_geometry = True
+    assert options.force_rectangle_lights_to_geometry
+    assert options.force_disk_lights_to_geometry
+    assert not options.force_sphere_lights_to_geometry
     importer = f2.Importer.create(default_import_options=options)
     importer.import_asset(CORNELL_BOX)
 
@@ -147,18 +164,18 @@ def test_material_collection_validates_input() -> None:
         importer.materials["Material"].replace(dict)
 
 
-@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_material_replacement_builds_live_scene(device_type: spy.DeviceType) -> None:
     device = helpers.get_device(device_type)
     importer = f2.Importer.create()
-    importer.import_asset(DAMAGED_HELMET)
+    importer.import_asset(BOX_GLB)
 
     props = f2.Properties()
     props["roughness_factor"] = 0.25
-    importer.materials["Material_MR"].replace("StandardMaterial", props)
+    importer.materials[BOX_MATERIAL_NAME].replace("StandardMaterial", props)
 
-    scene = f2.Scene.create(device, importer.build_importer_scene())
-    material = scene.materials.find("Material_MR")
+    scene = f2.Scene.from_importer_scene(device, importer.build_importer_scene())
+    material = scene.materials.find(BOX_MATERIAL_NAME)
     assert isinstance(material, f2.StandardMaterial)
     assert float(material.roughness_factor) == pytest.approx(0.25)
 
@@ -169,24 +186,24 @@ def test_material_replacement_builds_live_scene(device_type: spy.DeviceType) -> 
     assert any(material in list(instance.materials) for instance in instances)
 
 
-@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_material_replacement_accepts_native_material_class(device_type: spy.DeviceType) -> None:
     device = helpers.get_device(device_type)
     importer = f2.Importer.create()
-    importer.import_asset(DAMAGED_HELMET)
+    importer.import_asset(BOX_GLB)
 
     props = f2.Properties()
     props["roughness_factor"] = 0.375
-    importer.materials["Material_MR"].replace(f2.StandardMaterial, props)
+    importer.materials[BOX_MATERIAL_NAME].replace(f2.StandardMaterial, props)
 
-    scene = f2.Scene.create(device, importer.build_importer_scene())
-    material = scene.materials.find("Material_MR")
+    scene = f2.Scene.from_importer_scene(device, importer.build_importer_scene())
+    material = scene.materials.find(BOX_MATERIAL_NAME)
     assert isinstance(material, f2.StandardMaterial)
     assert float(material.roughness_factor) == pytest.approx(0.375)
 
 
-@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
-def test_scene_create_from_importer_runs_scene_created_callback_once(
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_scene_from_importer_runs_scene_loaded_callback_once(
     device_type: spy.DeviceType,
 ) -> None:
     device = helpers.get_device(device_type)
@@ -194,12 +211,12 @@ def test_scene_create_from_importer_runs_scene_created_callback_once(
     camera = importer.cameras.create_fov(name="RecordedCamera", fov_degrees=45.0)
     importer.nodes.create(name="RecordedCameraNode", camera=camera)
     callbacks_run: list[f2.Scene] = []
-    importer.on_scene_created(lambda scene: callbacks_run.append(scene))
+    importer.on_scene_loaded(lambda scene: callbacks_run.append(scene))
 
     importer.build_importer_scene()
     assert callbacks_run == []
 
-    scene = f2.Scene.create(device, importer)
+    scene = f2.Scene.from_importer(device, importer)
 
     assert callbacks_run == [scene]
     assert scene.active_camera is not None
@@ -208,19 +225,16 @@ def test_scene_create_from_importer_runs_scene_created_callback_once(
     assert scene.entities.find("RecordedCameraNode") is not None
 
 
-@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
-def test_scene_create_from_importer_adds_best_view_camera_only_when_missing(
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_explicit_importer_scene_preparation_adds_best_view_camera_only_when_missing(
     device_type: spy.DeviceType,
 ) -> None:
     device = helpers.get_device(device_type)
     importer = f2.Importer.create()
 
-    scene = f2.Scene.create(
-        device,
-        importer,
-        add_default_camera_best_view=True,
-        camera_aspect=4.0 / 3.0,
-    )
+    importer_scene = importer.build_importer_scene()
+    importer_scene.add_default_camera_best_view(50.0, 4.0 / 3.0)
+    scene = f2.Scene.from_importer_scene(device, importer_scene)
 
     assert len(scene.components.find_all(type=f2.Camera)) == 1
     assert scene.active_camera is not None
@@ -230,19 +244,79 @@ def test_scene_create_from_importer_adds_best_view_camera_only_when_missing(
     camera = authored_importer.cameras.create_fov(name="AuthoredCamera")
     authored_importer.nodes.create(name="AuthoredCameraNode", camera=camera)
 
-    authored_scene = f2.Scene.create(
-        device,
-        authored_importer,
-        add_default_camera_best_view=True,
-    )
+    authored_importer_scene = authored_importer.build_importer_scene()
+    if not authored_importer_scene.cameras:
+        authored_importer_scene.add_default_camera_best_view()
+    authored_scene = f2.Scene.from_importer_scene(device, authored_importer_scene)
 
     assert len(authored_scene.components.find_all(type=f2.Camera)) == 1
     assert authored_scene.entities.find("AuthoredCameraNode") is not None
     assert authored_scene.entities.find("AutoCamera_BestView") is None
 
 
-@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
-def test_scene_create_executes_python_scene_file(
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_scene_append_supports_importer_scene_and_importer(
+    device_type: spy.DeviceType,
+) -> None:
+    device = helpers.get_device(device_type)
+    scene = f2.Scene.create(device)
+
+    data_importer = f2.Importer.create()
+    data_importer.nodes.create(name="DataNode")
+    scene.append(data_importer.build_importer_scene())
+    assert scene.entities.find("DataNode") is not None
+
+    callback_count = 0
+    recipe_importer = f2.Importer.create()
+    recipe_importer.nodes.create(name="RecipeNode")
+
+    def on_loaded(loaded_scene: f2.Scene) -> None:
+        nonlocal callback_count
+        callback_count += 1
+        assert loaded_scene.entities.find("DataNode") is not None
+        assert loaded_scene.entities.find("RecipeNode") is not None
+
+    recipe_importer.on_scene_loaded(on_loaded)
+    scene.append(recipe_importer)
+
+    assert callback_count == 1
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_scene_append_python_path_runs_callback_after_existing_content(
+    device_type: spy.DeviceType, workspace_tmp_path: Path
+) -> None:
+    device = helpers.get_device(device_type)
+    scene = f2.Scene.create(device)
+    existing = scene.create_material(f2.StandardMaterial)
+    existing.name = "ExistingMaterial"
+    scene_path = write_python_scene(
+        workspace_tmp_path / "append_scene.py",
+        """
+        import falcor2 as f2
+
+        imp = f2.Importer.get()
+        imp.nodes.create(name="AppendedNode")
+
+        def finish(scene: f2.Scene) -> None:
+            assert scene.materials.find("ExistingMaterial") is not None
+            assert scene.entities.find("AppendedNode") is not None
+            material = scene.create_material(f2.StandardMaterial)
+            material.name = "CallbackMaterial"
+
+        imp.on_scene_loaded(finish)
+        """,
+    )
+
+    scene.append(scene_path)
+
+    assert scene.materials.find("ExistingMaterial") is existing
+    assert scene.materials.find("CallbackMaterial") is not None
+    assert scene.entities.find("AppendedNode") is not None
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_scene_load_executes_python_scene_file(
     device_type: spy.DeviceType, workspace_tmp_path: Path
 ) -> None:
     device = helpers.get_device(device_type)
@@ -257,7 +331,7 @@ def test_scene_create_executes_python_scene_file(
         """,
     )
 
-    scene = f2.Scene.create(device, scene_path)
+    scene = f2.Scene.load(device, scene_path)
 
     assert len(scene.entities) == 1
     assert scene.entities[0].name == "CameraNode"
@@ -266,7 +340,7 @@ def test_scene_create_executes_python_scene_file(
     assert scene.active_camera.fov_y == pytest.approx(70.0)
 
 
-@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_scene_create_resolves_source_relative_assets_from_unrelated_cwd(
     device_type: spy.DeviceType,
     workspace_tmp_path: Path,
@@ -292,7 +366,7 @@ def test_scene_create_resolves_source_relative_assets_from_unrelated_cwd(
     monkeypatch.chdir(other_dir)
 
     device = helpers.get_device(device_type)
-    scene = f2.Scene.create(device, scene_path)
+    scene = f2.Scene.load(device, scene_path)
     env_map = scene.components.find(type=f2.EnvMapLight)
 
     assert len(scene.geometries) > 0
@@ -300,8 +374,8 @@ def test_scene_create_resolves_source_relative_assets_from_unrelated_cwd(
     assert Path(env_map.env_map_path) == expected_env_path
 
 
-@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
-def test_scene_created_hook_can_create_active_camera(
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_scene_loaded_hook_can_create_active_camera(
     device_type: spy.DeviceType, workspace_tmp_path: Path
 ) -> None:
     device = helpers.get_device(device_type)
@@ -319,11 +393,11 @@ def test_scene_created_hook_can_create_active_camera(
             camera.name = "HookCamera"
             scene.active_camera = camera
 
-        imp.on_scene_created(finish)
+        imp.on_scene_loaded(finish)
         """,
     )
 
-    scene = f2.Scene.create(device, scene_path)
+    scene = f2.Scene.load(device, scene_path)
 
     assert len(scene.entities) == 1
     assert scene.entities[0].name == "HookCameraEntity"
@@ -331,7 +405,7 @@ def test_scene_created_hook_can_create_active_camera(
     assert scene.active_camera.name == "HookCamera"
 
 
-@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_scene_create_python_exception_restores_current_importer(
     device_type: spy.DeviceType, workspace_tmp_path: Path
 ) -> None:
@@ -349,7 +423,7 @@ def test_scene_create_python_exception_restores_current_importer(
     )
 
     with pytest.raises(RuntimeError, match="pyscene boom"):
-        f2.Scene.create(device, failing_scene_path)
+        f2.Scene.load(device, failing_scene_path)
 
     restored_scene = f2.Importer.get().build_importer_scene()
     assert len(restored_scene.cameras) == 1
@@ -368,7 +442,7 @@ def test_scene_create_python_exception_restores_current_importer(
         """,
     )
 
-    clean_scene = f2.Scene.create(device, clean_scene_path)
+    clean_scene = f2.Scene.load(device, clean_scene_path)
     assert len(clean_scene.entities) == 1
     assert clean_scene.entities[0].name == "CleanCameraNode"
 
@@ -376,7 +450,7 @@ def test_scene_create_python_exception_restores_current_importer(
     assert len(post_load_scene.cameras) == 0
 
 
-@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_scene_create_skips_main_guard(
     device_type: spy.DeviceType, workspace_tmp_path: Path
 ) -> None:
@@ -389,13 +463,13 @@ def test_scene_create_skips_main_guard(
         """,
     )
 
-    scene = f2.Scene.create(device, guarded_scene_path)
+    scene = f2.Scene.load(device, guarded_scene_path)
 
     assert scene is not None
 
 
-@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
-def test_scene_created_hook_exception_restores_current_importer(
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_scene_loaded_hook_exception_restores_current_importer(
     device_type: spy.DeviceType, workspace_tmp_path: Path
 ) -> None:
     device = helpers.get_device(device_type)
@@ -412,28 +486,28 @@ def test_scene_created_hook_exception_restores_current_importer(
         def finish(scene: f2.Scene) -> None:
             raise RuntimeError("pyscene callback boom")
 
-        imp.on_scene_created(finish)
+        imp.on_scene_loaded(finish)
         """,
     )
 
     with pytest.raises(RuntimeError, match="pyscene callback boom"):
-        f2.Scene.create(device, failing_scene_path)
+        f2.Scene.load(device, failing_scene_path)
 
     restored_scene = f2.Importer.get().build_importer_scene()
     assert len(restored_scene.cameras) == 1
     assert restored_scene.cameras[0].name == "BeforeCallbackFailure"
 
 
-@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_data_checker_material_python_scene_loads(device_type: spy.DeviceType) -> None:
     device = helpers.get_device(device_type)
 
     assert DATA_CHECKER_MATERIAL_SCENE.exists()
-    scene = f2.Scene.create(device, DATA_CHECKER_MATERIAL_SCENE)
+    scene = f2.Scene.load(device, DATA_CHECKER_MATERIAL_SCENE)
 
     assert scene.active_camera is not None
     assert scene.components.find(type=f2.EnvMapLight) is not None
-    material = scene.materials.find("Material_MR")
+    material = scene.materials.find(BOX_MATERIAL_NAME)
     assert isinstance(material, CheckerMaterial)
     assert material.scale == pytest.approx(12.0)
 

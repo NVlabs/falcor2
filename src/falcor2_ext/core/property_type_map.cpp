@@ -62,6 +62,18 @@ nb::object from_any_impl(const Any& a)
 }
 
 template<typename T>
+void copy_from_python_impl(nb::handle obj, void* out)
+{
+    *static_cast<T*>(out) = nb::cast<T>(obj);
+}
+
+template<typename T>
+nb::object copy_to_python_impl(const void* value)
+{
+    return nb::cast(*static_cast<const T*>(value));
+}
+
+template<typename T>
 void write_to_props_impl(Properties& props, std::string_view key, nb::handle obj)
 {
     props.set<T>(key, nb::cast<T>(obj));
@@ -101,6 +113,8 @@ PropertyTypeMapEntry make_entry(PropertyType pt)
         .python_type = get_python_type<T>(),
         .to_any = &to_any_impl<T>,
         .from_any = &from_any_impl<T>,
+        .copy_from_python = &copy_from_python_impl<T>,
+        .copy_to_python = &copy_to_python_impl<T>,
         .write_to_props = &write_to_props_impl<T>,
         .read_from_props = &read_from_props_impl<T>,
         .matches_python = &matches_python_impl<T>,

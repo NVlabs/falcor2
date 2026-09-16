@@ -7,3 +7,4 @@ from .optimizer.optimizer import Optimizer
 from .optimizer.adam import AdamOptimizer
 from .optimizer.gradient_descent import GradientDescentOptimizer
 from .jitter import frame_jitter, halton
+from .cuda_architecture import configure_cuda_architecture

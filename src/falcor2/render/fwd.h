@@ -18,6 +18,17 @@ class Component;
 
 class EmissiveGeometrySystem;
 
+// light_sampler.h
+
+class LightSampler;
+class UniformLightSampler;
+class PowerLightSampler;
+class HierarchicalLightSampler;
+
+// emissive_triangle_tree.h
+
+class EmissiveTriangleTree;
+
 // entity.h
 
 class Entity;
@@ -63,7 +74,7 @@ class SceneUpdateContext;
 // scene.h
 
 class Scene;
-struct SceneOptions;
+struct SceneConfig;
 
 using MaterialCollection = SceneObjectCollection<Material>;
 using MaterialCollectionView = SceneObjectCollectionView<Material>;
@@ -88,6 +99,7 @@ class Transform;
 
 class Camera;
 class GeometryInstance;
+class Light;
 class TransformAnimation;
 
 // geometry/xxx
@@ -98,7 +110,9 @@ class StaticMeshGeometry;
 
 // material/xxx
 
+class EmissionOnlyMaterial;
 class StandardMaterial;
 class StandardSpecGlossMaterial;
+class UnlitMaterial;
 
 } // namespace falcor

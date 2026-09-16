@@ -13,7 +13,7 @@ enum class RenderMode : uint {
     geometry_type,
     geometry_instance_id,
     primitive_index,
-    position_ws,
+    pos_ws,
     normal_ws,
     front_facing,
     texcoord,
@@ -48,7 +48,7 @@ float3 colorize_flag(bool flag)
     return select(flag, float3(0, 1, 0), float3(1, 0, 0));
 }
 
-float3 colorize_hit(HitInfo hit, SurfaceInteraction si, RenderMode mode)
+float3 colorize_hit(IHitInfo hit, SurfaceInteraction si, RenderMode mode)
 {
     switch (mode) {
     case RenderMode::shaded:
@@ -61,7 +61,7 @@ float3 colorize_hit(HitInfo hit, SurfaceInteraction si, RenderMode mode)
         return colorize_uint(hit.geometry_instance_id);
     case RenderMode::primitive_index:
         return colorize_uint(hit.primitive_index);
-    case RenderMode::position_ws:
+    case RenderMode::pos_ws:
         return frac(si.position_ws);
     case RenderMode::normal_ws:
         return colorize_normal(si.normal_ws);
@@ -96,7 +96,7 @@ render_geometry_instance_ids(uint2 tid: SV_DispatchThreadID, uniform Camera came
 
     Ray ray = camera.get_ray(uv);
     RayQuerySceneIntersector intersector;
-    HitInfo hit = intersector.intersect(ray);
+    IHitInfo hit = intersector.intersect(ray);
 
     output[tid] = hit.valid ? uint(hit.geometry_instance_id) : 0xffffffff;
 }
@@ -121,7 +121,7 @@ public void render_debug(
 
     Ray ray = camera.get_ray(uv);
     RayQuerySceneIntersector intersector;
-    HitInfo hit = intersector.intersect(ray);
+    IHitInfo hit = intersector.intersect(ray);
 
     float3 color = 0.0;
     if (hit.valid) {
@@ -152,7 +152,7 @@ public void render_debug_no_ids(
 
     Ray ray = camera.get_ray(uv);
     RayQuerySceneIntersector intersector;
-    HitInfo hit = intersector.intersect(ray);
+    IHitInfo hit = intersector.intersect(ray);
 
     float3 color = 0.0;
     if (hit.valid) {

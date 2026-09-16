@@ -404,7 +404,9 @@ inline void check_shared_types(sgl::SlangModule* module)
 {
     CHECK_STRUCT_BEGIN(module, "MaterialHeader", shared::MaterialHeader);
     CHECK_STRUCT_FIELD(type_id);
-    CHECK_STRUCT_FIELD(flags);
+    CHECK_STRUCT_FIELD(material_data);
+    CHECK_STRUCT_FIELD(opacity_texture);
+    CHECK_STRUCT_FIELD(opacity_data);
     CHECK_STRUCT_END();
 
     CHECK_STRUCT_BEGIN(module, "MaterialPayload", shared::MaterialPayload);
@@ -748,8 +750,17 @@ private:
     ref<sgl::CommandEncoder> m_command_encoder;
 };
 
-bool RenderScene::update(const HitGroupPolicy& hit_group_policy)
+bool RenderScene::update(const HitGroupPolicy& hit_group_policy, bool requires_opacity_evaluation)
 {
+    if (m_requires_opacity_evaluation != requires_opacity_evaluation) {
+        m_requires_opacity_evaluation = requires_opacity_evaluation;
+        for (const auto& [handle, geometry_instance] : m_geometry_instance_pool) {
+            const RenderGeometryGroup& geometry_group = m_geometry_group_pool[geometry_instance.geometry_group];
+            if (geometry_group.geometry_type == shared::GeometryType::triangle)
+                m_geometry_instance_pool.mark_dirty(handle, RenderGeometryInstanceDirtyFlags::opacity);
+        }
+    }
+
     UpdateContext ctx(m_device, hit_group_policy);
     bool changed = update(ctx);
     ctx.submit_command_encoder();
@@ -952,6 +963,11 @@ bool RenderScene::update(UpdateContext& ctx)
                     geometry_instance_desc_index
                 );
             instance_desc.flags = sgl::AccelerationStructureInstanceFlags::none;
+            // Set the no_opaque flag for ALL triangle geometry if opacity evaluation is required.
+            // TODO: We could make this more fine-grained by checking the material IDs of the geometry instance and only
+            // setting no_opaque if any of the materials are non-opaque.
+            if (m_requires_opacity_evaluation && geometry_group.geometry_type == shared::GeometryType::triangle)
+                instance_desc.flags = sgl::AccelerationStructureInstanceFlags::no_opaque;
             instance_desc.acceleration_structure = geometry_group.blas->handle();
             m_tlas_instance_descs[tlas_instance_desc_index] = instance_desc;
 

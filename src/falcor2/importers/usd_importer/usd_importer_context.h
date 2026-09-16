@@ -18,23 +18,19 @@ BEGIN_DISABLE_USD_WARNINGS
 #include <pxr/usd/usdGeom/metrics.h>
 END_DISABLE_USD_WARNINGS
 
-#include <vector>
+#include <filesystem>
+#include <functional>
+#include <map>
 #include <mutex>
-
+#include <set>
+#include <vector>
 
 namespace falcor {
 namespace usd_importer {
 
 class UsdImporterContext {
 public:
-    UsdImporterContext(const pxr::UsdStageRefPtr& stage, bool parallel_adds = true)
-        : m_usd_stage(stage)
-        , m_parallel_adds(parallel_adds)
-    {
-        m_node_idx_stacks.resize(1);
-        m_meters_per_unit = (float)pxr::UsdGeomGetStageMetersPerUnit(m_usd_stage);
-        m_scene = make_ref<ImporterScene>();
-    }
+    UsdImporterContext(const pxr::UsdStageRefPtr& stage, bool parallel_adds = true);
 
     ~UsdImporterContext() { m_task_group.wait(); }
 
@@ -54,20 +50,7 @@ public:
         return push_transform(parent_from_local, name, parent_node_idx());
     }
 
-    int push_transform(const pxr::UsdGeomXformable& prim)
-    {
-        bool resets = false;
-        pxr::GfMatrix4d usd_transform;
-        prim.GetLocalTransformation(&usd_transform, &resets, pxr::UsdTimeCode::EarliestTime());
-        int node_idx = push_transform(
-            to_falcor(usd_transform),
-            get_name(prim.GetPrim()),
-            resets ? root_node_idx() : parent_node_idx()
-        );
-        // Track prim path -> node index for animation extraction.
-        m_prim_path_to_node_idx[prim.GetPrim().GetPath()] = node_idx;
-        return node_idx;
-    }
+    int push_transform(const pxr::UsdGeomXformable& prim);
 
     void pop_transform() { node_idx_stack().pop_back(); }
 
@@ -162,8 +145,15 @@ private:
     /// Thread safe, scene access is locked.
     /// Separated out to be easy to package into a task.
     /// The `ws_from_local` must be captured by value, rather than referene to m_scene_mutexes.
-    static void add_light(pxr::UsdPrim prim, int parent, ImporterScene* scene, UsdSceneMutexes& scene_mutexes);
-    static ImporterLight create_light(pxr::UsdPrim prim);
+    static void add_light(
+        pxr::UsdPrim prim,
+        int parent,
+        ImporterScene* scene,
+        UsdSceneMutexes& scene_mutexes,
+        std::function<void(const std::filesystem::path&)> register_asset,
+        bool enable_virtual_sphere_shrinking
+    );
+    static ImporterLight create_light(pxr::UsdPrim prim, bool enable_virtual_sphere_shrinking);
 
     /// Thread safe, scene access is locked.
     /// Separated out to be easy to package into a task.
@@ -195,6 +185,9 @@ private:
     /// Add a texture to the scene and return its index
     int add_texture_to_scene(const ImporterTexture& texture);
 
+    /// Add a package-contained asset to the scene.
+    void add_asset_to_scene(const std::filesystem::path& path);
+
 private:
     pxr::UsdStageRefPtr m_usd_stage;
 
@@ -214,6 +207,7 @@ private:
     struct UsdSceneMutexes {
         std::mutex nodes;
         std::mutex material;
+        std::mutex asset;
         std::mutex texture;
         std::mutex camera;
         std::mutex light;
@@ -224,6 +218,8 @@ private:
     UsdSceneMutexes m_scene_mutexes;
     std::map<std::string, int> m_material_name_to_index;
     std::map<ImporterTexture, int> m_texture_to_index;
+    std::set<std::filesystem::path> m_asset_paths;
+    bool m_enable_virtual_sphere_shrinking = false;
     bool m_parallel_adds = false;
     sgl::thread::TaskGroup m_task_group;
 };

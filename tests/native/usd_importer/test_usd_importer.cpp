@@ -3,8 +3,9 @@
 
 
 #include "testing.h"
-#include "falcor2/render/material/materialx/codegen/codegen.h"
+#include "falcor2/render/material/mtlx/codegen/codegen.h"
 #include "falcor2/core/properties.h"
+#include "falcor2/importers/importer.h"
 #include "falcor2/importers/importer_types.h"
 #include "falcor2/importers/material_conversions.h"
 #include "falcor2/importers/usd_importer/usd_importer.h"
@@ -21,9 +22,11 @@ END_DISABLE_USD_WARNINGS
 #include <sgl/core/platform.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <fstream>
 #include <iostream>
+#include <utility>
 
 using namespace falcor;
 
@@ -345,14 +348,16 @@ TEST_CASE("UsdImporter - camera optics and node association")
     REQUIRE_GE(camera_index, 0);
     const ImporterCamera& camera = scene->cameras[camera_index];
     CHECK_EQ(camera.name, "CameraComponent");
-    CHECK_EQ(camera.projection, ImporterCamera::Projection::perspective);
-    CHECK_EQ(camera.fov_direction, ImporterCamera::FOVDirection::vertical);
-    CHECK_EQ(camera.sensor_size_mm, doctest::Approx(19.f));
     CHECK_EQ(camera.focal_length, doctest::Approx(100.f));
-    CHECK_EQ(camera.focus_distance, doctest::Approx(2.5f));
     CHECK_EQ(camera.fstop, doctest::Approx(2.8f));
+    CHECK_EQ(camera.sensor_size_mm, doctest::Approx(19.f));
+    CHECK_EQ(camera.vertical_sensor_size_mm(), doctest::Approx(19.f));
+    CHECK(camera.enable_depth_of_field);
+    CHECK_EQ(camera.focus_distance, doctest::Approx(2.5f));
     CHECK_EQ(camera.depth_range.x, doctest::Approx(0.1f));
     CHECK_EQ(camera.depth_range.y, doctest::Approx(1000.f));
+    CHECK_EQ(camera.projection, ImporterCamera::Projection::perspective);
+    CHECK_EQ(camera.fov_direction, ImporterCamera::FOVDirection::vertical);
     CHECK_EQ(
         camera.vertical_fov_degrees(),
         doctest::Approx(ImporterCamera::fov_degrees_from_focal_length(19.f, 100.f))
@@ -385,6 +390,93 @@ TEST_CASE("UsdImporter - camera optics and node association")
     const ImporterCamera& fallback_camera = scene->cameras[fallback_camera_index];
     CHECK_EQ(fallback_camera.fov_direction, ImporterCamera::FOVDirection::horizontal);
     CHECK_EQ(fallback_camera.sensor_size_mm, doctest::Approx(32.f));
+    CHECK_EQ(fallback_camera.vertical_sensor_size_mm(), doctest::Approx(24.f));
+}
+
+TEST_CASE("UsdImporter - invisible hierarchy preserves camera but not renderable scene objects")
+{
+    const std::filesystem::path scene_path = testing::get_case_temp_directory() / "invisible_parent_camera.usda";
+    {
+        std::ofstream file(scene_path);
+        file << R"usd(#usda 1.0
+
+def Xform "HiddenGroup"
+{
+    token visibility = "invisible"
+
+    def Camera "ValidationCamera"
+    {
+        float focalLength = 50
+        float horizontalAperture = 36
+        float verticalAperture = 24
+    }
+
+    def Mesh "HiddenMesh"
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+    }
+
+    def DistantLight "HiddenLight"
+    {
+        float inputs:intensity = 1
+    }
+}
+)usd";
+    }
+
+    ref<ImporterScene> scene = make_ref<UsdImporter>()->load_scene(scene_path);
+    REQUIRE(scene);
+    REQUIRE_EQ(scene->cameras.size(), 1);
+    CHECK_EQ(scene->cameras[0].name, "ValidationCamera");
+    CHECK(scene->meshes.empty());
+    CHECK(scene->lights.empty());
+}
+
+TEST_CASE("UsdImporter - indexed normal primvar")
+{
+    const std::filesystem::path scene_path = testing::get_case_temp_directory() / "indexed_normals.usda";
+    {
+        std::ofstream file(scene_path);
+        REQUIRE(file);
+        file << R"usd(#usda 1.0
+
+def Mesh "IndexedNormals"
+{
+    uniform token subdivisionScheme = "none"
+    int[] faceVertexCounts = [4]
+    int[] faceVertexIndices = [0, 1, 2, 3]
+    point3f[] points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]
+    normal3f[] primvars:normals = [(0, 0, 1), (0, 1, 0)] (
+        interpolation = "faceVarying"
+    )
+    int[] primvars:normals:indices = [0, 1, 0, 1]
+}
+)usd";
+    }
+
+    const ref<ImporterScene> scene = make_ref<UsdImporter>()->load_scene(scene_path);
+    REQUIRE(scene);
+    REQUIRE_EQ(scene->meshes.size(), 1);
+
+    const ImporterMesh& mesh = scene->meshes.front();
+    REQUIRE_EQ(mesh.vertex_count(), 4);
+    const auto positions = mesh.position_stream();
+    const auto normals = mesh.normal_stream();
+    REQUIRE(positions.valid());
+    REQUIRE(normals.valid());
+
+    const std::array expected{
+        std::pair{float3(0.f, 0.f, 0.f), float3(0.f, 0.f, 1.f)},
+        std::pair{float3(1.f, 0.f, 0.f), float3(0.f, 1.f, 0.f)},
+        std::pair{float3(1.f, 1.f, 0.f), float3(0.f, 0.f, 1.f)},
+        std::pair{float3(0.f, 1.f, 0.f), float3(0.f, 1.f, 0.f)},
+    };
+    for (size_t vertex_index = 0; vertex_index < mesh.vertex_count(); ++vertex_index) {
+        CHECK_EQ(positions[vertex_index], expected[vertex_index].first);
+        CHECK_EQ(normals[vertex_index], expected[vertex_index].second);
+    }
 }
 
 TEST_CASE("UsdImporter - light radiance attributes")
@@ -415,26 +507,114 @@ TEST_CASE("UsdImporter - light radiance attributes")
     REQUIRE(sun);
     CHECK_EQ(sun->type, ImporterLight::Type::distant);
     CHECK_EQ(sun->degree_angular_diameter, doctest::Approx(0.5357f));
-    CHECK_EQ(sun->intensity.x, doctest::Approx(3.f));
-    CHECK_EQ(sun->intensity.y, doctest::Approx(6.f));
-    CHECK_EQ(sun->intensity.z, doctest::Approx(9.f));
+    CHECK_EQ(sun->intensity.x, doctest::Approx(0.75f));
+    CHECK_EQ(sun->intensity.y, doctest::Approx(1.5f));
+    CHECK_EQ(sun->intensity.z, doctest::Approx(2.25f));
+    CHECK_EQ(sun->exposure, doctest::Approx(2.f));
 
     const ImporterLight* normalized_sun = find_light("/NormalizedSun");
     REQUIRE(normalized_sun);
     CHECK_EQ(normalized_sun->type, ImporterLight::Type::distant);
     CHECK_EQ(normalized_sun->degree_angular_diameter, doctest::Approx(60.f));
     const float normalized_size_factor = 0.25f * std::acos(-1.f);
-    CHECK_EQ(normalized_sun->intensity.x, doctest::Approx(3.f / normalized_size_factor));
-    CHECK_EQ(normalized_sun->intensity.y, doctest::Approx(6.f / normalized_size_factor));
-    CHECK_EQ(normalized_sun->intensity.z, doctest::Approx(9.f / normalized_size_factor));
+    CHECK_EQ(normalized_sun->intensity.x, doctest::Approx(0.75f / normalized_size_factor));
+    CHECK_EQ(normalized_sun->intensity.y, doctest::Approx(1.5f / normalized_size_factor));
+    CHECK_EQ(normalized_sun->intensity.z, doctest::Approx(2.25f / normalized_size_factor));
+    CHECK_EQ(normalized_sun->exposure, doctest::Approx(2.f));
 
     const ImporterLight* sky = find_light("/TexturelessSky");
     REQUIRE(sky);
     CHECK_EQ(sky->type, ImporterLight::Type::dome);
     CHECK(sky->env_map_path.empty());
-    CHECK_EQ(sky->intensity.x, doctest::Approx(4.f));
-    CHECK_EQ(sky->intensity.y, doctest::Approx(2.f));
-    CHECK_EQ(sky->intensity.z, doctest::Approx(1.f));
+    CHECK_EQ(sky->intensity.x, doctest::Approx(2.f));
+    CHECK_EQ(sky->intensity.y, doctest::Approx(1.f));
+    CHECK_EQ(sky->intensity.z, doctest::Approx(0.5f));
+    CHECK_EQ(sky->exposure, doctest::Approx(1.f));
+}
+
+TEST_CASE("UsdImporter - versioned dome light")
+{
+    const std::filesystem::path light_path = testing::get_case_temp_directory() / "versioned_dome_light.usda";
+    {
+        std::ofstream file(light_path);
+        REQUIRE(file);
+        file << R"usd(#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def DomeLight_1 "VersionedTexturelessSky"
+{
+    color3f inputs:color = (0.25, 0.5, 1)
+    bool inputs:enableColorTemperature = 1
+    float inputs:colorTemperature = 3000
+    float inputs:exposure = 2
+    float inputs:intensity = 2
+    asset inputs:texture:file
+    uniform token poleAxis = "scene"
+}
+
+def DomeLight_1 "ExplicitYPole"
+{
+    asset inputs:texture:file
+    uniform token poleAxis = "Y"
+}
+
+def DomeLight_1 "ExplicitZPole"
+{
+    asset inputs:texture:file
+    uniform token poleAxis = "Z"
+}
+)usd";
+    }
+
+    ref<ImporterScene> scene = make_ref<UsdImporter>()->load_scene(light_path);
+    REQUIRE(scene);
+    REQUIRE_EQ(scene->lights.size(), 3);
+    auto light_it = std::find_if(
+        scene->lights.begin(),
+        scene->lights.end(),
+        [](const ImporterLight& light)
+        {
+            return light.name == "/VersionedTexturelessSky";
+        }
+    );
+    REQUIRE(light_it != scene->lights.end());
+    const ImporterLight& light = *light_it;
+    CHECK_EQ(light.name, "/VersionedTexturelessSky");
+    CHECK_EQ(light.type, ImporterLight::Type::dome);
+    CHECK(light.env_map_path.empty());
+    CHECK_EQ(light.intensity.x, doctest::Approx(0.5f));
+    CHECK_EQ(light.intensity.y, doctest::Approx(1.f));
+    CHECK_EQ(light.intensity.z, doctest::Approx(2.f));
+    CHECK_EQ(light.exposure, doctest::Approx(2.f));
+    CHECK(light.enable_color_temperature);
+    CHECK_EQ(light.color_temperature, doctest::Approx(3000.f));
+
+    auto find_light_node = [&](std::string_view name) -> const ImporterNode*
+    {
+        auto it = std::find_if(
+            scene->nodes.begin(),
+            scene->nodes.end(),
+            [&](const ImporterNode& node)
+            {
+                return node.light_index >= 0 && scene->lights[node.light_index].name == name;
+            }
+        );
+        return it == scene->nodes.end() ? nullptr : &(*it);
+    };
+
+    const ImporterNode* scene_pole = find_light_node("/VersionedTexturelessSky");
+    REQUIRE(scene_pole);
+    CHECK_EQ(scene_pole->transform, sgl::math::matrix_from_rotation_x(sgl::math::radians(90.f)));
+
+    const ImporterNode* y_pole = find_light_node("/ExplicitYPole");
+    REQUIRE(y_pole);
+    CHECK_EQ(y_pole->transform, float4x4::identity());
+
+    const ImporterNode* z_pole = find_light_node("/ExplicitZPole");
+    REQUIRE(z_pole);
+    CHECK_EQ(z_pole->transform, sgl::math::matrix_from_rotation_x(sgl::math::radians(90.f)));
 }
 
 TEST_CASE("UsdImporter - normalized area light radiance")
@@ -444,6 +624,9 @@ TEST_CASE("UsdImporter - normalized area light radiance")
         std::ofstream file(lights_path);
         REQUIRE(file);
         file << R"usd(#usda 1.0
+(
+    metersPerUnit = 1
+)
 
 def Xform "ScaledPlanarLights"
 {
@@ -454,6 +637,7 @@ def Xform "ScaledPlanarLights"
     {
         float inputs:width = 2
         float inputs:height = 5
+        float inputs:exposure = 1
         float inputs:intensity = 60
         bool inputs:normalize = 1
     }
@@ -524,6 +708,23 @@ def DomeLight "Dome"
     REQUIRE(rect);
     CHECK_EQ(rect->type, ImporterLight::Type::rectangular);
     CHECK_EQ(rect->intensity.x, doctest::Approx(1.f));
+    CHECK_EQ(rect->exposure, doctest::Approx(1.f));
+    CHECK_EQ(rect->width, doctest::Approx(2.f));
+    CHECK_EQ(rect->height, doctest::Approx(5.f));
+    CHECK(scene->meshes.empty());
+    CHECK(scene->materials.empty());
+    auto rect_node = std::find_if(
+        scene->nodes.begin(),
+        scene->nodes.end(),
+        [](const ImporterNode& node)
+        {
+            return node.name == "/ScaledPlanarLights/Rect" && node.light_index >= 0;
+        }
+    );
+    REQUIRE(rect_node != scene->nodes.end());
+    CHECK_LT(rect_node->mesh_index, 0);
+    CHECK_GE(rect_node->light_index, 0);
+    CHECK_EQ(rect_node->transform, float4x4::identity());
 
     const ImporterLight* disk = find_light("/ScaledPlanarLights/Disk");
     REQUIRE(disk);
@@ -545,6 +746,305 @@ def DomeLight "Dome"
     REQUIRE(dome);
     CHECK_EQ(dome->type, ImporterLight::Type::dome);
     CHECK_EQ(dome->intensity.x, doctest::Approx(7.f));
+}
+
+TEST_CASE("UsdImporter - finite sphere classification and point hint preserve USD light energy")
+{
+    const std::filesystem::path lights_path = testing::get_case_temp_directory() / "point_and_spot_lights.usda";
+    {
+        std::ofstream file(lights_path);
+        REQUIRE(file);
+        file << R"usd(#usda 1.0
+(
+    metersPerUnit = 0.01
+)
+
+def SphereLight "Point"
+{
+    float inputs:exposure = 1
+    float inputs:intensity = 79577.47
+    float inputs:radius = 1
+    bool treatAsPoint = 1
+}
+
+def SphereLight "Spot" (
+    prepend apiSchemas = ["ShapingAPI"]
+)
+{
+    float inputs:exposure = 2
+    float inputs:intensity = 79577.47
+    float inputs:radius = 1
+    float inputs:shaping:cone:angle = 35
+    float inputs:shaping:cone:softness = 0.42857143
+    bool treatAsPoint = 1
+}
+
+def SphereLight "SpotFocused" (
+    prepend apiSchemas = ["ShapingAPI"]
+)
+{
+    float inputs:intensity = 79577.47
+    float inputs:radius = 1
+    float inputs:shaping:cone:angle = 35
+    float inputs:shaping:cone:softness = 0.42857143
+    float inputs:shaping:focus = 2
+    bool treatAsPoint = 1
+}
+
+def SphereLight "FiniteSphere"
+{
+    float inputs:intensity = 1
+    bool inputs:normalize = 1
+    float inputs:radius = 2
+}
+
+def SphereLight "FiniteShapedSphere" (
+    prepend apiSchemas = ["ShapingAPI"]
+)
+{
+    float inputs:intensity = 1
+    bool inputs:normalize = 1
+    float inputs:radius = 2
+    float inputs:shaping:cone:angle = 40
+    float inputs:shaping:cone:softness = 0.25
+    float inputs:shaping:focus = 4
+}
+
+def DiskLight "AuthoredDisk"
+{
+    float inputs:intensity = 1
+    bool inputs:normalize = 1
+    float inputs:radius = 2
+}
+
+def DiskLight "AuthoredShapedDisk" (
+    prepend apiSchemas = ["ShapingAPI"]
+)
+{
+    float inputs:intensity = 1
+    bool inputs:normalize = 1
+    float inputs:radius = 2
+    float inputs:shaping:cone:angle = 30
+    float inputs:shaping:cone:softness = 0.5
+    float inputs:shaping:focus = 2
+}
+
+def RectLight "AuthoredShapedRect" (
+    prepend apiSchemas = ["ShapingAPI"]
+)
+{
+    float inputs:height = 3
+    float inputs:intensity = 1
+    bool inputs:normalize = 1
+    float inputs:shaping:cone:angle = 50
+    float inputs:shaping:cone:softness = 0.2
+    float inputs:shaping:focus = 1.5
+    float inputs:width = 2
+}
+)usd";
+    }
+
+    ref<ImporterScene> scene = make_ref<UsdImporter>()->load_scene(lights_path);
+    REQUIRE(scene);
+    REQUIRE_EQ(scene->lights.size(), 8);
+
+    auto find_light = [&](const std::string& name) -> const ImporterLight*
+    {
+        auto it = std::find_if(
+            scene->lights.begin(),
+            scene->lights.end(),
+            [&](const ImporterLight& light)
+            {
+                return light.name == name;
+            }
+        );
+        return it == scene->lights.end() ? nullptr : &*it;
+    };
+
+    const ImporterLight* point = find_light("/Point");
+    REQUIRE(point);
+    CHECK_EQ(point->type, ImporterLight::Type::point);
+    CHECK_FALSE(point->enable_virtual_sphere_shrinking);
+    CHECK_EQ(point->intensity.x, doctest::Approx(100.f));
+    CHECK_EQ(point->exposure, doctest::Approx(1.f));
+
+    const ImporterLight* spot = find_light("/Spot");
+    REQUIRE(spot);
+    CHECK_EQ(spot->type, ImporterLight::Type::point);
+    CHECK_EQ(spot->intensity.x, doctest::Approx(100.f));
+    CHECK_EQ(spot->exposure, doctest::Approx(2.f));
+    CHECK(spot->enable_shaping);
+    CHECK_EQ(spot->shaping_cone_angle, doctest::Approx(35.f));
+    CHECK_EQ(spot->shaping_cone_softness, doctest::Approx(3.f / 7.f));
+    CHECK_EQ(spot->shaping_focus, doctest::Approx(0.f));
+    const int spot_index = static_cast<int>(spot - scene->lights.data());
+
+    auto spot_node = std::find_if(
+        scene->nodes.begin(),
+        scene->nodes.end(),
+        [&](const ImporterNode& node)
+        {
+            return node.light_index == spot_index;
+        }
+    );
+    REQUIRE(spot_node != scene->nodes.end());
+    CHECK_EQ(spot_node->transform, float4x4::identity());
+
+    const ImporterLight* focused_spot = find_light("/SpotFocused");
+    REQUIRE(focused_spot);
+    CHECK_EQ(focused_spot->type, ImporterLight::Type::point);
+    CHECK(focused_spot->enable_shaping);
+    CHECK_EQ(focused_spot->shaping_focus, doctest::Approx(2.f));
+
+    const float pi = std::acos(-1.f);
+    const ImporterLight* finite_sphere = find_light("/FiniteSphere");
+    REQUIRE(finite_sphere);
+    CHECK_EQ(finite_sphere->type, ImporterLight::Type::sphere);
+    CHECK_FALSE(finite_sphere->enable_virtual_sphere_shrinking);
+    CHECK_FALSE(finite_sphere->enable_shaping);
+    CHECK_EQ(finite_sphere->radius, doctest::Approx(2.f));
+    CHECK_EQ(finite_sphere->intensity.x, doctest::Approx(625.f / pi));
+
+    const ImporterLight* finite_shaped_sphere = find_light("/FiniteShapedSphere");
+    REQUIRE(finite_shaped_sphere);
+    CHECK_EQ(finite_shaped_sphere->type, ImporterLight::Type::sphere);
+    CHECK_FALSE(finite_shaped_sphere->enable_virtual_sphere_shrinking);
+    CHECK(finite_shaped_sphere->enable_shaping);
+    CHECK_EQ(finite_shaped_sphere->radius, doctest::Approx(2.f));
+    CHECK_EQ(finite_shaped_sphere->intensity.x, doctest::Approx(finite_sphere->intensity.x));
+    CHECK_EQ(finite_shaped_sphere->shaping_cone_angle, doctest::Approx(40.f));
+    CHECK_EQ(finite_shaped_sphere->shaping_cone_softness, doctest::Approx(0.25f));
+    CHECK_EQ(finite_shaped_sphere->shaping_focus, doctest::Approx(4.f));
+
+    const ImporterLight* authored_disk = find_light("/AuthoredDisk");
+    REQUIRE(authored_disk);
+    CHECK_EQ(authored_disk->type, ImporterLight::Type::disk);
+    CHECK_FALSE(authored_disk->enable_shaping);
+    CHECK_EQ(authored_disk->radius, doctest::Approx(2.f));
+    CHECK_EQ(authored_disk->intensity.x, doctest::Approx(2500.f / pi));
+
+    const ImporterLight* authored_shaped_disk = find_light("/AuthoredShapedDisk");
+    REQUIRE(authored_shaped_disk);
+    CHECK_EQ(authored_shaped_disk->type, ImporterLight::Type::disk);
+    CHECK(authored_shaped_disk->enable_shaping);
+    CHECK_EQ(authored_shaped_disk->radius, doctest::Approx(2.f));
+    CHECK_EQ(authored_shaped_disk->intensity.x, doctest::Approx(authored_disk->intensity.x));
+    CHECK_EQ(authored_shaped_disk->shaping_cone_angle, doctest::Approx(30.f));
+    CHECK_EQ(authored_shaped_disk->shaping_cone_softness, doctest::Approx(0.5f));
+    CHECK_EQ(authored_shaped_disk->shaping_focus, doctest::Approx(2.f));
+
+    const ImporterLight* authored_shaped_rect = find_light("/AuthoredShapedRect");
+    REQUIRE(authored_shaped_rect);
+    CHECK_EQ(authored_shaped_rect->type, ImporterLight::Type::rectangular);
+    CHECK(authored_shaped_rect->enable_shaping);
+    CHECK_EQ(authored_shaped_rect->width, doctest::Approx(2.f));
+    CHECK_EQ(authored_shaped_rect->height, doctest::Approx(3.f));
+    CHECK_EQ(authored_shaped_rect->intensity.x, doctest::Approx(5000.f / 3.f));
+    CHECK_EQ(authored_shaped_rect->shaping_cone_angle, doctest::Approx(50.f));
+    CHECK_EQ(authored_shaped_rect->shaping_cone_softness, doctest::Approx(0.2f));
+    CHECK_EQ(authored_shaped_rect->shaping_focus, doctest::Approx(1.5f));
+
+    const float4x4 expected_shaped_transform = float4x4::identity();
+    for (const ImporterLight* shaped_light : {finite_shaped_sphere, authored_disk, authored_shaped_disk}) {
+        const int light_index = static_cast<int>(shaped_light - scene->lights.data());
+        auto light_node = std::find_if(
+            scene->nodes.begin(),
+            scene->nodes.end(),
+            [&](const ImporterNode& node)
+            {
+                return node.light_index == light_index;
+            }
+        );
+        REQUIRE(light_node != scene->nodes.end());
+        CHECK_EQ(light_node->transform, expected_shaped_transform);
+    }
+
+    const int rect_index = static_cast<int>(authored_shaped_rect - scene->lights.data());
+    auto rect_node = std::find_if(
+        scene->nodes.begin(),
+        scene->nodes.end(),
+        [&](const ImporterNode& node)
+        {
+            return node.light_index == rect_index;
+        }
+    );
+    REQUIRE(rect_node != scene->nodes.end());
+    CHECK_EQ(rect_node->transform, float4x4::identity());
+}
+
+TEST_CASE("UsdImporter - Unreal exporter provenance enables virtual shrinking only for finite spheres")
+{
+    auto check_marker = [](std::string_view file_name, std::string_view marker)
+    {
+        const std::filesystem::path lights_path = testing::get_case_temp_directory() / file_name;
+        {
+            std::ofstream file(lights_path);
+            REQUIRE(file);
+            file << "#usda 1.0\n\n"
+                 << marker << R"usd(
+
+def SphereLight "FiniteSphere"
+{
+    float inputs:radius = 2
+}
+
+def SphereLight "Point"
+{
+    float inputs:radius = 2
+    bool treatAsPoint = 1
+}
+)usd";
+        }
+
+        ref<ImporterScene> scene = make_ref<UsdImporter>()->load_scene(lights_path);
+        REQUIRE(scene);
+        REQUIRE_EQ(scene->lights.size(), 2);
+
+        auto find_light = [&](std::string_view name) -> const ImporterLight*
+        {
+            auto it = std::find_if(
+                scene->lights.begin(),
+                scene->lights.end(),
+                [&](const ImporterLight& light)
+                {
+                    return light.name == name;
+                }
+            );
+            return it == scene->lights.end() ? nullptr : &*it;
+        };
+
+        const ImporterLight* finite_sphere = find_light("/FiniteSphere");
+        REQUIRE(finite_sphere);
+        CHECK_EQ(finite_sphere->type, ImporterLight::Type::sphere);
+        CHECK(finite_sphere->enable_virtual_sphere_shrinking);
+
+        const ImporterLight* point = find_light("/Point");
+        REQUIRE(point);
+        CHECK_EQ(point->type, ImporterLight::Type::point);
+        CHECK_FALSE(point->enable_virtual_sphere_shrinking);
+    };
+
+    SUBCASE("legacy unrealMaterial attribute")
+    {
+        check_marker(
+            "unreal_legacy_light_export.usda",
+            R"usd(def Scope "ExporterMetadata"
+{
+    custom string unrealMaterial = "/Game/Materials/M_Lamp"
+})usd"
+        );
+    }
+
+    SUBCASE("unreal material render context")
+    {
+        check_marker(
+            "unreal_render_context_light_export.usda",
+            R"usd(def Material "UnrealMaterial"
+{
+    token outputs:unreal:surface = "unreal"
+})usd"
+        );
+    }
 }
 
 // Helper function to print all materials in a scene
@@ -853,10 +1353,276 @@ TEST_CASE("convert_material_usdpreviewsurface_to_standardmaterial")
     CHECK_EQ(*result, expected);
 }
 
-TEST_CASE("convert_material_materialx_to_materialxmaterial_mx139_reference")
+TEST_CASE("convert_material_usdpreviewsurface_emissive_texture_uses_unit_factor")
 {
     const std::filesystem::path test_scene_path = testing::project_directory() / "tests" / "native" / "usd_importer"
-        / "test_scope_materials_mx139_openpbr.usda";
+        / "test_usdpreviewsurface_emissive_texture.usda";
+    REQUIRE(std::filesystem::exists(test_scene_path));
+
+    auto importer = falcor::make_ref<falcor::UsdImporter>();
+    ref<falcor::ImporterScene> scene = importer->load_scene(test_scene_path);
+    REQUIRE(scene);
+    REQUIRE_EQ(scene->materials.size(), 1);
+
+    auto result = convert_material(scene->materials[0], {"UsdPreviewSurface"}, {"StandardMaterial"});
+    REQUIRE(result.has_value());
+
+    CHECK(result->find("emissive_texture_path") != result->end());
+    CHECK_EQ(result->get<float3>("emissive_factor", float3(0.f)), float3(1.f));
+    CHECK(result->get<bool>("emissive_texture_srgb"));
+}
+
+TEST_CASE("convert_falcor_usd_materials")
+{
+    const std::filesystem::path test_scene_path
+        = testing::project_directory() / "tests" / "native" / "usd_importer" / "test_falcor_materials.usda";
+    REQUIRE(std::filesystem::exists(test_scene_path));
+
+    auto importer = falcor::make_ref<falcor::UsdImporter>();
+    ref<falcor::ImporterScene> scene = importer->load_scene(test_scene_path);
+    REQUIRE(scene);
+    REQUIRE_EQ(scene->materials.size(), 5);
+
+    auto find_material = [&](std::string_view name) -> const ImporterMaterial*
+    {
+        auto it = std::find_if(
+            scene->materials.begin(),
+            scene->materials.end(),
+            [&](const ImporterMaterial& material)
+            {
+                return material.name == name;
+            }
+        );
+        return it != scene->materials.end() ? &*it : nullptr;
+    };
+
+    const std::filesystem::path expected_texture_path = std::filesystem::weakly_canonical(test_scene_path);
+
+    const ImporterMaterial* standard_ptr = find_material("/Root/Looks/Standard");
+    REQUIRE(standard_ptr);
+    const ImporterMaterial& standard = *standard_ptr;
+    REQUIRE(standard.output_to_material_network.contains("_terminal:falcor:surface"));
+    auto standard_result = convert_material(standard);
+    REQUIRE(standard_result);
+    CHECK_EQ(standard_result->get<std::string>("_scene_material_type"), "StandardMaterial");
+    CHECK_EQ(standard_result->get<AlphaMode>("alpha_mode"), AlphaMode::mask);
+    CHECK_EQ(standard_result->get<float>("alpha_factor"), doctest::Approx(0.75f));
+    CHECK_EQ(standard_result->get<float>("alpha_cutoff"), doctest::Approx(0.25f));
+    CHECK_EQ(standard_result->get<float3>("base_color_factor"), float3(0.2f, 0.4f, 0.6f));
+    CHECK(standard_result->get<bool>("double_sided"));
+    CHECK_EQ(standard_result->get<float3>("emissive_factor"), float3(0.1f, 0.2f, 0.3f));
+    CHECK_EQ(standard_result->get<float>("ior"), doctest::Approx(1.7f));
+    CHECK_EQ(standard_result->get<float>("metallic_factor"), doctest::Approx(0.8f));
+    CHECK_EQ(standard_result->get<float>("roughness_factor"), doctest::Approx(0.35f));
+    CHECK_EQ(standard_result->get<float>("diffuse_transmission_factor"), doctest::Approx(0.2f));
+    CHECK_EQ(standard_result->get<float>("specular_transmission_factor"), doctest::Approx(0.9f));
+    CHECK(standard_result->get<bool>("thin_walled"));
+    CHECK_EQ(standard_result->get<float3>("transmission_factor"), float3(0.15f, 0.75f, 0.3f));
+    CHECK_EQ(standard_result->get<uint>("metallic_texture_channel"), 2u);
+    CHECK_EQ(standard_result->get<uint>("roughness_texture_channel"), 1u);
+    CHECK_EQ(
+        standard_result->get<std::filesystem::path>("base_color_texture_path").lexically_normal(),
+        expected_texture_path.lexically_normal()
+    );
+    CHECK_EQ(
+        standard_result->get<std::filesystem::path>("emissive_texture_path").lexically_normal(),
+        expected_texture_path.lexically_normal()
+    );
+    CHECK_EQ(
+        standard_result->get<std::filesystem::path>("metallic_roughness_texture_path").lexically_normal(),
+        expected_texture_path.lexically_normal()
+    );
+    CHECK_EQ(
+        standard_result->get<std::filesystem::path>("normal_texture_path").lexically_normal(),
+        expected_texture_path.lexically_normal()
+    );
+    CHECK_EQ(
+        standard_result->get<std::filesystem::path>("transmission_texture_path").lexically_normal(),
+        expected_texture_path.lexically_normal()
+    );
+    CHECK(standard_result->get<bool>("base_color_texture_srgb"));
+    CHECK(standard_result->get<bool>("emissive_texture_srgb"));
+    CHECK_FALSE(standard_result->has_property("metallic_roughness_texture_srgb"));
+    CHECK_FALSE(standard_result->has_property("normal_texture_srgb"));
+    CHECK(standard_result->get<bool>("transmission_texture_srgb"));
+    CHECK(importer_material::is_texture_srgb(*standard_result, "base_color_texture_path"));
+    CHECK_FALSE(importer_material::is_texture_srgb(*standard_result, "normal_texture_path"));
+
+    const ImporterMaterial* unlit_ptr = find_material("/Root/Looks/Unlit");
+    REQUIRE(unlit_ptr);
+    const ImporterMaterial& unlit = *unlit_ptr;
+    auto unlit_result = convert_material(unlit);
+    REQUIRE(unlit_result);
+    CHECK_EQ(unlit_result->get<std::string>("_scene_material_type"), "UnlitMaterial");
+    CHECK_EQ(unlit_result->get<AlphaMode>("alpha_mode"), AlphaMode::blend);
+    CHECK_EQ(unlit_result->get<float>("alpha_factor"), doctest::Approx(0.6f));
+    CHECK_EQ(unlit_result->get<float>("alpha_cutoff"), doctest::Approx(0.4f));
+    CHECK_EQ(unlit_result->get<float3>("base_color_factor"), float3(1.5f, 2.f, 4.f));
+    CHECK_FALSE(unlit_result->get<bool>("double_sided"));
+    CHECK_EQ(
+        unlit_result->get<std::filesystem::path>("base_color_texture_path").lexically_normal(),
+        expected_texture_path.lexically_normal()
+    );
+    CHECK(unlit_result->get<bool>("base_color_texture_srgb"));
+
+    const ImporterMaterial* standard_defaults_ptr = find_material("/Root/Looks/StandardDefaults");
+    REQUIRE(standard_defaults_ptr);
+    auto standard_defaults_result = convert_material(*standard_defaults_ptr);
+    REQUIRE(standard_defaults_result);
+    CHECK_EQ(standard_defaults_result->size(), 1);
+    CHECK_EQ(standard_defaults_result->get<std::string>("_scene_material_type"), "StandardMaterial");
+
+    const ImporterMaterial* unlit_defaults_ptr = find_material("/Root/Looks/UnlitDefaults");
+    REQUIRE(unlit_defaults_ptr);
+    auto unlit_defaults_result = convert_material(*unlit_defaults_ptr);
+    REQUIRE(unlit_defaults_result);
+    CHECK_EQ(unlit_defaults_result->size(), 1);
+    CHECK_EQ(unlit_defaults_result->get<std::string>("_scene_material_type"), "UnlitMaterial");
+
+    const ImporterMaterial* openpbr_ptr = find_material("/Root/Looks/OpenPBR");
+    REQUIRE(openpbr_ptr);
+    const ImporterMaterial& openpbr = *openpbr_ptr;
+    auto openpbr_result = convert_material(openpbr);
+    REQUIRE(openpbr_result);
+    CHECK_EQ(openpbr_result->get<std::string>("_scene_material_type"), "OpenPBRMaterial");
+    CHECK_EQ(openpbr_result->get<float>("base_weight"), doctest::Approx(0.9f));
+    CHECK_EQ(openpbr_result->get<float3>("base_color"), float3(0.25f, 0.5f, 0.75f));
+    CHECK_EQ(openpbr_result->get<float>("specular_roughness"), doctest::Approx(0.35f));
+    CHECK_EQ(openpbr_result->get<uint>("specular_roughness_texture_channel"), 1u);
+    CHECK_EQ(openpbr_result->get<float3>("transmission_scatter"), float3(0.1f, 0.2f, 0.3f));
+    CHECK_EQ(openpbr_result->get<float>("thin_film_ior"), doctest::Approx(1.45f));
+    CHECK_EQ(openpbr_result->get<float>("emission_luminance"), doctest::Approx(2.5f));
+    CHECK_EQ(openpbr_result->get<float>("opacity_factor"), doctest::Approx(0.8f));
+    CHECK_EQ(openpbr_result->get<float>("opacity_threshold"), doctest::Approx(0.2f));
+    CHECK_EQ(openpbr_result->get<uint>("opacity_texture_channel"), 2u);
+    CHECK_EQ(openpbr_result->get<float>("normal_texture_scale"), doctest::Approx(0.75f));
+    CHECK(openpbr_result->get<bool>("geometry_thin_walled"));
+    CHECK_EQ(
+        openpbr_result->get<std::filesystem::path>("base_color_texture_path").lexically_normal(),
+        expected_texture_path.lexically_normal()
+    );
+    CHECK_EQ(
+        openpbr_result->get<std::filesystem::path>("specular_roughness_texture_path").lexically_normal(),
+        expected_texture_path.lexically_normal()
+    );
+    CHECK_EQ(
+        openpbr_result->get<std::filesystem::path>("opacity_texture_path").lexically_normal(),
+        expected_texture_path.lexically_normal()
+    );
+    CHECK_EQ(
+        openpbr_result->get<std::filesystem::path>("normal_texture_path").lexically_normal(),
+        expected_texture_path.lexically_normal()
+    );
+    CHECK(openpbr_result->get<bool>("base_color_texture_srgb"));
+    CHECK_FALSE(openpbr_result->has_property("specular_roughness_texture_srgb"));
+    CHECK_FALSE(openpbr_result->has_property("opacity_texture_srgb"));
+    CHECK_FALSE(openpbr_result->has_property("normal_texture_srgb"));
+
+    {
+        ImporterMaterial extended = unlit;
+        auto& terminal = extended.output_to_material_network.at("_terminal:falcor:surface").back();
+        terminal.set("unexpected", 1.f);
+        terminal.set("unexpected:typename", "float");
+        auto result = convert_material(extended);
+        REQUIRE(result);
+        CHECK_FALSE(result->has_property("unexpected"));
+    }
+
+    {
+        ImporterMaterial extended = openpbr;
+        auto& terminal = extended.output_to_material_network.at("_terminal:falcor:surface").back();
+        terminal.set("unexpected", 1.f);
+        terminal.set("unexpected:typename", "float");
+        auto result = convert_material(extended);
+        REQUIRE(result);
+        CHECK_FALSE(result->has_property("unexpected"));
+    }
+}
+
+TEST_CASE("load shader ball Falcor overlays")
+{
+    struct OverlayCase {
+        std::filesystem::path filename;
+        std::string material_name;
+        std::string material_type;
+    };
+
+    const std::array cases = {
+        OverlayCase{
+            "shader-ball/standard.usda",
+            "/standard_shader_ball_scene/materials/falcor_standard",
+            "StandardMaterial"
+        },
+        OverlayCase{
+            "shader-ball/openpbr.usda",
+            "/standard_shader_ball_scene/materials/falcor_openpbr",
+            "OpenPBRMaterial"
+        },
+    };
+
+    for (const OverlayCase& overlay : cases) {
+        CAPTURE(overlay.filename);
+        const std::filesystem::path scene_path = testing::project_directory() / "data" / "scenes" / overlay.filename;
+        REQUIRE(std::filesystem::exists(scene_path));
+
+        auto importer = falcor::make_ref<falcor::UsdImporter>();
+        ref<falcor::ImporterScene> scene = importer->load_scene(scene_path);
+        REQUIRE(scene);
+        REQUIRE_EQ(scene->lights.size(), 5);
+        for (const ImporterLight& light : scene->lights) {
+            CHECK_EQ(light.type, ImporterLight::Type::rectangular);
+            CHECK(light.geometry_visible);
+        }
+
+        const auto material_it = std::find_if(
+            scene->materials.begin(),
+            scene->materials.end(),
+            [&](const ImporterMaterial& material)
+            {
+                return material.name == overlay.material_name;
+            }
+        );
+        REQUIRE(material_it != scene->materials.end());
+        auto converted = convert_material(*material_it);
+        REQUIRE(converted);
+        CHECK_EQ(converted->get<std::string>("_scene_material_type"), overlay.material_type);
+
+        if (overlay.material_type == "StandardMaterial") {
+            CHECK_EQ(converted->get<float3>("base_color_factor"), float3(0.18f));
+            CHECK_EQ(converted->get<float>("roughness_factor"), doctest::Approx(0.25f));
+            CHECK_EQ(converted->get<float>("ior"), doctest::Approx(1.5f));
+        } else {
+            CHECK_EQ(converted->get<float3>("base_color"), float3(0.18f));
+            CHECK_EQ(converted->get<float>("specular_roughness"), doctest::Approx(0.25f));
+            CHECK_EQ(converted->get<float>("specular_ior"), doctest::Approx(1.5f));
+        }
+
+        const std::string surface_name = "/standard_shader_ball_scene/shader_ball/material_surface";
+        const auto surface_it = std::find_if(
+            scene->meshes.begin(),
+            scene->meshes.end(),
+            [&](const ImporterMesh& mesh)
+            {
+                return mesh.name == surface_name;
+            }
+        );
+        REQUIRE(surface_it != scene->meshes.end());
+        REQUIRE_FALSE(surface_it->subgeometries.empty());
+        for (const ImporterMesh::Subgeometry& subgeometry : surface_it->subgeometries)
+            CHECK_EQ(subgeometry.material_name, overlay.material_name);
+
+        ref<ImporterScene> geometry_scene = import_scene(scene_path);
+        REQUIRE(geometry_scene);
+        CHECK(geometry_scene->lights.empty());
+        CHECK_EQ(geometry_scene->meshes.size(), scene->meshes.size() + 5);
+        CHECK_EQ(geometry_scene->materials.size(), scene->materials.size() + 5);
+    }
+}
+
+TEST_CASE("convert_material_materialx_to_materialxmaterial_mtlx_reference")
+{
+    const std::filesystem::path test_scene_path
+        = testing::project_directory() / "tests" / "native" / "usd_importer" / "test_scope_materials_mtlx_openpbr.usda";
     REQUIRE(std::filesystem::exists(test_scene_path));
 
     auto importer = falcor::make_ref<falcor::UsdImporter>();
@@ -888,10 +1654,10 @@ TEST_CASE("convert_material_materialx_to_materialxmaterial_mx139_reference")
     const std::filesystem::path actual_basepath = result->get<std::filesystem::path>("mtlx_basepath", {});
     CHECK_EQ(actual_basepath.lexically_normal(), expected_mtlx_basepath.lexically_normal());
 
-    materialx::CodeGenDesc desc;
+    mtlx::CodeGenDesc desc;
     desc.document = actual_basepath / result->get<std::filesystem::path>("mtlx_path", {});
     desc.node_name = result->get<std::string>("mtlx_node_name", "");
-    auto generated = materialx::CodeGen::generate(desc);
+    auto generated = mtlx::CodeGen::generate(desc);
     REQUIRE(generated);
     CHECK_FALSE(generated->module_source.empty());
 }
@@ -926,7 +1692,7 @@ TEST_CASE("convert_material_materialx_id_network_to_materialxmaterial")
     CHECK(mtlx_buffer.find("<materialx") != std::string::npos);
 }
 
-TEST_CASE("convert_material_mx139_openpbr_id_network_to_materialxmaterial")
+TEST_CASE("convert_material_mtlx_openpbr_id_network_to_materialxmaterial")
 {
     ImporterMaterial material;
     material.name = "/Root/Looks/GeneratedOpenPbr";
@@ -957,10 +1723,10 @@ TEST_CASE("convert_material_mx139_openpbr_id_network_to_materialxmaterial")
     CHECK(mtlx_buffer.find("<materialx") != std::string::npos);
     CHECK(mtlx_buffer.find("<open_pbr_surface") != std::string::npos);
 
-    materialx::CodeGenDesc desc;
+    mtlx::CodeGenDesc desc;
     desc.document = mtlx_buffer;
     desc.node_name = result->get<std::string>("mtlx_node_name", "");
-    auto generated = materialx::CodeGen::generate(desc);
+    auto generated = mtlx::CodeGen::generate(desc);
     REQUIRE(generated);
     CHECK_FALSE(generated->module_source.empty());
 }

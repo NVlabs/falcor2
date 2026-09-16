@@ -86,12 +86,10 @@ def test_blender_sun_normalmap_scene(
     pipeline = PathTracerPipeline.create(device)
     pipeline.spp = SPP
     pipeline.tone_map = True
+    pipeline.tonemapper.auto_exposure = False
     pipeline.path_tracer.enable_nee = True
     pipeline.path_tracer.enable_mis = True
-    pipeline.path_tracer.enable_analytic_lights = True
-    pipeline.path_tracer.enable_environment_light = True
-    pipeline.path_tracer.enable_emissive_triangles = False
-    pipeline.path_tracer.env_map_as_background = False
+    pipeline.path_tracer.use_background_color = True
     pipeline.path_tracer.background_color = spy.float3(0.0, 0.0, 0.0)
     pipeline.path_tracer.max_depth = 3
     pipeline.output_spec = f2.ContainerSpec.texture2d(spy.Format.rgba16_float, (HEIGHT, WIDTH))

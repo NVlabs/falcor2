@@ -18,16 +18,18 @@ public struct BeerBTDF : IBSDF
         this.pathshortening = pathshortening;
     }
 
-    public float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+
+    public BSDFEval
+    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
     {
-        return float3(0.0);
+        return BSDFEval();
     }
 
     public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
         sample = {};
 
-        if (wi.z > BSDF_MIN_COS_THETA)
+        if (wi.z < BSDF_MIN_COS_THETA)
             return false;
 
         sample.wo = float3(-wi.x, -wi.y, -wi.z);
@@ -39,7 +41,6 @@ public struct BeerBTDF : IBSDF
         return true;
     }
 
-    public float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc) { return 0.0; }
 
     public AlbedoContributions eval_albedo(const float3 wi)
     {

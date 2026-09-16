@@ -17,11 +17,17 @@ implementing utils;
 [Differentiable]
 public float3 eval_fresnel_schlick(float3 f0, float3 f90, float cos_theta)
 {
-    return f0 + (f90 - f0) * pow(max(1 - cos_theta, 0), 5); // Clamp to avoid NaN if cos_theta = 1+epsilon
+    const float x = max(1 - cos_theta, 0); // Preserve the endpoint if cos_theta = 1+epsilon.
+    const float x2 = x * x;
+    const float x5 = x2 * x2 * x;
+    return f0 + (f90 - f0) * x5;
 }
 
 [Differentiable]
 public float eval_fresnel_schlick(float f0, float f90, float cos_theta)
 {
-    return f0 + (f90 - f0) * pow(max(1 - cos_theta, 0), 5); // Clamp to avoid NaN if cos_theta = 1+epsilon
+    const float x = max(1 - cos_theta, 0); // Preserve the endpoint if cos_theta = 1+epsilon.
+    const float x2 = x * x;
+    const float x5 = x2 * x2 * x;
+    return f0 + (f90 - f0) * x5;
 }

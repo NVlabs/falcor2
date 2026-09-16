@@ -126,8 +126,8 @@ mx::FileSearchPath compute_search_paths()
 {
     mx::FileSearchPath search_paths;
 
-#ifdef MATERIALX_1_39_STD_LIBRARY_PATH
-    search_paths.append(mx::FilePath(MATERIALX_1_39_STD_LIBRARY_PATH));
+#ifdef MTLX_STANDARD_LIBRARY_PATH
+    search_paths.append(mx::FilePath(MTLX_STANDARD_LIBRARY_PATH));
 #endif
 
     auto get_env_var = [](const char* env_name) -> std::string

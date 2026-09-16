@@ -25,7 +25,7 @@ public void render_ids_compute(uint2 tid: SV_DispatchThreadID, uniform Camera ca
 
     Ray ray = camera.get_ray(uv);
     RayQuerySceneIntersector intersector;
-    HitInfo hit = intersector.intersect(ray);
+    IHitInfo hit = intersector.intersect(ray);
 
     output[tid] = hit.valid ? uint(hit.geometry_instance_id) : 0xffffffff;
 }
@@ -47,7 +47,7 @@ ParameterBlock<RenderIdsParams> g_render_ids_params;
 [raypayload]
 public struct RayPayload
 {
-    HitInfo hit : read(caller)
+    PackedHitInfo hit : read(caller)
         : write(closesthit);
 
     __init() { hit = {}; }
@@ -55,7 +55,7 @@ public struct RayPayload
 
 public struct RayTracingSceneIntersector : ISceneIntersector
 {
-    public HitInfo intersect(Ray ray)
+    public IHitInfo intersect(Ray ray)
     {
         RayPayload payload = {};
         TraceRay(
@@ -68,12 +68,12 @@ public struct RayTracingSceneIntersector : ISceneIntersector
             ray.to_ray_desc(),
             payload
         );
-        return payload.hit;
+        return payload.hit.unpack();
     }
 
     public bool is_occluded(Ray ray)
     {
-        HitInfo hit = intersect(ray);
+        IHitInfo hit = intersect(ray);
         return hit.valid;
     }
 };
@@ -84,7 +84,7 @@ void intersect_miss(inout RayPayload payload) { }
 SCENE_RAY_TYPE_CLOSEST_HIT(intersect, intersect_closest_hit, RayPayload);
 void intersect_closest_hit<D : IDeferredHitInfo>(inout RayPayload payload, D deferred_hit)
 {
-    payload.hit = deferred_hit.create();
+    payload.hit = deferred_hit.create().pack();
 }
 
 [shader("raygeneration")]
@@ -102,7 +102,7 @@ public void render_ids_ray_gen()
 
     Ray ray = g_render_ids_params.camera.get_ray(uv);
     RayTracingSceneIntersector intersector;
-    HitInfo hit = intersector.intersect(ray);
+    IHitInfo hit = intersector.intersect(ray);
 
     g_render_ids_params.output[pixel] = hit.valid ? uint(hit.geometry_instance_id) : 0xffffffff;
 }

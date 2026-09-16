@@ -64,6 +64,26 @@ Render MDL the same way:
 Use `--samples-per-pixel N` to override the recipe sample count for diagnostic
 or documentation runs.
 
+Use the repeatable `--filter GLOB` option to render only MaterialX entries whose
+labels match one or more case-sensitive glob patterns. For example, to rerender
+one entry:
+
+```powershell
+.\.conda\python.exe examples\render_material\materialx_suite.py `
+  --options examples\render_material\materialx\_options.mtlx `
+  --render-backend material_visualizer `
+  --filter "shader_ops:mix_surface_with_opacity/out"
+```
+
+Use wildcards to select a group, and repeat the option to combine groups:
+
+```powershell
+.\.conda\python.exe examples\render_material\materialx_suite.py `
+  --options examples\render_material\materialx\_options.mtlx `
+  --filter "shader_ops:*opacity*" `
+  --filter "standard_surface:*gold*"
+```
+
 ## Representative MaterialX Report
 
 `examples/render_material/materialx/_options_representative.mtlx` is a smaller

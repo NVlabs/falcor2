@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, replace
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Callable
 import xml.etree.ElementTree as ET
@@ -58,10 +59,12 @@ class MaterialXProvider:
     materialx_root: Path
     device_type: str
     samples_per_pixel_override: int | None = None
+    entry_filters: tuple[str, ...] = ()
     name: str = "materialx"
 
     def collect_entries(self) -> tuple[RenderEntry, ...]:
-        return collect_materialx_entries(self.options, self.materialx_root)
+        entries = collect_materialx_entries(self.options, self.materialx_root)
+        return filter_materialx_entries(entries, self.entry_filters)
 
     def render_settings(self) -> RenderSettings:
         settings = render_settings(self.options)
@@ -118,6 +121,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Override the option-derived sample count for all rendered entries.",
     )
     parser.add_argument(
+        "--filter",
+        dest="entry_filters",
+        action="append",
+        default=[],
+        metavar="GLOB",
+        help=(
+            "Only render entries whose label matches this case-sensitive glob. "
+            "May be repeated to match any of several patterns."
+        ),
+    )
+    parser.add_argument(
         "--device",
         choices=("automatic", "d3d12", "vulkan", "metal", "cuda"),
         default="automatic",
@@ -135,6 +149,7 @@ def provider_from_args(args: argparse.Namespace) -> MaterialXProvider:
         materialx_root=args.materialx_root,
         device_type=select_materialx_device_type(args.device),
         samples_per_pixel_override=args.samples_per_pixel,
+        entry_filters=tuple(args.entry_filters),
     )
 
 
@@ -221,6 +236,21 @@ def collect_materialx_entries(
     return tuple(deduped)
 
 
+def filter_materialx_entries(
+    entries: tuple[RenderEntry, ...], patterns: tuple[str, ...]
+) -> tuple[RenderEntry, ...]:
+    if not patterns:
+        return entries
+
+    filtered = tuple(
+        entry for entry in entries if any(fnmatchcase(entry.label, pattern) for pattern in patterns)
+    )
+    if not filtered:
+        formatted_patterns = ", ".join(repr(pattern) for pattern in patterns)
+        raise ValueError(f"No MaterialX entries matched --filter: {formatted_patterns}")
+    return filtered
+
+
 def render_geometry_path(options: MaterialXOptions, materialx_root: Path) -> Path:
     geometry_path = Path(options.render_geometry)
     if not geometry_path.is_absolute():
@@ -258,7 +288,6 @@ def preview_settings(
         device_type=device_type,
         width=options.render_size[0],
         height=options.render_size[1],
-        enable_analytic_lights=options.enable_direct_lighting,
         radiance_ibl_path=radiance_ibl_path(options, materialx_root),
         dump_generated_code=options.dump_generated_code,
     )

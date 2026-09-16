@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "falcor2/importers/importer.h"
+#include "falcor2/importers/importer_area_light_geometry.h"
 #include "falcor2/importers/importer_edits.h"
 #include "falcor2/importers/importer_types.h"
 #include "falcor2/importers/usd_importer/usd_importer.h"
@@ -116,14 +117,14 @@ void Importer::import_asset(const std::filesystem::path& path)
     add_edit(std::make_unique<ImportAssetEdit>(path, m_default_import_options));
 }
 
-void Importer::on_scene_created(SceneCreatedCallback callback)
+void Importer::on_scene_loaded(SceneLoadedCallback callback)
 {
-    m_scene_created_callbacks.push_back(std::move(callback));
+    m_scene_loaded_callbacks.push_back(std::move(callback));
 }
 
-void Importer::run_scene_created_callbacks(ref<Scene> scene) const
+void Importer::run_scene_loaded_callbacks(ref<Scene> scene) const
 {
-    for (const auto& callback : m_scene_created_callbacks) {
+    for (const auto& callback : m_scene_loaded_callbacks) {
         callback(scene);
     }
 }
@@ -195,13 +196,15 @@ ref<ImporterScene> import_scene(const std::filesystem::path& path, const ImportO
 
     ref<ImporterScene> importer_scene;
     std::string extension = sgl::string::to_lower(path.extension().string());
-    if (extension == ".usd" || extension == ".usda" || extension == ".usdc") {
+    if (extension == ".usd" || extension == ".usda" || extension == ".usdc" || extension == ".usdz") {
         importer_scene = UsdImporter().load_scene(path);
     } else if (extension == ".gltf" || extension == ".glb") {
         importer_scene = GltfImporter().load_scene(path);
     } else {
         FALCOR_THROW("Unknown scene file extension \"{}\"", extension);
     }
+
+    detail::convert_area_lights_to_geometry(*importer_scene, import_options);
 
     if (import_options.recompute_normals) {
         sgl::thread::parallel_for(

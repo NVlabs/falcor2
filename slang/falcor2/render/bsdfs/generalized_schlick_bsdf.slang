@@ -34,38 +34,42 @@ public struct GeneralizedSchlickBSDF : IBSDF
         return eval_fresnel_generalized_schlick(color0, color90, exponent, cos_theta);
     }
 
-    public float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+
+    public BSDFEval
+    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
     {
-        if (D.is_singular() || wi.z * wo.z <= 0.0)
-            return float3(0.0);
+        if (D.is_singular() || min(wi.z, wo.z) < BSDF_MIN_COS_THETA)
+            return BSDFEval();
 
         float3 h = normalize(wi + wo);
         h *= sign(h.z);
         float wi_dot_h = dot(wi, h);
         float wo_dot_h = dot(wo, h);
         if (wi_dot_h * wi.z < 0.0 || wo_dot_h * wo.z < 0.0)
-            return float3(0.0);
+            return BSDFEval();
 
         float3 F = eval_fresnel(abs(wi_dot_h));
-        return D.G2(wo, wi) * D.eval_ndf(h) * F / (4.0 * abs(wi.z));
+        float pdf = D.eval_pdf(wi, h) / (4.0 * abs(wi_dot_h));
+        float3 value = D.G2(wo, wi) * D.eval_ndf(h) * F / (4.0 * abs(wi.z));
+        return BSDFEval(value, pdf);
     }
 
     public bool sample<S : ISampleGenerator>(float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
         sample = {};
 
-        if (wi.z < 0.0)
+        if (wi.z < BSDF_MIN_COS_THETA)
             return false;
 
         if (D.is_singular()) {
             sample.wo = float3(-wi.x, -wi.y, wi.z);
             sample.weight = eval_fresnel(wi.z);
             sample.flags = BSDFFlags::delta_reflection;
-            sample.pdf = 1.0;
+            sample.pdf = 0.0;
         } else {
             float3 h = D.sample(wi, sg);
             sample.wo = reflect(-wi, h);
-            if (sample.wo.z < 0.0)
+            if (sample.wo.z < BSDF_MIN_COS_THETA)
                 return false;
 
             float3 F = eval_fresnel(abs(dot(h, wi)));
@@ -76,17 +80,12 @@ public struct GeneralizedSchlickBSDF : IBSDF
         return true;
     }
 
-    public float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
-    {
-        if (D.is_singular() || wi.z * wo.z <= 0.0)
-            return 0.0;
-        float3 h = normalize(wi + wo);
-        return D.eval_pdf(wi, h) / (4.0 * abs(dot(wi, h)));
-    }
 
     public AlbedoContributions eval_albedo(const float3 wi)
     {
         float3 r = eval_fresnel(abs(wi.z));
+        // This reflection-only BSDF uses transmission to carry MaterialX layer pass-through;
+        // generated transmits[] separately controls actual through-material transport.
         return AlbedoContributions(r, 0.0, 1.0 - r, 0.0);
     }
 

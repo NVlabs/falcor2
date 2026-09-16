@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include "falcor2/render/shared_scene_types.h"
+#include "falcor2/render/shared_geometry_types.h"
 #include "falcor2/render/hit_group_policy.h"
 
 #include "falcor2/core/object.h"
@@ -465,6 +465,7 @@ enum class RenderGeometryInstanceDirtyFlags : uint8_t {
     destroyed = 1 << 1,
     geometry_group = 1 << 2,
     transform = 1 << 3,
+    opacity = 1 << 4,
 };
 FALCOR_ENUM_CLASS_OPERATORS(RenderGeometryInstanceDirtyFlags);
 
@@ -546,7 +547,7 @@ public:
     const RenderTransform& get_transform(RenderTransformHandle handle) const;
     void update_transform(RenderTransformHandle handle, const float4x4& world_from_object);
 
-    bool update(const HitGroupPolicy& hit_group_policy);
+    bool update(const HitGroupPolicy& hit_group_policy, bool requires_opacity_evaluation);
     void bind_to_scene(sgl::ShaderCursor cursor) const;
 
     bool has_triangle_geometry() const { return m_triangle_geometries.m_pool.count() > 0; }
@@ -603,6 +604,8 @@ private:
     bool m_tlas_prefer_refit{true};
 
     ref<sgl::Buffer> m_scratch_buffer;
+
+    bool m_requires_opacity_evaluation{false};
 };
 
 FALCOR_ENUM_CLASS_OPERATORS(RenderScene::DirtyFlags);

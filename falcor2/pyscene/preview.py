@@ -24,7 +24,8 @@ DEFAULT_WIDTH = 1280
 DEFAULT_HEIGHT = 720
 DEFAULT_TITLE = "Falcor2 PyScene Preview"
 DEFAULT_INTERACTIVE_SPP = 1
-DEFAULT_HEADLESS_SPP = 32
+DEFAULT_HEADLESS_SPP = 128
+MAX_HEADLESS_SPP_PER_BATCH = 32
 DEVICE_TYPE_CHOICES = ("automatic", "d3d12", "vulkan", "cuda")
 
 
@@ -44,8 +45,21 @@ def create_preview_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--width", type=_positive_int, default=DEFAULT_WIDTH)
     parser.add_argument("--height", type=_positive_int, default=DEFAULT_HEIGHT)
-    parser.add_argument("--spp", type=_positive_int)
+    parser.add_argument(
+        "--spp",
+        type=_positive_int,
+        help=(
+            f"Samples per pixel. Defaults to {DEFAULT_INTERACTIVE_SPP} interactively and "
+            f"{DEFAULT_HEADLESS_SPP} when --out is set."
+        ),
+    )
     parser.add_argument("--out", type=Path)
+    parser.add_argument(
+        "--no-tone-map",
+        dest="tone_map",
+        action="store_false",
+        help="Disable artistic tone mapping; PNG output still uses its standard sRGB encoding.",
+    )
     return parser
 
 
@@ -56,16 +70,17 @@ def parse_preview_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def create_preview_pipeline(device: spy.Device) -> PathTracerPipeline:
+def create_preview_pipeline(
+    device: spy.Device,
+    *,
+    tone_map: bool = True,
+) -> PathTracerPipeline:
     pipeline = PathTracerPipeline.create(device)
     pipeline.path_tracer.max_depth = 3
     pipeline.path_tracer.enable_nee = True
     pipeline.path_tracer.enable_mis = True
-    pipeline.path_tracer.enable_analytic_lights = True
-    pipeline.path_tracer.enable_environment_light = True
-    pipeline.path_tracer.enable_emissive_triangles = True
-    pipeline.path_tracer.env_map_as_background = True
-    pipeline.tone_map = True
+    pipeline.path_tracer.use_background_color = False
+    pipeline.tone_map = tone_map
     return pipeline
 
 
@@ -103,6 +118,7 @@ def _set_importer_source_path(
 @dataclass(frozen=True)
 class CameraRenderResult:
     camera_name: str
+    camera_path: str
     path: Path
     width: int
     height: int
@@ -130,35 +146,48 @@ def render_scene_cameras(
     width: int,
     height: int,
     spp: int,
+    tone_map: bool = True,
 ) -> list[CameraRenderResult]:
     _validate_render_size(width, height, spp)
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    cameras = scene.components.find_all(type=f2.Camera)
+    cameras = sorted(
+        scene.components.find_all(type=f2.Camera),
+        key=lambda camera: (str(camera.entity.name), str(camera.name)),
+    )
     if not cameras:
         raise ValueError("preview scene does not contain a camera")
 
-    pipeline = create_preview_pipeline(device)
+    pipeline = create_preview_pipeline(
+        device,
+        tone_map=tone_map,
+    )
     pipeline.output_spec = ContainerSpec.texture2d(
         spy.Format.rgba32_float,
         (height, width),
     )
-    pipeline.spp = spp
-
     results: list[CameraRenderResult] = []
     for index, camera in enumerate(cameras):
-        camera_name = camera.name
+        camera_name = str(camera.name)
+        camera_path = str(camera.entity.name)
         print(f"Rendering camera {index + 1}/{len(cameras)}: {camera_name}", flush=True)
         pipeline.reset()
-        image = pipeline(scene, camera=camera)
-        device.wait()
+        image = None
+        remaining_spp = spp
+        while remaining_spp > 0:
+            pipeline.spp = min(remaining_spp, MAX_HEADLESS_SPP_PER_BATCH)
+            image = pipeline(scene, camera=camera)
+            device.wait()
+            remaining_spp -= pipeline.spp
+        assert image is not None
         path = output_dir / _camera_filename(index, camera_name)
         save_image(image, path)
         print(f"Saved: {path}", flush=True)
         results.append(
             CameraRenderResult(
                 camera_name=camera_name,
+                camera_path=camera_path,
                 path=path,
                 width=width,
                 height=height,
@@ -174,13 +203,15 @@ def preview(argv: Sequence[str] | None = None) -> None:
     _set_importer_source_path(importer, _find_external_caller_source())
 
     device_type = getattr(spy.DeviceType, args.device_type)
-    device = create_device(device_type=device_type)
-    scene = f2.Scene.create(
-        device,
-        importer,
-        add_default_camera_best_view=True,
-        camera_aspect=args.width / args.height,
+    device = create_device(
+        device_type=device_type,
+        enable_cuda_interop=args.out is None,
     )
+    importer_scene = importer.build_importer_scene()
+    if not importer_scene.cameras:
+        importer_scene.add_default_camera_best_view(50.0, args.width / args.height)
+    scene = f2.Scene.from_importer_scene(device, importer_scene)
+    importer.run_scene_loaded_callbacks(scene)
     if args.out is not None:
         render_scene_cameras(
             device,
@@ -189,10 +220,14 @@ def preview(argv: Sequence[str] | None = None) -> None:
             width=args.width,
             height=args.height,
             spp=args.spp,
+            tone_map=args.tone_map,
         )
         return
 
-    pipeline = create_preview_pipeline(device)
+    pipeline = create_preview_pipeline(
+        device,
+        tone_map=args.tone_map,
+    )
     pipeline.spp = args.spp
 
     from falcor2.editor import Editor, EditorConfig
@@ -207,4 +242,7 @@ def preview(argv: Sequence[str] | None = None) -> None:
         ),
         scene=scene,
     )
-    editor.run(pipeline)
+    while editor.update():
+        if editor.needs_render:
+            image = pipeline(scene, delta_time=editor.dt)
+            editor.present(image)

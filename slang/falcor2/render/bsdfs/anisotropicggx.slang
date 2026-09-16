@@ -33,7 +33,11 @@ public struct AnisotropicGGXPolicy<let TSingularCutoffInverse : int, let TClampB
     public __init(float2 alpha)
     {
         float singular_cutoff = 1.0 / float(TSingularCutoffInverse);
-        this.alpha = TClampBelowCutoff ? max(alpha, float2(singular_cutoff)) : alpha;
+        bool singular = all(alpha < singular_cutoff);
+        // If both axes are below the cutoff, the distribution is better represented by a delta lobe. If either axis
+        // remains rough, keep a finite anisotropic GGX lobe and clamp both axes so its density never divides by a
+        // near-zero roughness. Using the same cutoff for both decisions leaves one clear transition between the models.
+        this.alpha = TClampBelowCutoff || !singular ? max(alpha, float2(singular_cutoff)) : alpha;
     }
 
     /// A 'singular' distribution is one which would be more ideally treated as an
@@ -52,7 +56,7 @@ public struct AnisotropicGGXPolicy<let TSingularCutoffInverse : int, let TClampB
         float sin_theta_sq = max(1.0 - cos_theta_sq, 0.0);
         float tan_theta_sq = sin_theta_sq / cos_theta_sq;
         if (isinf(tan_theta_sq))
-            return 0.0;
+            return float.INFINITY;
 
         float2 cos_sin_phi_sq = sin_theta_sq == 0.0 ? float2(1.0, 0.0) : float2(v.x * v.x, v.y * v.y) / sin_theta_sq;
         float alpha_sq = dot(cos_sin_phi_sq, alpha * alpha);
@@ -121,5 +125,6 @@ public struct AnisotropicGGXPolicy<let TSingularCutoffInverse : int, let TClampB
     }
 
     /// Returns the PDF of sampling normal h from VNDF(w)
+    [Differentiable]
     float eval_pdf(float3 w, float3 h) { return eval_vndf(w, h); }
 };

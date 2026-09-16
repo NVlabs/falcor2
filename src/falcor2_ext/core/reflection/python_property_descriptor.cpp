@@ -2,10 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "python_property_descriptor.h"
+#include "python_object_factory.h"
 
 #include "core/any.h"
 
 #include "falcor2/core/error.h"
+#include "falcor2/core/object.h"
+#include "falcor2/core/reflected_object.h"
 
 namespace falcor::reflection {
 
@@ -14,6 +17,28 @@ namespace falcor::reflection {
 // ---------------------------------------------------------------------------
 
 namespace {
+bool is_python_subclass(nb::handle type, nb::handle base)
+{
+    if (type.is_none() || !PyType_Check(type.ptr()))
+        return false;
+
+    int result = PyObject_IsSubclass(type.ptr(), base.ptr());
+    if (result < 0)
+        throw nb::python_error();
+    return result == 1;
+}
+
+bool is_enum_type(nb::handle type)
+{
+    nb::object enum_type = nb::module_::import_("enum").attr("Enum");
+    return is_python_subclass(type, enum_type);
+}
+
+bool is_enum_flags_type(nb::handle type)
+{
+    nb::object flag_type = nb::module_::import_("enum").attr("Flag");
+    return is_python_subclass(type, flag_type);
+}
 
 /// Build the metadata vector from a Python PythonPropertyInfo.
 std::vector<Any> build_metadata(nb::handle info)
@@ -32,15 +57,23 @@ std::vector<Any> build_metadata(nb::handle info)
         metadata.push_back(Any(ValueRange{nb::cast<double>(t[0]), nb::cast<double>(t[1])}));
     }
 
-    // enum_type -> EnumDescriptor
-    nb::object enum_type = info.attr("enum_type");
-    if (!enum_type.is_none()) {
+    // Integer-valued Enum type -> EnumDescriptor
+    nb::object value_type = info.attr("value_type");
+    if (is_enum_type(value_type)) {
         EnumDescriptor desc;
-        nb::object members = enum_type.attr("__members__");
+        desc.is_flags = is_enum_flags_type(value_type);
+        nb::object members = value_type.attr("__members__");
         for (auto item : members.attr("items")()) {
             nb::tuple kv = nb::borrow<nb::tuple>(item);
             std::string name = nb::cast<std::string>(kv[0]);
-            int64_t value = nb::cast<int64_t>(kv[1].attr("value"));
+            int64_t value;
+            FALCOR_CHECK(
+                nb::try_cast<int64_t>(kv[1].attr("value"), value),
+                "Property \"{}\": enum {} member {} must have an integer value representable as int64.",
+                nb::cast<std::string>(info.attr("name")),
+                nb::cast<std::string>(value_type.attr("__name__")),
+                name
+            );
             desc.items.push_back(EnumItem{value, std::move(name)});
         }
         metadata.push_back(Any(std::move(desc)));
@@ -83,21 +116,6 @@ std::vector<Any> build_metadata(nb::handle info)
         );
     }
 
-    // on_change -- wraps a Python callback as a C++ OnChange.
-    // The void* instance parameter is a nb::handle* pointing to the Python object.
-    nb::object on_change = info.attr("on_change");
-    if (!on_change.is_none()) {
-        nb::object py_callback = nb::borrow(on_change);
-        metadata.push_back(
-            Any(OnChange{[py_callback](void* instance)
-                         {
-                             nb::gil_scoped_acquire gil;
-                             nb::handle* obj = static_cast<nb::handle*>(instance);
-                             py_callback(*obj);
-                         }})
-        );
-    }
-
     return metadata;
 }
 
@@ -112,23 +130,26 @@ PythonPropertyDescriptor::PythonPropertyDescriptor(nb::object info)
     , m_info(std::move(info))
     , m_getter(nb::borrow(m_info.attr("getter")))
     , m_setter(nb::borrow(m_info.attr("setter")))
+    , m_on_change(nb::borrow(m_info.attr("on_change")))
     , m_default_value(nb::borrow(m_info.attr("default_value")))
+    , m_has_default_value(nb::cast<bool>(m_info.attr("has_default_value")))
     , m_is_enum(false)
 {
-    // Resolve the type map entry by Python type object (not by string).
-    nb::object value_type = m_info.attr("value_type");
-    if (!value_type.is_none())
-        m_type_entry = property_type_map_find(value_type);
+    // Classify the canonical Python value type.
+    m_value_type = nb::borrow(m_info.attr("value_type"));
+    m_is_reflected_object = is_python_subclass(m_value_type, nb::type<ReflectedObject>());
+    m_is_enum = is_enum_type(m_value_type);
+    if (!m_is_reflected_object && !m_is_enum)
+        m_type_entry = property_type_map_find(m_value_type);
 
-    // Resolve enum type.
-    nb::object et = m_info.attr("enum_type");
-    if (!et.is_none()) {
-        m_enum_type = et;
-        m_is_enum = true;
-    } else if (!value_type.is_none() && !m_type_entry) {
-        // If value_type is set but not found in the type map, check if it's an IntEnum subclass.
-        nb::object int_enum = nb::module_::import_("enum").attr("IntEnum");
-        m_is_enum = PyObject_IsSubclass(value_type.ptr(), int_enum.ptr()) == 1;
+    nb::object object_factories = m_info.attr("object_factories");
+    if (nb::len(object_factories) > 0) {
+        FALCOR_CHECK(
+            m_is_reflected_object,
+            "Property \"{}\": object_factories requires a ReflectedObject value_type.",
+            m_name
+        );
+        set_object_factory(make_ref<PythonObjectFactory>(object_factories));
     }
 }
 
@@ -136,6 +157,8 @@ const std::type_info& PythonPropertyDescriptor::type() const
 {
     if (m_type_entry)
         return *m_type_entry->type_info;
+    if (m_is_reflected_object)
+        return typeid(ref<ReflectedObject>);
     if (m_is_enum)
         return typeid(int64_t);
     return typeid(nb::object);
@@ -143,12 +166,12 @@ const std::type_info& PythonPropertyDescriptor::type() const
 
 bool PythonPropertyDescriptor::has_default_value() const
 {
-    return !m_default_value.is_none();
+    return m_has_default_value;
 }
 
 bool PythonPropertyDescriptor::is_default(const void* instance) const
 {
-    if (m_default_value.is_none())
+    if (!m_has_default_value)
         return false;
     nb::gil_scoped_acquire gil;
     nb::object current = py_get(instance);
@@ -162,6 +185,10 @@ Any PythonPropertyDescriptor::get_any(const void* instance) const
 
     if (m_type_entry)
         return m_type_entry->to_any(val);
+    if (m_is_reflected_object) {
+        validate_reflected_object(val);
+        return Any(val.is_none() ? ref<ReflectedObject>{} : nb::cast<ref<ReflectedObject>>(val));
+    }
     if (m_is_enum)
         return Any(nb::cast<int64_t>(val.attr("value")));
 
@@ -180,15 +207,19 @@ void PythonPropertyDescriptor::set_any(void* instance, const Any& value) const
         return;
     }
 
+    if (m_is_reflected_object) {
+        const ref<ReflectedObject>* object = any_cast<ref<ReflectedObject>>(&value);
+        FALCOR_CHECK(object != nullptr, "Property \"{}\": expected ref<ReflectedObject> Any.", m_name);
+        nb::object py_object = *object ? nb::cast(*object) : nb::none();
+        validate_reflected_object(py_object);
+        py_set(instance, py_object);
+        return;
+    }
+
     if (m_is_enum) {
         const int64_t* iv = any_cast<int64_t>(&value);
         FALCOR_CHECK(iv != nullptr, "Property \"{}\": expected int64_t Any for enum.", m_name);
-        if (m_enum_type.is_valid()) {
-            nb::object py_val = m_enum_type(*iv);
-            py_set(instance, py_val);
-        } else {
-            py_set(instance, nb::cast(*iv));
-        }
+        py_set(instance, m_value_type(*iv));
         return;
     }
 
@@ -216,12 +247,7 @@ void PythonPropertyDescriptor::set_enum_from_int64(void* instance, int64_t value
     FALCOR_CHECK(!m_read_only, "Property \"{}\" is read-only.", m_name);
     FALCOR_CHECK(m_is_enum, "Property \"{}\": type is not an enum.", m_name);
     nb::gil_scoped_acquire gil;
-    if (m_enum_type.is_valid()) {
-        nb::object py_val = m_enum_type(value);
-        py_set(instance, py_val);
-    } else {
-        py_set(instance, nb::cast(value));
-    }
+    py_set(instance, m_value_type(value));
 }
 
 bool PythonPropertyDescriptor::is_serializable_to_properties() const
@@ -268,12 +294,7 @@ bool PythonPropertyDescriptor::read_from_properties(void* instance, const Proper
 
     if (m_is_enum) {
         auto ev = props.get<falcor::detail::PropertyEnumValue>(m_name);
-        if (m_enum_type.is_valid()) {
-            nb::object py_val = m_enum_type(ev.value);
-            py_set(instance, py_val);
-        } else {
-            py_set(instance, nb::cast(ev.value));
-        }
+        py_set(instance, m_value_type(ev.value));
         return true;
     }
 
@@ -282,7 +303,7 @@ bool PythonPropertyDescriptor::read_from_properties(void* instance, const Proper
 
 void PythonPropertyDescriptor::reset(void* instance) const
 {
-    if (m_read_only || m_default_value.is_none())
+    if (m_read_only || !m_has_default_value)
         return;
     nb::gil_scoped_acquire gil;
     py_set(instance, m_default_value);
@@ -290,20 +311,46 @@ void PythonPropertyDescriptor::reset(void* instance) const
 
 void PythonPropertyDescriptor::get_value(const void* instance, void* out) const
 {
-    FALCOR_UNUSED(instance);
-    FALCOR_UNUSED(out);
-    // get_value is the low-level typed path which requires compile-time type knowledge.
-    // Python properties should use get_any() instead.
-    FALCOR_THROW("Property \"{}\": get_value() not supported for Python properties. Use get_any().", m_name);
+    nb::gil_scoped_acquire gil;
+    nb::object value = py_get(instance);
+    if (m_type_entry) {
+        m_type_entry->copy_from_python(value, out);
+        return;
+    }
+    if (m_is_reflected_object) {
+        validate_reflected_object(value);
+        *static_cast<ref<ReflectedObject>*>(out)
+            = value.is_none() ? ref<ReflectedObject>{} : nb::cast<ref<ReflectedObject>>(value);
+        return;
+    }
+    if (m_is_enum) {
+        *static_cast<int64_t*>(out) = nb::cast<int64_t>(value.attr("value"));
+        return;
+    }
+    *static_cast<nb::object*>(out) = std::move(value);
 }
 
 void PythonPropertyDescriptor::set_value(void* instance, const void* value) const
 {
-    FALCOR_UNUSED(instance);
-    FALCOR_UNUSED(value);
-    // set_value is the low-level typed path which requires compile-time type knowledge.
-    // Python properties should use set_any() instead.
-    FALCOR_THROW("Property \"{}\": set_value() not supported for Python properties. Use set_any().", m_name);
+    FALCOR_CHECK(!m_read_only, "Property \"{}\" is read-only.", m_name);
+    nb::gil_scoped_acquire gil;
+    if (m_type_entry) {
+        py_set(instance, m_type_entry->copy_to_python(value));
+        return;
+    }
+    if (m_is_reflected_object) {
+        const ref<ReflectedObject>& object = *static_cast<const ref<ReflectedObject>*>(value);
+        nb::object py_object = object ? nb::cast(object) : nb::none();
+        validate_reflected_object(py_object);
+        py_set(instance, py_object);
+        return;
+    }
+    if (m_is_enum) {
+        int64_t enum_value = *static_cast<const int64_t*>(value);
+        py_set(instance, m_value_type(enum_value));
+        return;
+    }
+    py_set(instance, *static_cast<const nb::object*>(value));
 }
 
 // ---------------------------------------------------------------------------
@@ -320,6 +367,31 @@ void PythonPropertyDescriptor::py_set(void* instance, nb::handle value) const
 {
     nb::handle* obj = static_cast<nb::handle*>(instance);
     m_setter(*obj, value);
+    if (!m_on_change.is_none())
+        m_on_change(*obj);
+}
+
+void PythonPropertyDescriptor::validate_reflected_object(nb::handle value) const
+{
+    if (value.is_none()) {
+        const ReflectedObjectFactory* factory = object_factory();
+        FALCOR_CHECK(
+            factory && factory->find_index(nullptr).has_value(),
+            "Property \"{}\" does not allow None.",
+            m_name
+        );
+        return;
+    }
+
+    int is_instance = PyObject_IsInstance(value.ptr(), m_value_type.ptr());
+    if (is_instance < 0)
+        throw nb::python_error();
+    FALCOR_CHECK(
+        is_instance == 1,
+        "Property \"{}\": value must be an instance of {}.",
+        m_name,
+        nb::cast<std::string>(m_value_type.attr("__name__"))
+    );
 }
 
 } // namespace falcor::reflection

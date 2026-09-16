@@ -13,7 +13,16 @@ import falcor2.testing.helpers as helpers
 DATA_DIR = Path(__file__).parent.parent.parent.parent / "data"
 
 
-@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
+class CapturingLoggerOutput(spy.LoggerOutput):
+    def __init__(self) -> None:
+        super().__init__()
+        self.messages: list[str] = []
+
+    def write(self, level: spy.LogLevel, name: str, msg: str) -> None:
+        self.messages.append(msg)
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_asset_resolver_priority_for_regular_and_udim_textures(
     device_type: spy.DeviceType,
     tmp_path: Path,
@@ -67,18 +76,18 @@ def test_invalid_handle(device_type: spy.DeviceType):
     module = spy.Module.load_from_file(device, "render/test_texture_manager.slang")
 
     assert module.test_2d(
-        handle={"data": handle.data},
+        handle=handle,
         uv=spy.float2(0, 0),
         default_value=spy.float4(1, 0, 1, 0),
     ) == spy.float4(1, 0, 1, 0)
 
     assert module.test_3d(
-        handle={"data": handle.data},
+        handle=handle,
         uvw=spy.float3(0, 0, 0),
         default_value=spy.float4(1, 0, 1, 0),
     ) == spy.float4(1, 0, 1, 0)
 
-    assert module.test_handle_flag_conversion(handle={"data": handle.data}) == handle.data
+    assert module.test_handle_flag_conversion(handle=handle) == handle.data
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
@@ -162,7 +171,18 @@ def test_load_texture(
         assert regular_blue_handle.is_finalized() == False
         assert regular_blue_handle.texture == None
 
-        texture_manager.update()
+        log_output = CapturingLoggerOutput()
+        logger = spy.Logger.get()
+        logger.add_output(log_output)
+        try:
+            texture_manager.update()
+        finally:
+            logger.remove_output(log_output)
+
+        loaded_messages = [
+            message for message in log_output.messages if message.startswith('Loaded texture "')
+        ]
+        assert len(loaded_messages) == 2
 
     assert white_1k_handle.is_finalized() == True
     assert white_1k_handle.texture != None
@@ -181,13 +201,13 @@ def test_load_texture(
     module = spy.Module.load_from_file(device, "render/test_texture_manager.slang")
 
     assert module.test_2d(
-        handle={"data": white_1k_handle.data},
+        handle=white_1k_handle,
         uv=spy.float2(0.5, 0.5),
         default_value=spy.float4(0, 0, 0, 0),
     ) == spy.float4(1, 1, 1, 1)
 
     assert module.test_2d(
-        handle={"data": regular_blue_handle.data},
+        handle=regular_blue_handle,
         uv=spy.float2(0.5, 0.5),
         default_value=spy.float4(0, 0, 0, 0),
     ) == spy.float4(0, 0, 1, 1)
@@ -215,6 +235,38 @@ def test_load_texture(
     assert stats.regular_texture_count == 0
     assert stats.udim_texture_count == 0
     assert stats.total_sampler_count == 1
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_deferred_load_filters_loaded_and_repeated_ids(device_type: spy.DeviceType) -> None:
+    device = helpers.get_device(device_type)
+    texture_manager = TextureManager(device)
+    white_path = DATA_DIR / "assets/textures/test_texture_manager/white_1k.png"
+    blue_path = DATA_DIR / "assets/textures/test_texture_manager/regular_blue.png"
+
+    white_handle = texture_manager.load_texture(white_path, load_deferred=True)
+    assert texture_manager.load_texture(white_path, load_deferred=False) == white_handle
+    assert white_handle.is_finalized()
+
+    blue_handle = texture_manager.load_texture(blue_path, load_deferred=True)
+    assert texture_manager.load_texture(blue_path, load_deferred=True) == blue_handle
+
+    log_output = CapturingLoggerOutput()
+    logger = spy.Logger.get()
+    logger.add_output(log_output)
+    try:
+        texture_manager.update()
+    finally:
+        logger.remove_output(log_output)
+
+    loaded_messages = [
+        message for message in log_output.messages if message.startswith('Loaded texture "')
+    ]
+    assert len(loaded_messages) == 1
+    assert str(blue_path) in loaded_messages[0]
+    assert blue_handle.is_finalized()
+    assert blue_handle.texture is not None
+    assert blue_handle.texture.width == 64
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)

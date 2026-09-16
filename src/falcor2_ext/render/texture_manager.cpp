@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "nanobind.h"
-#include "nbdictionary.h"
 
 #include "falcor2/render/texture_manager.h"
 
 #include <sgl/device/device.h>
+#include <sgl/device/sampler.h>
 
 namespace nb = nanobind;
 using namespace nb::literals;
@@ -44,17 +44,7 @@ FALCOR_PY_EXPORT(render_texture_manager)
         .DEF_PROP_RO(TextureHandle, udim_tiles)
         .DEF_PROP_RO(TextureHandle, texture)
         .DEF_PROP_RO(TextureHandle, sampler)
-        .DEF_PROP_RO(TextureHandle, data)
-        .def(
-            "get_this",
-            [](TextureHandle* self)
-            {
-                nb::dict result = NBDictionary::get_uniforms(*self);
-                result["_type"] = "TextureHandle";
-                return result;
-            },
-            "Returns the bindings for this texture handle."
-        );
+        .DEF_PROP_RO(TextureHandle, data);
 
     // TODO(scene) there seems to be a bug how pydoc is generated for this nested class!
     nb::class_<TextureHandle::UDIMTile>(texture_handle, "UDIMTile", D(UDIMTile))

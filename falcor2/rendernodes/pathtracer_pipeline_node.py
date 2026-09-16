@@ -1,20 +1,34 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""High-level path-tracing pipeline with optional DLSS Ray Reconstruction."""
+"""High-level path-tracing pipeline with optional DLSS or OptiX denoising."""
 
-import slangpy as spy
+from enum import IntEnum
 from typing import Any, Optional
 
+import slangpy as spy
+
 import falcor2 as f2
+from falcor2.reflection import reflected, reflected_property
 from falcor2.rendergraph import ContainerSpec, RenderNode
 from falcor2.rendernodes.accumulator_node import AccumulatorNode
+from falcor2.rendernodes.reweighting_accumulator_node import ReweightingAccumulatorNode
 from falcor2.rendernodes.dlss_ray_recon_node import DLSSRayReconNode
+from falcor2.rendernodes.optix_denoiser_node import OptixDenoiserNode
 from falcor2.rendernodes.reference_pathtracer_node import ReferencePathTracerNode
 from falcor2.rendernodes.tonemapper_node import TonemapperNode
 from falcor2.utils.jitter import frame_jitter
 
 
+class AccumulationMode(IntEnum):
+    """Accumulation policy used by the normal non-DLSS rendering path."""
+
+    off = 0
+    normal = 1
+    weighted = 2
+
+
+@reflected
 class PathTracerPipeline(RenderNode):
     """Reference path-tracing pipeline with accumulation, tonemapping, and DLSS-RR."""
 
@@ -24,10 +38,16 @@ class PathTracerPipeline(RenderNode):
         self.device = device
         self.path_tracer = ReferencePathTracerNode.create(device)
         self.accumulator = AccumulatorNode.create(device)
+        self.reweighting_accumulator = ReweightingAccumulatorNode.create(device)
         self.tonemapper = TonemapperNode.create(device)
         self.dlss_rr = DLSSRayReconNode.create(device)
-        self.enable_dlss_rr = False
-        self.tone_map = True
+        self.optix_denoiser = OptixDenoiserNode.create(device)
+        self._enable_dlss_rr = False
+        self._enable_optix_denoiser = False
+        self._enable_nan_overlay = False
+        self._nan_overlay_module: spy.Module | None = None
+        self._accumulate_nan_count = True
+        self._tone_map = True
         self._output_spec = ContainerSpec.auto()
         self._guide_output_specs = dict(self.path_tracer.guide_output_specs)
         self._iteration = 0
@@ -35,6 +55,7 @@ class PathTracerPipeline(RenderNode):
         self._last_camera_uniforms = None
         self._pending_reset = False
         self._spp = 1
+        self._accumulation_mode = AccumulationMode.normal
         self._last_dlss_key: tuple[int, int, int, int, Any] | None = None
         self._last_enable_dlss_rr = self.enable_dlss_rr
 
@@ -42,6 +63,22 @@ class PathTracerPipeline(RenderNode):
     def create(cls, device: spy.Device) -> "PathTracerPipeline":
         """Create a path-tracer pipeline for ``device``."""
         return cls(device)
+
+    def graph_settings_children(self) -> dict[str, Any]:
+        """Expose node-level controls in the graph settings UI."""
+        return {
+            "path_tracer": self.path_tracer,
+            "accumulator": self.accumulator,
+            "reweighting_accumulator": self.reweighting_accumulator,
+            "dlss_rr": self.dlss_rr,
+            "optix_denoiser": self.optix_denoiser,
+            "tonemapper": self.tonemapper,
+        }
+
+    def on_graph_settings_changed(self, source: Any) -> None:
+        """Reset accumulated history when path-tracer settings change."""
+        if source is self.path_tracer:
+            self.request_reset()
 
     @property
     def spp(self) -> int:
@@ -61,6 +98,92 @@ class PathTracerPipeline(RenderNode):
     def output_spec(self, value: ContainerSpec):
         self._output_spec = value
         self.request_reset()
+
+    @reflected_property(
+        ui_label="Accumulation mode",
+        ui_group="Rendering",
+        ui_enable_if=lambda pipeline: not pipeline.enable_dlss_rr,
+    )
+    def accumulation_mode(self) -> AccumulationMode:
+        """Accumulation policy for normal path-traced samples."""
+        return self._accumulation_mode
+
+    @accumulation_mode.setter
+    def accumulation_mode(self, value: AccumulationMode) -> None:
+        mode = AccumulationMode(value)
+        if mode != self._accumulation_mode:
+            self._accumulation_mode = mode
+            self.request_reset()
+
+    @reflected_property(ui_label="DLSS Ray Reconstruction", ui_group="Rendering")
+    def enable_dlss_rr(self) -> bool:
+        """Whether DLSS Ray Reconstruction owns the temporal render path."""
+        return self._enable_dlss_rr
+
+    @enable_dlss_rr.setter
+    def enable_dlss_rr(self, value: bool) -> None:
+        enabled = bool(value)
+        if enabled != self._enable_dlss_rr:
+            self._enable_dlss_rr = enabled
+            self.request_reset()
+
+    @reflected_property(
+        ui_label="OptiX denoiser",
+        ui_group="Rendering",
+        ui_enable_if=lambda pipeline: pipeline.optix_denoiser_available,
+    )
+    def enable_optix_denoiser(self) -> bool:
+        """Whether OptiX denoises accumulated linear HDR color."""
+        return self._enable_optix_denoiser
+
+    @enable_optix_denoiser.setter
+    def enable_optix_denoiser(self, value: bool) -> None:
+        enabled = bool(value)
+        if enabled and not self.optix_denoiser.is_supported:
+            raise RuntimeError("OptiX denoising requires a CUDA or CUDA-interoperable device.")
+        if enabled != self._enable_optix_denoiser:
+            self._enable_optix_denoiser = enabled
+            self.request_reset()
+
+    @property
+    def optix_denoiser_available(self) -> bool:
+        """Whether this pipeline's device can run OptiX denoising."""
+        return self.optix_denoiser.is_supported
+
+    @reflected_property(ui_label="Tone mapping", ui_group="Rendering")
+    def tone_map(self) -> bool:
+        """Whether the tone mapper converts linear HDR color to display output."""
+        return self._tone_map
+
+    @tone_map.setter
+    def tone_map(self, value: bool) -> None:
+        self._tone_map = bool(value)
+
+    @reflected_property(ui_label="Highlight NaN pixels", ui_group="Debug")
+    def enable_nan_overlay(self) -> bool:
+        """Whether the final image highlights pixels that produced NaNs."""
+        return self._enable_nan_overlay
+
+    @enable_nan_overlay.setter
+    def enable_nan_overlay(self, value: bool) -> None:
+        self._enable_nan_overlay = bool(value)
+
+    @reflected_property(
+        ui_label="Accumulate NaN counts",
+        ui_group="Debug",
+        ui_enable_if=lambda pipeline: pipeline.enable_nan_overlay,
+    )
+    def accumulate_nan_count(self) -> bool:
+        """Whether ``nan_count`` persists until color accumulation resets.
+
+        When false, the count is cleared once at the start of every pipeline
+        frame and includes all SPP iterations rendered for that frame.
+        """
+        return self._accumulate_nan_count
+
+    @accumulate_nan_count.setter
+    def accumulate_nan_count(self, value: bool) -> None:
+        self._accumulate_nan_count = bool(value)
 
     @property
     def guide_output_specs(self) -> dict[str, ContainerSpec | None]:
@@ -83,7 +206,7 @@ class PathTracerPipeline(RenderNode):
         self._last_scene_update_generation = scene.update_generation
 
         if camera is not None:
-            cam_uniforms = camera.get_uniforms()
+            cam_uniforms = camera.calc_uniforms()
             if cam_uniforms != self._last_camera_uniforms:
                 needs_reset = True
                 self._last_camera_uniforms = cam_uniforms
@@ -98,8 +221,10 @@ class PathTracerPipeline(RenderNode):
         """Immediately clear accumulation and all camera-dependent temporal history."""
         self._iteration = 0
         self.accumulator.reset(cmd=cmd)
+        self.reweighting_accumulator.reset(cmd=cmd)
         self.path_tracer.reset()
         self.dlss_rr.reset()
+        self.tonemapper.reset(cmd=cmd)
         self._last_scene_update_generation = None
         self._last_camera_uniforms = None
         self._last_dlss_key = None
@@ -112,6 +237,7 @@ class PathTracerPipeline(RenderNode):
         self._iteration = 0
         # self.path_tracer.reset()
         self.accumulator.reset(cmd=cmd)
+        self.reweighting_accumulator.reset(cmd=cmd)
         self._pending_reset = False
 
     def _reset_dlss_rr(self):
@@ -134,13 +260,13 @@ class PathTracerPipeline(RenderNode):
         target_height, target_width = resolved.dims
         return int(target_width), int(target_height)
 
-    def _render_iteration(
+    def _render_raw_iteration(
         self,
         scene: f2.Scene,
         camera: f2.Camera,
         cmd: spy.CommandEncoder | None = None,
     ) -> tuple[Any, dict[str, Any | None]]:
-        """Render one accumulated path-tracer iteration and return color plus guides."""
+        """Render one raw path-tracer iteration and return color plus guides."""
         scene.update()
 
         if self._needs_reset(scene, camera):
@@ -149,12 +275,28 @@ class PathTracerPipeline(RenderNode):
         # In normal mode the path tracer is configured from pipeline-owned specs
         # every frame, so stale DLSS internal specs cannot leak across mode changes.
         self.path_tracer.output_spec = self._output_spec
-        self.path_tracer.guide_output_specs = self._guide_output_specs
+        guide_specs = dict(self._guide_output_specs)
+        if self.enable_optix_denoiser:
+            for name in self.optix_denoiser.GUIDE_NAMES:
+                if guide_specs.get(name) is None:
+                    guide_specs[name] = ContainerSpec.texture2d()
+        if self.enable_nan_overlay:
+            guide_specs["nan_count"] = ContainerSpec.texture2d(spy.Format.r32_uint)
+        self.path_tracer.guide_output_specs = guide_specs
         image, guides = self.path_tracer(scene, camera, iteration=self._iteration, cmd=cmd)
-        image = self.accumulator(image, cmd=cmd)
         self._iteration += 1
 
         return image, guides
+
+    def _render_iteration(
+        self,
+        scene: f2.Scene,
+        camera: f2.Camera,
+        cmd: spy.CommandEncoder | None = None,
+    ) -> tuple[Any, dict[str, Any | None]]:
+        """Render and standard-accumulate one path-tracer iteration."""
+        image, guides = self._render_raw_iteration(scene, camera, cmd=cmd)
+        return self.accumulator(image, cmd=cmd), guides
 
     def _render_dlss_rr_iteration(
         self,
@@ -195,6 +337,9 @@ class PathTracerPipeline(RenderNode):
         # DLSS mode asks the path tracer for internal low-resolution color and
         # guide textures. The pipeline final output spec remains owned by dlss_rr.
         self.path_tracer.output_spec = color_spec
+        if self.enable_nan_overlay:
+            guide_specs = dict(guide_specs)
+            guide_specs["nan_count"] = ContainerSpec.texture2d(spy.Format.r32_uint)
         self.path_tracer.guide_output_specs = guide_specs  # type: ignore
         color, guides = self.path_tracer(
             scene,
@@ -223,12 +368,13 @@ class PathTracerPipeline(RenderNode):
         output_guides_dict["color"] = color
         return output, output_guides_dict
 
-    def forward(
+    def _exec(
         self,
         scene: f2.Scene,
         camera: Optional[f2.Camera] = None,
         cmd: spy.CommandEncoder | None = None,
         output_guides: bool = False,
+        delta_time: float = 1.0 / 60.0,
     ) -> Any:
         """Render the current frame.
 
@@ -239,6 +385,11 @@ class PathTracerPipeline(RenderNode):
         camera = camera or (scene and scene.active_camera)
         if camera is None:
             return None
+
+        # Per-frame mode clears once here so all SPP iterations rendered below
+        # contribute to the same frame-local count.
+        if not self.accumulate_nan_count:
+            self.path_tracer.reset_nan_checks()
 
         if self.enable_dlss_rr != self._last_enable_dlss_rr:
             self.request_reset()
@@ -251,20 +402,60 @@ class PathTracerPipeline(RenderNode):
                 cmd=cmd,
             )
         else:
-            image, guides = self._render_iteration(
-                scene,
-                camera,
-                cmd=cmd,
-            )
-            for _ in range(1, self.spp):
+            if self._accumulation_mode == AccumulationMode.off:
+                image, guides = self._render_raw_iteration(
+                    scene,
+                    camera,
+                    cmd=cmd,
+                )
+            elif self._accumulation_mode == AccumulationMode.normal:
                 image, guides = self._render_iteration(
                     scene,
                     camera,
                     cmd=cmd,
                 )
+                for _ in range(1, self.spp):
+                    image, guides = self._render_iteration(
+                        scene,
+                        camera,
+                        cmd=cmd,
+                    )
+            else:
+                image, guides = self._render_raw_iteration(
+                    scene,
+                    camera,
+                    cmd=cmd,
+                )
+                self.reweighting_accumulator.accumulate(image, cmd=cmd)
+                for _ in range(1, self.spp):
+                    image, guides = self._render_raw_iteration(
+                        scene,
+                        camera,
+                        cmd=cmd,
+                    )
+                    self.reweighting_accumulator.accumulate(image, cmd=cmd)
+                image = self.reweighting_accumulator.resolve(output_like=image, cmd=cmd)
+
+            if self.enable_optix_denoiser:
+                image = self.optix_denoiser(image, guides, cmd=cmd)
 
         if self.tone_map:
-            image = self.tonemapper(image, cmd=cmd)
+            image = self.tonemapper(image, cmd=cmd, delta_time=delta_time)
+
+        if self.enable_nan_overlay:
+            nan_count = guides["nan_count"]
+            if not isinstance(image, spy.Texture) or not isinstance(nan_count, spy.Texture):
+                raise TypeError("NaN overlay requires texture color and nan_count outputs.")
+            if self._nan_overlay_module is None:
+                self._nan_overlay_module = spy.Module(
+                    self.device.load_module("falcor2.rendernodes.nan_overlay")
+                )
+            self._nan_overlay_module.apply_nan_overlay(
+                pixel=spy.grid((image.height, image.width)),
+                nan_count=nan_count,
+                output=image,
+                _append_to=cmd,
+            )
 
         if output_guides:
             return image, guides

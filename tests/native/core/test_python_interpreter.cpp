@@ -7,6 +7,7 @@
 
 #include <fstream>
 #include <thread>
+#include <vector>
 
 using namespace falcor;
 
@@ -131,6 +132,68 @@ TEST_CASE("execute_file controls persistent module identity")
     ctx.execute_string("assert __name__ == '__main__'");
     ctx.execute_string("assert guard_count == 2");
 }
+
+TEST_CASE("execute_file search paths are temporary and restored after errors")
+{
+    PythonContext ctx = PythonInterpreter::get().create_context();
+    const std::filesystem::path temp_dir = testing::get_case_temp_directory();
+    const std::filesystem::path helper_path = temp_dir / "pyscene_python_path_helper.py";
+    const std::filesystem::path script_path = temp_dir / "uses_helper.py";
+    const std::filesystem::path failing_script_path = temp_dir / "uses_helper_then_fails.py";
+
+    {
+        std::ofstream helper(helper_path);
+        helper << "VALUE = 17\n";
+    }
+    {
+        std::ofstream script(script_path);
+        script << "from pyscene_python_path_helper import VALUE\n";
+        script << "assert VALUE == 17\n";
+    }
+    {
+        std::ofstream script(failing_script_path);
+        script << "from pyscene_python_path_helper import VALUE\n";
+        script << "raise RuntimeError(f'failure after importing {VALUE}')\n";
+    }
+
+    ctx.execute_string("import sys\nsaved_sys_path = sys.path\nsaved_sys_path_values = list(sys.path)");
+    const std::vector<std::filesystem::path> search_paths{temp_dir};
+    ctx.execute_file(script_path, "__search_path_test__", search_paths);
+    ctx.execute_string("assert sys.path is saved_sys_path\nassert sys.path == saved_sys_path_values");
+
+    CHECK_THROWS_AS(
+        ctx.execute_file(failing_script_path, "__search_path_failure_test__", search_paths),
+        PythonException
+    );
+    ctx.execute_string("assert sys.path is saved_sys_path\nassert sys.path == saved_sys_path_values");
+}
+
+#if defined(_WIN32)
+TEST_CASE("execute_file supports non-ASCII Windows paths")
+{
+    PythonContext ctx = PythonInterpreter::get().create_context();
+    std::wstring directory_name = L"python_path_";
+    directory_name.push_back(static_cast<wchar_t>(0x00e9));
+    const std::filesystem::path unicode_dir = testing::get_case_temp_directory() / directory_name;
+    std::filesystem::create_directories(unicode_dir);
+
+    const std::filesystem::path helper_path = unicode_dir / "pyscene_unicode_path_helper.py";
+    const std::filesystem::path script_path = unicode_dir / "uses_unicode_path_helper.py";
+    {
+        std::ofstream helper(helper_path);
+        helper << "VALUE = 23\n";
+    }
+    {
+        std::ofstream script(script_path);
+        script << "from pyscene_unicode_path_helper import VALUE\n";
+        script << "assert VALUE == 23\n";
+        script << "assert '\\\\' not in __file__\n";
+    }
+
+    const std::vector<std::filesystem::path> search_paths{unicode_dir};
+    ctx.execute_file(script_path, "__unicode_path_test__", search_paths);
+}
+#endif
 
 TEST_CASE("execute_file with non-existent path throws")
 {

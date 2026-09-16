@@ -6,9 +6,11 @@
 #include "material_network.h"
 #include "usd_importer_utils.h"
 #include "falcor2/importers/importer_types.h"
+#include "falcor2/importers/material_conversions.h"
 
 BEGIN_DISABLE_USD_WARNINGS
 #include <pxr/base/tf/pathUtils.h>
+#include <pxr/usd/ar/packageUtils.h>
 #include <pxr/usd/sdf/path.h>
 #include <pxr/usd/sdf/schema.h>
 #include <pxr/usd/sdr/declare.h>
@@ -77,6 +79,10 @@ static SdfAssetPath resolve_asset_symlinks(const SdfAssetPath& assetPath)
     if (p.empty()) {
         p = assetPath.GetAssetPath();
     }
+
+    // Package members are virtual assets, not filesystem paths.
+    if (ArIsPackageRelativePath(p))
+        return assetPath;
 
     if (resolve_symlinks(p, &p)) {
         return SdfAssetPath(assetPath.GetAssetPath(), p);
@@ -214,7 +220,8 @@ void walk_graph(
     PathSet* visited_nodes,
     const pxr::UsdShadeConnectableAPI& shade_node,
     const pxr::TfTokenVector& shader_source_types,
-    const pxr::TfTokenVector& render_contexts
+    const pxr::TfTokenVector& render_contexts,
+    const std::function<void(const std::filesystem::path&)>& register_asset
 )
 {
     using namespace pxr;
@@ -247,7 +254,8 @@ void walk_graph(
                     visited_nodes,
                     UsdShadeConnectableAPI(attr.GetPrim()),
                     shader_source_types,
-                    render_contexts
+                    render_contexts,
+                    register_asset
                 );
 
                 /// Add relationship
@@ -260,6 +268,13 @@ void walk_graph(
                 const VtValue value = resolve_material_param_value(attr);
                 if (!value.IsEmpty()) {
                     set_from_value(params, input_name, value);
+                    if (value.IsHolding<SdfAssetPath>()) {
+                        const SdfAssetPath& asset_path = value.UncheckedGet<SdfAssetPath>();
+                        register_asset(
+                            asset_path.GetResolvedPath().empty() ? asset_path.GetAssetPath()
+                                                                 : asset_path.GetResolvedPath()
+                        );
+                    }
                 }
             }
             if (attr.HasColorSpace()) {
@@ -285,6 +300,7 @@ void walk_graph(
             SdfAssetPath path;
             if (node_def.GetSourceAsset(&path, source_type)) {
                 path = resolve_asset_symlinks(path);
+                register_asset(path.GetResolvedPath().empty() ? path.GetAssetPath() : path.GetResolvedPath());
                 if (path.GetResolvedPath().empty()) {
                     params.set(fmt::format("info:{}:sourceAsset", source_type_str), path.GetAssetPath());
                     params.set(fmt::format("info:{}:sourceAsset:is_resolved", source_type_str), false);
@@ -316,7 +332,8 @@ void build_material(
     const pxr::UsdPrim& usd_terminal,
     const std::string_view& terminal_identifier,
     const pxr::TfTokenVector& shader_source_types,
-    const pxr::TfTokenVector& render_contexts
+    const pxr::TfTokenVector& render_contexts,
+    const std::function<void(const std::filesystem::path&)>& register_asset
 )
 {
     using namespace pxr;
@@ -330,7 +347,8 @@ void build_material(
         &visited_nodes,
         pxr::UsdShadeConnectableAPI(usd_terminal),
         shader_source_types,
-        render_contexts
+        render_contexts,
+        register_asset
     );
 
     if (!TF_VERIFY(!nodes.empty()))
@@ -523,7 +541,11 @@ std::optional<Properties> usdpreviewsurface_to_standardmaterial(const ImporterMa
     if (auto it = params.find("diffuseColor"); it != params.end()) {
         switch (it.type()) {
         case PropertyType::int_:
-            properties.set("base_color_texture_path", textures[it.get<int>()]->texture_path);
+            importer_material::set_texture_path(
+                properties,
+                "base_color_texture_path",
+                textures[it.get<int>()]->texture_path
+            );
             break;
         case PropertyType::float4:
             properties.set("base_color_factor", it.get<float4>().xyz());
@@ -542,7 +564,12 @@ std::optional<Properties> usdpreviewsurface_to_standardmaterial(const ImporterMa
     if (auto it = params.find("emissiveColor"); it != params.end()) {
         switch (it.type()) {
         case PropertyType::int_:
-            properties.set("emissive_texture_path", textures[it.get<int>()]->texture_path);
+            importer_material::set_texture_path(
+                properties,
+                "emissive_texture_path",
+                textures[it.get<int>()]->texture_path
+            );
+            properties.set("emissive_factor", float3(1.f));
             break;
         case PropertyType::float4:
             properties.set("emissive_factor", it.get<float4>().xyz());
@@ -566,7 +593,12 @@ std::optional<Properties> usdpreviewsurface_to_standardmaterial(const ImporterMa
             const ImporterTexture& metallic_texture = *textures[metallic_it.get<int>()];
             const ImporterTexture& roughness_texture = *textures[roughness_it.get<int>()];
             if (metallic_texture.texture_path == roughness_texture.texture_path) {
-                properties.set("metallic_roughness_texture_path", metallic_texture.texture_path);
+                importer_material::set_texture_path(
+                    properties,
+                    "metallic_roughness_texture_path",
+                    metallic_texture.texture_path,
+                    false
+                );
                 properties.set("metallic_texture_channel", channel_to_index("metallic", metallic_texture.source_name));
                 properties.set(
                     "roughness_texture_channel",
@@ -594,7 +626,12 @@ std::optional<Properties> usdpreviewsurface_to_standardmaterial(const ImporterMa
     }
 
     if (auto it = params.find("normal"); it != params.end() && it.type() == PropertyType::int_) {
-        properties.set("normal_texture_path", textures[it.get<int>()]->texture_path);
+        importer_material::set_texture_path(
+            properties,
+            "normal_texture_path",
+            textures[it.get<int>()]->texture_path,
+            false
+        );
     }
 
     return properties;

@@ -8,8 +8,8 @@ import pytest
 import slangpy as spy
 import falcor2 as f2
 import falcor2.testing.helpers as helpers
-from falcor2.rendergraph import OutputPrelude
-from falcor2.rendernodes import WRITE_GUIDE_INTERFACE
+from falcor2.rendergraph import OutputOperation, OutputPrelude
+from falcor2.rendernodes.reference_pathtracer_node import WRITE_GUIDE_INTERFACE
 
 
 EXPECTED_GUIDE_OUTPUT_VALUE_TYPES = {
@@ -18,12 +18,14 @@ EXPECTED_GUIDE_OUTPUT_VALUE_TYPES = {
     "specular_albedo": "vector<float,4>",
     "normals": "vector<float,4>",
     "roughness": "float",
+    "metallic": "float",
     "depth": "float",
     "hardware_depth": "float",
     "specular_hit_distance": "float",
     "motion_vectors": "vector<float,2>",
     "emission": "vector<float,4>",
     "geometry_id": "vector<uint,4>",
+    "nan_count": "uint",
 }
 
 EXPECTED_GUIDE_OUTPUT_FORMATS = {
@@ -32,12 +34,14 @@ EXPECTED_GUIDE_OUTPUT_FORMATS = {
     "specular_albedo": spy.Format.rgba16_float,
     "normals": spy.Format.rgba16_float,
     "roughness": spy.Format.r16_float,
+    "metallic": spy.Format.r16_float,
     "depth": spy.Format.r32_float,
     "hardware_depth": spy.Format.r32_float,
     "specular_hit_distance": spy.Format.r16_float,
     "motion_vectors": spy.Format.rg16_float,
     "emission": spy.Format.rgba16_float,
     "geometry_id": spy.Format.rgba32_uint,
+    "nan_count": spy.Format.r32_uint,
 }
 
 EXPECTED_GUIDE_OUTPUT_CLEAR_VALUES = {
@@ -46,6 +50,7 @@ EXPECTED_GUIDE_OUTPUT_CLEAR_VALUES = {
     "specular_albedo": (0.0, 0.0, 0.0, 1.0),
     "normals": (0.0, 0.0, 1.0, 0.0),
     "roughness": (1.0, 0.0, 0.0, 0.0),
+    "metallic": (0.0, 0.0, 0.0, 0.0),
     "depth": (0.0, 0.0, 0.0, 0.0),
     "hardware_depth": (1.0, 0.0, 0.0, 0.0),
     "specular_hit_distance": (0.0, 0.0, 0.0, 0.0),
@@ -57,6 +62,7 @@ EXPECTED_GUIDE_OUTPUT_CLEAR_VALUES = {
         0xFFFFFFFF,
         int(f2.MaterialID.invalid),
     ),
+    "nan_count": (0, 0, 0, 0),
 }
 
 
@@ -117,6 +123,10 @@ def test_write_guide_interface_reflects_output_specs(
     assert [spec.name for spec in specs] == list(EXPECTED_GUIDE_OUTPUT_VALUE_TYPES)
     assert {spec.name: spec.format for spec in specs} == EXPECTED_GUIDE_OUTPUT_FORMATS
     for spec in specs:
+        expected_operation = (
+            OutputOperation.increment if spec.name == "nan_count" else OutputOperation.write
+        )
+        assert spec.operation == expected_operation
         expected_clear = EXPECTED_GUIDE_OUTPUT_CLEAR_VALUES[spec.name]
         if "uint" in spec.format.name:
             assert tuple(spec.clear_value) == expected_clear
@@ -162,9 +172,18 @@ def test_write_guide_prelude_matches_enabled_guides(
         mip_count=1,
         usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access,
     )
+    nan_count = device.create_texture(
+        type=spy.TextureType.texture_2d,
+        format=spy.Format.r32_uint,
+        width=2,
+        height=2,
+        mip_count=1,
+        usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access,
+    )
     write_guide = {
         "depth": depth,
         "motion_vectors": motion_vectors,
+        "nan_count": nan_count,
     }
 
     prelude = OutputPrelude.create(linked_module, WRITE_GUIDE_INTERFACE).generate(write_guide)
@@ -174,6 +193,10 @@ def test_write_guide_prelude_matches_enabled_guides(
     assert "public RWTexture2D<vector<float,4>> diffuse_albedo;" not in prelude
     assert "__g_falcor_OutputBlockIWriteGuide.depth[coord] = value;" in prelude
     assert "__g_falcor_OutputBlockIWriteGuide.motion_vectors[coord] = value;" in prelude
+    assert (
+        "__g_falcor_OutputBlockIWriteGuide_nan_count[coord] = "
+        "__g_falcor_OutputBlockIWriteGuide_nan_count[coord] + value;" in prelude
+    )
     assert "export struct WriteGuide : IWriteGuide" in prelude
     assert "public static bool depth_enabled()" in prelude
     assert "public static bool motion_vectors_enabled()" in prelude
@@ -189,3 +212,43 @@ def test_write_guide_prelude_matches_enabled_guides(
     assert (
         "public static override void diffuse_albedo(vector<uint,2> coord, " "vector<float,4> value)"
     ) in prelude
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_nan_overlay_heat_and_outline(device_type: spy.DeviceType, device: spy.Device) -> None:
+    nan_count_data = np.zeros((5, 7), dtype=np.uint32)
+    nan_count_data[2, 2:5] = (1, 8, 64)
+    nan_count = device.create_texture(
+        type=spy.TextureType.texture_2d,
+        format=spy.Format.r32_uint,
+        width=7,
+        height=5,
+        mip_count=1,
+        usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access,
+        data=nan_count_data,
+    )
+    color_data = np.full((10, 14, 4), 0.25, dtype=np.float32)
+    color_data[..., 3] = 1.0
+    color = device.create_texture(
+        type=spy.TextureType.texture_2d,
+        format=spy.Format.rgba32_float,
+        width=14,
+        height=10,
+        mip_count=1,
+        usage=spy.TextureUsage.shader_resource | spy.TextureUsage.unordered_access,
+        data=color_data,
+    )
+
+    module = spy.Module(device.load_module("falcor2.rendernodes.nan_overlay"))
+    module.apply_nan_overlay(
+        pixel=spy.grid((color.height, color.width)),
+        nan_count=nan_count,
+        output=color,
+    )
+    result = color.to_numpy()
+
+    np.testing.assert_allclose(result[4, 4], (1.0, 1.0, 0.0, 1.0), atol=1e-6)
+    np.testing.assert_allclose(result[4, 6], (1.0, 0.0, 0.0, 1.0), atol=1e-6)
+    np.testing.assert_allclose(result[4, 8], (1.0, 1.0, 1.0, 1.0), atol=1e-6)
+    np.testing.assert_allclose(result[3, 6], (0.0, 0.0, 0.0, 1.0), atol=1e-6)
+    np.testing.assert_allclose(result[0, 0], color_data[0, 0], atol=1e-6)

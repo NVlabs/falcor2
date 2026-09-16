@@ -34,7 +34,7 @@ MATERIALX_DEFAULT_SCREEN_COLOR_SRGB8 = (76, 76, 82)
 MATERIALX_DEFAULT_SCREEN_COLOR = tuple(
     _srgb8_to_linear(value) for value in MATERIALX_DEFAULT_SCREEN_COLOR_SRGB8
 )
-# MaterialX value previews are wrapped as a BSDF, and the MX139 basic wrapper currently
+# MaterialX value previews are wrapped as a BSDF, and the MTLX basic wrapper currently
 # reports that BSDF reflection through the PathTracer's specular albedo guide.
 PREVIEW_PROPERTY_GUIDES = {
     "albedo": "specular_albedo",
@@ -53,10 +53,8 @@ class PathTracerPreviewSettings:
     max_depth: int = 3
     enable_nee: bool = True
     enable_mis: bool = True
-    enable_analytic_lights: bool = True
-    enable_emissive_triangles: bool = True
     radiance_ibl_path: Path | None = None
-    env_map_as_background: bool = False
+    use_background_color: bool = True
     background_color: tuple[float, float, float] = MATERIALX_DEFAULT_SCREEN_COLOR
     tone_map: bool = False
     dump_generated_code: bool = False
@@ -75,7 +73,7 @@ class PathTracerPreviewRenderer:
             flip_v=settings.geometry_flip_v,
             uv_origin=settings.geometry_uv_origin,
         )
-        self.scene = f2.Scene.create(self.device, importer_scene)
+        self.scene = f2.Scene.from_importer_scene(self.device, importer_scene)
         self.camera = self._create_camera(settings.width, settings.height)
         if settings.radiance_ibl_path is not None:
             env_entity = self.scene.create_entity()
@@ -166,10 +164,7 @@ class PathTracerPreviewRenderer:
         self.pipeline.path_tracer.max_depth = settings.max_depth
         self.pipeline.path_tracer.enable_nee = settings.enable_nee
         self.pipeline.path_tracer.enable_mis = settings.enable_mis
-        self.pipeline.path_tracer.enable_analytic_lights = settings.enable_analytic_lights
-        self.pipeline.path_tracer.enable_environment_light = settings.radiance_ibl_path is not None
-        self.pipeline.path_tracer.enable_emissive_triangles = settings.enable_emissive_triangles
-        self.pipeline.path_tracer.env_map_as_background = settings.env_map_as_background
+        self.pipeline.path_tracer.use_background_color = settings.use_background_color
         self.pipeline.path_tracer.background_color = spy.float3(*settings.background_color)
         self.pipeline.tone_map = settings.tone_map
         self.pipeline.output_spec = f2.ContainerSpec.texture2d(

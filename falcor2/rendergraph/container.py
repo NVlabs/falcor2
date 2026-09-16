@@ -29,11 +29,12 @@ from .image_format import (
     channel_count,
     format_to_typename,
 )
+from ..utils.per_device_cache import PerDeviceCache
 
 ClearValue = spy.float4 | spy.int4 | spy.uint4
 
 UTILS_MODULE_PATH = "falcor2/utils.slang"
-_UTILS_MODULES: dict[int, spy.Module] = {}
+_UTILS_MODULE_CACHE = PerDeviceCache[spy.Module]()
 
 
 class Container:
@@ -317,12 +318,10 @@ def _resolve_device(
 
 
 def _utils_module(device: spy.Device) -> spy.Module:
-    key = id(device)
-    module = _UTILS_MODULES.get(key)
-    if module is None:
-        module = spy.Module.load_from_file(device, UTILS_MODULE_PATH)
-        _UTILS_MODULES[key] = module
-    return module
+    return _UTILS_MODULE_CACHE.get_or_create(
+        device,
+        lambda device: spy.Module.load_from_file(device, UTILS_MODULE_PATH),
+    )
 
 
 def _dispatch_fill(

@@ -43,35 +43,59 @@ public extension Scene
     }
 }
 
-public struct TriangleHitData
+public struct TriangleHitInfo : IHitInfo
 {
+    public property GeometryType geometry_type
+    {
+        get {
+            return GeometryType::triangle;
+        }
+    }
+
+    public GeometryInstanceID geometry_instance_id;
+
+    public uint primitive_index;
+
+    public property bool valid
+    {
+        get {
+            return true;
+        }
+    }
+
     public float2 barycentrics;
-}
 
-public HitInfo
-make_triangle_hit_info(GeometryInstanceID geometry_instance_id, uint primitive_index, float2 barycentrics)
-{
-    HitInfo hit;
-    hit.geometry_type = GeometryType::triangle;
-    hit.geometry_instance_id = geometry_instance_id;
-    hit.primitive_index = primitive_index;
-    TriangleHitData hit_data = { barycentrics };
-    hit._hit_data = reinterpret<HitData>(hit_data);
-    return hit;
-}
+    public __init(GeometryInstanceID geometry_instance_id, uint primitive_index, float2 barycentrics)
+    {
+        this.geometry_instance_id = geometry_instance_id;
+        this.primitive_index = primitive_index;
+        this.barycentrics = barycentrics;
+    }
 
-public HitInfo make_triangle_hit_info(float2 barycentrics)
-{
-    return make_triangle_hit_info(GeometryInstanceID(InstanceID() + GeometryIndex2()), PrimitiveIndex(), barycentrics);
-}
+    public __init(const PackedHitInfo p)
+    {
+        geometry_instance_id = GeometryInstanceID(p.data[1]);
+        primitive_index = p.data[2];
+        barycentrics = float2(asfloat(p.data[3]), asfloat(p.data[4]));
+    }
+
+    public PackedHitInfo pack()
+    {
+        PackedHitInfo p = {};
+        p.data[0] = uint(geometry_type);
+        p.data[1] = uint(geometry_instance_id);
+        p.data[2] = primitive_index;
+        p.data[3] = asuint(barycentrics.x);
+        p.data[4] = asuint(barycentrics.y);
+        return p;
+    }
+};
 
 public extension Scene
 {
     /// Construct a surface interaction from a triangle hit.
-    public SurfaceInteraction make_triangle_surface_interaction(HitInfo hit, float3 wi_ws)
+    public SurfaceInteraction make_triangle_surface_interaction(TriangleHitInfo hit, float3 wi_ws)
     {
-        TriangleHitData hit_data = reinterpret<TriangleHitData>(hit._hit_data);
-
         GeometryInstanceDesc geometry_instance = get_geometry_instance_desc(hit.geometry_instance_id);
         TriangleGeometryInstanceDesc geometry_instance_data
             = reinterpret<TriangleGeometryInstanceDesc>(geometry_instance);
@@ -88,13 +112,9 @@ public extension Scene
         let v2 = detail::unpack_triangle_vertex(triangle_geometry.vertices[vertex_offset + i2]);
 
         // barycentric weights
-        let bw = float3(
-            1.0 - hit_data.barycentrics.x - hit_data.barycentrics.y,
-            hit_data.barycentrics.x,
-            hit_data.barycentrics.y
-        );
+        let bw = float3(1.0 - hit.barycentrics.x - hit.barycentrics.y, hit.barycentrics.x, hit.barycentrics.y);
 
-        let position_os = bw.x * v0.position + bw.y * v1.position + bw.z * v2.position;
+        let pos_os = bw.x * v0.position + bw.y * v1.position + bw.z * v2.position;
         let shading_normal_os = bw.x * v0.normal + bw.y * v1.normal + bw.z * v2.normal;
         let shading_tangent_os = bw.x * v0.tangent + bw.y * v1.tangent + bw.z * v2.tangent;
         let uv = bw.x * v0.uv[0] + bw.y * v1.uv[0] + bw.z * v2.uv[0];
@@ -112,7 +132,7 @@ public extension Scene
 
         SurfaceInteraction si = {};
         si.wi_ws = wi_ws;
-        si.position_ws = transform_point(world_from_object, position_os);
+        si.position_ws = transform_point(world_from_object, pos_os);
         si.normal_ws = normalize(transform_vector(inverse_transpose, normal_os));
         si.front_facing = dot(wi_ws, si.normal_ws) >= 0;
         si.uv = uv;
@@ -128,5 +148,8 @@ public extension Scene
 public struct DeferredTriangleHitInfo : IDeferredHitInfo
 {
     public float2 barycentrics;
-    public HitInfo create() { return make_triangle_hit_info(barycentrics); }
+    public IHitInfo create()
+    {
+        return TriangleHitInfo(GeometryInstanceID(InstanceID() + GeometryIndex2()), PrimitiveIndex(), barycentrics);
+    }
 };

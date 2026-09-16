@@ -20,13 +20,23 @@ public struct DisneyDiffuseBRDF : IBSDF, IDifferentiable
         this.roughness = roughness;
     }
 
+
     [Differentiable]
-    public float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public override
+        float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    {
+        return eval_with_pdf(wi, wo, sg, bc).value;
+    }
+
+    [Differentiable]
+    public BSDFEval
+    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
     {
         if (min(wi.z, wo.z) < BSDF_MIN_COS_THETA)
-            return float3(0.0);
+            return BSDFEval();
 
-        return eval_weight(wi, wo) * float.INV_PI * wo.z;
+        const float pdf = float.INV_PI * wo.z;
+        return BSDFEval(eval_weight(wi, wo) * pdf, pdf);
     }
 
     public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
@@ -44,13 +54,6 @@ public struct DisneyDiffuseBRDF : IBSDF, IDifferentiable
         return true;
     }
 
-    public float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
-    {
-        if (min(wi.z, wo.z) < BSDF_MIN_COS_THETA)
-            return 0.0;
-
-        return float.INV_PI * wo.z;
-    }
 
     public AlbedoContributions eval_albedo(const float3 wi)
     {

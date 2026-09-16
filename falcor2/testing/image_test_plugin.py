@@ -10,14 +10,33 @@ store test results, and manage image test data.
 
 import hashlib
 import json
+import os
 from pathlib import Path
+import shutil
 from typing import Any, Dict, List, Optional, Union
+import urllib.parse
+import urllib.request
 import numpy as np
 from botocore.exceptions import PartialCredentialsError
 import warnings
+from dataclasses import dataclass
 
 from slangpy import Bitmap, Tensor
 import falcor2.testing.helpers as helpers
+
+
+PUBLIC_BUCKET_URL = "https://pdx.s8k.io/v1/AUTH_team-nvr-ci/nvr-ci-imagetests"
+
+
+@dataclass
+class ImageComparison:
+    """Result of comparing one generated image with its reference."""
+
+    status: str
+    reference_hash: Optional[str] = None
+    difference: Optional[float] = None
+    message: Optional[str] = None
+    reference_array: Optional[np.ndarray[Any, Any]] = None
 
 
 class ImageTest:
@@ -73,7 +92,7 @@ class ImageTest:
         image_hash = self._compute_image_hash(image_array)
 
         # Always save debug PNG for every image test
-        self._save_debug_png(
+        debug_path = self._save_debug_png(
             image_array,
             additional_name,
             debug_output_normalize=debug_output_normalize,
@@ -82,8 +101,31 @@ class ImageTest:
 
         if self.gen_images:
             self._save_reference_image(image_array, image_hash, additional_name)
+            comparison = ImageComparison(
+                status="generated",
+                reference_hash=image_hash,
+                difference=0.0,
+                reference_array=image_array,
+            )
         else:
-            self._compare_with_reference(image_array, image_hash, additional_name, tolerance)
+            comparison = self._compare_with_reference(
+                image_array, image_hash, additional_name, tolerance
+            )
+
+        self._save_report_result(
+            image_array=image_array,
+            image_hash=image_hash,
+            additional_name=additional_name,
+            tolerance=tolerance,
+            comparison=comparison,
+            debug_path=debug_path,
+            debug_output_normalize=debug_output_normalize,
+            debug_output_stratify=debug_output_stratify,
+        )
+
+        if comparison.status == "failed":
+            assert comparison.message is not None
+            raise AssertionError(comparison.message)
 
     def _convert_to_numpy(self, image: Union[np.ndarray[Any, Any], Bitmap, Tensor]):
         """Convert various image formats to numpy array."""
@@ -132,25 +174,31 @@ class ImageTest:
         image_hash: str,
         additional_name: Optional[str],
         tolerance: float,
-    ) -> None:
+    ) -> ImageComparison:
         """Compare image with reference and fail test if different."""
         metadata = self.plugin.get_metadata(self.json_file)
-        full_test_name = self.test_name
-        if additional_name:
-            full_test_name = f"{self.test_name}[{additional_name}]"
+        full_test_name = self._full_test_name(additional_name)
 
         # Check if test function and version exist
         if full_test_name not in metadata or "reference" not in metadata[full_test_name]:
-            raise AssertionError(
-                f"No reference image found for {full_test_name}. "
-                f"Run with --gen-images to generate reference data."
+            return ImageComparison(
+                status="failed",
+                message=(
+                    f"No reference image found for {full_test_name}. "
+                    "Run with --gen-images to generate reference data."
+                ),
             )
 
         # Compare hash first.
         reference_hash = metadata[full_test_name]["reference"]
         if image_hash == reference_hash:
             print(f"Image test passed for {full_test_name}")
-            return
+            return ImageComparison(
+                status="passed",
+                reference_hash=reference_hash,
+                difference=0.0,
+                reference_array=image_array,
+            )
 
         # If we get here, the image doesn't match the reference
         # Load the reference image for comparison
@@ -158,7 +206,11 @@ class ImageTest:
         if not reference_path.exists():
             self.plugin.download_reference(reference_hash)
         if not reference_path.exists():
-            raise AssertionError(f"Reference image not found: {reference_path}")
+            return ImageComparison(
+                status="failed",
+                reference_hash=reference_hash,
+                message=f"Reference image not found: {reference_path}",
+            )
         reference_bitmap = Bitmap.load_from_file(str(reference_path))
         reference_array = np.asarray(
             reference_bitmap.convert(component_type=Bitmap.ComponentType.float32),
@@ -177,10 +229,22 @@ class ImageTest:
         diff = float(np.mean((image_array - reference_array) ** 2))
         if diff > tolerance:
             self._save_error_images(image_array, reference_array, additional_name)
-            raise AssertionError(
-                f"Image test failed for {full_test_name}. "
-                f"Difference: {diff:.6f}, tolerance: {tolerance:.6f}"
+            return ImageComparison(
+                status="failed",
+                reference_hash=reference_hash,
+                difference=diff,
+                message=(
+                    f"Image test failed for {full_test_name}. "
+                    f"Difference: {diff:.6f}, tolerance: {tolerance:.6f}"
+                ),
+                reference_array=reference_array,
             )
+        return ImageComparison(
+            status="passed",
+            reference_hash=reference_hash,
+            difference=diff,
+            reference_array=reference_array,
+        )
 
     def _save_debug_png(
         self,
@@ -188,7 +252,7 @@ class ImageTest:
         additional_name: Optional[str],
         debug_output_normalize: bool,
         debug_output_stratify: bool,
-    ) -> None:
+    ) -> Path:
         """Always save a debug PNG of the generated image with a clean, readable name."""
         # Create debug directory
         debug_dir = self.image_test_dir / "debug" / self.test_file
@@ -222,6 +286,99 @@ class ImageTest:
         )
         debug_bitmap.write(str(debug_path), Bitmap.FileFormat.png)
         print(f"Debug PNG saved: {debug_path}")
+        return debug_path
+
+    def _full_test_name(self, additional_name: Optional[str]) -> str:
+        full_test_name = self.test_name
+        if additional_name:
+            full_test_name = f"{full_test_name}[{additional_name}]"
+        return full_test_name
+
+    def _save_report_result(
+        self,
+        image_array: np.ndarray[Any, Any],
+        image_hash: str,
+        additional_name: Optional[str],
+        tolerance: float,
+        comparison: ImageComparison,
+        debug_path: Path,
+        debug_output_normalize: bool,
+        debug_output_stratify: bool,
+    ) -> None:
+        """Write one xdist-safe result record when CI report capture is enabled."""
+        report_dir_value = os.environ.get("FALCOR_IMAGE_TEST_REPORT_DIR")
+        if not report_dir_value:
+            return
+
+        try:
+            report_dir = Path(report_dir_value)
+            full_test_name = self._full_test_name(additional_name)
+            result_key = f"{self.json_file.resolve()}::{full_test_name}"
+            result_id = hashlib.sha256(result_key.encode("utf-8")).hexdigest()[:20]
+            asset_dir = report_dir / "assets" / result_id
+            record_dir = report_dir / "records"
+            asset_dir.mkdir(exist_ok=True, parents=True)
+            record_dir.mkdir(exist_ok=True, parents=True)
+
+            current_path = asset_dir / "current.png"
+            shutil.copyfile(debug_path, current_path)
+
+            reference_path: Optional[Path] = None
+            diff_path: Optional[Path] = None
+            if comparison.reference_array is not None:
+                reference_path = asset_dir / "reference.png"
+                reference_bitmap = self._to_bitmap(
+                    comparison.reference_array,
+                    for_png=True,
+                    normalize=debug_output_normalize,
+                    stratify=debug_output_stratify,
+                )
+                reference_bitmap.write(str(reference_path), Bitmap.FileFormat.png)
+
+                diff_path = asset_dir / "diff.png"
+                diff_image = np.abs(image_array - comparison.reference_array) * 10.0
+                diff_bitmap = self._to_bitmap(diff_image, for_png=True)
+                diff_bitmap.write(str(diff_path), Bitmap.FileFormat.png)
+
+            try:
+                metadata_file = self.json_file.resolve().relative_to(helpers.PROJECT_ROOT.resolve())
+            except ValueError:
+                metadata_file = self.json_file.resolve()
+
+            assets: Dict[str, Optional[str]] = {
+                "current": current_path.relative_to(report_dir).as_posix(),
+                "reference": (
+                    reference_path.relative_to(report_dir).as_posix()
+                    if reference_path is not None
+                    else None
+                ),
+                "diff": (
+                    diff_path.relative_to(report_dir).as_posix() if diff_path is not None else None
+                ),
+            }
+            record = {
+                "schema_version": 1,
+                "id": result_id,
+                "test_name": full_test_name,
+                "test_file": self.test_file,
+                "metadata_file": metadata_file.as_posix(),
+                "status": comparison.status,
+                "difference": comparison.difference,
+                "tolerance": tolerance,
+                "current_hash": image_hash,
+                "reference_hash": comparison.reference_hash,
+                "message": comparison.message,
+                "assets": assets,
+            }
+
+            record_path = record_dir / f"{result_id}.json"
+            temporary_path = record_path.with_suffix(".json.tmp")
+            with open(temporary_path, "w") as file:
+                json.dump(record, file, indent=2)
+                file.write("\n")
+            temporary_path.replace(record_path)
+        except Exception as exc:
+            warnings.warn(f"Failed to capture image test report result: {exc}")
 
     def _to_uint8(self, data: np.ndarray[Any, Any]) -> np.ndarray[Any, Any]:
         """Convert float image data to 8-bit PNG format with gamma correction."""
@@ -395,20 +552,22 @@ class ImageTestPlugin:
         self._close_client()
 
     def download_reference(self, reference: str) -> None:
-        """Download a specific reference image from S3."""
-        bucket_name = "nvr-ci-imagetests"
+        """Download a specific reference image from the public object-store endpoint."""
         refs_dir = helpers.PROJECT_ROOT / ".imagetests" / "references"
         refs_dir.mkdir(exist_ok=True, parents=True)
         ref_path = refs_dir / f"{reference}.exr"
         if not ref_path.exists():
-            s3_key = f"references/{reference}.exr"
-            client = self._get_client()
-            if client is None:
-                return
+            encoded_reference = urllib.parse.quote(reference, safe="")
+            url = f"{PUBLIC_BUCKET_URL}/references/{encoded_reference}.exr"
+            temporary_path = ref_path.with_suffix(f".{os.getpid()}.tmp")
             try:
-                client.download_file(bucket_name, s3_key, str(ref_path))
+                with urllib.request.urlopen(url, timeout=60) as response:
+                    with open(temporary_path, "wb") as output:
+                        shutil.copyfileobj(response, output)
+                temporary_path.replace(ref_path)
             except Exception as e:
-                warnings.warn(f"Failed to download {ref_path} from S3: {e}")
+                temporary_path.unlink(missing_ok=True)
+                warnings.warn(f"Failed to download {ref_path} from public storage: {e}")
 
     def upload_reference(self, reference: str) -> None:
         """Upload a specific reference image to S3."""

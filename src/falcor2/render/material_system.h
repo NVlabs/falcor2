@@ -36,6 +36,9 @@ public:
     /// Get the additional modules required by all active materials.
     std::span<const ref<sgl::SlangModule>> required_modules() const { return m_required_modules; }
 
+    /// Returns true if any valid material uses alpha masking/blending.
+    bool requires_opacity_evaluation() const { return m_requires_opacity_evaluation; }
+
 private:
     /// Allocate a new material ID.
     shared::MaterialID allocate_material_id();
@@ -48,6 +51,7 @@ private:
 
     std::vector<sgl::TypeConformance> m_type_conformances;
     std::vector<ref<sgl::SlangModule>> m_required_modules;
+    bool m_requires_opacity_evaluation{false};
 
     // Next material ID to allocate. Starts at 1 since 0 is reserved for InvalidMaterial.
     uint32_t m_next_material_id{1};

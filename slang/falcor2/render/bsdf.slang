@@ -69,6 +69,38 @@ public struct BSDFSample : IDifferentiable
     public bool has_flag(const BSDFFlags flags) { return is_set(this.flags, flags); }
 }
 
+/// Compile-time hints specifying which components eval_with_pdf() must return.
+/// Implementations may compute components that were not requested, but callers must not rely on them.
+public enum BSDFEvalHints : uint {
+    none = 0x0,
+    eval = 0x1,
+    pdf = 0x2,
+    both = eval | pdf,
+}
+
+/// Result of evaluating a BSDF and its directional sampling density together.
+public struct BSDFEval : IDifferentiable
+{
+    /// BSDF value using the same convention as IBSDF.eval().
+    public float3 value;
+    /// Directional pdf using the same convention as IBSDF.eval_pdf().
+    public float pdf;
+
+    [Differentiable]
+    public __init()
+    {
+        value = float3(0.0);
+        pdf = 0.0;
+    }
+
+    [Differentiable]
+    public __init(float3 value, float pdf)
+    {
+        this.value = value;
+        this.pdf = pdf;
+    }
+}
+
 /// Albedo is split into four components. They have to sum up to 1.0.
 public struct AlbedoContributions
 {
@@ -100,7 +132,7 @@ AlbedoContributions operator +(const AlbedoContributions a, const AlbedoContribu
     );
 }
 
-AlbedoContributions operator +=(AlbedoContributions a, const AlbedoContributions b)
+AlbedoContributions operator +=(inout AlbedoContributions a, const AlbedoContributions b)
 {
     a.reflection += b.reflection;
     a.absorption_r += b.absorption_r;
@@ -181,6 +213,20 @@ public struct BSDFContext
     }
 };
 
+/// Deterministic sample generator used by the generator-free eval_pdf() convenience alias.
+///
+/// Random samples may affect only the value returned by eval_with_pdf(), never its PDF. Changing that
+/// contract would invalidate eval_pdf() and must be treated with utmost care.
+public struct EvalPdfFallbackSampleGenerator : ISampleGenerator
+{
+    public __init(uint seed) { }
+    public __init(uint2 pixel, uint sample_index) { }
+
+    [mutating]
+    // next_float() maps the upper 24 bits to the midpoint sample 0.5.
+    public uint next_uint() { return 0x80000000u; }
+};
+
 public interface IBSDF
 {
     /// Evaluates the BSDF.
@@ -190,7 +236,21 @@ public interface IBSDF
     /// @param bc BSDF context.
     /// @return For surface BSDFs, returns f(wi, wo) * abs(dot(wo, n)). Curve BSDFs return their scattering
     /// response without an extra surface foreshortening factor.
-    public float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc);
+    public float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    {
+        return eval_with_pdf(wi, wo, sg, bc).value;
+    }
+
+    /// Evaluates the BSDF and its directional pdf together.
+    /// @param wi Incident direction.
+    /// @param wo Outgoing direction.
+    /// @param[inout] sg Sample generator.
+    /// @param bc BSDF context.
+    /// The sample generator may affect only the value calculation; the PDF must be deterministic and
+    /// generator-independent.
+    /// @return The BSDF value and solid-angle pdf returned by eval() and eval_pdf(), respectively.
+    public BSDFEval
+    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc);
 
     /// Samples the BSDF.
     /// @param wi Incident direction.
@@ -205,7 +265,11 @@ public interface IBSDF
     /// @param wo Outgoing direction.
     /// @param bc BSDF context.
     /// @return Returns the pdf with respect to solid angle for sampling outgoing direction wo (0 for delta events).
-    public float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc);
+    public float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+    {
+        EvalPdfFallbackSampleGenerator sg = EvalPdfFallbackSampleGenerator(0u);
+        return eval_with_pdf(wi, wo, sg, bc).pdf;
+    }
 
     /// Evaluate albedos (hemispherical reflectance) of the BSDF. Reflection + transmission hemisphere should be <= 1.0.
     /// Curve BSDFs may report an approximate full-sphere scattering albedo.

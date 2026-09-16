@@ -2,9 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from pathlib import Path
-from typing import Any
 
-from falcor2.reflection import Property
+from falcor2.reflection import reflected_property
 
 import falcor2 as f2
 import slangpy as spy
@@ -14,20 +13,20 @@ DATA_DIR = Path(__file__).parent.parent.parent.parent / "data"
 
 
 class PythonMaterialSample(f2.Material):
-    texture_index = Property(
+    texture_index = reflected_property(
         3,
         doc="Index of the texture to use",
         value_range=(0, 3),
         on_change=lambda self: self.mark_dirty(f2.Material.DirtyFlags.properties),
     )
-    texture0 = Property(
+    texture0 = reflected_property(
         "assets/textures/test_texture_manager/udim_1001.png",
         doc="First texture",
         on_change=lambda self: self.mark_dirty(
             f2.Material.DirtyFlags.properties | f2.Material.DirtyFlags.resources
         ),
     )
-    texture1 = Property(
+    texture1 = reflected_property(
         "assets/textures/test_texture_manager/regular_blue.png",
         doc="Second texture",
         on_change=lambda self: self.mark_dirty(
@@ -65,22 +64,8 @@ class PythonMaterialSample(f2.Material):
             self._module = self.scene.device.load_module("render/python_material_sample.slang")
 
     def write_to_cursor(self, cursor: spy.BufferElementCursor | spy.ShaderCursor) -> None:
-        cursor["textures"] = [
-            self._texture_handles[0].get_this(),
-            self._texture_handles[1].get_this(),
-        ]
+        cursor["textures"] = self._texture_handles
         cursor["texture_index"] = self.texture_index
 
     def required_module(self) -> spy.SlangModule | None:
         return self._module
-
-    # Used temporarily until MaterialMarshall is in place.
-    def get_this(self) -> dict[str, Any]:
-        uniforms = {}
-        uniforms["textures"] = [
-            self._texture_handles[0].get_this(),
-            self._texture_handles[1].get_this(),
-        ]
-        uniforms["texture_index"] = self.texture_index
-        uniforms["_type"] = self.slang_type_name
-        return uniforms

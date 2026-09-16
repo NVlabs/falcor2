@@ -56,6 +56,18 @@ public:
         sgl::NativeHandle cuda_stream = {}
     );
 
+    /// Record denoising into a CUDA command encoder.
+    /// @param params Denoiser parameters.
+    /// @param guide_layer Guide layer containing auxiliary data (leave empty if not used).
+    /// @param layers List of layers to denoise.
+    /// @param command_encoder CUDA command encoder to record the denoising operation into.
+    void denoise(
+        const optix::DenoiserParams& params,
+        const optix::DenoiserGuideLayer& guide_layer,
+        std::span<optix::DenoiserLayer> layers,
+        sgl::CommandEncoder* command_encoder
+    );
+
     /// Device used by this denoiser.
     sgl::Device* device() const { return m_device; }
 

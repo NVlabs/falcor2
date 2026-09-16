@@ -6,7 +6,7 @@ import slangpy as spy
 from slangpy.core.native import get_value_signature
 
 import falcor2.testing.helpers as helpers
-from falcor2.rendergraph import OutputPrelude
+from falcor2.rendergraph import Container, OutputOperation, OutputPrelude
 
 ALL_DEVICE_TYPES = helpers.DEFAULT_DEVICE_TYPES
 
@@ -70,6 +70,34 @@ public void dummy()
 }
 """
 
+TEST_INCREMENT_MODULE = """
+import slangpy;
+
+[__AttributeUsage(_AttributeTargets.Function)]
+struct OutputSpecAttribute
+{
+    string format;
+    string clear_value;
+    string operation;
+}
+
+public interface ITestIncrement
+{
+    [OutputSpec("r32_uint", "0", "increment")]
+    public static void count(uint2 coord, uint value);
+    public static bool count_enabled();
+}
+
+extern struct TestIncrement : ITestIncrement;
+extern static const bool TestIncrement_count = false;
+
+public void count_nan(uint2 coord, float3 value)
+{
+    if (any(isnan(value)))
+        TestIncrement::count(coord, 1u);
+}
+"""
+
 
 def _module(device: spy.Device) -> spy.Module:
     return spy.Module(device.load_module_from_source("output_prelude_test", TEST_MODULE))
@@ -77,6 +105,12 @@ def _module(device: spy.Device) -> spy.Module:
 
 def _int_module(device: spy.Device) -> spy.Module:
     return spy.Module(device.load_module_from_source("output_prelude_int_test", TEST_INT_MODULE))
+
+
+def _increment_module(device: spy.Device) -> spy.Module:
+    return spy.Module(
+        device.load_module_from_source("output_prelude_increment_test", TEST_INCREMENT_MODULE)
+    )
 
 
 def _texture(device: spy.Device, format: spy.Format) -> spy.Texture:
@@ -103,6 +137,7 @@ def test_output_prelude_read_specs_reflects_function_attributes(
     assert [spec.format for spec in specs] == [spy.Format.rgba32_float, spy.Format.r32_float]
     assert tuple(specs[0].clear_value) == (0.0, 0.0, 0.0, 1.0)
     assert tuple(specs[1].clear_value) == (1.0, 0.0, 0.0, 0.0)
+    assert all(spec.operation == OutputOperation.write for spec in specs)
     assert OutputPrelude.create(module, "ITestWrite").specs == {
         "color": specs[0],
         "depth": specs[1],
@@ -154,6 +189,58 @@ def test_output_prelude_generates_texture_and_tensor_outputs(
     assert "export static const bool TestWrite_depth = true;" in prelude
     expected_signature = get_value_signature(targets)
     assert output_prelude.signature(targets) == "ITestWrite\nTestWrite\n" + expected_signature
+
+
+@pytest.mark.parametrize("device_type", ALL_DEVICE_TYPES)
+def test_output_prelude_generates_incrementing_texture_and_tensor_outputs(
+    device_type: spy.DeviceType,
+):
+    device = helpers.get_device(device_type)
+    module = _increment_module(device)
+    output_prelude = OutputPrelude.create(module, "ITestIncrement")
+
+    spec = output_prelude.specs["count"]
+    assert spec.format == spy.Format.r32_uint
+    assert tuple(spec.clear_value) == (0, 0, 0, 0)
+    assert spec.operation == OutputOperation.increment
+
+    texture = _texture(device, spy.Format.r32_uint)
+    texture_targets = {"count": texture}
+    texture_prelude = output_prelude.generate(texture_targets)
+    assert (
+        'public [format("r32ui")] RWTexture2D<uint> '
+        "__g_falcor_OutputBlockITestIncrement_count;" in texture_prelude
+    )
+    assert (
+        "__g_falcor_OutputBlockITestIncrement_count[coord] = "
+        "__g_falcor_OutputBlockITestIncrement_count[coord] + value;" in texture_prelude
+    )
+    count_texture_nan = module.count_nan.prelude(texture_prelude).write(
+        lambda cursor: output_prelude.bind(cursor, texture_targets)
+    )
+    Container.clear(texture, spec.clear_value)
+    count_texture_nan(spy.uint2(0, 0), spy.float3(0.0))
+    count_texture_nan(spy.uint2(0, 0), spy.float3(float("nan"), 0.0, 0.0))
+    count_texture_nan(spy.uint2(0, 0), spy.float3(float("nan"), 0.0, 0.0))
+    assert texture.to_numpy()[0, 0] == 2
+
+    tensor = spy.Tensor.empty(device, shape=(2, 3), dtype="uint")
+    tensor_targets = {"count": tensor}
+    tensor_prelude = output_prelude.generate(tensor_targets)
+    assert "public RWTensor<uint, 2> __g_falcor_OutputBlockITestIncrement_count;" in tensor_prelude
+    assert (
+        "__g_falcor_OutputBlockITestIncrement_count.store(int(coord.y), int(coord.x), "
+        "__g_falcor_OutputBlockITestIncrement_count.load(int(coord.y), int(coord.x)) + value);"
+        in tensor_prelude
+    )
+    count_tensor_nan = module.count_nan.prelude(tensor_prelude).write(
+        lambda cursor: output_prelude.bind(cursor, tensor_targets)
+    )
+    Container.clear(tensor, spec.clear_value)
+    count_tensor_nan(spy.uint2(0, 0), spy.float3(0.0))
+    count_tensor_nan(spy.uint2(0, 0), spy.float3(float("nan"), 0.0, 0.0))
+    count_tensor_nan(spy.uint2(0, 0), spy.float3(float("nan"), 0.0, 0.0))
+    assert tensor.to_numpy()[0, 0] == 2
 
 
 @pytest.mark.parametrize("device_type", ALL_DEVICE_TYPES)

@@ -10,6 +10,8 @@
 #include "falcor2/render/scene.h"
 #include "falcor2/render/scene_globals.h"
 
+#include <sgl/device/sampler.h>
+
 // Include OpenPBR lookup tables.
 #define OPENPBR_CONSTEXPR_GLOBAL static constexpr
 #define OPENPBR_ENERGY_TABLES_USE_UINT16 1
@@ -240,6 +242,17 @@ void OpenPBRMaterial::on_load_resources()
             attr.texture_handle = {};
         }
     }
+    if (m_opacity_texture) {
+        m_opacity_texture_handle = m_scene->texture_manager()->register_texture({.texture = m_opacity_texture});
+    } else if (!m_opacity_texture_path.empty()) {
+        m_opacity_texture_handle = m_scene->texture_manager()->load_texture({
+            .path = m_opacity_texture_path,
+            .srgb = false,
+            .load_deferred = true,
+        });
+    } else {
+        m_opacity_texture_handle = {};
+    }
     if (m_normal_texture) {
         m_normal_texture_handle = m_scene->texture_manager()->register_texture({.texture = m_normal_texture});
     } else if (!m_normal_texture_path.empty()) {
@@ -312,12 +325,27 @@ void OpenPBRMaterial::update(SceneUpdateContext& ctx)
     ctx.command_encoder()->upload_buffer_data(m_attributes_buffer, 0, attributes_size, attributes_data.get());
 }
 
+Material::OpacityDesc OpenPBRMaterial::opacity_desc() const
+{
+    shared::OpacityFlags opacity_flags = shared::OpacityFlags::none;
+    if (m_opacity_texture_handle || m_opacity_factor < 1.f) {
+        opacity_flags = shared::OpacityFlags::enabled;
+        if (m_opacity_threshold > 0.f)
+            opacity_flags |= shared::OpacityFlags::use_threshold;
+    }
+
+    return {
+        .flags = opacity_flags,
+        .texture_handle = m_opacity_texture_handle,
+        .texture_channel = m_opacity_texture_channel,
+        .factor = m_opacity_factor,
+        .threshold = m_opacity_threshold,
+    };
+}
+
 template<typename CursorT>
 void OpenPBRMaterial::write_to_cursor_impl(CursorT cursor) const
 {
-    // TODO(tdavidovic): This duplicates MaterialSystem's MaterialHeader.flags write. Reconcile the two paths once
-    // direct material marshalling can get the same header data without this local write.
-    cursor["header"]["flags"] = static_cast<uint32_t>(flags());
     cursor["normal_texture_handle"] = m_normal_texture_handle;
     cursor["normal_texture_scale"] = m_normal_texture_scale;
     cursor["attributes_buffer"] = to_handle(m_attributes_buffer);
@@ -353,6 +381,8 @@ void OpenPBRMaterial::initialize_properties()
             return reflection::value_range(1.0, std::numeric_limits<float>::max());
         case AttributeKind::positive:
             return reflection::value_range(0.0, std::numeric_limits<float>::max());
+        case AttributeKind::signed_unit:
+            return reflection::value_range(-1.0, 1.0);
         }
         return reflection::value_range(0.0, 1.0);
     };
@@ -431,6 +461,56 @@ void OpenPBRMaterial::initialize_properties()
     }
 
     m_material_properties.add_property<ref<sgl::Texture>>(
+        "opacity_texture",
+        m_opacity_texture,
+        false,
+        reflection::on_change(&OpenPBRMaterial::require_load_resources),
+        reflection::ui_label("Opacity Texture"),
+        reflection::ui_group(GROUP_GEOMETRY),
+        reflection::UIFlags::advanced
+    );
+    m_material_properties.add_property<std::filesystem::path>(
+        "opacity_texture_path",
+        m_opacity_texture_path,
+        false,
+        reflection::on_change(&OpenPBRMaterial::require_load_resources),
+        reflection::ui_label("Opacity Texture Path"),
+        reflection::ui_group(GROUP_GEOMETRY),
+        reflection::UIFlags::advanced
+    );
+    m_material_properties.add_property<uint32_t>(
+        "opacity_texture_channel",
+        m_opacity_texture_channel,
+        false,
+        reflection::default_value(3u),
+        reflection::value_range(0u, 3u),
+        reflection::on_change(&OpenPBRMaterial::require_update),
+        reflection::ui_label("Opacity Texture Channel"),
+        reflection::ui_group(GROUP_GEOMETRY),
+        reflection::UIFlags::advanced
+    );
+    m_material_properties.add_property<float>(
+        "opacity_factor",
+        m_opacity_factor,
+        false,
+        reflection::default_value(1.f),
+        reflection::value_range_unit(),
+        reflection::on_change(&OpenPBRMaterial::require_update),
+        reflection::ui_label("Opacity Factor"),
+        reflection::ui_group(GROUP_GEOMETRY)
+    );
+    m_material_properties.add_property<float>(
+        "opacity_threshold",
+        m_opacity_threshold,
+        false,
+        reflection::default_value(0.f),
+        reflection::value_range_unit(),
+        reflection::on_change(&OpenPBRMaterial::require_update),
+        reflection::ui_label("Opacity Threshold"),
+        reflection::ui_group(GROUP_GEOMETRY)
+    );
+
+    m_material_properties.add_property<ref<sgl::Texture>>(
         "normal_texture",
         m_normal_texture,
         false,
@@ -490,6 +570,11 @@ void OpenPBRMaterial::sync_attributes_from_properties()
         }
     }
 
+    m_opacity_texture = m_material_properties.get<ref<sgl::Texture>>("opacity_texture");
+    m_opacity_texture_path = m_material_properties.get<std::filesystem::path>("opacity_texture_path");
+    m_opacity_texture_channel = m_material_properties.get<uint32_t>("opacity_texture_channel");
+    m_opacity_factor = m_material_properties.get<float>("opacity_factor");
+    m_opacity_threshold = m_material_properties.get<float>("opacity_threshold");
     m_normal_texture = m_material_properties.get<ref<sgl::Texture>>("normal_texture");
     m_normal_texture_path = m_material_properties.get<std::filesystem::path>("normal_texture_path");
     m_normal_texture_scale = m_material_properties.get<float>("normal_texture_scale");

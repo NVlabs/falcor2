@@ -22,35 +22,18 @@ def scene(device: spy.Device) -> f2.Scene:
     return f2.Scene.create(device)
 
 
-@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_scene_uv_origin_api(device_type: spy.DeviceType):
     device = helpers.get_device(device_type)
     scene = f2.Scene.create(device)
-    assert scene.options.uv_origin == f2.UVOrigin.upper_left
-    assert scene.requirements_generation != 0
-    assert f2.SceneOptions().uv_origin == f2.UVOrigin.upper_left
-    assert not hasattr(f2, "create_scene")
-    with pytest.raises(TypeError):
-        f2.Scene(device)
-    with pytest.raises(AttributeError):
-        scene.uv_origin = f2.UVOrigin.lower_left
-    with pytest.raises(AttributeError):
-        scene.options.uv_origin = f2.UVOrigin.lower_left
-    scene.update()
-    assert "falcor2_scene_uv_origin_upper_left" in [
-        module.name for module in scene.requirements.modules
-    ]
+    assert scene.config.uv_origin == f2.UVOrigin.upper_left
+    assert f2.SceneConfig().uv_origin == f2.UVOrigin.upper_left
 
-    lower_left_scene = f2.Scene(device, f2.SceneOptions(f2.UVOrigin.lower_left))
-    assert lower_left_scene.options.uv_origin == f2.UVOrigin.lower_left
-    lower_left_scene.update()
-    assert "falcor2_scene_uv_origin_lower_left" in [
-        module.name for module in lower_left_scene.requirements.modules
-    ]
-
-    module = spy.Module.load_from_file(
-        device, "render/test_texture_manager.slang", link=lower_left_scene.requirements.modules
-    )
+    lower_left_config = f2.SceneConfig(f2.UVOrigin.lower_left)
+    lower_left_scene = f2.Scene.create(device, lower_left_config)
+    assert lower_left_scene.config.uv_origin == f2.UVOrigin.lower_left
+    with pytest.raises(AttributeError):
+        lower_left_scene.config.uv_origin = f2.UVOrigin.upper_left
     texture_manager = f2.TextureManager(device)
     point_sampler = device.create_sampler(
         min_filter=spy.TextureFilteringMode.point,
@@ -68,37 +51,92 @@ def test_scene_uv_origin_api(device_type: spy.DeviceType):
         red_top_green_bottom_texture, point_sampler
     )
     texture_manager.update()
-    assert module.test_2d(
-        handle={"data": red_top_green_bottom_handle.data},
-        uv=spy.float2(0.5, 0.25),
-        default_value=spy.float4(1, 0, 1, 1),
-    ) == spy.float4(0, 1, 0, 1)
+
+    def sample_texture(scene: f2.Scene) -> spy.float4:
+        scene.update()
+        module = spy.Module.load_from_file(
+            device, "render/test_texture_manager.slang", link=scene.requirements.modules
+        )
+        return module.test_2d(
+            handle={"data": red_top_green_bottom_handle.data},
+            uv=spy.float2(0.5, 0.25),
+            default_value=spy.float4(1, 0, 1, 1),
+        )
+
+    assert sample_texture(scene) == spy.float4(1, 0, 0, 1)
+    assert sample_texture(lower_left_scene) == spy.float4(0, 1, 0, 1)
 
     path = DATA / "assets/cornell-box/usdpreviewsurface/cornell-box.usda"
     importer_scene = f2.UsdImporter().load_scene(path)
     assert importer_scene.uv_origin == f2.UVOrigin.lower_left
 
     loaded_scenes = [
-        f2.Scene.create(device, importer_scene),
-        f2.Scene.create(device, path),
+        f2.Scene.from_importer_scene(device, importer_scene),
+        f2.Scene.load(device, path),
     ]
     for loaded_scene in loaded_scenes:
-        assert loaded_scene.options.uv_origin == f2.UVOrigin.lower_left
-        loaded_scene.update()
-        assert "falcor2_scene_uv_origin_lower_left" in [
-            module.name for module in loaded_scene.requirements.modules
-        ]
+        assert loaded_scene.config.uv_origin == f2.UVOrigin.lower_left
+        assert sample_texture(loaded_scene) == spy.float4(0, 1, 0, 1)
 
+    upper_left_config = f2.SceneConfig(f2.UVOrigin.upper_left)
     override_scenes = [
-        f2.Scene.create(device, importer_scene, f2.UVOrigin.upper_left),
-        f2.Scene.create(device, path, uv_origin=f2.UVOrigin.upper_left),
+        f2.Scene.from_importer_scene(device, importer_scene, config=upper_left_config),
+        f2.Scene.load(device, path, config=upper_left_config),
     ]
     for override_scene in override_scenes:
-        assert override_scene.options.uv_origin == f2.UVOrigin.upper_left
-        override_scene.update()
-        assert "falcor2_scene_uv_origin_upper_left" in [
-            module.name for module in override_scene.requirements.modules
-        ]
+        assert override_scene.config.uv_origin == f2.UVOrigin.upper_left
+        assert sample_texture(override_scene) == spy.float4(1, 0, 0, 1)
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_scene_opacity_requirement_transitions(device_type: spy.DeviceType) -> None:
+    device = helpers.get_device(device_type)
+    scene = f2.Scene.create(device)
+    first = scene.create_material(f2.StandardMaterial)
+    second = scene.create_material(f2.StandardMaterial)
+
+    scene.update()
+    assert not scene.requirements.requires_opacity_evaluation
+    initial_generation = scene.requirements_generation
+
+    first.alpha_mode = f2.AlphaMode.mask
+    update_flags = scene.update()
+    assert scene.requirements.requires_opacity_evaluation
+    assert update_flags & f2.SceneUpdateFlags.requirements
+    assert scene.requirements_generation > initial_generation
+    masked_generation = scene.requirements_generation
+
+    second.alpha_mode = f2.AlphaMode.mask
+    update_flags = scene.update()
+    assert scene.requirements.requires_opacity_evaluation
+    assert not (update_flags & f2.SceneUpdateFlags.requirements)
+    assert scene.requirements_generation == masked_generation
+
+    first.alpha_mode = f2.AlphaMode.opaque
+    update_flags = scene.update()
+    assert scene.requirements.requires_opacity_evaluation
+    assert not (update_flags & f2.SceneUpdateFlags.requirements)
+    assert scene.requirements_generation == masked_generation
+
+    second.remove()
+    update_flags = scene.update()
+    assert not scene.requirements.requires_opacity_evaluation
+    assert update_flags & f2.SceneUpdateFlags.requirements
+    assert scene.requirements_generation > masked_generation
+    opaque_generation = scene.requirements_generation
+
+    first.alpha_mode = f2.AlphaMode.blend
+    update_flags = scene.update()
+    assert scene.requirements.requires_opacity_evaluation
+    assert update_flags & f2.SceneUpdateFlags.requirements
+    assert scene.requirements_generation > opaque_generation
+    blend_generation = scene.requirements_generation
+
+    first.alpha_mode = f2.AlphaMode.opaque
+    update_flags = scene.update()
+    assert not scene.requirements.requires_opacity_evaluation
+    assert update_flags & f2.SceneUpdateFlags.requirements
+    assert scene.requirements_generation > blend_generation
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)

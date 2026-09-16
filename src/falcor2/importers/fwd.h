@@ -5,6 +5,9 @@
 
 namespace falcor {
 
+// vertex_remap.h
+struct VertexRemap;
+
 // importer_types.h
 
 struct ImporterMeshAttribute;

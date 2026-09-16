@@ -11,6 +11,7 @@
 #include "falcor2/core/types.h"
 #include "falcor2/core/properties.h"
 #include "falcor2/core/reflection.h"
+#include "falcor2/utils/color.h"
 
 #include <sgl/device/buffer_cursor.h>
 
@@ -46,6 +47,14 @@ public:
     /// Light exposure value in exposure stops.
     float exposure() const { return m_exposure; }
     void set_exposure(float exposure);
+
+    /// Whether the color temperature multiplier is enabled.
+    bool enable_color_temperature() const { return m_enable_color_temperature; }
+    void set_enable_color_temperature(bool enable_color_temperature);
+
+    /// Color temperature in Kelvin.
+    float color_temperature() const { return m_color_temperature; }
+    void set_color_temperature(float color_temperature);
 
     /// Slang type name of the struct representing this light type.
     /// Specifies the type used for write_to_cursor().
@@ -95,12 +104,36 @@ public:
                 "Exposure value in stops.",
                 reflection::default_value(0.f),
                 reflection::ui_label("Exposure")
+            )
+            .def_prop_rw(
+                "enable_color_temperature",
+                &Light::enable_color_temperature,
+                &Light::set_enable_color_temperature,
+                "Enable the luminance-normalized color temperature multiplier.",
+                reflection::default_value(false),
+                reflection::ui_label("Enable Color Temperature")
+            )
+            .def_prop_rw(
+                "color_temperature",
+                &Light::color_temperature,
+                &Light::set_color_temperature,
+                "Blackbody color temperature in Kelvin. 6500 K is neutral white.",
+                reflection::default_value(6500.f),
+                reflection::value_range(MIN_COLOR_TEMPERATURE, MAX_COLOR_TEMPERATURE),
+                reflection::ui_label("Color Temperature")
             );
     }
 
 protected:
+    static constexpr float MIN_LIGHT_ANGLE = 0.f;
+    static constexpr float MAX_LIGHT_ANGLE = 180.f;
+
+    float3 apply_color_temperature_and_exposure(float3 value) const;
+
     bool m_active{true};
     float m_exposure{0.f};
+    bool m_enable_color_temperature{false};
+    float m_color_temperature{6500.f};
     std::string m_slang_type_name;
     shared::LightType m_light_type{0};
     shared::LightFlags m_light_flags{shared::LightFlags::none};
@@ -179,7 +212,7 @@ public:
                 &DistantLight::set_cutoff_angle,
                 "Cutoff angle in degrees.",
                 reflection::default_value(1.f),
-                reflection::value_range(0.0, 180.0),
+                reflection::value_range(MIN_LIGHT_ANGLE, MAX_LIGHT_ANGLE),
                 reflection::ui_label("Cutoff Angle")
             );
     }
@@ -202,6 +235,10 @@ public:
 
     const std::filesystem::path& env_map_path() const { return m_env_map_path; }
     void set_env_map_path(const std::filesystem::path& env_map_path);
+    void set_env_map_texture(ref<sgl::Texture> env_map_texture);
+
+    float3 intensity() const { return m_intensity; }
+    void set_intensity(float3 intensity);
 
     // SceneObject interface
 
@@ -221,6 +258,15 @@ public:
                 &EnvMapLight::env_map_path,
                 &EnvMapLight::set_env_map_path,
                 "Environment map file path."
+            )
+            .def_prop_rw(
+                "intensity",
+                &EnvMapLight::intensity,
+                &EnvMapLight::set_intensity,
+                "Environment map intensity.",
+                reflection::default_value(float3(1.f)),
+                reflection::ui_label("Intensity"),
+                reflection::UIFlags::display_as_color
             );
     }
 
@@ -229,6 +275,8 @@ private:
     void write_to_cursor_impl(CursorT cursor) const;
 
     std::filesystem::path m_env_map_path;
+    ref<sgl::Texture> m_env_map_texture;
+    float3 m_intensity{1.f};
 
     TextureHandle m_env_map_texture_handle;
     bool m_env_map_loaded{false};
@@ -238,6 +286,116 @@ private:
 
     ref<sgl::ComputeKernel> m_build_importance_map_kernel;
 };
+
+/// Non-polymorphic state for an optional directional light emission profile.
+///
+/// Shaping follows USD semantics around the light's local negative-Z axis. It
+/// modulates emitted radiance or intensity without changing the emitter shape.
+class FALCOR_API LightShaping {
+public:
+    static constexpr float MIN_CONE_ANGLE = 0.f;
+    static constexpr float MAX_CONE_ANGLE = 180.f;
+
+    bool enabled() const { return m_enabled; }
+    bool set_enabled(bool enabled);
+
+    float cone_angle() const { return m_cone_angle; }
+    bool set_cone_angle(float angle);
+
+    float cone_softness() const { return m_cone_softness; }
+    bool set_cone_softness(float softness);
+
+    float focus() const { return m_focus; }
+    bool set_focus(float focus);
+
+    template<typename CursorT>
+    void write_to_cursor(CursorT cursor) const;
+
+    template<typename LightT, reflection::ClassReflector R>
+    static void reflect(R& r)
+    {
+        r //
+            .def_prop_rw(
+                "enable_shaping",
+                &LightT::enable_shaping,
+                &LightT::set_enable_shaping,
+                "Enable directional emission shaping.",
+                reflection::default_value(false),
+                reflection::ui_label("Enable Shaping")
+            )
+            .def_prop_rw(
+                "shaping_cone_angle",
+                &LightT::shaping_cone_angle,
+                &LightT::set_shaping_cone_angle,
+                "Angular cutoff from the local negative-Z axis, in degrees.",
+                reflection::default_value(90.f),
+                reflection::value_range(MIN_CONE_ANGLE, MAX_CONE_ANGLE),
+                reflection::ui_label("Shaping Cone Angle")
+            )
+            .def_prop_rw(
+                "shaping_cone_softness",
+                &LightT::shaping_cone_softness,
+                &LightT::set_shaping_cone_softness,
+                "Fraction of the cone occupied by the smooth transition.",
+                reflection::default_value(0.f),
+                reflection::value_range(0.f, 1.f),
+                reflection::ui_label("Shaping Cone Softness")
+            )
+            .def_prop_rw(
+                "shaping_focus",
+                &LightT::shaping_focus,
+                &LightT::set_shaping_focus,
+                "Off-axis cosine power exponent used to focus emission.",
+                reflection::default_value(0.f),
+                reflection::value_range_positive(),
+                reflection::ui_label("Shaping Focus")
+            );
+    }
+
+private:
+    bool m_enabled{false};
+    float m_cone_angle{90.f};
+    float m_cone_softness{0.f};
+    float m_focus{0.f};
+};
+
+#define FALCOR_LIGHT_SHAPING_MIXIN(member)                                                                             \
+    bool enable_shaping() const                                                                                        \
+    {                                                                                                                  \
+        return (member).enabled();                                                                                     \
+    }                                                                                                                  \
+    void set_enable_shaping(bool enabled)                                                                              \
+    {                                                                                                                  \
+        if ((member).set_enabled(enabled))                                                                             \
+            mark_dirty(DirtyFlags::render_state);                                                                      \
+    }                                                                                                                  \
+    float shaping_cone_angle() const                                                                                   \
+    {                                                                                                                  \
+        return (member).cone_angle();                                                                                  \
+    }                                                                                                                  \
+    void set_shaping_cone_angle(float angle)                                                                           \
+    {                                                                                                                  \
+        if ((member).set_cone_angle(angle))                                                                            \
+            mark_dirty(DirtyFlags::render_state);                                                                      \
+    }                                                                                                                  \
+    float shaping_cone_softness() const                                                                                \
+    {                                                                                                                  \
+        return (member).cone_softness();                                                                               \
+    }                                                                                                                  \
+    void set_shaping_cone_softness(float softness)                                                                     \
+    {                                                                                                                  \
+        if ((member).set_cone_softness(softness))                                                                      \
+            mark_dirty(DirtyFlags::render_state);                                                                      \
+    }                                                                                                                  \
+    float shaping_focus() const                                                                                        \
+    {                                                                                                                  \
+        return (member).focus();                                                                                       \
+    }                                                                                                                  \
+    void set_shaping_focus(float focus)                                                                                \
+    {                                                                                                                  \
+        if ((member).set_focus(focus))                                                                                 \
+            mark_dirty(DirtyFlags::render_state);                                                                      \
+    }
 
 class FALCOR_API PointLight : public Light {
     FALCOR_SCENE_OBJECT(PointLight, Light)
@@ -249,6 +407,8 @@ public:
 
     float3 intensity() const { return m_intensity; }
     void set_intensity(float3 intensity);
+
+    FALCOR_LIGHT_SHAPING_MIXIN(m_shaping)
 
     // Light interface
 
@@ -266,6 +426,8 @@ public:
                 reflection::ui_label("Intensity"),
                 reflection::UIFlags::display_as_color
             );
+
+        LightShaping::reflect<PointLight>(r);
     }
 
 private:
@@ -273,24 +435,27 @@ private:
     void write_to_cursor_impl(CursorT cursor) const;
 
     float3 m_intensity{1.f};
+    LightShaping m_shaping;
 };
 
-class FALCOR_API SpotLight : public Light {
-    FALCOR_SCENE_OBJECT(SpotLight, Light)
+class FALCOR_API SphereLight : public Light {
+    FALCOR_SCENE_OBJECT(SphereLight, Light)
     FALCOR_WRITE_TO_CURSOR_OVERRIDES();
 
 public:
-    SpotLight();
-    ~SpotLight() override;
+    SphereLight();
+    ~SphereLight() override;
 
-    float3 intensity() const { return m_intensity; }
-    void set_intensity(float3 intensity);
+    float3 radiance() const { return m_radiance; }
+    void set_radiance(float3 radiance);
 
-    float cutoff_angle() const { return m_cutoff_angle; }
-    void set_cutoff_angle(float cutoff_angle);
+    float radius() const { return m_radius; }
+    void set_radius(float radius);
 
-    float falloff_angle() const { return m_falloff_angle; }
-    void set_falloff_angle(float falloff_angle);
+    bool enable_virtual_sphere_shrinking() const { return m_enable_virtual_sphere_shrinking; }
+    void set_enable_virtual_sphere_shrinking(bool enable);
+
+    FALCOR_LIGHT_SHAPING_MIXIN(m_shaping)
 
     // Light interface
 
@@ -300,41 +465,166 @@ public:
     {
         r //
             .def_prop_rw(
-                "intensity",
-                &SpotLight::intensity,
-                &SpotLight::set_intensity,
-                "Light intensity.",
+                "radiance",
+                &SphereLight::radiance,
+                &SphereLight::set_radiance,
+                "Radiance.",
                 reflection::default_value(float3(1.f)),
-                reflection::ui_label("Intensity"),
+                reflection::ui_label("Radiance"),
                 reflection::UIFlags::display_as_color
             )
             .def_prop_rw(
-                "cutoff_angle",
-                &SpotLight::cutoff_angle,
-                &SpotLight::set_cutoff_angle,
-                "Cutoff angle in degrees.",
-                reflection::default_value(45.f),
-                reflection::value_range(0.0, 180.0),
-                reflection::ui_label("Cutoff Angle")
+                "radius",
+                &SphereLight::radius,
+                &SphereLight::set_radius,
+                "Local-space radius.",
+                reflection::default_value(1.f),
+                reflection::value_range_positive(),
+                reflection::ui_label("Radius")
             )
             .def_prop_rw(
-                "falloff_angle",
-                &SpotLight::falloff_angle,
-                &SpotLight::set_falloff_angle,
-                "Falloff angle in degrees.",
-                reflection::default_value(40.f),
-                reflection::value_range(0.0, 180.0),
-                reflection::ui_label("Falloff Angle")
+                "enable_virtual_sphere_shrinking",
+                &SphereLight::enable_virtual_sphere_shrinking,
+                &SphereLight::set_enable_virtual_sphere_shrinking,
+                "Keep the sampled sphere smaller than the receiver distance while preserving emitted power.",
+                reflection::default_value(false),
+                reflection::ui_label("Enable Virtual Sphere Shrinking")
             );
+
+        LightShaping::reflect<SphereLight>(r);
     }
 
 private:
     template<typename CursorT>
     void write_to_cursor_impl(CursorT cursor) const;
 
-    float3 m_intensity{1.f};
-    float m_cutoff_angle{45.f};
-    float m_falloff_angle{40.f};
+    float3 m_radiance{1.f};
+    float m_radius{1.f};
+    bool m_enable_virtual_sphere_shrinking{false};
+    LightShaping m_shaping;
 };
+
+class FALCOR_API DiskLight : public Light {
+    FALCOR_SCENE_OBJECT(DiskLight, Light)
+    FALCOR_WRITE_TO_CURSOR_OVERRIDES();
+
+public:
+    DiskLight();
+    ~DiskLight() override;
+
+    float3 radiance() const { return m_radiance; }
+    void set_radiance(float3 radiance);
+
+    float radius() const { return m_radius; }
+    void set_radius(float radius);
+
+    FALCOR_LIGHT_SHAPING_MIXIN(m_shaping)
+
+    // Light interface
+
+    /// Reflect this class.
+    template<reflection::ClassReflector R>
+    static void reflect(R& r)
+    {
+        r //
+            .def_prop_rw(
+                "radiance",
+                &DiskLight::radiance,
+                &DiskLight::set_radiance,
+                "Radiance.",
+                reflection::default_value(float3(1.f)),
+                reflection::ui_label("Radiance"),
+                reflection::UIFlags::display_as_color
+            )
+            .def_prop_rw(
+                "radius",
+                &DiskLight::radius,
+                &DiskLight::set_radius,
+                "Local-space radius.",
+                reflection::default_value(1.f),
+                reflection::value_range_positive(),
+                reflection::ui_label("Radius")
+            );
+
+        LightShaping::reflect<DiskLight>(r);
+    }
+
+private:
+    template<typename CursorT>
+    void write_to_cursor_impl(CursorT cursor) const;
+
+    float3 m_radiance{1.f};
+    float m_radius{1.f};
+    LightShaping m_shaping;
+};
+
+class FALCOR_API RectLight : public Light {
+    FALCOR_SCENE_OBJECT(RectLight, Light)
+    FALCOR_WRITE_TO_CURSOR_OVERRIDES();
+
+public:
+    RectLight();
+    ~RectLight() override;
+
+    float3 radiance() const { return m_radiance; }
+    void set_radiance(float3 radiance);
+
+    float width() const { return m_width; }
+    void set_width(float width);
+
+    float height() const { return m_height; }
+    void set_height(float height);
+
+    FALCOR_LIGHT_SHAPING_MIXIN(m_shaping)
+
+    // Light interface
+
+    /// Reflect this class.
+    template<reflection::ClassReflector R>
+    static void reflect(R& r)
+    {
+        r //
+            .def_prop_rw(
+                "radiance",
+                &RectLight::radiance,
+                &RectLight::set_radiance,
+                "Radiance.",
+                reflection::default_value(float3(1.f)),
+                reflection::ui_label("Radiance"),
+                reflection::UIFlags::display_as_color
+            )
+            .def_prop_rw(
+                "width",
+                &RectLight::width,
+                &RectLight::set_width,
+                "Local-space width.",
+                reflection::default_value(1.f),
+                reflection::value_range_positive(),
+                reflection::ui_label("Width")
+            )
+            .def_prop_rw(
+                "height",
+                &RectLight::height,
+                &RectLight::set_height,
+                "Local-space height.",
+                reflection::default_value(1.f),
+                reflection::value_range_positive(),
+                reflection::ui_label("Height")
+            );
+
+        LightShaping::reflect<RectLight>(r);
+    }
+
+private:
+    template<typename CursorT>
+    void write_to_cursor_impl(CursorT cursor) const;
+
+    float3 m_radiance{1.f};
+    float m_width{1.f};
+    float m_height{1.f};
+    LightShaping m_shaping;
+};
+
+#undef FALCOR_LIGHT_SHAPING_MIXIN
 
 } // namespace falcor

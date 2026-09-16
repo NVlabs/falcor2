@@ -1,0 +1,155 @@
+#usda 1.0
+(
+    defaultPrim = "Root"
+)
+
+def Xform "Root"
+{
+    def Scope "Looks"
+    {
+        def Material "Standard"
+        {
+            token outputs:falcor:surface.connect = </Root/Looks/Standard/FalcorSurface.outputs:surface>
+            token outputs:surface.connect = </Root/Looks/Standard/PreviewSurface.outputs:surface>
+
+            def Shader "FalcorSurface"
+            {
+                uniform token info:id = "FalcorStandardMaterial"
+                float inputs:alpha_cutoff = 0.25
+                float inputs:alpha_factor = 0.75
+                token inputs:alpha_mode = "mask"
+                color3f inputs:base_color_factor = (0.2, 0.4, 0.6)
+                asset inputs:base_color_texture_path = @test_falcor_materials.usda@
+                bool inputs:double_sided = 1
+                color3f inputs:emissive_factor = (0.1, 0.2, 0.3)
+                asset inputs:emissive_texture_path = @test_falcor_materials.usda@
+                float inputs:ior = 1.7
+                float inputs:metallic_factor = 0.8
+                asset inputs:metallic_roughness_texture_path = @test_falcor_materials.usda@
+                uint inputs:metallic_texture_channel = 2
+                asset inputs:normal_texture_path = @test_falcor_materials.usda@
+                float inputs:roughness_factor = 0.35
+                uint inputs:roughness_texture_channel = 1
+                float inputs:diffuse_transmission_factor = 0.2
+                float inputs:specular_transmission_factor = 0.9
+                bool inputs:thin_walled = 1
+                color3f inputs:transmission_factor = (0.15, 0.75, 0.3)
+                asset inputs:transmission_texture_path = @test_falcor_materials.usda@
+                token outputs:surface
+            }
+
+            def Shader "PreviewSurface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (1, 0, 1)
+                token outputs:surface
+            }
+        }
+
+        def Material "Unlit"
+        {
+            token outputs:falcor:surface.connect = </Root/Looks/Unlit/FalcorSurface.outputs:surface>
+
+            def Shader "FalcorSurface"
+            {
+                uniform token info:id = "FalcorUnlitMaterial"
+                float inputs:alpha_cutoff = 0.4
+                float inputs:alpha_factor = 0.6
+                token inputs:alpha_mode = "blend"
+                color3f inputs:base_color_factor = (1.5, 2, 4)
+                asset inputs:base_color_texture_path = @test_falcor_materials.usda@
+                bool inputs:double_sided = 0
+                token outputs:surface
+            }
+        }
+
+        def Material "StandardDefaults"
+        {
+            token outputs:falcor:surface.connect = </Root/Looks/StandardDefaults/FalcorSurface.outputs:surface>
+
+            def Shader "FalcorSurface"
+            {
+                uniform token info:id = "FalcorStandardMaterial"
+                token outputs:surface
+            }
+        }
+
+        def Material "UnlitDefaults"
+        {
+            token outputs:falcor:surface.connect = </Root/Looks/UnlitDefaults/FalcorSurface.outputs:surface>
+
+            def Shader "FalcorSurface"
+            {
+                uniform token info:id = "FalcorUnlitMaterial"
+                token outputs:surface
+            }
+        }
+
+        def Material "OpenPBR"
+        {
+            token outputs:falcor:surface.connect = </Root/Looks/OpenPBR/FalcorSurface.outputs:surface>
+
+            def Shader "FalcorSurface"
+            {
+                uniform token info:id = "FalcorOpenPBRMaterial"
+                float inputs:base_weight = 0.9
+                color3f inputs:base_color = (0.25, 0.5, 0.75)
+                asset inputs:base_color_texture_path = @test_falcor_materials.usda@
+                float inputs:specular_roughness = 0.35
+                asset inputs:specular_roughness_texture_path = @test_falcor_materials.usda@
+                uint inputs:specular_roughness_texture_channel = 1
+                color3f inputs:transmission_scatter = (0.1, 0.2, 0.3)
+                float inputs:thin_film_ior = 1.45
+                float inputs:emission_luminance = 2.5
+                float inputs:opacity_factor = 0.8
+                float inputs:opacity_threshold = 0.2
+                asset inputs:opacity_texture_path = @test_falcor_materials.usda@
+                uint inputs:opacity_texture_channel = 2
+                asset inputs:normal_texture_path = @test_falcor_materials.usda@
+                float inputs:normal_texture_scale = 0.75
+                bool inputs:geometry_thin_walled = 1
+                token outputs:surface
+            }
+        }
+    }
+
+    def Mesh "StandardTriangle"
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+        rel material:binding = </Root/Looks/Standard>
+    }
+
+    def Mesh "UnlitTriangle"
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(0, 0, 1), (1, 0, 1), (0, 1, 1)]
+        rel material:binding = </Root/Looks/Unlit>
+    }
+
+    def Mesh "StandardDefaultsTriangle"
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(0, 0, 2), (1, 0, 2), (0, 1, 2)]
+        rel material:binding = </Root/Looks/StandardDefaults>
+    }
+
+    def Mesh "UnlitDefaultsTriangle"
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(0, 0, 3), (1, 0, 3), (0, 1, 3)]
+        rel material:binding = </Root/Looks/UnlitDefaults>
+    }
+
+    def Mesh "OpenPBRTriangle"
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(0, 0, 4), (1, 0, 4), (0, 1, 4)]
+        rel material:binding = </Root/Looks/OpenPBR>
+    }
+}

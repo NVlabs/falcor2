@@ -40,9 +40,107 @@ public extension Scene
     }
 }
 
-public struct LSSHitData
+public struct LSSHitInfo : IHitInfo
 {
+    public property GeometryType geometry_type
+    {
+        get {
+            return GeometryType::lss;
+        }
+    }
+
+    public GeometryInstanceID geometry_instance_id;
+
+    public uint primitive_index;
+
+    public property bool valid
+    {
+        get {
+            return true;
+        }
+    }
+
     public float2 uv;
+
+    public __init(
+        GeometryInstanceID geometry_instance_id,
+        uint primitive_index,
+        float3 hit_pos_os,
+        float2x4 positions_and_radii_os
+    )
+    {
+        this.geometry_instance_id = geometry_instance_id;
+        this.primitive_index = primitive_index;
+        this.uv = curve_hit_pos_to_uv(hit_pos_os, positions_and_radii_os[0], positions_and_radii_os[1]);
+    }
+
+    public __init(const PackedHitInfo p)
+    {
+        geometry_instance_id = GeometryInstanceID(p.data[1]);
+        primitive_index = p.data[2];
+        uv = float2(asfloat(p.data[3]), asfloat(p.data[4]));
+    }
+
+    public PackedHitInfo pack()
+    {
+        PackedHitInfo p = {};
+        p.data[0] = uint(geometry_type);
+        p.data[1] = uint(geometry_instance_id);
+        p.data[2] = primitive_index;
+        p.data[3] = asuint(uv.x);
+        p.data[4] = asuint(uv.y);
+        return p;
+    }
+};
+
+public extension Scene
+{
+    /// Construct a surface interaction from an LSS hit.
+    public SurfaceInteraction make_lss_surface_interaction(LSSHitInfo hit, float3 wi_ws)
+    {
+        GeometryInstanceDesc geometry_instance = get_geometry_instance_desc(hit.geometry_instance_id);
+        LSSGeometryInstanceDesc geometry_instance_data = reinterpret<LSSGeometryInstanceDesc>(geometry_instance);
+
+        let vertex_offset = geometry_instance_data.vertex_offset;
+        let index_offset = geometry_instance_data.index_offset + hit.primitive_index;
+
+        let i0 = lss_geometry.indices[index_offset];
+        let i1 = i0 + 1;
+
+        let v0 = detail::unpack_lss_vertex(lss_geometry.vertices[vertex_offset + i0]);
+        let v1 = detail::unpack_lss_vertex(lss_geometry.vertices[vertex_offset + i1]);
+
+        float3 hit_pos;
+        float3 sphere_center;
+        uv_to_curve_hit_pos(
+            hit.uv,
+            float4(v0.position, v0.radius),
+            float4(v1.position, v1.radius),
+            hit_pos,
+            sphere_center
+        );
+
+        let pos_os = hit_pos;
+        let normal_os = hit_pos - sphere_center;
+        let tangent_os = v1.position - v0.position;
+
+        let world_from_object = get_world_from_object(geometry_instance.header.transform_id);
+        let inverse_transpose = transpose(float3x3(get_object_from_world(geometry_instance.header.transform_id)));
+
+        SurfaceInteraction si = {};
+        si.wi_ws = wi_ws;
+        si.position_ws = transform_point(world_from_object, pos_os);
+        si.normal_ws = normalize(transform_vector(inverse_transpose, normal_os));
+        si.front_facing = dot(wi_ws, si.normal_ws) >= 0;
+        si.uv = hit.uv;
+        si.shading_frame_ws = Frame(
+            si.normal_ws,
+            normalize(transform_vector(world_from_object, tangent_os)),
+            1.0 /*handedness*/,
+            Frame::Component::tangent
+        );
+        return si;
+    }
 }
 
 /// Computes the uv parameters (from 0 to 1) from ray-curve hit position.
@@ -136,97 +234,24 @@ void uv_to_curve_hit_pos(float2 uv, float4 sphere_a, float4 sphere_b, out float3
     sphere_center = sphere_a.xyz + (z + delta_z) * fwd;
 }
 
-public HitInfo make_lss_hit_info(
-    GeometryInstanceID geometry_instance_id,
-    uint primitive_index,
-    float3 hit_pos_os,
-    float2x4 positions_and_radii_os
-)
-{
-    HitInfo hit;
-    hit.geometry_type = GeometryType::lss;
-    hit.geometry_instance_id = geometry_instance_id;
-    hit.primitive_index = primitive_index;
-    float2 uv = curve_hit_pos_to_uv(hit_pos_os, positions_and_radii_os[0], positions_and_radii_os[1]);
-    LSSHitData hit_data = { uv };
-    hit._hit_data = reinterpret<HitData>(hit_data);
-    return hit;
-}
-
-public HitInfo make_lss_hit_info()
-{
-#ifndef __TARGET_CUDA__
-    float3 hit_pos_os = ObjectRayOrigin() + ObjectRayDirection() * RayTCurrent();
-#else
-    float3x4 world_to_object = WorldToObject3x4();
-    float3 hit_pos_ws = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
-    float3 hit_pos_os = transform_point(world_to_object, hit_pos_ws);
-#endif
-    return make_lss_hit_info(
-        GeometryInstanceID(InstanceID() + GeometryIndex2()),
-        PrimitiveIndex(),
-        hit_pos_os,
-        GetLssPositionsAndRadii()
-    );
-}
-
-public extension Scene
-{
-    /// Construct a surface interaction from an LSS hit.
-    public SurfaceInteraction make_lss_surface_interaction(HitInfo hit, float3 wi_ws)
-    {
-        LSSHitData hit_data = reinterpret<LSSHitData>(hit._hit_data);
-
-        GeometryInstanceDesc geometry_instance = get_geometry_instance_desc(hit.geometry_instance_id);
-        LSSGeometryInstanceDesc geometry_instance_data = reinterpret<LSSGeometryInstanceDesc>(geometry_instance);
-
-        let vertex_offset = geometry_instance_data.vertex_offset;
-        let index_offset = geometry_instance_data.index_offset + hit.primitive_index;
-
-        let i0 = lss_geometry.indices[index_offset];
-        let i1 = i0 + 1;
-
-        let v0 = get_lss_vertex(vertex_offset + i0);
-        let v1 = get_lss_vertex(vertex_offset + i1);
-
-        float3 hit_pos;
-        float3 sphere_center;
-        uv_to_curve_hit_pos(
-            hit_data.uv,
-            float4(v0.position, v0.radius),
-            float4(v1.position, v1.radius),
-            hit_pos,
-            sphere_center
-        );
-
-        let position_os = hit_pos;
-        let normal_os = hit_pos - sphere_center;
-        let tangent_os = v1.position - v0.position;
-        let uv = hit_data.uv;
-
-        let world_from_object = get_world_from_object(geometry_instance.header.transform_id);
-        let inverse_transpose = transpose(float3x3(get_object_from_world(geometry_instance.header.transform_id)));
-
-        SurfaceInteraction si = {};
-        si.wi_ws = wi_ws;
-        si.position_ws = transform_point(world_from_object, position_os);
-        si.normal_ws = normalize(transform_vector(inverse_transpose, normal_os));
-        si.front_facing = dot(wi_ws, si.normal_ws) >= 0;
-        si.uv = uv;
-        si.shading_frame_ws = Frame(
-            si.normal_ws,
-            normalize(transform_vector(world_from_object, tangent_os)),
-            1.0 /*handedness*/,
-            Frame::Component::tangent
-        );
-
-        return si;
-    }
-}
-
 public struct DeferredLSSHitInfo : IDeferredHitInfo
 {
-    public HitInfo create() { return make_lss_hit_info(); }
+    public IHitInfo create()
+    {
+#ifndef __TARGET_CUDA__
+        float3 hit_pos_os = ObjectRayOrigin() + ObjectRayDirection() * RayTCurrent();
+#else
+        float3x4 world_to_object = WorldToObject3x4();
+        float3 hit_pos_ws = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
+        float3 hit_pos_os = transform_point(world_to_object, hit_pos_ws);
+#endif
+        return LSSHitInfo(
+            GeometryInstanceID(InstanceID() + GeometryIndex2()),
+            PrimitiveIndex(),
+            hit_pos_os,
+            GetLssPositionsAndRadii()
+        );
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -259,7 +284,7 @@ public struct ProceduralLSSIntersectionAttributes
 public struct DeferredProceduralLSSHitInfo : IDeferredHitInfo
 {
     public float2x4 segment;
-    public HitInfo create()
+    public IHitInfo create()
     {
 #ifndef __TARGET_CUDA__
         float3 hit_pos_os = ObjectRayOrigin() + ObjectRayDirection() * RayTCurrent();
@@ -268,11 +293,6 @@ public struct DeferredProceduralLSSHitInfo : IDeferredHitInfo
         float3 hit_pos_ws = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
         float3 hit_pos_os = transform_point(world_to_object, hit_pos_ws);
 #endif
-        return make_lss_hit_info(
-            GeometryInstanceID(InstanceID() + GeometryIndex2()),
-            PrimitiveIndex(),
-            hit_pos_os,
-            segment
-        );
+        return LSSHitInfo(GeometryInstanceID(InstanceID() + GeometryIndex2()), PrimitiveIndex(), hit_pos_os, segment);
     }
 };

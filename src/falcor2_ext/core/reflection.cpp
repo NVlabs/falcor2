@@ -5,6 +5,8 @@
 #include "core/reflection/python_class_reflection.h"
 #include "core/reflection/python_property_descriptor.h"
 
+#include "falcor2/core/object.h"
+#include "falcor2/core/reflected_object.h"
 #include "falcor2/core/reflection/property_descriptor.h"
 #include "falcor2/core/reflection/metadata.h"
 #include "falcor2/ui/property_editor.h"
@@ -103,6 +105,9 @@ FALCOR_PY_EXPORT(core_reflection)
                 const int64_t* iv = any_cast<int64_t>(&a);
                 if (iv)
                     return nb::cast(*iv);
+                const ref<ReflectedObject>* object = any_cast<ref<ReflectedObject>>(&a);
+                if (object)
+                    return *object ? nb::cast(*object) : nb::none();
                 return nb::none();
             },
             "instance"_a
@@ -125,10 +130,16 @@ FALCOR_PY_EXPORT(core_reflection)
                     self.set_any(static_cast<void*>(&handle), a);
                     return;
                 }
+                if (self.type() == typeid(ref<ReflectedObject>)
+                    && (value.is_none() || nb::isinstance<ReflectedObject>(value))) {
+                    Any a(value.is_none() ? ref<ReflectedObject>{} : nb::cast<ref<ReflectedObject>>(value));
+                    self.set_any(static_cast<void*>(&handle), a);
+                    return;
+                }
                 FALCOR_THROW("PythonPropertyDescriptor: cannot convert value for set_any_value.");
             },
             "instance"_a,
-            "value"_a
+            nb::arg("value").none()
         )
         .def(
             "is_default",

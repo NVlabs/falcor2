@@ -105,8 +105,9 @@ def test_managed_buffer_gpu_access(device_type: spy.DeviceType):
     module = spy.Module(device.load_module("utils/test_managed_buffer.slang"))
 
     # Run the shader to copy data from ManagedBuffer to dst_buffer
+    buffer_handle = f2.to_handle(managed_buffer)
     module["run_test"](
-        src=f2.to_handle(managed_buffer),
+        src=buffer_handle,
         dst=dst_buffer,
         byte_size=buffer_size,
     )

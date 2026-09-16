@@ -41,52 +41,52 @@ FALCOR_PY_EXPORT(denoisers_ngx_features)
             nb::overload_cast<sgl::CommandEncoder*, const DLSSRREvaluateDesc&>(&DLSSRRFeature::evaluate),
             "command_encoder"_a,
             "desc"_a,
-            D(ngx, DLSSRRFeature, evaluate)
+            D(ngx, DLSSRRFeature, evaluate, 2)
         );
 
-    nb::class_<DLSSSRFeature, Object>(ngx_module, "DLSSSRFeature", D_NA(ngx, DLSSSRFeature))
-        .def_prop_ro("device", &DLSSSRFeature::device, D_NA(ngx, DLSSSRFeature, device))
-        .def_prop_ro("ngx", &DLSSSRFeature::ngx, D_NA(ngx, DLSSSRFeature, ngx))
-        .def_prop_ro("desc", &DLSSSRFeature::desc, nb::rv_policy::reference_internal, D_NA(ngx, DLSSSRFeature, desc))
+    nb::class_<DLSSSRFeature, Object>(ngx_module, "DLSSSRFeature", D(ngx, DLSSSRFeature))
+        .def_prop_ro("device", &DLSSSRFeature::device, D(ngx, DLSSSRFeature, device))
+        .def_prop_ro("ngx", &DLSSSRFeature::ngx, D(ngx, DLSSSRFeature, ngx))
+        .def_prop_ro("desc", &DLSSSRFeature::desc, nb::rv_policy::reference_internal, D(ngx, DLSSSRFeature, desc))
         .def_prop_ro(
             "last_evaluate_result",
             &DLSSSRFeature::last_evaluate_result,
-            D_NA(ngx, DLSSSRFeature, last_evaluate_result)
+            D(ngx, DLSSSRFeature, last_evaluate_result)
         )
         .def(
             "evaluate",
             nb::overload_cast<const DLSSSREvaluateDesc&>(&DLSSSRFeature::evaluate),
             "desc"_a,
-            D_NA(ngx, DLSSSRFeature, evaluate)
+            D(ngx, DLSSSRFeature, evaluate)
         )
         .def(
             "evaluate",
             nb::overload_cast<sgl::CommandEncoder*, const DLSSSREvaluateDesc&>(&DLSSSRFeature::evaluate),
             "command_encoder"_a,
             "desc"_a,
-            D_NA(ngx, DLSSSRFeature, evaluate)
+            D(ngx, DLSSSRFeature, evaluate, 2)
         );
 
-    nb::class_<DLSSGFeature, Object>(ngx_module, "DLSSGFeature", D_NA(ngx, DLSSGFeature))
-        .def_prop_ro("device", &DLSSGFeature::device, D_NA(ngx, DLSSGFeature, device))
-        .def_prop_ro("ngx", &DLSSGFeature::ngx, D_NA(ngx, DLSSGFeature, ngx))
-        .def_prop_ro("desc", &DLSSGFeature::desc, nb::rv_policy::reference_internal, D_NA(ngx, DLSSGFeature, desc))
+    nb::class_<DLSSGFeature, Object>(ngx_module, "DLSSGFeature", D(ngx, DLSSGFeature))
+        .def_prop_ro("device", &DLSSGFeature::device, D(ngx, DLSSGFeature, device))
+        .def_prop_ro("ngx", &DLSSGFeature::ngx, D(ngx, DLSSGFeature, ngx))
+        .def_prop_ro("desc", &DLSSGFeature::desc, nb::rv_policy::reference_internal, D(ngx, DLSSGFeature, desc))
         .def_prop_ro(
             "last_evaluate_result",
             &DLSSGFeature::last_evaluate_result,
-            D_NA(ngx, DLSSGFeature, last_evaluate_result)
+            D(ngx, DLSSGFeature, last_evaluate_result)
         )
         .def(
             "evaluate",
             nb::overload_cast<const DLSSGEvaluateDesc&>(&DLSSGFeature::evaluate),
             "desc"_a,
-            D_NA(ngx, DLSSGFeature, evaluate)
+            D(ngx, DLSSGFeature, evaluate)
         )
         .def(
             "evaluate",
             nb::overload_cast<sgl::CommandEncoder*, const DLSSGEvaluateDesc&>(&DLSSGFeature::evaluate),
             "command_encoder"_a,
             "desc"_a,
-            D_NA(ngx, DLSSGFeature, evaluate)
+            D(ngx, DLSSGFeature, evaluate, 2)
         );
 }

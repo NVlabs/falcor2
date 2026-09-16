@@ -13,6 +13,8 @@
 #include <sgl/core/timer.h>
 #include <sgl/core/string.h>
 
+#include <set>
+
 namespace falcor {
 
 // -----------------------------------------------------------------------------
@@ -359,9 +361,11 @@ void TextureManager::load_textures(std::span<const TextureID> texture_ids)
     std::vector<std::filesystem::path> paths;
     std::vector<sgl::TextureLoader::Options> options;
     std::vector<TextureEntry*> texture_entries;
+    std::vector<TextureID> unique_texture_ids;
+    std::set<TextureID> seen_texture_ids;
     for (TextureID texture_id : texture_ids) {
         TextureEntry& texture_entry = get_texture_entry(texture_id);
-        if (texture_entry.is_loaded)
+        if (texture_entry.is_loaded || !seen_texture_ids.insert(texture_id).second)
             continue;
         FALCOR_ASSERT(texture_entry.info);
         paths.push_back(texture_entry.info->path);
@@ -373,6 +377,7 @@ void TextureManager::load_textures(std::span<const TextureID> texture_ids)
             }
         );
         texture_entries.push_back(&texture_entry);
+        unique_texture_ids.push_back(texture_id);
     }
 
     if (paths.empty())
@@ -386,10 +391,10 @@ void TextureManager::load_textures(std::span<const TextureID> texture_ids)
     for (size_t i = 0; i < textures.size(); ++i) {
         texture_entries[i]->texture = textures[i];
         texture_entries[i]->is_loaded = true;
-        m_texture_to_texture_id.emplace(texture_entries[i]->texture.get(), texture_ids[i]);
+        m_texture_to_texture_id.emplace(texture_entries[i]->texture.get(), unique_texture_ids[i]);
     }
 
-    notify_textures_loaded(texture_ids, timer.elapsed_s());
+    notify_textures_loaded(unique_texture_ids, timer.elapsed_s());
 }
 
 void TextureManager::notify_textures_loaded(std::span<const TextureID> texture_ids, double duration_s)

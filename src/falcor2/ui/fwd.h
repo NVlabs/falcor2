@@ -7,6 +7,16 @@ namespace falcor::ui {
 
 class CameraController;
 
+// editor_command.h
+
+struct CommandShortcut;
+struct EditorCommand;
+class EditorCommandRegistry;
+
+// icon_library.h
+
+class IconLibrary;
+
 // scene_editor.h
 
 class SceneEditor;

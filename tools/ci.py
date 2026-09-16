@@ -9,6 +9,8 @@ import os
 import sys
 import platform
 import argparse
+from pathlib import Path
+import shutil
 import subprocess
 from collections.abc import Sequence
 from typing import Any, Optional, Union
@@ -17,6 +19,8 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 import tools.build as bt
 import tools.build_slang as bts
 from tools import crashpad
+from tools.system_telemetry import DEFAULT_SYSTEM_TELEMETRY_OUTPUT_PATH
+from tools.system_telemetry import SystemTelemetrySampler
 
 Command = Union[str, Sequence[str]]
 
@@ -36,10 +40,12 @@ INFO_ENV_VARS = (
     "CI_COMMIT_SHA",
     "CI_CONFIG",
     "CI_DEFAULT_BRANCH",
+    "CI_DEVICE_CACHE_POLICY",
     "CI_FLAGS",
     "CI_JOB_ID",
     "CI_JOB_NAME",
     "CI_JOB_STAGE",
+    "CI_JOB_URL",
     "CI_MODULE_AND_SHADER_CACHE_DIR",
     "CI_MODULE_CACHE",
     "CI_OS",
@@ -47,12 +53,15 @@ INFO_ENV_VARS = (
     "CI_PLATFORM",
     "CI_PROJECT_DIR",
     "CI_PROJECT_PATH",
+    "CI_PROJECT_URL",
+    "CI_PYTEST_WORKERS",
     "CI_PYTHON",
     "CI_RUNNER_DESCRIPTION",
     "CI_RUNNER_ID",
     "CI_RUNNER_TAGS",
     "CI_SHADER_CACHE",
     "CI_USE_CUSTOM_SLANG",
+    "CI_FORCE_IMAGE_TEST_REPORT",
     "CONDA_DEFAULT_ENV",
     "CONDA_ENVS_DIRS",
     "CUDA_HOME",
@@ -147,6 +156,7 @@ def run_command(
     shell: bool = True,
     env: Optional[dict[str, str]] = None,
     fix_paths: bool = True,
+    system_telemetry_path: Path | None = None,
 ) -> str:
     if fix_paths and get_os() == "windows":
         if isinstance(command, str):
@@ -173,17 +183,34 @@ def run_command(
         env=env,
     )
     assert process.stdout is not None
+    system_sampler: SystemTelemetrySampler | None = None
+    if system_telemetry_path is not None:
+        try:
+            system_sampler = SystemTelemetrySampler(process.pid)
+            system_sampler.start()
+        except Exception as exc:
+            print(f"WARNING: Cannot start system telemetry: {exc}")
+            system_sampler = None
 
     out = ""
-    while True:
-        nextline = process.stdout.readline()
-        if nextline == "" and process.poll() is not None:
-            break
-        sys.stdout.write(nextline)
-        sys.stdout.flush()
-        out += nextline
+    try:
+        while True:
+            nextline = process.stdout.readline()
+            if nextline == "" and process.poll() is not None:
+                break
+            sys.stdout.write(nextline)
+            sys.stdout.flush()
+            out += nextline
 
-    process.communicate()
+        process.communicate()
+    finally:
+        if system_sampler is not None:
+            try:
+                system_sampler.stop()
+                assert system_telemetry_path is not None
+                system_sampler.write(system_telemetry_path)
+            except Exception as exc:
+                print(f"WARNING: Cannot write system telemetry: {exc}")
     if process.returncode != 0:
         raise CommandError(display_command, process.returncode, out)
 
@@ -282,22 +309,25 @@ def cpp_test_command(args: Any) -> list[str]:
 
 
 def python_test_command(args: Any) -> list[str]:
+    workers = int(getattr(args, "pytest_workers", 4))
     command = [
         "pytest",
         "./tests/python",
         "-vra",
         "-n",
-        "4",
-        "--maxprocesses=4",
+        str(workers),
+        f"--maxprocesses={workers}",
         "--junit-xml=reports/pytest-junit.xml",
+        "--telemetry",
+        "--telemetry-output=reports/test-telemetry.json",
         "--slow",
+        "--device-cache-policy",
+        args.device_cache_policy,
         "--module-cache" if args.module_cache else "--no-module-cache",
         "--shader-cache" if args.shader_cache else "--no-shader-cache",
     ]
     if args.module_and_shader_cache_dir is not None:
         command.append(f"--module-and-shader-cache-dir={args.module_and_shader_cache_dir}")
-    if args.config.lower() == "release":
-        command.append("--image-tests")
     return command
 
 
@@ -341,15 +371,30 @@ def typing_check_python(args: Any):
 
 def unit_test_python(args: Any):
     os.makedirs("reports", exist_ok=True)
+    DEFAULT_SYSTEM_TELEMETRY_OUTPUT_PATH.unlink(missing_ok=True)
+    Path("reports/test-telemetry.json").unlink(missing_ok=True)
     if "crashpad" in args.flags:
         crashpad.setup("python")
+
+    report_enabled = args.config.lower() == "release"
+    report_root = Path("reports/image-tests")
+    test_env: dict[str, str] = {}
+    if "crashpad" in args.flags:
+        test_env["FALCOR_CRASHPAD_DEFER_REPORT"] = "1"
+    if report_enabled:
+        if report_root.exists():
+            shutil.rmtree(report_root)
+        raw_report_dir = report_root / "raw"
+        raw_report_dir.mkdir(parents=True)
+        test_env["FALCOR_IMAGE_TEST_REPORT_DIR"] = str(raw_report_dir.resolve())
 
     error: Optional[CommandError] = None
     try:
         run_command(
             python_test_command(args),
             shell=False,
-            env={"FALCOR_CRASHPAD_DEFER_REPORT": "1"} if "crashpad" in args.flags else None,
+            env=test_env or None,
+            system_telemetry_path=DEFAULT_SYSTEM_TELEMETRY_OUTPUT_PATH,
         )
     except CommandError as exc:
         error = exc
@@ -357,8 +402,32 @@ def unit_test_python(args: Any):
         if "crashpad" in args.flags:
             crashpad.report("python")
 
+    report_error: Optional[CommandError] = None
+    if report_enabled:
+        report_command = [
+            "python",
+            "tools/image_test_report.py",
+            "--input",
+            str(report_root / "raw"),
+            "--output",
+            str(report_root / "site"),
+            "--test-exit-code",
+            str(error.returncode if error is not None else 0),
+        ]
+        if os.environ.get("CI_JOB_ID"):
+            report_command.append("--upload")
+            if not args.force_image_test_report:
+                report_command.append("--skip-if-no-failures")
+        try:
+            run_command(report_command, shell=False)
+        except CommandError as exc:
+            report_error = exc
+            print(f"Image test report generation failed: {exc}")
+
     if error is not None:
         raise error
+    if report_error is not None:
+        raise report_error
 
 
 # def coverage_report(args: Any):
@@ -394,6 +463,16 @@ def create_parser() -> argparse.ArgumentParser:
         help="Root directory for persistent unit-test caches",
     )
     parser.add_argument(
+        "--device-cache-policy",
+        choices=("session", "file", "test"),
+        help="Recycle Python test devices at session, file, or test boundaries",
+    )
+    parser.add_argument(
+        "--pytest-workers",
+        type=int,
+        help="Number of parallel pytest workers",
+    )
+    parser.add_argument(
         "--use-custom-slang",
         action="store_true",
         default=None,
@@ -416,6 +495,12 @@ def create_parser() -> argparse.ArgumentParser:
         type=str,
         action="store",
         help="Custom slang config, only valid when --use-custom-slang is set.",
+    )
+    parser.add_argument(
+        "--force-image-test-report",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Generate and upload the image test report even when all image tests pass",
     )
 
     commands = parser.add_subparsers(dest="command", required=True, help="sub-command help")
@@ -464,10 +549,13 @@ def main(argv: Optional[Sequence[str]] = None):
         ("module_cache", "CI_MODULE_CACHE", False),
         ("shader_cache", "CI_SHADER_CACHE", True),
         ("module_and_shader_cache_dir", "CI_MODULE_AND_SHADER_CACHE_DIR", None),
+        ("device_cache_policy", "CI_DEVICE_CACHE_POLICY", "file"),
+        ("pytest_workers", "CI_PYTEST_WORKERS", 4),
         ("use_custom_slang", "CI_USE_CUSTOM_SLANG", False),
         ("slang_repository", "CI_SLANG_REPOSITORY", "https://github.com/shader-slang/slang.git"),
         ("slang_branch", "CI_SLANG_BRANCH", "master"),
         ("slang_config", "CI_SLANG_CONFIG", "Release"),
+        ("force_image_test_report", "CI_FORCE_IMAGE_TEST_REPORT", False),
     ]
 
     for var, env_var, default_value in VARS:
@@ -478,9 +566,20 @@ def main(argv: Optional[Sequence[str]] = None):
     args["use_custom_slang"] = parse_bool(args["use_custom_slang"], "CI_USE_CUSTOM_SLANG")
     args["module_cache"] = parse_bool(args["module_cache"], "CI_MODULE_CACHE")
     args["shader_cache"] = parse_bool(args["shader_cache"], "CI_SHADER_CACHE")
+    args["force_image_test_report"] = parse_bool(
+        args["force_image_test_report"], "CI_FORCE_IMAGE_TEST_REPORT"
+    )
     cache_dir = args["module_and_shader_cache_dir"]
     if isinstance(cache_dir, str) and not cache_dir.strip():
         args["module_and_shader_cache_dir"] = None
+    if args["device_cache_policy"] not in ("session", "file", "test"):
+        raise ValueError(
+            f"Invalid CI_DEVICE_CACHE_POLICY: {args['device_cache_policy']!r}. "
+            "Expected one of: session, file, test"
+        )
+    args["pytest_workers"] = int(args["pytest_workers"])
+    if args["pytest_workers"] < 1:
+        raise ValueError("CI_PYTEST_WORKERS must be at least 1")
 
     # Split flags.
     args["flags"] = args["flags"].split(",") if args["flags"] != "" else []

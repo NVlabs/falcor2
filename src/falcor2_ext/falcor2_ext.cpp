@@ -14,10 +14,11 @@ FALCOR_PY_DECLARE(core_signal);
 FALCOR_PY_DECLARE(core_asset_resolver);
 
 FALCOR_PY_DECLARE(render_static_mesh_geometry);
+FALCOR_PY_DECLARE(render_light_sampler);
 FALCOR_PY_DECLARE(render_scene);
 FALCOR_PY_DECLARE(render_ray_tracing_setup);
 FALCOR_PY_DECLARE(render_mdl_discovery);
-FALCOR_PY_DECLARE(render_materialx_codegen);
+FALCOR_PY_DECLARE(render_mtlx_codegen);
 FALCOR_PY_DECLARE(render_texture_manager);
 FALCOR_PY_DECLARE(render_transform);
 
@@ -41,6 +42,7 @@ FALCOR_PY_DECLARE(denoisers_ngx);
 FALCOR_PY_DECLARE(denoisers_ngx_features);
 
 FALCOR_PY_DECLARE(ui_camera_controller);
+FALCOR_PY_DECLARE(ui_property_editor);
 FALCOR_PY_DECLARE(ui_scene_editor);
 FALCOR_PY_DECLARE(ui_scene_interaction_controller);
 FALCOR_PY_DECLARE(ui_scene_picker);
@@ -49,6 +51,7 @@ FALCOR_PY_DECLARE(ui_widgets);
 
 #if FALCOR_BUILD_TESTS
 FALCOR_PY_DECLARE(testing_nanobind_reflector);
+FALCOR_PY_DECLARE(testing_reflection);
 #endif
 
 NB_MODULE(falcor2_ext, m_)
@@ -94,14 +97,16 @@ NB_MODULE(falcor2_ext, m_)
     FALCOR_PY_IMPORT(core_signal);
 
     FALCOR_PY_IMPORT(render_scene);
+    FALCOR_PY_IMPORT(render_light_sampler);
     FALCOR_PY_IMPORT(render_ray_tracing_setup);
     FALCOR_PY_IMPORT(render_mdl_discovery);
     FALCOR_PY_IMPORT(render_static_mesh_geometry);
-    FALCOR_PY_IMPORT(render_materialx_codegen);
+    FALCOR_PY_IMPORT(render_mtlx_codegen);
     FALCOR_PY_IMPORT(render_texture_manager);
     FALCOR_PY_IMPORT(render_transform);
 
     FALCOR_PY_IMPORT(ui_camera_controller);
+    FALCOR_PY_IMPORT(ui_property_editor);
     FALCOR_PY_IMPORT(ui_scene_editor);
     FALCOR_PY_IMPORT(ui_scene_interaction_controller);
     FALCOR_PY_IMPORT(ui_scene_picker);
@@ -110,6 +115,7 @@ NB_MODULE(falcor2_ext, m_)
 
 #if FALCOR_BUILD_TESTS
     FALCOR_PY_IMPORT(testing_nanobind_reflector);
+    FALCOR_PY_IMPORT(testing_reflection);
 #endif
 
     nanobind_falcor2_ext_module.m_free = [](void*)

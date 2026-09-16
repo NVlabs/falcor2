@@ -39,7 +39,10 @@ class CameraMarshall(spybind.Marshall):
     def create_calldata(
         self, context: spybind.BindContext, binding: spybind.BoundVariable, data: Any
     ):
-        return data.get_uniforms()
+        return data
+
+    def create_dispatchdata(self, data: Any):
+        return data
 
     def gen_calldata(
         self,

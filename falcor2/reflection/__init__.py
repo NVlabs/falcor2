@@ -3,12 +3,14 @@
 
 from falcor2.reflection.properties import (
     PythonPropertyInfo,
-    Property,
+    object_factory,
     reflected,
+    reflected_property as reflected_property,
 )
 
 __all__ = [
     "PythonPropertyInfo",
-    "Property",
+    "object_factory",
     "reflected",
+    "reflected_property",
 ]

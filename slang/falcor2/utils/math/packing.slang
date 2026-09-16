@@ -300,6 +300,38 @@ public float3 unpack_r11g11b10(uint packed)
 }
 
 // ----------------------------------------------------------------------------
+// 16-bit unsigned floating point
+// ----------------------------------------------------------------------------
+
+/// Pack a finite non-negative float as an unsigned E8M8 value, rounding upward.
+/// Values that exceed the finite encoding range are encoded as 0xffff.
+/// @param value Finite non-negative float value.
+/// @return Packed value in the low 16 bits.
+public uint pack_ufloat_e8m8_round_up(float value)
+{
+    if (value <= 0.0)
+        return 0;
+
+    const uint bits = asuint(value);
+    uint packed = bits >> 15;
+    if ((bits & 0x7fff) != 0)
+        ++packed;
+    return packed <= 0xfeff ? packed : 0xffff;
+}
+
+/// Unpack an unsigned E8M8 value to float.
+/// Reserved encodings greater than 0xfeff are decoded as the maximum finite float.
+/// @param packed Packed value in the low 16 bits.
+/// @return Unpacked non-negative float value.
+public float unpack_ufloat_e8m8(uint packed)
+{
+    packed &= 0xffff;
+    if (packed > 0xfeff)
+        return float.MAX;
+    return asfloat(packed << 15);
+}
+
+// ----------------------------------------------------------------------------
 // Normal packing in octahedral mapping
 // ----------------------------------------------------------------------------
 

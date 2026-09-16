@@ -190,7 +190,7 @@ def main() -> None:
     pipeline.path_tracer.max_depth = 3
     pipeline.path_tracer.enable_nee = True
     pipeline.path_tracer.enable_mis = True
-    pipeline.path_tracer.env_map_as_background = False
+    pipeline.path_tracer.use_background_color = True
     pipeline.tone_map = True
     pipeline.output_spec = ContainerSpec.torch(format=spy.Format.rgba32_float)
     pipeline.spp = 16
@@ -217,7 +217,7 @@ def main() -> None:
 
     while editor.update(scene, camera):
         if editor.needs_render:
-            image = pipeline(scene, camera)
+            image = pipeline(scene, camera, delta_time=editor.dt)
             editor.present(viewer.process(image))
 
 

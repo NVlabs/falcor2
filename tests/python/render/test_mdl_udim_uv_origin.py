@@ -13,7 +13,6 @@ import slangpy as spy
 
 import falcor2 as f2
 import falcor2.testing.helpers as helpers
-from falcor2.importers import import_scene
 from falcor2.rendergraph import ContainerSpec
 from falcor2.rendernodes import ReferencePathTracerNode
 
@@ -104,8 +103,8 @@ MANUAL_QUAD_CASES = [
 
 
 def test_udim_test_assets_have_expected_imported_uvs() -> None:
-    usd_scene = import_scene(USD_SCENE_PATH)
-    glb_scene = import_scene(GLB_SCENE_PATH)
+    usd_scene = f2.import_scene(USD_SCENE_PATH)
+    glb_scene = f2.import_scene(GLB_SCENE_PATH)
     assert usd_scene is not None
     assert glb_scene is not None
 
@@ -300,7 +299,7 @@ def test_mdl_udim_manual_quad_uses_recorded_origin_conventions(
     importer_scene.root_nodes = [0]
     importer_scene.calculate_aabbs()
 
-    scene = f2.Scene.create(device, importer_scene)
+    scene = f2.Scene.from_importer_scene(device, importer_scene)
     scene.update()
     camera = helpers.create_test_camera(
         scene,

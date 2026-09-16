@@ -5,6 +5,7 @@
 
 #include "falcor2/denoisers/optix_denoiser.h"
 
+#include <sgl/device/command.h>
 #include <sgl/device/device.h>
 #include <sgl/device/resource.h>
 
@@ -25,7 +26,7 @@ FALCOR_PY_EXPORT(denoisers_optix_denoiser)
         .DEF_RW(OptixDenoiserDesc, max_width)
         .DEF_RW(OptixDenoiserDesc, max_height);
 
-    nb::class_<OptixDenoiser>(m, "OptixDenoiser", D(OptixDenoiser))
+    nb::class_<OptixDenoiser, Object>(m, "OptixDenoiser", D(OptixDenoiser))
         .def(
             nb::init<ref<sgl::Device>, const OptixDenoiserDesc&>(),
             "device"_a,
@@ -34,11 +35,28 @@ FALCOR_PY_EXPORT(denoisers_optix_denoiser)
         )
         .def(
             "denoise",
-            &OptixDenoiser::denoise,
+            nb::overload_cast<
+                const DenoiserParams&,
+                const DenoiserGuideLayer&,
+                std::span<DenoiserLayer>,
+                sgl::NativeHandle>(&OptixDenoiser::denoise),
             "params"_a,
             "guide_layer"_a,
             "layers"_a,
             "cuda_stream"_a = sgl::NativeHandle{},
+            D(OptixDenoiser, denoise)
+        )
+        .def(
+            "denoise",
+            nb::overload_cast<
+                const DenoiserParams&,
+                const DenoiserGuideLayer&,
+                std::span<DenoiserLayer>,
+                sgl::CommandEncoder*>(&OptixDenoiser::denoise),
+            "params"_a,
+            "guide_layer"_a,
+            "layers"_a,
+            "command_encoder"_a,
             D(OptixDenoiser, denoise)
         )
         .def(
