@@ -20,7 +20,7 @@ void EmissionOnlyMaterial::set_enable_color_temperature(bool enable_color_temper
 {
     if (enable_color_temperature != m_enable_color_temperature) {
         m_enable_color_temperature = enable_color_temperature;
-        mark_dirty_properties();
+        mark_dirty_emission_properties();
     }
 }
 
@@ -29,7 +29,7 @@ void EmissionOnlyMaterial::set_color_temperature(float color_temperature)
     color_temperature = std::clamp(color_temperature, MIN_COLOR_TEMPERATURE, MAX_COLOR_TEMPERATURE);
     if (color_temperature != m_color_temperature) {
         m_color_temperature = color_temperature;
-        mark_dirty_properties();
+        mark_dirty_emission_properties();
     }
 }
 
@@ -42,7 +42,7 @@ void EmissionOnlyMaterial::on_load_resources()
     } else if (!m_emission_color_texture_path.empty()) {
         m_emission_color_texture_handle = m_scene->texture_manager()->load_texture({
             .path = m_emission_color_texture_path,
-            .srgb = true,
+            .flags = TextureLoadFlags::color,
             .load_deferred = true,
         });
     } else {

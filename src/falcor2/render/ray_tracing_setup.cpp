@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "falcor2/render/ray_tracing_setup.h"
-
 #include "falcor2/render/scene.h"
 
 #include "falcor2/core/error.h"
@@ -13,9 +12,16 @@ namespace falcor {
 
 static constexpr const char* DUMMY_HIT_GROUP_NAME = "__dummy_hit_group";
 
-SceneRayTracingSetup
-SceneRayTracingSetup::create(const Scene* scene, std::span<const RayDesc> ray_descs, std::optional<Options> options)
+SceneRayTracingSetup SceneRayTracingSetup::create(
+    const Scene* scene,
+    std::span<const RayDesc> ray_descs,
+    const SceneRequirements* requirements,
+    std::optional<Options> options
+)
 {
+    FALCOR_CHECK_NOT_NULL(scene);
+    if (!requirements)
+        requirements = scene->requirements();
     // Convert RayDesc to PerGeometryTypeRayDesc with empty hit groups, then call the main create function.
     std::vector<PerGeometryTypeRayDesc> per_geom_descs;
     per_geom_descs.reserve(ray_descs.size());
@@ -25,6 +31,7 @@ SceneRayTracingSetup::create(const Scene* scene, std::span<const RayDesc> ray_de
         return fmt::format("_scene_{}_{}", ray_type_name, suffix);
     };
 
+    const LSSIntersectionMode lss_intersection_mode = requirements->lss_intersection_mode;
     for (const RayDesc& ray_desc : ray_descs) {
         PerGeometryTypeRayDesc per_geom_desc;
 
@@ -43,8 +50,7 @@ SceneRayTracingSetup::create(const Scene* scene, std::span<const RayDesc> ray_de
         }
 
         // LSS hit group.
-        switch (scene->_render_scene()->lss_mode()) {
-        case RenderLSSMode::hardware: {
+        if (lss_intersection_mode == LSSIntersectionMode::hardware) {
             sgl::HitGroupDesc lss_hit_group_desc{
                 .hit_group_name = entry_point_name(ray_desc.name, "lss_hit_group"),
                 .closest_hit_entry_point
@@ -52,9 +58,7 @@ SceneRayTracingSetup::create(const Scene* scene, std::span<const RayDesc> ray_de
                 .any_hit_entry_point = ray_desc.has_any_hit ? entry_point_name(ray_desc.name, "lss_any_hit") : "",
             };
             per_geom_desc.hit_groups[shared::GeometryType::lss] = lss_hit_group_desc;
-            break;
-        }
-        case RenderLSSMode::procedural: {
+        } else {
             sgl::HitGroupDesc lss_hit_group_desc{
                 .hit_group_name = entry_point_name(ray_desc.name, "lss_hit_group"),
                 .closest_hit_entry_point
@@ -64,8 +68,19 @@ SceneRayTracingSetup::create(const Scene* scene, std::span<const RayDesc> ray_de
                 .intersection_entry_point = "procedural_lss_intersection",
             };
             per_geom_desc.hit_groups[shared::GeometryType::lss] = lss_hit_group_desc;
-            break;
         }
+
+        // Analytic area-light hit group.
+        {
+            sgl::HitGroupDesc hit_group_desc{
+                .hit_group_name = entry_point_name(ray_desc.name, "area_light_hit_group"),
+                .closest_hit_entry_point
+                = ray_desc.has_closest_hit ? entry_point_name(ray_desc.name, "area_light_closest_hit") : "",
+                .any_hit_entry_point
+                = ray_desc.has_any_hit ? entry_point_name(ray_desc.name, "area_light_any_hit") : "",
+                .intersection_entry_point = "area_light_intersection",
+            };
+            per_geom_desc.hit_groups[shared::GeometryType::area_light] = hit_group_desc;
         }
         per_geom_descs.push_back(std::move(per_geom_desc));
     }
@@ -73,6 +88,7 @@ SceneRayTracingSetup::create(const Scene* scene, std::span<const RayDesc> ray_de
     return create(
         scene,
         std::span<const PerGeometryTypeRayDesc>(per_geom_descs.data(), per_geom_descs.size()),
+        requirements,
         options
     );
 }
@@ -80,11 +96,16 @@ SceneRayTracingSetup::create(const Scene* scene, std::span<const RayDesc> ray_de
 SceneRayTracingSetup SceneRayTracingSetup::create(
     const Scene* scene,
     std::span<const PerGeometryTypeRayDesc> ray_descs,
+    const SceneRequirements* requirements,
     std::optional<Options> options_
 )
 {
+    FALCOR_CHECK_NOT_NULL(scene);
+    if (!requirements)
+        requirements = scene->requirements();
+    sgl::Device* device = scene->device();
     Options options = options_.value_or(Options{});
-    const HitGroupPolicy& policy = scene->hit_group_policy();
+    const HitGroupPolicy& policy = requirements->hit_group_policy;
 
     FALCOR_CHECK(policy.mode == HitGroupPolicy::Mode::per_geometry_type, "Only per_geometry_type mode is supported.");
     FALCOR_CHECK(!ray_descs.empty(), "ray_descs must not be empty.");
@@ -95,15 +116,10 @@ SceneRayTracingSetup SceneRayTracingSetup::create(
 
     SceneRayTracingSetup result;
 
-    // Determine which geometry types are active in the scene for pipeline flags.
-    bool has_lss = scene->_render_scene()->has_geometry_type(shared::GeometryType::lss);
-    RenderLSSMode lss_mode = scene->_render_scene()->lss_mode();
-    result.pipeline_flags = (has_lss && lss_mode == RenderLSSMode::hardware)
-        ? sgl::RayTracingPipelineFlags::enable_linear_swept_spheres
-        : sgl::RayTracingPipelineFlags::none;
+    result.pipeline_flags = requirements->ray_tracing_pipeline_flags;
 
     if (is_set(result.pipeline_flags, sgl::RayTracingPipelineFlags::enable_linear_swept_spheres)
-        && !scene->device()->has_feature(sgl::Feature::acceleration_structure_linear_swept_spheres))
+        && !device->has_feature(sgl::Feature::acceleration_structure_linear_swept_spheres))
         FALCOR_THROW("Scene requires hardware LSS but device lacks support.");
 
     // Collect unique entry point names (avoid duplicates).
@@ -122,7 +138,12 @@ SceneRayTracingSetup SceneRayTracingSetup::create(
     static constexpr shared::GeometryType geometry_types[] = {
         shared::GeometryType::triangle,
         shared::GeometryType::lss,
+        shared::GeometryType::area_light,
     };
+    FALCOR_CHECK(
+        policy.geometry_type_count <= std::size(geometry_types),
+        "Hit-group policy includes unsupported geometry types."
+    );
 
     // Process each ray type required by the policy.
     // Ray types beyond what the user provided get dummy (empty) entries.
@@ -152,7 +173,7 @@ SceneRayTracingSetup SceneRayTracingSetup::create(
                 shared::GeometryType geom_type = geometry_types[gt];
 
                 // Skip geometry types not present in the scene if requested.
-                if (options.skip_unused_geometry_types && !scene->has_geometry_type(geom_type)) {
+                if (options.skip_unused_geometry_types && !requirements->has_geometry_type(geom_type)) {
                     sbt_names[rt][gt] = DUMMY_HIT_GROUP_NAME;
                     needs_dummy_hit_group = true;
                     continue;
@@ -164,8 +185,9 @@ SceneRayTracingSetup SceneRayTracingSetup::create(
                     const sgl::HitGroupDesc& found = it->second;
 
                     // Patch intersection entry point for LSS if using hardware LSS on CUDA.
-                    if (geom_type == shared::GeometryType::lss && lss_mode == RenderLSSMode::hardware
-                        && scene->device()->type() == sgl::DeviceType::cuda) {
+                    if (geom_type == shared::GeometryType::lss
+                        && requirements->lss_intersection_mode == LSSIntersectionMode::hardware
+                        && device->type() == sgl::DeviceType::cuda) {
                         sgl::HitGroupDesc patched = found;
                         patched.intersection_entry_point = "__builtin_intersection__linear_swept_spheres";
                         result.hit_groups.push_back(patched);

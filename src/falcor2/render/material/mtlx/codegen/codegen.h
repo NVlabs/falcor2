@@ -9,9 +9,11 @@
 namespace falcor {
 namespace mtlx {
 
+class CodeGenCache;
+
 class FALCOR_API CodeGen {
 public:
-    static std::unique_ptr<CodeGenResult> generate(const CodeGenDesc& desc);
+    static std::unique_ptr<CodeGenResult> generate(const CodeGenDesc& desc, CodeGenCache* cache = nullptr);
     static std::vector<RenderableElement> discover_renderable_elements(const CodeGenDesc& desc);
 };
 

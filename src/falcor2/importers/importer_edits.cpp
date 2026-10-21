@@ -42,7 +42,8 @@ bool has_scene_content(const ImporterScene& scene)
 {
     return !scene.materials.empty() || !scene.assets.empty() || !scene.textures.empty() || !scene.meshes.empty()
         || !scene.curves.empty() || !scene.nodes.empty() || !scene.cameras.empty() || !scene.lights.empty()
-        || !scene.prototypes.empty() || !scene.root_nodes.empty() || !scene.animation.channels.empty();
+        || !scene.skins.empty() || !scene.prototypes.empty() || !scene.root_nodes.empty()
+        || !scene.animation.channels.empty();
 }
 
 template<typename T>
@@ -57,12 +58,18 @@ void append_imported_scene(ImporterScene& destination, ImporterScene& source)
     if (!has_scene_content(destination)) {
         destination.uv_origin = source.uv_origin;
     }
+    if (source.max_mip_count)
+        destination.max_mip_count = destination.max_mip_count
+            ? std::min(destination.max_mip_count, source.max_mip_count)
+            : source.max_mip_count;
 
+    const size_t material_offset = destination.materials.size();
     const size_t mesh_offset = destination.meshes.size();
     const size_t curve_offset = destination.curves.size();
     const size_t node_offset = destination.nodes.size();
     const size_t camera_offset = destination.cameras.size();
     const size_t light_offset = destination.lights.size();
+    const size_t skin_offset = destination.skins.size();
     const size_t prototype_offset = destination.prototypes.size();
     const size_t animation_channel_offset = destination.animation.channels.size();
 
@@ -73,6 +80,7 @@ void append_imported_scene(ImporterScene& destination, ImporterScene& source)
     destination.curves.reserve(destination.curves.size() + source.curves.size());
     destination.cameras.reserve(destination.cameras.size() + source.cameras.size());
     destination.lights.reserve(destination.lights.size() + source.lights.size());
+    destination.skins.reserve(destination.skins.size() + source.skins.size());
     destination.prototypes.reserve(destination.prototypes.size() + source.prototypes.size());
     destination.animation.channels.reserve(destination.animation.channels.size() + source.animation.channels.size());
     destination.nodes.reserve(destination.nodes.size() + source.nodes.size());
@@ -81,14 +89,32 @@ void append_imported_scene(ImporterScene& destination, ImporterScene& source)
     append_move(destination.materials, source.materials);
     append_move(destination.assets, source.assets);
     append_move(destination.textures, source.textures);
-    append_move(destination.meshes, source.meshes);
-    append_move(destination.curves, source.curves);
     append_move(destination.cameras, source.cameras);
     append_move(destination.lights, source.lights);
+
+    for (ImporterMesh& mesh : source.meshes) {
+        for (auto& subgeometry : mesh.subgeometries) {
+            subgeometry.material_index = remap_index(subgeometry.material_index, material_offset, "mesh material");
+        }
+        destination.meshes.push_back(std::move(mesh));
+    }
+
+    for (ImporterCurve& curve : source.curves) {
+        curve.material_index = remap_index(curve.material_index, material_offset, "curve material");
+        destination.curves.push_back(std::move(curve));
+    }
+
+    for (ImporterSkin& skin : source.skins) {
+        skin.skeleton_root = remap_index(skin.skeleton_root, node_offset, "skin skeleton root");
+        for (int& joint : skin.joints)
+            joint = remap_index(joint, node_offset, "skin joint");
+        destination.skins.push_back(std::move(skin));
+    }
 
     // Apply source animation if we don't aleady have one.
     if (animation_channel_offset == 0 && !source.animation.channels.empty()) {
         destination.animation.name = source.animation.name;
+        destination.animation.source_asset_ref = source.animation.source_asset_ref;
     }
     append_move(destination.animation.channels, source.animation.channels);
 
@@ -99,6 +125,7 @@ void append_imported_scene(ImporterScene& destination, ImporterScene& source)
 
     for (auto& node : source.nodes) {
         node.mesh_index = remap_index(node.mesh_index, mesh_offset, "node mesh");
+        node.skin_index = remap_index(node.skin_index, skin_offset, "node skin");
         node.curve_index = remap_index(node.curve_index, curve_offset, "node curve");
         node.light_index = remap_index(node.light_index, light_offset, "node light");
         node.camera_index = remap_index(node.camera_index, camera_offset, "node camera");
@@ -216,6 +243,7 @@ void SetEnvironmentEdit::apply(ImporterBuildContext& context) const
         ImporterLight light;
         light.name = m_name;
         light.type = ImporterLight::Type::dome;
+        light.properties = ImporterLight::make_properties({}, light.type);
         light.env_map_path = resolved_path.string();
         light.exposure = m_exposure;
         light_index = static_cast<int>(context.scene->lights.size());

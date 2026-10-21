@@ -1,0 +1,209 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+mdl 1.10;
+import ::df::*;
+import ::math::*;
+import ::scene::*;
+import ::state::*;
+import ::tex::*;
+
+export material Diffuse(uniform color radiance = color(0)) = material(
+    surface: material_surface(emission: material_emission(
+        emission: df::diffuse_edf(), intensity: radiance * math::PI
+    ))
+);
+
+export material Missing() = material();
+
+export material Direct(uniform color radiance = color(0)) = material(
+    surface: material_surface(emission: material_emission(
+        emission: df::diffuse_edf(), intensity: radiance
+    ))
+);
+
+export material Scaled(
+    uniform color radiance = color(1),
+    uniform float strength = 1.0,
+    uniform color tint = color(1)
+) = material(
+    surface: material_surface(emission: material_emission(
+        emission: df::diffuse_edf(), intensity: radiance * strength * tint * math::PI
+    ))
+);
+
+// A black parameter inside a sum does not prove that the sum is black.
+export material Additive(uniform color radiance = color(0)) = material(
+    surface: material_surface(emission: material_emission(
+        emission: df::diffuse_edf(), intensity: (radiance + color(1)) * math::PI
+    ))
+);
+
+export material TypedControls(
+    uniform bool enabled = true,
+    uniform int level = 2,
+    uniform float strength = 1.0
+) = material(
+    surface: material_surface(emission: material_emission(
+        emission: df::diffuse_edf(),
+        intensity: (enabled ? color(float(level - 2) * strength * strength) : color(0)) * math::PI
+    ))
+);
+
+// Shading dependencies outside intensity must not force discovery to evaluate shared init.
+export material UnrelatedShading(uniform color radiance = color(0)) = material(
+    surface: material_surface(
+        scattering: df::diffuse_reflection_bsdf(
+            tint: color(state::texture_coordinate(0)) + scene::data_lookup_color("COLOR_0", color(0))
+        ),
+        emission: material_emission(
+            emission: df::diffuse_edf(), intensity: (radiance + color(1)) * math::PI
+        )
+    ),
+    geometry: material_geometry(normal: math::normalize(state::normal() + float3(0.1, 0, 0)))
+);
+
+export material UvEmission() = material(
+    surface: material_surface(emission: material_emission(
+        emission: df::diffuse_edf(), intensity: color(state::texture_coordinate(0).x) * math::PI
+    ))
+);
+
+// The enabled branch is black at a zero-initialized shading state, but emits elsewhere.
+export material ConditionalSpatial(uniform bool nighttime = false, uniform int level = 1) = material(
+    surface: material_surface(emission: material_emission(
+        emission: df::diffuse_edf(),
+        intensity: (nighttime && level > 0 ? color(state::texture_coordinate(0).x) : color(0)) * math::PI
+    ))
+);
+
+export material ConditionalSpatialReverse(uniform bool nighttime = false, uniform int level = 1) = material(
+    surface: material_surface(emission: material_emission(
+        emission: df::diffuse_edf(),
+        intensity: (nighttime && level > 0 ? color(0) : color(state::texture_coordinate(0).x)) * math::PI
+    ))
+);
+
+export material SharedConditionalSpatial(uniform bool enabled = true) = let {
+    color e0 = enabled ? color(state::texture_coordinate(0).x) : color(0);
+    color e1 = e0 * e0;
+    color e2 = e1 * e1;
+    color e3 = e2 * e2;
+} in material(
+    surface: material_surface(emission: material_emission(
+        emission: df::diffuse_edf(), intensity: e3
+    ))
+);
+
+export material SceneConditional() = material(
+    surface: material_surface(emission: material_emission(
+        emission: df::diffuse_edf(),
+        intensity: math::luminance(scene::data_lookup_uniform_color("COLOR_0", color(0))) > 0.5 ? color(1) : color(0)
+    ))
+);
+
+export material StateConditional() = material(
+    surface: material_surface(emission: material_emission(
+        emission: df::diffuse_edf(),
+        intensity: state::texture_coordinate(0).x > 0.5 ? color(1) : color(0)
+    ))
+);
+
+export material PositionEmission() = material(
+    surface: material_surface(emission: material_emission(
+        emission: df::diffuse_edf(), intensity: color(state::position().x) * math::PI
+    ))
+);
+
+export material ObjectEmission() = material(
+    surface: material_surface(emission: material_emission(
+        emission: df::diffuse_edf(), intensity: color(float(state::object_id())) * math::PI
+    ))
+);
+
+export material UniformSceneEmission() = material(
+    surface: material_surface(emission: material_emission(
+        emission: df::diffuse_edf(),
+        intensity: scene::data_lookup_uniform_color("COLOR_0", color(0)) * math::PI
+    ))
+);
+
+export material FixedTexture(uniform texture_2d map = texture_2d()) = material(
+    surface: material_surface(emission: material_emission(
+        emission: df::diffuse_edf(),
+        intensity: (tex::texture_isvalid(map) ? tex::lookup_color(map, float2(0.25, 0.5)) : color(0)) * math::PI
+    ))
+);
+
+// Empty EDF with nonzero intensity must not enter emissive triangle allocation.
+export material EmptyEdf() = material(
+    surface: material_surface(emission: material_emission(
+        emission: edf(), intensity: color(1)
+    ))
+);
+
+export material ConstantBlack() = material(
+    surface: material_surface(emission: material_emission(
+        emission: df::diffuse_edf(), intensity: color(0)
+    ))
+);
+
+// A single nonzero channel, however dim, must remain a potential emitter.
+export material ConstantDim() = material(
+    surface: material_surface(emission: material_emission(
+        emission: df::diffuse_edf(), intensity: color(0, 1e-8, 0)
+    ))
+);
+
+// User-defined material types can follow the standard surface convention.
+export declarative struct custom_material in material_category {
+    material_surface surface = material_surface();
+};
+
+export custom_material Custom(uniform color radiance = color(0)) = custom_material(
+    surface: material_surface(emission: material_emission(
+        emission: df::diffuse_edf(), intensity: radiance * math::PI
+    ))
+);
+
+// No surface or emission fields: the adapter must not request those callables.
+export declarative struct scattering_material in material_category {
+    bsdf scattering = bsdf();
+};
+
+export scattering_material CustomMissing() = scattering_material();
+
+export custom_material CustomPower() = custom_material(
+    surface: material_surface(emission: material_emission(
+        emission: df::diffuse_edf(), intensity: color(1), mode: intensity_power
+    ))
+);
+
+export material Textured(
+    uniform texture_2d map = texture_2d(),
+    uniform color fallback = color(0),
+    uniform color radiance = color(1),
+    uniform float strength = 1.0,
+    uniform int uv = 0,
+    uniform float2 offset = float2(0)
+) = material(
+    surface: material_surface(emission: material_emission(
+        emission: df::diffuse_edf(),
+        intensity: radiance * strength * math::PI * (tex::texture_isvalid(map)
+            ? tex::lookup_color(map, float2(state::texture_coordinate(uv).x, state::texture_coordinate(uv).y) + offset)
+            : fallback)
+    ))
+);
+
+export material VertexColour() = material(
+    surface: material_surface(emission: material_emission(
+        emission: df::diffuse_edf(),
+        intensity: scene::data_lookup_color("COLOR_0", color(0)) * math::PI
+    ))
+);
+
+export material Power() = material(
+    surface: material_surface(emission: material_emission(
+        emission: df::diffuse_edf(), intensity: color(1), mode: intensity_power
+    ))
+);

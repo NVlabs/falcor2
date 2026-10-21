@@ -13,9 +13,127 @@
 #include <sgl/device/shader.h>
 #include <sgl/device/shader_cursor.h>
 
+#include <array>
+#include <bit>
 #include <cmath>
 
 namespace falcor {
+
+namespace {
+
+struct RenderAreaLightInstanceData {
+    shared::LightID light_id;
+    bool geometry_visible{false};
+};
+
+shared::GeometryInstanceDescPayload get_area_light_instance_payload(const RenderAreaLightInstanceData& data)
+{
+    shared::AreaLightGeometryInstanceDesc desc = {};
+    desc.light_id = data.light_id;
+    desc.flags = data.geometry_visible ? shared::AreaLightGeometryFlags::visible : shared::AreaLightGeometryFlags::none;
+    return std::bit_cast<shared::GeometryInstanceDesc>(desc).payload;
+}
+
+uint8_t get_area_light_instance_mask(const RenderAreaLightInstanceData& data)
+{
+    uint8_t instance_mask = shared::INSTANCE_MASK_BIT_AREA_LIGHT;
+    if (data.geometry_visible)
+        instance_mask |= shared::INSTANCE_MASK_BIT_AREA_LIGHT_VISIBLE;
+    return instance_mask;
+}
+
+float4x4 get_area_light_proxy_transform(const Light* light)
+{
+    enum class ProxyShape {
+        planar,
+        sphere,
+        cylinder,
+    };
+
+    const float4x4 world_from_light = light->entity()->world_from_object_matrix();
+    const float3 center_ws = world_from_light.get_col(3).xyz();
+    float3 half_axis_u_ws = {};
+    float3 half_axis_v_ws = {};
+    float3 half_axis_w_ws = {};
+    ProxyShape shape = ProxyShape::planar;
+
+    if (const SphereLight* sphere = dynamic_cast<const SphereLight*>(light)) {
+        shape = ProxyShape::sphere;
+        const float radius = sphere->world_radius();
+        half_axis_u_ws = float3(radius, 0.f, 0.f);
+        half_axis_v_ws = float3(0.f, radius, 0.f);
+        half_axis_w_ws = float3(0.f, 0.f, radius);
+    } else if (const CylinderLight* cylinder = dynamic_cast<const CylinderLight*>(light)) {
+        shape = ProxyShape::cylinder;
+        const CylinderLightWorldGeometry geometry = cylinder->world_geometry();
+        half_axis_u_ws = geometry.half_length_ws * geometry.axis_ws;
+        half_axis_v_ws = geometry.radius_u_ws;
+        half_axis_w_ws = geometry.radius_v_ws;
+    } else if (const DiskLight* disk = dynamic_cast<const DiskLight*>(light)) {
+        half_axis_u_ws = disk->radius() * world_from_light.get_col(0).xyz();
+        half_axis_v_ws = disk->radius() * world_from_light.get_col(1).xyz();
+    } else if (const RectLight* rect = dynamic_cast<const RectLight*>(light)) {
+        half_axis_u_ws = 0.5f * rect->width() * world_from_light.get_col(0).xyz();
+        half_axis_v_ws = 0.5f * rect->height() * world_from_light.get_col(1).xyz();
+    } else {
+        FALCOR_THROW("Area light type '{}' has no geometry transform implementation.", light->slang_type_name());
+    }
+
+    const float3 extent_ws = abs(half_axis_u_ws) + abs(half_axis_v_ws) + abs(half_axis_w_ws);
+    const float magnitude = std::max({
+        1.f,
+        std::abs(center_ws.x),
+        std::abs(center_ws.y),
+        std::abs(center_ws.z),
+        extent_ws.x,
+        extent_ws.y,
+        extent_ws.z,
+    });
+    const float padding = 1e-5f * magnitude;
+
+    // The shared procedural geometry is the canonical [-1, 1]^3 AABB. Its instance transform must conservatively
+    // contain the light and remain invertible, including for degenerate lights.
+    const auto use_axis_aligned_proxy = [&]()
+    {
+        half_axis_u_ws = float3(std::max(extent_ws.x, padding), 0.f, 0.f);
+        half_axis_v_ws = float3(0.f, std::max(extent_ws.y, padding), 0.f);
+        half_axis_w_ws = float3(0.f, 0.f, std::max(extent_ws.z, padding));
+    };
+
+    switch (shape) {
+    case ProxyShape::sphere: {
+        const float radius = std::max(length(half_axis_w_ws), padding);
+        half_axis_u_ws = float3(radius, 0.f, 0.f);
+        half_axis_v_ws = float3(0.f, radius, 0.f);
+        half_axis_w_ws = float3(0.f, 0.f, radius);
+        break;
+    }
+    case ProxyShape::cylinder:
+        if (length(half_axis_u_ws) <= padding || length(half_axis_v_ws) <= padding
+            || length(half_axis_w_ws) <= padding) {
+            use_axis_aligned_proxy();
+        }
+        break;
+    case ProxyShape::planar: {
+        const float3 area_vector = cross(half_axis_u_ws, half_axis_v_ws);
+        if (length(area_vector) > padding * padding) {
+            half_axis_w_ws = normalize(area_vector) * padding;
+        } else {
+            use_axis_aligned_proxy();
+        }
+        break;
+    }
+    }
+
+    float4x4 transform = float4x4::identity();
+    transform.set_col(0, float4(half_axis_u_ws, 0.f));
+    transform.set_col(1, float4(half_axis_v_ws, 0.f));
+    transform.set_col(2, float4(half_axis_w_ws, 0.f));
+    transform.set_col(3, float4(center_ws, 1.f));
+    return transform;
+}
+
+} // namespace
 
 LightSystem::LightSystem(Scene* scene)
     : SceneSystem{scene}
@@ -30,6 +148,7 @@ LightSystem::LightSystem(Scene* scene)
         {"ILight", "EnvMapLight"},
         {"ILight", "PointLight"},
         {"ILight", "SphereLight"},
+        {"ILight", "CylinderLight"},
         {"ILight", "DiskLight"},
         {"ILight", "RectLight"},
     };
@@ -45,6 +164,102 @@ void LightSystem::create_kernels()
         .program
         = m_scene->device()->link_program({module}, {module->entry_point("compute_light_powers", m_type_conformances)}),
     });
+}
+
+void LightSystem::sync_area_light_geometry()
+{
+    RenderScene* render_scene = m_scene->_render_scene();
+
+    // Mark all existing area light geometry instances as unseen.
+    for (auto& [_, instance] : m_area_light_geometry_instances)
+        instance.seen = false;
+
+    // Iterate over all lights and update or create area light geometry instances as needed.
+    for (size_t i = 0; i < m_components.size(); ++i) {
+        const Light* light = m_components[i]->as<Light>();
+        if (!light || !light->is_valid() || !light->active() || !is_set(light->light_flags(), shared::LightFlags::area))
+            continue;
+
+        // Create the area light geometry if they don't already exist.
+        if (!m_area_light_geometry) {
+            m_area_light_geometry = render_scene->create_area_light_geometry({});
+            std::array<RenderHandle, 1> geometries{m_area_light_geometry};
+            m_area_light_geometry_group = render_scene->create_geometry_group({.geometries = geometries});
+        }
+
+        const shared::LightID light_id = light->light_id();
+        const bool geometry_visible = light->geometry_visible();
+        const RenderAreaLightInstanceData instance_data{
+            .light_id = light_id,
+            .geometry_visible = geometry_visible,
+        };
+
+        // Find or create the area light geometry instance for this light.
+        auto instance_it = m_area_light_geometry_instances.find(light);
+        if (instance_it == m_area_light_geometry_instances.end()) {
+            const float4x4 transform = get_area_light_proxy_transform(light);
+            const RenderTransformHandle render_transform
+                = render_scene->create_transform({.world_from_object = transform});
+            const RenderGeometryInstanceHandle geometry_instance = render_scene->create_geometry_instance({
+                .geometry_group = m_area_light_geometry_group,
+                .transform = render_transform,
+                .payload_override = get_area_light_instance_payload(instance_data),
+                .instance_mask = get_area_light_instance_mask(instance_data),
+            });
+            m_area_light_geometry_instances.emplace(
+                light,
+                AreaLightGeometryInstance{
+                    geometry_instance,
+                    render_transform,
+                    transform,
+                    true,
+                }
+            );
+            continue;
+        }
+
+        // Update the existing area light geometry instance with the new transform and instance data.
+        AreaLightGeometryInstance& instance = instance_it->second;
+        instance.seen = true;
+        // Another light may have triggered this sync, so reuse the cached proxy for unchanged lights.
+        if (m_components.dirty_flags()[i] != Component::DirtyFlags::none) {
+            const float4x4 transform = get_area_light_proxy_transform(light);
+            if (instance.proxy_transform != transform) {
+                render_scene->update_transform(instance.transform, transform);
+                instance.proxy_transform = transform;
+            }
+        }
+        render_scene->update_geometry_instance_payload(
+            instance.geometry_instance,
+            get_area_light_instance_payload(instance_data)
+        );
+        render_scene->update_geometry_instance_mask(
+            instance.geometry_instance,
+            get_area_light_instance_mask(instance_data)
+        );
+    }
+
+    // Destroy area light geometry instances that are no longer seen.
+    for (auto it = m_area_light_geometry_instances.begin(); it != m_area_light_geometry_instances.end();) {
+        const AreaLightGeometryInstance& instance = it->second;
+        if (instance.seen) {
+            ++it;
+            continue;
+        }
+        render_scene->destroy_geometry_instance(instance.geometry_instance);
+        render_scene->destroy_transform(instance.transform);
+        it = m_area_light_geometry_instances.erase(it);
+    }
+
+    // Destroy the area light geometry if no instances remain.
+    if (m_area_light_geometry_instances.empty()) {
+        if (m_area_light_geometry_group)
+            render_scene->destroy_geometry_group(m_area_light_geometry_group);
+        if (m_area_light_geometry)
+            render_scene->destroy_area_light_geometry(m_area_light_geometry);
+        m_area_light_geometry_group = {};
+        m_area_light_geometry = {};
+    }
 }
 
 SceneUpdateFlags LightSystem::update(SceneUpdateContext& ctx)
@@ -125,6 +340,8 @@ SceneUpdateFlags LightSystem::update(SceneUpdateContext& ctx)
 
     m_light_data.mark_all_dirty();
     m_light_data.update_buffer(ctx.command_encoder());
+
+    sync_area_light_geometry();
 
     // Compute selection estimates for all active component lights. Environment-map estimates
     // depend on the 1x1 mip generated during light update, so evaluate every light

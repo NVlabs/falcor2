@@ -2,18 +2,266 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "testing.h"
+#include "falcor2/importers/importer.h"
 #include "falcor2/importers/importer_types.h"
 #include "falcor2/importers/gltf_importer/gltf_importer.h"
+#include "falcor2/importers/gltf_importer/gltf_conversions.h"
 #include "falcor2/core/object.h"
 
 #include <sgl/core/platform.h>
 #include <sgl/math/vector_math.h>
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <fstream>
 
 using namespace falcor;
+
+TEST_CASE("GltfImporter - opaque static lines retain pairs and instance transforms")
+{
+    const auto directory = testing::get_case_temp_directory();
+    const auto path = directory / "lines.gltf";
+    for (int component_type : {5121, 5123, 5125}) {
+        CAPTURE(component_type);
+        const size_t index_size = component_type == 5121 ? 1 : component_type == 5123 ? 2 : 4;
+        const std::array<float, 12> positions = {0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 1.f, 1.f, 0.f};
+        {
+            std::ofstream data(directory / "lines.bin", std::ios::binary | std::ios::trunc);
+            data.write(reinterpret_cast<const char*>(positions.data()), sizeof(positions));
+            for (uint32_t index : {0u, 3u, 1u, 2u})
+                data.write(reinterpret_cast<const char*>(&index), index_size);
+            REQUIRE(data.good());
+        }
+        {
+            std::ofstream file(path, std::ios::trunc);
+            file << R"({"asset":{"version":"2.0"},"buffers":[{"uri":"lines.bin","byteLength":)" << 48 + 4 * index_size
+                 << R"(}],"bufferViews":[{"buffer":0,"byteLength":48},{"buffer":0,"byteOffset":48,"byteLength":)"
+                 << 4 * index_size << R"(}],"accessors":[{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3"},
+                 {"bufferView":1,"componentType":)"
+                 << component_type << R"(,"count":4,"type":"SCALAR"},
+                 {"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
+                 "materials":[{"pbrMetallicRoughness":{"baseColorFactor":[0.2,0.3,0.4,1]},
+                 "emissiveFactor":[0.1,0.2,0.3]}],
+                 "meshes":[{"primitives":[
+                 {"attributes":{"POSITION":0},"indices":1,"mode":1,"material":0},
+                 {"attributes":{"POSITION":0},"mode":1,"material":0},
+                 {"attributes":{"POSITION":2},"mode":4,"material":0}]}],
+                 "nodes":[{"mesh":0,"translation":[2,3,4]},{"mesh":0,"scale":[2,2,2]}],
+                 "scenes":[{"nodes":[0,1]}],"scene":0})";
+            REQUIRE(file.good());
+        }
+        auto scene = make_ref<GltfImporter>()->load_scene(path);
+        REQUIRE(scene);
+        REQUIRE_EQ(scene->curves.size(), 2);
+        REQUIRE_EQ(scene->meshes.size(), 1);
+        REQUIRE_EQ(scene->materials.size(), 3);
+        CHECK_EQ(scene->curves[0].indices, std::vector<uint32_t>({0, 3, 1, 2}));
+        CHECK_EQ(scene->curves[1].indices, std::vector<uint32_t>({0, 1, 2, 3}));
+        CHECK_EQ(scene->curves[0].position_stream()[3], float3(1.f, 1.f, 0.f));
+        const auto radii = scene->curves[0].radius_stream();
+        for (size_t i = 0; i < radii.size; ++i)
+            CHECK_EQ(radii[i], 0.0005f);
+        CHECK_EQ(scene->curves[0].material_index, 1);
+        CHECK_EQ(scene->curves[1].material_index, 2);
+        CHECK_EQ(scene->materials[0].params.get<std::string>("_type"), "gltf_pbrMetallicRoughness");
+        CHECK_EQ(scene->materials[1].params.get<std::string>("_type"), "gltf_unlit");
+        const auto color = scene->materials[1].params.get<float4>("baseColorFactor");
+        CHECK_EQ(color.x, doctest::Approx(0.3f));
+        CHECK_EQ(color.y, doctest::Approx(0.5f));
+        CHECK_EQ(color.z, doctest::Approx(0.7f));
+        REQUIRE_EQ(scene->nodes.size(), 6);
+        CHECK_EQ(scene->nodes[0].mesh_index, 0);
+        CHECK_EQ(scene->nodes[1].mesh_index, 0);
+        CHECK_EQ(scene->nodes[0].transform[0][3], 2.f);
+        CHECK_EQ(scene->nodes[1].transform[0][0], 2.f);
+        CHECK_EQ(scene->nodes[2].curve_index, 0);
+        CHECK_EQ(scene->nodes[3].curve_index, 1);
+        CHECK_EQ(scene->nodes[4].curve_index, 0);
+        CHECK_EQ(scene->nodes[5].curve_index, 1);
+        CHECK_EQ(scene->nodes[2].parent, 0);
+        CHECK_EQ(scene->nodes[4].parent, 1);
+        CHECK_EQ(scene->nodes[2].transform, float4x4::identity());
+    }
+    std::ifstream file(path);
+    const std::string original((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    file.close();
+    auto replace = [&](std::string_view before, std::string_view after)
+    {
+        std::string text = original;
+        const auto offset = text.find(before);
+        REQUIRE_NE(offset, std::string::npos);
+        text.replace(offset, before.size(), after);
+        std::ofstream output(path, std::ios::trunc);
+        output << text;
+        REQUIRE(output.good());
+    };
+    replace(R"("count":4,"type":"SCALAR")", R"("count":3,"type":"SCALAR")");
+    CHECK_THROWS(make_ref<GltfImporter>()->load_scene(path));
+    replace(R"("count":4,"type":"VEC3")", R"("count":3,"type":"VEC3")");
+    CHECK_THROWS(make_ref<GltfImporter>()->load_scene(path));
+    replace(R"("emissiveFactor")", R"("alphaMode":"BLEND","emissiveFactor")");
+    const auto transparent = make_ref<GltfImporter>()->load_scene(path);
+    CHECK(transparent->curves.empty());
+    CHECK_EQ(transparent->meshes.size(), 1);
+    replace(R"("emissiveFactor")", R"("emissiveFactor")");
+    {
+        std::fstream data(directory / "lines.bin", std::ios::in | std::ios::out | std::ios::binary);
+        const uint32_t invalid_index = 4;
+        data.seekp(48);
+        data.write(reinterpret_cast<const char*>(&invalid_index), sizeof(invalid_index));
+        REQUIRE(data.good());
+    }
+    CHECK_THROWS(make_ref<GltfImporter>()->load_scene(path));
+}
+
+TEST_CASE("GltfConversion - native texture semantics without a scene")
+{
+    ImporterMaterial source;
+    source.params.set("_type", "gltf_pbrMetallicRoughness");
+    source.params.set("baseColorFactor", float4(0.2f, 0.3f, 0.4f, 0.5f));
+    source.params.set("baseColorTexture", 0);
+    source.params.set("baseColorTexture:texcoord", 3);
+    source.params.set("baseColorTexture:offset", float2(0.25f, -0.5f));
+    source.params.set("baseColorTexture:rotation", 0.75f);
+    source.params.set("baseColorTexture:scale", float2(2.f, 3.f));
+    source.params.set("metallicRoughnessTexture", 0);
+    source.params.set("normalTexture", 0);
+    source.params.set("normalTexture:strength", 0.6f);
+    source.params.set("hasTransmission", true);
+    const std::array<ImporterTexture, 1> textures{};
+    std::map<std::string, TextureLoadFlags> bindings;
+    auto bind = [&](Properties&, std::string_view name, const ImporterTexture&, TextureLoadFlags flags)
+    {
+        bindings.emplace(name, flags);
+    };
+    auto result = gltf_to_gltf(source, textures, true, bind);
+    REQUIRE(result);
+    CHECK_EQ(result->get<std::string>("_scene_material_type"), "GLTFMaterial");
+    CHECK_EQ(result->get<float3>("base_color_factor"), float3(0.2f, 0.3f, 0.4f));
+    CHECK_EQ(result->get<float>("alpha_factor"), 0.5f);
+    CHECK_EQ(result->get<uint32_t>("base_color_texture_texcoord"), 3u);
+    CHECK_EQ(result->get<float2>("base_color_texture_offset"), float2(0.25f, -0.5f));
+    CHECK_EQ(result->get<float>("base_color_texture_rotation"), 0.75f);
+    CHECK_EQ(result->get<float2>("base_color_texture_uv_scale"), float2(2.f, 3.f));
+    CHECK_EQ(result->get<float>("normal_texture_scale"), 0.6f);
+    CHECK(result->get<bool>("use_vertex_color"));
+    CHECK(result->get<bool>("enable_backface_culling"));
+    CHECK_EQ(bindings.at("base_color_texture"), TextureLoadFlags::color);
+    CHECK_EQ(bindings.at("metallic_roughness_texture"), TextureLoadFlags::data_rgb);
+    CHECK_EQ(bindings.at("normal_texture"), TextureLoadFlags::normal);
+
+    source.params.set("thicknessFactor", 0.1f);
+    CHECK_FALSE(gltf_to_gltf(source, textures, false, bind)->get<bool>("enable_backface_culling"));
+    source.params.set("baseColorTexture", -1);
+    CHECK_THROWS(gltf_to_gltf(source, textures, false, bind));
+    source.params.set("baseColorTexture", 1);
+    CHECK_THROWS(gltf_to_gltf(source, textures, false, bind));
+    source.params.set("baseColorTexture", 0);
+    source.params.set("baseColorTexture:texcoord", 8);
+    CHECK_THROWS(gltf_to_gltf(source, textures, false, bind));
+}
+
+TEST_CASE("GltfConversion - MDL generates transforms without a scene")
+{
+    ImporterMaterial source;
+    source.params.set("_type", "gltf_pbrMetallicRoughness");
+    source.params.set("baseColorTexture", 0);
+    source.params.set("baseColorTexture:has_transform", true);
+    source.params.set("baseColorTexture:texcoord", 2);
+    source.params.set("baseColorTexture:offset", float2(0.1f, 0.2f));
+    source.params.set("baseColorTexture:rotation", 0.3f);
+    source.params.set("baseColorTexture:scale", float2(2.f, 3.f));
+    source.params.set("metallicRoughnessTexture", 0);
+    std::array<ImporterTexture, 1> textures{};
+    textures[0].wrap_s = TextureWrapMode::mirror_repeat;
+    std::map<std::string, bool> bindings;
+    auto bind = [&](Properties&, std::string_view name, const ImporterTexture&, bool srgb)
+    {
+        bindings.emplace(name, srgb);
+    };
+    auto result = gltf_to_mdl(source, textures, UVOrigin::upper_left, bind);
+    REQUIRE(result);
+    CHECK_EQ(result->get<std::string>("_scene_material_type"), "MDLMaterial");
+    CHECK_EQ(result->get<int>("base_color_texture_uv"), 2);
+    CHECK_EQ(result->get<int>("base_color_texture_wrap_s"), 33648);
+    CHECK_EQ(result->get<float2>("base_color_texture_offset"), float2(0.1f, 0.2f));
+    CHECK_EQ(result->get<float>("base_color_texture_rotation"), 0.3f);
+    CHECK_EQ(result->get<float2>("base_color_texture_uv_scale"), float2(2.f, 3.f));
+    const auto code = result->get<std::string>("mdl_source");
+    CHECK_NE(code.find("offset: base_color_texture_offset"), std::string::npos);
+    CHECK_NE(code.find("rotation: base_color_texture_rotation"), std::string::npos);
+    CHECK_NE(code.find("scale: base_color_texture_uv_scale"), std::string::npos);
+    CHECK_FALSE(result->has_property("metallic_roughness_texture_offset"));
+    CHECK(bindings.at("base_color_texture_map"));
+    CHECK_FALSE(bindings.at("metallic_roughness_texture_map"));
+    source.params.set("baseColorTexture:rotation", -0.8f);
+    CHECK_EQ(gltf_to_mdl(source, textures, UVOrigin::upper_left, bind)->get<std::string>("mdl_source"), code);
+    source.params.set("baseColorTexture:texcoord", 4);
+    CHECK_THROWS(gltf_to_mdl(source, textures, UVOrigin::upper_left, bind));
+}
+
+TEST_CASE("GltfConversion - MDL thin transmission retains authored sidedness")
+{
+    for (const bool double_sided : {false, true}) {
+        for (const bool has_transmission : {false, true}) {
+            for (const float transmission : {0.f, 0.9f}) {
+                for (const int volume : {0, 1, 2}) {
+                    CAPTURE(double_sided);
+                    CAPTURE(has_transmission);
+                    CAPTURE(transmission);
+                    CAPTURE(volume);
+                    ImporterMaterial source;
+                    source.params.set("_type", "gltf_pbrMetallicRoughness");
+                    source.params.set("doubleSided", double_sided);
+                    source.params.set("hasTransmission", has_transmission);
+                    source.params.set("transmissionFactor", transmission);
+                    // Absent volume, an explicitly zero thickness and a solid boundary.
+                    if (volume != 0) {
+                        source.params.set("hasVolume", true);
+                        source.params.set("thicknessFactor", volume == 1 ? 0.f : 0.5f);
+                    }
+                    const auto result = gltf_to_mdl(source, {}, UVOrigin::upper_left, {});
+                    REQUIRE(result);
+                    CHECK_EQ(result->get<bool>("enable_backface_culling"), !double_sided && volume != 2);
+                    CHECK_NE(
+                        result->get<std::string>("mdl_source")
+                            .find(volume == 2 ? "thin_walled: false" : "thin_walled: true"),
+                        std::string::npos
+                    );
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("GltfConversion - workflow selection and absent inputs")
+{
+    ImporterMaterial source;
+    CHECK_FALSE(gltf_to_gltf(source, {}, false, {}));
+    CHECK_FALSE(gltf_to_mdl(source, {}, UVOrigin::upper_left, {}));
+    source.params.set("_type", "gltf_unlit");
+    auto unlit = gltf_to_gltf(source, {}, false, {});
+    REQUIRE(unlit);
+    CHECK_EQ(unlit->get<std::string>("_scene_material_type"), "UnlitMaterial");
+    CHECK_FALSE(unlit->has_property("base_color_factor"));
+    CHECK_FALSE(gltf_to_mdl(source, {}, UVOrigin::upper_left, {}));
+    source.params.set("_type", "gltf_pbrSpecularGlossiness");
+    source.params.set("diffuseFactor", float4(0.25f));
+    source.params.set("specularFactor", float3(0.6f));
+    source.params.set("glossinessFactor", 0.7f);
+    auto specgloss = gltf_to_gltf(source, {}, false, {});
+    REQUIRE(specgloss);
+    CHECK_EQ(specgloss->get<std::string>("_scene_material_type"), "GLTFSpecGlossMaterial");
+    CHECK_EQ(specgloss->get<float3>("diffuse_factor"), float3(0.25f));
+    CHECK_EQ(specgloss->get<float3>("specular_factor"), float3(0.6f));
+    CHECK_EQ(specgloss->get<float>("glossiness_factor"), 0.7f);
+    CHECK_FALSE(specgloss->has_property("base_color_factor"));
+    auto mdl = gltf_to_mdl(source, {}, UVOrigin::upper_left, {});
+    REQUIRE(mdl);
+    CHECK_NE(mdl->get<std::string>("mdl_source").find("gltf_material_khr_specular_glossiness("), std::string::npos);
+}
 
 namespace {
 
@@ -83,6 +331,24 @@ void check_mesh(const ImporterMesh& mesh, const std::string& expected_name)
     }
 }
 
+void check_float3_approx(const float3& actual, const float3& expected, float epsilon = 1e-5f)
+{
+    CHECK(actual.x == doctest::Approx(expected.x).epsilon(epsilon));
+    CHECK(actual.y == doctest::Approx(expected.y).epsilon(epsilon));
+    CHECK(actual.z == doctest::Approx(expected.z).epsilon(epsilon));
+}
+
+bool has_attribute(const ImporterMesh& mesh, ImporterSemantic semantic)
+{
+    return std::ranges::any_of(
+        mesh.attributes(),
+        [semantic](const ImporterMeshAttribute& attribute)
+        {
+            return attribute.semantic == semantic;
+        }
+    );
+}
+
 } // anonymous namespace
 
 TEST_CASE("GltfImporter - Basic Loading")
@@ -121,6 +387,30 @@ TEST_CASE("GltfImporter - Basic Loading")
         scene->cameras.size(),
         scene->lights.size()
     );
+}
+
+TEST_CASE("GltfImporter - Vertex color streams are only created for meshes that use them")
+{
+    auto importer = make_ref<GltfImporter>();
+    const auto sample_file = testing::project_directory() / "data" / "assets" / "kronos" / "VertexColorTest" / "glTF"
+        / "VertexColorTest.gltf";
+
+    ref<ImporterScene> scene = importer->load_scene(sample_file);
+    REQUIRE(scene);
+    REQUIRE_EQ(scene->meshes.size(), 2);
+
+    size_t colored_mesh_count = 0;
+    size_t uncolored_mesh_count = 0;
+    for (const ImporterMesh& mesh : scene->meshes) {
+        REQUIRE_EQ(mesh.subgeometries.size(), 1);
+        if (mesh.color_attribute().valid())
+            ++colored_mesh_count;
+        else
+            ++uncolored_mesh_count;
+    }
+
+    CHECK_EQ(colored_mesh_count, 1);
+    CHECK_EQ(uncolored_mesh_count, 1);
 }
 
 TEST_CASE("GltfImporter - Mixed Authored Tangents Are Regenerated")
@@ -247,6 +537,183 @@ TEST_CASE("GltfImporter - Mixed Authored Tangents Are Regenerated")
         CHECK(sgl::math::length(tangents[vertex_index]) == doctest::Approx(1.f));
         CHECK((handedness[vertex_index] == 1.f || handedness[vertex_index] == -1.f));
     }
+}
+
+TEST_CASE("GltfImporter - Default Pose Skinning")
+{
+    struct Vertex {
+        float position[3];
+        float normal[3];
+        float tangent[4];
+        uint8_t joints[4];
+        uint8_t weights[4];
+    };
+    static_assert(sizeof(Vertex) == 48);
+
+    constexpr float INV_SQRT_TWO = 0.70710678118f;
+    const std::array<Vertex, 3> vertices = {
+        Vertex{
+            {1.f, 0.f, 0.f},
+            {INV_SQRT_TWO, INV_SQRT_TWO, 0.f},
+            {INV_SQRT_TWO, -INV_SQRT_TWO, 0.f, -1.f},
+            {0, 0, 0, 0},
+            {255, 0, 0, 0},
+        },
+        Vertex{
+            {1.f, 1.f, 0.f},
+            {INV_SQRT_TWO, INV_SQRT_TWO, 0.f},
+            {INV_SQRT_TWO, -INV_SQRT_TWO, 0.f, -1.f},
+            {0, 1, 0, 0},
+            {64, 191, 0, 0},
+        },
+        Vertex{
+            {1.f, 0.f, 1.f},
+            {INV_SQRT_TWO, INV_SQRT_TWO, 0.f},
+            {INV_SQRT_TWO, -INV_SQRT_TWO, 0.f, -1.f},
+            {1, 0, 0, 0},
+            {255, 0, 0, 0},
+        },
+    };
+    const std::array<uint16_t, 3> indices = {0, 1, 2};
+    const std::array<float, 32> inverse_bind_matrices = {
+        1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, -1.f, 0.f, 0.f, 1.f,
+        1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, -1.f, 0.f, 0.f, 1.f,
+    };
+
+    const std::filesystem::path path = testing::get_case_temp_directory() / "default_pose_skinning.gltf";
+    const std::filesystem::path buffer_path = path.parent_path() / "default_pose_skinning.bin";
+    {
+        std::ofstream file(buffer_path, std::ios::binary | std::ios::trunc);
+        file.write(reinterpret_cast<const char*>(vertices.data()), vertices.size() * sizeof(Vertex));
+        file.write(reinterpret_cast<const char*>(indices.data()), indices.size() * sizeof(uint16_t));
+        const uint16_t padding = 0;
+        file.write(reinterpret_cast<const char*>(&padding), sizeof(padding));
+        file.write(
+            reinterpret_cast<const char*>(inverse_bind_matrices.data()),
+            inverse_bind_matrices.size() * sizeof(float)
+        );
+        REQUIRE(file.good());
+    }
+    {
+        std::ofstream file(path, std::ios::trunc);
+        file << R"json({
+  "asset": { "version": "2.0" },
+  "scene": 0,
+  "scenes": [{ "nodes": [0] }],
+  "nodes": [
+    { "name": "Root", "translation": [10, 0, 0], "children": [1, 2] },
+    { "name": "Mesh", "translation": [2, 0, 0], "mesh": 0, "skin": 0 },
+    { "name": "Skeleton", "translation": [4, 0, 0], "children": [3] },
+    { "name": "Joint0", "scale": [2, 1, 0.5], "children": [4] },
+    { "name": "Joint1", "translation": [2, 0, 0] }
+  ],
+  "skins": [{ "inverseBindMatrices": 6, "joints": [3, 4], "skeleton": 2 }],
+  "meshes": [{
+    "name": "SkinnedMesh",
+    "primitives": [{
+      "attributes": { "POSITION": 0, "NORMAL": 1, "TANGENT": 2, "JOINTS_0": 3, "WEIGHTS_0": 4 },
+      "indices": 5
+    }]
+  }],
+  "buffers": [{ "byteLength": 280, "uri": "default_pose_skinning.bin" }],
+  "bufferViews": [
+    { "buffer": 0, "byteOffset": 0, "byteLength": 144, "byteStride": 48, "target": 34962 },
+    { "buffer": 0, "byteOffset": 144, "byteLength": 6, "target": 34963 },
+    { "buffer": 0, "byteOffset": 152, "byteLength": 128 }
+  ],
+  "accessors": [
+    { "bufferView": 0, "byteOffset": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [1, 0, 0], "max": [1, 1, 1] },
+    { "bufferView": 0, "byteOffset": 12, "componentType": 5126, "count": 3, "type": "VEC3" },
+    { "bufferView": 0, "byteOffset": 24, "componentType": 5126, "count": 3, "type": "VEC4" },
+    { "bufferView": 0, "byteOffset": 40, "componentType": 5121, "count": 3, "type": "VEC4" },
+    { "bufferView": 0, "byteOffset": 44, "componentType": 5121, "normalized": true, "count": 3, "type": "VEC4" },
+    { "bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR" },
+    { "bufferView": 2, "componentType": 5126, "count": 2, "type": "MAT4" }
+  ]
+})json";
+        REQUIRE(file.good());
+    }
+
+    ImportOptions import_options;
+    CHECK_FALSE(import_options.bake_poses);
+    import_options.bake_poses = true;
+    ref<ImporterScene> scene = import_scene(path, import_options);
+    REQUIRE(scene);
+    REQUIRE_EQ(scene->meshes.size(), 1);
+    REQUIRE_EQ(scene->nodes.size(), 5);
+    CHECK(scene->skins.empty());
+    CHECK_EQ(scene->nodes[1].mesh_index, 0);
+    CHECK_EQ(scene->nodes[1].skin_index, -1);
+    check_float3_approx(scene->nodes[0].transform.get_col(3).xyz(), float3(10.f, 0.f, 0.f));
+    check_float3_approx(scene->nodes[1].transform.get_col(3).xyz(), float3(2.f, 0.f, 0.f));
+
+    const ImporterMesh& mesh = scene->meshes.front();
+    REQUIRE_EQ(mesh.vertex_count(), 3);
+    CHECK_FALSE(has_attribute(mesh, ImporterSemantic::joints));
+    CHECK_FALSE(has_attribute(mesh, ImporterSemantic::weights));
+    const auto positions = mesh.position_stream();
+    const auto normals = mesh.normal_stream();
+    const auto tangents = mesh.tangent_stream();
+    const auto handedness = mesh.handedness_stream();
+    REQUIRE(positions.valid());
+    REQUIRE(normals.valid());
+    REQUIRE(tangents.valid());
+    REQUIRE(handedness.valid());
+
+    check_float3_approx(positions[0], float3(2.f, 0.f, 0.f));
+    check_float3_approx(positions[1], float3(2.f + 4.f * (191.f / 255.f), 1.f, 0.f));
+    check_float3_approx(positions[2], float3(6.f, 0.f, 0.5f));
+    for (size_t vertex_index = 0; vertex_index < mesh.vertex_count(); ++vertex_index) {
+        check_float3_approx(normals[vertex_index], float3(0.4472135955f, 0.894427191f, 0.f));
+        check_float3_approx(tangents[vertex_index], float3(0.894427191f, -0.4472135955f, 0.f));
+        CHECK_EQ(handedness[vertex_index], -1.f);
+    }
+
+    // Omitting options from the shared import path must retain the raw skin data because pose baking is opt-in.
+    ref<ImporterScene> raw_scene = import_scene(path);
+    REQUIRE(raw_scene);
+    REQUIRE_EQ(raw_scene->meshes.size(), 1);
+    REQUIRE_EQ(raw_scene->skins.size(), 1);
+    CHECK_EQ(raw_scene->nodes[1].skin_index, 0);
+    CHECK_EQ(raw_scene->skins[0].skeleton_root, 2);
+    CHECK_EQ(raw_scene->skins[0].joints, std::vector<int>({3, 4}));
+    REQUIRE_EQ(raw_scene->skins[0].joint_from_bind_mesh.size(), 2);
+    check_float3_approx(raw_scene->skins[0].joint_from_bind_mesh[0].get_col(3).xyz(), float3(-1.f, 0.f, 0.f));
+    CHECK(raw_scene->meshes.front().find_attribute(ImporterSemantic::joints) != nullptr);
+    CHECK(raw_scene->meshes.front().find_attribute(ImporterSemantic::weights) != nullptr);
+    const auto raw_positions = raw_scene->meshes.front().position_stream();
+    check_float3_approx(raw_positions[0], float3(1.f, 0.f, 0.f));
+    check_float3_approx(raw_positions[1], float3(1.f, 1.f, 0.f));
+    check_float3_approx(raw_positions[2], float3(1.f, 0.f, 1.f));
+
+    ref<ImporterScene> flattened_scene = import_scene(path);
+    REQUIRE_EQ(flattened_scene->skins.size(), 1);
+    flattened_scene->flatten_node_hierarchy();
+    CHECK(flattened_scene->skins.empty());
+    CHECK(
+        std::ranges::all_of(
+            flattened_scene->nodes,
+            [](const ImporterNode& node)
+            {
+                return node.skin_index == -1;
+            }
+        )
+    );
+
+    raw_scene->bake_pose();
+    CHECK(raw_scene->skins.empty());
+    CHECK_EQ(raw_scene->nodes[1].skin_index, -1);
+    CHECK(raw_scene->meshes.front().find_attribute(ImporterSemantic::joints) == nullptr);
+    CHECK(raw_scene->meshes.front().find_attribute(ImporterSemantic::weights) == nullptr);
+    check_float3_approx(raw_positions[0], positions[0]);
+    check_float3_approx(raw_positions[1], positions[1]);
+    check_float3_approx(raw_positions[2], positions[2]);
+
+    // Baking consumes each node's skin reference, making repeated calls a no-op.
+    raw_scene->bake_pose();
+    check_float3_approx(raw_positions[0], positions[0]);
+    check_float3_approx(raw_positions[1], positions[1]);
+    check_float3_approx(raw_positions[2], positions[2]);
 }
 
 TEST_CASE("GltfImporter - Invalid File")
@@ -982,8 +1449,8 @@ TEST_CASE("GltfImporter - Texture Transforms")
                 CHECK_EQ(material.params.get<int>("baseColorTexture"), 0);
 
                 // Check for texture transform offset
-                if (material.params.has_property("baseColorTexture_offset")) {
-                    auto offset = material.params.get<float2>("baseColorTexture_offset");
+                if (material.params.has_property("baseColorTexture:offset")) {
+                    auto offset = material.params.get<float2>("baseColorTexture:offset");
                     CHECK_EQ(offset.x, 0.5f);
                     CHECK_EQ(offset.y, 0.0f);
                 }
@@ -993,8 +1460,8 @@ TEST_CASE("GltfImporter - Texture Transforms")
                 CHECK_EQ(material.params.get<int>("baseColorTexture"), 0);
 
                 // Check for texture transform offset
-                if (material.params.has_property("baseColorTexture_offset")) {
-                    auto offset = material.params.get<float2>("baseColorTexture_offset");
+                if (material.params.has_property("baseColorTexture:offset")) {
+                    auto offset = material.params.get<float2>("baseColorTexture:offset");
                     CHECK_EQ(offset.x, 0.0f);
                     CHECK_EQ(offset.y, 0.5f);
                 }
@@ -1004,8 +1471,8 @@ TEST_CASE("GltfImporter - Texture Transforms")
                 CHECK_EQ(material.params.get<int>("baseColorTexture"), 0);
 
                 // Check for texture transform offset
-                if (material.params.has_property("baseColorTexture_offset")) {
-                    auto offset = material.params.get<float2>("baseColorTexture_offset");
+                if (material.params.has_property("baseColorTexture:offset")) {
+                    auto offset = material.params.get<float2>("baseColorTexture:offset");
                     CHECK_EQ(offset.x, 0.5f);
                     CHECK_EQ(offset.y, 0.5f);
                 }
@@ -1015,8 +1482,8 @@ TEST_CASE("GltfImporter - Texture Transforms")
                 CHECK_EQ(material.params.get<int>("baseColorTexture"), 1);
 
                 // Check for texture transform rotation
-                if (material.params.has_property("baseColorTexture_rotation")) {
-                    auto rotation = material.params.get<float>("baseColorTexture_rotation");
+                if (material.params.has_property("baseColorTexture:rotation")) {
+                    auto rotation = material.params.get<float>("baseColorTexture:rotation");
                     CHECK(std::abs(rotation - 0.39269908169872415480783042290994f) < 1e-6f);
                 }
             } else if (material.name == "Scale") {
@@ -1025,8 +1492,8 @@ TEST_CASE("GltfImporter - Texture Transforms")
                 CHECK_EQ(material.params.get<int>("baseColorTexture"), 1);
 
                 // Check for texture transform scale
-                if (material.params.has_property("baseColorTexture_scale")) {
-                    auto scale = material.params.get<float2>("baseColorTexture_scale");
+                if (material.params.has_property("baseColorTexture:scale")) {
+                    auto scale = material.params.get<float2>("baseColorTexture:scale");
                     CHECK_EQ(scale.x, 1.5f);
                     CHECK_EQ(scale.y, 1.5f);
                 }
@@ -1036,21 +1503,21 @@ TEST_CASE("GltfImporter - Texture Transforms")
                 CHECK_EQ(material.params.get<int>("baseColorTexture"), 1);
 
                 // Check for texture transform offset
-                if (material.params.has_property("baseColorTexture_offset")) {
-                    auto offset = material.params.get<float2>("baseColorTexture_offset");
+                if (material.params.has_property("baseColorTexture:offset")) {
+                    auto offset = material.params.get<float2>("baseColorTexture:offset");
                     CHECK(std::abs(offset.x - (-0.2f)) < 1e-6f);
                     CHECK(std::abs(offset.y - (-0.1f)) < 1e-6f);
                 }
 
                 // Check for texture transform rotation
-                if (material.params.has_property("baseColorTexture_rotation")) {
-                    auto rotation = material.params.get<float>("baseColorTexture_rotation");
+                if (material.params.has_property("baseColorTexture:rotation")) {
+                    auto rotation = material.params.get<float>("baseColorTexture:rotation");
                     CHECK(std::abs(rotation - 0.3f) < 1e-6f);
                 }
 
                 // Check for texture transform scale
-                if (material.params.has_property("baseColorTexture_scale")) {
-                    auto scale = material.params.get<float2>("baseColorTexture_scale");
+                if (material.params.has_property("baseColorTexture:scale")) {
+                    auto scale = material.params.get<float2>("baseColorTexture:scale");
                     CHECK_EQ(scale.x, 1.5f);
                     CHECK_EQ(scale.y, 1.5f);
                 }
@@ -1059,6 +1526,75 @@ TEST_CASE("GltfImporter - Texture Transforms")
 
         INFO("Texture transform test completed successfully");
     }
+}
+
+TEST_CASE("GltfImporter - Native Thin Transmission")
+{
+    const auto path = testing::get_case_temp_directory() / "thin_transmission.gltf";
+    {
+        std::ofstream file(path, std::ios::trunc);
+        file << R"json({
+  "asset": {"version": "2.0"},
+  "extensionsUsed": ["KHR_materials_transmission", "KHR_materials_volume"],
+  "materials": [
+    {"extensions": {"KHR_materials_transmission": {"transmissionFactor": 0.75}}},
+    {"extensions": {"KHR_materials_transmission": {"transmissionFactor": 1.0},
+                    "KHR_materials_volume": {"thicknessFactor": 0.5}}}
+  ]
+})json";
+        REQUIRE(file.good());
+    }
+    ImportOptions options;
+    options.gltf_material_mode = GLTFMaterialMode::automatic;
+    auto scene = make_ref<GltfImporter>()->load_scene(path, options);
+    REQUIRE(scene);
+    REQUIRE_EQ(scene->materials.size(), 2);
+    const auto& thin = scene->materials[0].params;
+    CHECK_EQ(thin.get<std::string>("_type"), "gltf_pbrMetallicRoughness");
+    CHECK_EQ(thin.get<float>("transmissionFactor"), 0.75f);
+    CHECK(thin.get("hasTransmission", false));
+    CHECK_FALSE(thin.get("_gltf_use_mdl", false));
+    CHECK_EQ(thin.get("alphaMode", AlphaMode::opaque), AlphaMode::opaque);
+    CHECK_FALSE(scene->materials[1].params.get("_gltf_use_mdl", false));
+    CHECK_EQ(scene->materials[1].params.get<float>("thicknessFactor"), 0.5f);
+}
+
+TEST_CASE("GltfImporter - Unlit Material")
+{
+    const std::filesystem::path path = testing::get_case_temp_directory() / "unlit_material.gltf";
+    {
+        std::ofstream file(path, std::ios::trunc);
+        file << R"json({
+  "asset": { "version": "2.0" },
+  "extensionsUsed": ["KHR_materials_unlit"],
+  "materials": [{
+    "name": "Unlit",
+    "pbrMetallicRoughness": {
+      "baseColorFactor": [0.25, 0.5, 0.75, 0.6],
+      "metallicFactor": 0.2,
+      "roughnessFactor": 0.3
+    },
+    "extensions": { "KHR_materials_unlit": {} },
+    "alphaMode": "MASK",
+    "alphaCutoff": 0.4,
+    "doubleSided": true
+  }]
+})json";
+        REQUIRE(file.good());
+    }
+
+    auto scene = make_ref<GltfImporter>()->load_scene(path);
+    REQUIRE(scene);
+    REQUIRE_EQ(scene->materials.size(), 1);
+
+    const Properties& params = scene->materials.front().params;
+    CHECK_EQ(params.get<std::string>("_type"), "gltf_unlit");
+    CHECK_EQ(params.get<float4>("baseColorFactor"), float4(0.25f, 0.5f, 0.75f, 0.6f));
+    CHECK_FALSE(params.has_property("metallicFactor"));
+    CHECK_FALSE(params.has_property("roughnessFactor"));
+    CHECK_EQ(params.get("alphaMode", AlphaMode::opaque), AlphaMode::mask);
+    CHECK_EQ(params.get<float>("alphaCutoff"), doctest::Approx(0.4f));
+    CHECK(params.get("doubleSided", false));
 }
 
 TEST_CASE("GltfImporter - Alpha Mode and Double-Sided Materials")
@@ -1180,7 +1716,7 @@ TEST_CASE("GltfImporter - Linear Translation Animation")
     CHECK_EQ(scene->nodes[0].animation_rotation, -1);
     CHECK_EQ(scene->nodes[0].animation_scale, -1);
 
-    CHECK_EQ(scene->animation.duration(), doctest::Approx(2.f));
+    CHECK_EQ(scene->animation.key_range().end, doctest::Approx(2.f));
 }
 
 TEST_CASE("GltfImporter - Step Rotation Animation")
@@ -1264,7 +1800,7 @@ TEST_CASE("GltfImporter - Multi Channel Animation")
     CHECK_EQ(scene->nodes[0].animation_scale, 2);
 
     // Duration is max across channels = 3.0 (from scale channel).
-    CHECK_EQ(scene->animation.duration(), doctest::Approx(3.f));
+    CHECK_EQ(scene->animation.key_range().end, doctest::Approx(3.f));
 }
 
 TEST_CASE("GltfImporter - CubicSpline Animation")
@@ -1356,7 +1892,7 @@ TEST_CASE("GltfImporter - No Animation")
 
         // Scene without animation should have empty animation data.
         CHECK(scene->animation.channels.empty());
-        CHECK_EQ(scene->animation.duration(), 0.f);
+        CHECK_FALSE(scene->animation.key_range().is_valid());
 
         // No node should reference any animation channel.
         for (const auto& node : scene->nodes) {

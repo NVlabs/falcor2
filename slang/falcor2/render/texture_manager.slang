@@ -59,8 +59,6 @@ public struct ExplicitLodSampler : ILodSampler
     }
 }
 
-public extern static const bool FALCOR_TEXTURE_COORDINATE_ORIGIN_LOWER_LEFT = false;
-
 public enum class TextureHandleFlags : uint {
     none = 0,
     udim = 0x1,
@@ -78,7 +76,7 @@ __generic<T : ITexelElement = float4, uint FlagsAsUint = 0x3 /*TextureHandleFlag
 
     public static const bool ENABLE_UDIM = is_set(Flags, TextureHandleFlags::udim);
     public static const bool FLIP_V_COORDINATE
-        = is_set(Flags, TextureHandleFlags::uv_origin_correction) && FALCOR_TEXTURE_COORDINATE_ORIGIN_LOWER_LEFT;
+        = is_set(Flags, TextureHandleFlags::uv_origin_correction) && UV_ORIGIN_LOWER_LEFT;
 
     public uint data = detail::INVALID_TEXTURE_HANDLE;
 

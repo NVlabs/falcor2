@@ -4,8 +4,10 @@
 #pragma once
 
 #include "usd_importer_macros.h"
-#include "falcor2/importers/importer_types.h"
+#include "falcor2/core/ustring.h"
+#include "falcor2/importers/importer.h"
 #include "falcor2/importers/usd_importer/usd_importer_utils.h"
+#include "falcor2/importers/usd_importer/usd_importer_tasks.h"
 
 #include "sgl/core/thread.h"
 
@@ -19,7 +21,6 @@ BEGIN_DISABLE_USD_WARNINGS
 END_DISABLE_USD_WARNINGS
 
 #include <filesystem>
-#include <functional>
 #include <map>
 #include <mutex>
 #include <set>
@@ -30,11 +31,12 @@ namespace usd_importer {
 
 class UsdImporterContext {
 public:
-    UsdImporterContext(const pxr::UsdStageRefPtr& stage, bool parallel_adds = true);
-
-    ~UsdImporterContext() { m_task_group.wait(); }
-
-    void traverse_scene(const pxr::UsdPrim& root);
+    UsdImporterContext(
+        const pxr::UsdStageRefPtr& stage,
+        const ImportOptions& import_options,
+        ustring source_asset_path,
+        bool parallel_adds = true
+    );
 
     /// How many meters is a single scene unit.
     /// Multiply scene units with this to get meters.
@@ -47,23 +49,30 @@ public:
 
     int push_transform(const float4x4& parent_from_local, std::string_view name = "")
     {
-        return push_transform(parent_from_local, name, parent_node_idx());
+        return push_transform(parent_from_local, name, current_node_idx());
     }
 
     int push_transform(const pxr::UsdGeomXformable& prim);
 
     void pop_transform() { node_idx_stack().pop_back(); }
 
-    void add_mesh(pxr::UsdPrim prim, bool run_immediate = false);
-    void add_curve(pxr::UsdPrim prim, bool run_immediate = false);
-    void add_light(pxr::UsdPrim prim, bool run_immediate = false);
-    void add_camera(pxr::UsdPrim prim, bool run_immediate = false);
-    void add_instance(pxr::UsdPrim prim);
-    void add_point_instancer(pxr::UsdPrim prim);
+    /// Attach prim contents to the node created by traversal; asynchronous tasks capture its index by value.
+    void add_mesh(pxr::UsdPrim prim, int node_idx, bool run_immediate = false);
+    void add_curve(pxr::UsdPrim prim, int node_idx, bool run_immediate = false);
+    void add_light(pxr::UsdPrim prim, int node_idx, bool run_immediate = false);
+    void add_camera(pxr::UsdPrim prim, int node_idx, bool run_immediate = false);
+    void add_instance(pxr::UsdPrim prim, int node_idx);
+    void add_point_instancer(pxr::UsdPrim prim, int node_idx);
 
-    void finalize()
+    void run(const pxr::UsdPrim& root)
     {
-        m_task_group.wait();
+        run_traversal_and_wait(
+            m_task_group,
+            [&]
+            {
+                traverse_scene(root);
+            }
+        );
         extract_animations();
     }
 
@@ -72,7 +81,7 @@ public:
     std::string get_name(const pxr::UsdPrim& prim) const { return prim.GetPath().GetString(); }
 
 private:
-    struct UsdSceneMutexes;
+    void traverse_scene(const pxr::UsdPrim& root);
 
     std::vector<int>& node_idx_stack() { return m_node_idx_stacks.back(); }
     const std::vector<int>& node_idx_stack() const { return m_node_idx_stacks.back(); }
@@ -80,8 +89,8 @@ private:
     void pop_prototype_stack() { m_node_idx_stacks.pop_back(); }
     bool is_prototype() const { return m_node_idx_stacks.size() > 1; }
 
-    /// Get the current parent node index, -1 if none is present.
-    int parent_node_idx() const { return node_idx_stack().empty() ? -1 : node_idx_stack().back(); }
+    /// Get the current node index, -1 if none is present.
+    int current_node_idx() const { return node_idx_stack().empty() ? -1 : node_idx_stack().back(); }
 
     /// Returns the current root node, used when `GetLocalTransformation` asks for reset.
     /// The reset ignores inheritance in the Usd hierarchy, but we still want to inherit from the
@@ -110,61 +119,26 @@ private:
     /// Adds root node to the current scope (scene or prototype in the future).
     void add_root_node(int root_idx) { m_scene->root_nodes.push_back(root_idx); }
 
-    /// Thread safe, locks access to caches.
+    /// Resolve the bound material inside USD without exposing its TBB-backed cache types.
     pxr::UsdShadeMaterial get_bound_material(const pxr::UsdShadeMaterialBindingAPI& binding_api)
     {
-        std::lock_guard l(m_scene_mutexes.material);
-        return binding_api.ComputeBoundMaterial(&m_bindings_cache, &m_coll_query_cache);
+        return binding_api.ComputeBoundMaterial();
     }
 
     /// Thread safe, locks access to m_material_name_to_index and m_scene.materials.
-    std::string resolve_material(const pxr::UsdShadeMaterialBindingAPI& binding_api, std::string_view mesh_name = "");
+    int resolve_material(const pxr::UsdShadeMaterialBindingAPI& binding_api, std::string_view mesh_name = "");
 
-    /// Thread safe, scene access is locked, resolve_material_func is resolve_material.
-    /// Separated out to be easy to package into a task.
-    /// The `ws_from_local` must be captured by value, rather than referene to m_scene_mutexes.
-    static void add_mesh(
-        pxr::UsdPrim prim,
-        int parent,
-        ImporterScene* scene,
-        UsdSceneMutexes& scene_mutexes,
-        std::function<std::string(const pxr::UsdShadeMaterialBindingAPI& binding_api, std::string_view)>
-            resolve_material_func
-    );
+    /// Extract mesh data and attach it to the node. Shared scene access is locked.
+    void extract_mesh(pxr::UsdPrim prim, int node_idx);
 
-    /// Thread safe, scene access is locked.
-    static void add_curve(
-        pxr::UsdPrim prim,
-        int parent,
-        ImporterScene* scene,
-        UsdSceneMutexes& scene_mutexes,
-        std::function<std::string(const pxr::UsdShadeMaterialBindingAPI& binding_api, std::string_view)>
-            resolve_material_func
-    );
+    /// Extract curve data and attach it to the node. Shared scene access is locked.
+    void extract_curve(pxr::UsdPrim prim, int node_idx);
 
-    /// Thread safe, scene access is locked.
-    /// Separated out to be easy to package into a task.
-    /// The `ws_from_local` must be captured by value, rather than referene to m_scene_mutexes.
-    static void add_light(
-        pxr::UsdPrim prim,
-        int parent,
-        ImporterScene* scene,
-        UsdSceneMutexes& scene_mutexes,
-        std::function<void(const std::filesystem::path&)> register_asset,
-        bool enable_virtual_sphere_shrinking
-    );
-    static ImporterLight create_light(pxr::UsdPrim prim, bool enable_virtual_sphere_shrinking);
+    /// Extract light data and attach it to the node. Shared scene access is locked.
+    void extract_light(pxr::UsdPrim prim, int node_idx);
 
-    /// Thread safe, scene access is locked.
-    /// Separated out to be easy to package into a task.
-    /// The `ws_from_local` must be captured by value, rather than referene to m_scene_mutexes.
-    static void add_camera(
-        pxr::UsdPrim prim,
-        int parent,
-        float meters_per_unit,
-        ImporterScene* scene,
-        UsdSceneMutexes& scene_mutexes
-    );
+    /// Extract camera data and attach it to the node. Shared scene access is locked.
+    void extract_camera(pxr::UsdPrim prim, int node_idx);
 
     /// Returns an index of prototype, creating it if necessary.
     int add_prototype(pxr::UsdPrim prototype);
@@ -188,13 +162,18 @@ private:
     /// Add a package-contained asset to the scene.
     void add_asset_to_scene(const std::filesystem::path& path);
 
+    pxr::SdfPath source_path_for_prim(const pxr::UsdPrim& prim) const;
+    SourceAssetRef source_asset_ref_for_object(std::string_view object_path) const;
+    SourceAssetRef source_asset_ref_for_prim(const pxr::UsdPrim& prim) const;
+
 private:
     pxr::UsdStageRefPtr m_usd_stage;
+    const ustring m_source_asset_path;
+    /// Representative paths resolved once, before asynchronous extraction starts.
+    const std::map<pxr::SdfPath, pxr::SdfPath> m_prototype_source_paths;
+    ImportOptions m_import_options;
 
     float m_meters_per_unit;
-    pxr::UsdShadeMaterialBindingAPI::CollectionQueryCache m_coll_query_cache; ///< Material collection binding cache
-    pxr::UsdShadeMaterialBindingAPI::BindingsCache m_bindings_cache;          ///< Material binding cache
-
     std::vector<std::vector<int>> m_node_idx_stacks;
     ref<ImporterScene> m_scene;
 

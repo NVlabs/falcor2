@@ -11,7 +11,10 @@ public struct TinyUniformSampleGenerator : ISampleGenerator
 {
     LCG rng;
 
-    public __init(uint seed) { rng = LCG(seed); }
+    public __init(uint sample_index, uint scrambling_seed = 0)
+    {
+        rng = LCG(scrambling_seed == 0 ? sample_index : jenkins_hash(sample_index ^ scrambling_seed));
+    }
 
     public __init(uint2 pixel, uint sample_index)
     {

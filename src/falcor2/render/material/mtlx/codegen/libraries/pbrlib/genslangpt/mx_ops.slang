@@ -1,54 +1,85 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+[mutating]
 void mx_layer_bsdf(ClosureData closure_data, BSDF top, BSDF base, out BSDF result)
 {
     result.set_layer(mx_stack_next_layer++);
+#ifdef MTLX_SCALARIZED_GRAPH_STORAGE
+    mx_stack.set_child_weights(result.get_index(), top.weight, base.weight);
+#else
     mx_stack.layer_weights[result.get_index()] = float3(1.0);
     mx_stack.mix_values[result.get_index()] = float3(0.0);
+#endif
 }
 
+[mutating]
 void mx_weighted_layer_bsdf(ClosureData closure_data, BSDF top, float3 top_weight, BSDF base, out BSDF result)
 {
     result.set_layer(mx_stack_next_layer++);
+#ifdef MTLX_SCALARIZED_GRAPH_STORAGE
+    mx_stack.set_child_weights(result.get_index(), top.weight * saturate(top_weight), base.weight);
+#else
     mx_stack.layer_weights[result.get_index()] = float3(1.0);
     mx_stack.mix_values[result.get_index()] = float3(0.0);
+#endif
 
+#ifndef MTLX_SCALARIZED_GRAPH_STORAGE
     float3 top_coverage = saturate(top_weight);
     if (top.is_bsdf())
         mx_stack.bsdf_weights[top.get_index()] *= top_coverage;
     else
         mx_stack.layer_weights[top.get_index()] *= top_coverage;
+#endif
 }
 
+[mutating]
 void mx_mix_bsdf(ClosureData closure_data, BSDF fg, BSDF bg, float mix_value, out BSDF result)
 {
     mx_mix_bsdf(closure_data, fg, bg, float3(mix_value), result);
 }
 
+[mutating]
 void mx_mix_bsdf(ClosureData closure_data, BSDF fg, BSDF bg, float3 mix_value, out BSDF result)
 {
     result.set_layer(mx_stack_next_layer++);
+#ifdef MTLX_SCALARIZED_GRAPH_STORAGE
+    float3 clamped_mix = saturate(mix_value);
+    mx_stack.set_child_weights(result.get_index(), fg.weight * clamped_mix, bg.weight * (float3(1.0) - clamped_mix));
+#else
     mx_stack.layer_weights[result.get_index()] = float3(1.0);
     mx_stack.mix_values[result.get_index()] = saturate(mix_value);
+#endif
 }
 
+[mutating]
 void mx_add_bsdf(ClosureData closure_data, BSDF in1, BSDF in2, out BSDF result)
 {
     result.set_layer(mx_stack_next_layer++);
+#ifdef MTLX_SCALARIZED_GRAPH_STORAGE
+    mx_stack.set_child_weights(result.get_index(), in1.weight, in2.weight);
+#else
     mx_stack.layer_weights[result.get_index()] = float3(1.0);
     mx_stack.mix_values[result.get_index()] = float3(0.0);
+#endif
 }
 
+[mutating]
 void mx_multiply_bsdf(ClosureData closure_data, BSDF in1, float3 in2, out BSDF result)
 {
+#ifdef MTLX_SCALARIZED_GRAPH_STORAGE
+    result = in1;
+    result.weight *= in2;
+#else
     if (in1.is_bsdf())
         mx_stack.bsdf_weights[in1.get_index()] *= in2;
     else
         mx_stack.layer_weights[in1.get_index()] *= in2;
     result = in1;
+#endif
 }
 
+[mutating]
 void mx_multiply_bsdf(ClosureData closure_data, BSDF in1, float in2, out BSDF result)
 {
     mx_multiply_bsdf(closure_data, in1, float3(in2), result);
@@ -79,12 +110,21 @@ void mx_mix_edf(ClosureData closure_data, EDF fg, EDF bg, float mix_value, out E
     result.radiance = lerp(bg.radiance, fg.radiance, clamp(mix_value, 0.0, 1.0));
 }
 
+[mutating]
 void mx_mix_surfaceshader(surfaceshader fg, surfaceshader bg, float mix_value, out surfaceshader result)
 {
     float clamped_mix = clamp(mix_value, 0.0, 1.0);
     result.root.set_layer(mx_stack_next_layer++);
+#ifdef MTLX_SCALARIZED_GRAPH_STORAGE
+    mx_stack.set_child_weights(
+        result.root.get_index(),
+        fg.root.weight * float3(clamped_mix),
+        bg.root.weight * float3(1.0 - clamped_mix)
+    );
+#else
     mx_stack.layer_weights[result.root.get_index()] = float3(1.0);
     mx_stack.mix_values[result.root.get_index()] = float3(clamped_mix);
+#endif
     result.opacity = lerp(bg.opacity, fg.opacity, clamped_mix);
     result.edf.radiance = lerp(bg.edf.radiance, fg.edf.radiance, clamped_mix);
     result.thin_walled = fg.thin_walled || bg.thin_walled;

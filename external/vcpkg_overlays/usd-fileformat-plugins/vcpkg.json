@@ -1,0 +1,22 @@
+{
+  "name": "usd-fileformat-plugins",
+  "version-string": "2026.07-falcor2.14",
+  "description": "Optional Adobe file-format plugins for Falcor2's core-only OpenUSD",
+  "homepage": "https://github.com/skallweitNV/USD-Fileformat-plugins",
+  "license": "Apache-2.0",
+  "supports": "(windows & x64 & !uwp) | (linux & x64) | (osx & (x64 | arm64))",
+  "dependencies": [
+    { "name": "openimageio", "default-features": false },
+    "usd",
+    "zlib",
+    { "name": "vcpkg-cmake", "host": true }
+  ],
+  "features": {
+    "fbx": {
+      "description": "FBX plugin (downloads Autodesk FBX SDK 2020.3.11 for the build)",
+      "dependencies": [
+        { "name": "libxml2", "default-features": false }
+      ]
+    }
+  }
+}

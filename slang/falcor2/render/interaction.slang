@@ -21,6 +21,17 @@ public interface ISurfaceInteraction : IInteraction
     public property Frame shading_frame_ws;
 };
 
+/// Apply the renderer's spawn policy; an unavailable bound uses the standard offset.
+public float3
+offset_surface_ray_origin(float3 position, float3 oriented_normal, Conditional<float, ENABLE_PRECISE_RAY_OFFSETS> bound)
+{
+    if (let offset = bound.get()) {
+        if (offset > 0.0)
+            return offset_ray_origin_precise(position, oriented_normal, offset);
+    }
+    return offset_ray_origin(position, oriented_normal);
+}
+
 public struct SurfaceInteraction : ISurfaceInteraction
 {
     /// Incident direction (i.e. -ray.dir) in world-space.
@@ -39,7 +50,24 @@ public struct SurfaceInteraction : ISurfaceInteraction
     /// Index of refraction for the medium on the front-facing, exterior side of the material at the hit.
     public float exterior_ior = 1.0;
 
+    /// Packed integer addressing data for scene-backed material inputs.
+    public no_diff Conditional<PackedHitInfo, ENABLE_GEOMETRY_PROPERTIES> hit_info
+        = Conditional<PackedHitInfo, ENABLE_GEOMETRY_PROPERTIES>(PackedHitInfo());
+
+    /// World-space offset along the unit geometric normal; zero if unavailable.
+    /// Compiled out when disabled. This is not stored in persistent path state.
+    public no_diff Conditional<float, ENABLE_PRECISE_RAY_OFFSETS> ray_offset
+        = Conditional<float, ENABLE_PRECISE_RAY_OFFSETS>(0.0);
+
     public __init() { }
+
+    /// Store the packed addressing data when surface interactions include hit information.
+    [mutating]
+    public void set_hit_info(IHitInfo hit)
+    {
+        if (ENABLE_GEOMETRY_PROPERTIES)
+            hit_info.set(hit.pack());
+    }
 
     /// Returns the geometric normal in world-space such that it points towards the viewer.
     public float3 front_normal_ws() { return front_facing ? normal_ws : -normal_ws; }

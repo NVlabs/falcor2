@@ -1,8 +1,10 @@
 set(SGL_BUILD_EXAMPLES OFF)
 set(SGL_BUILD_TESTS OFF)
 set(SGL_GENERATE_SETPATH_SCRIPTS OFF)
+set(SGL_BUILD_STANDALONE OFF) # Use the image libraries already supplied by Falcor's vcpkg manifest.
 
-add_subdirectory(slangpy)
+add_subdirectory(slangpy EXCLUDE_FROM_ALL)
+
 
 # -----------------------------------------------------------------------------
 # MDL SDK
@@ -52,12 +54,40 @@ endif()
 falcor2_copy_binary(${mdl-sdk_SOURCE_DIR}/examples/mdl/nvidia/core_definitions.mdl ./mdl/nvidia)
 falcor2_copy_binary(${mdl-sdk_SOURCE_DIR}/examples/mdl/nvidia/core_definitions_de.xlf ./mdl/nvidia)
 falcor2_copy_binary(${mdl-sdk_SOURCE_DIR}/examples/mdl/nvidia/core_definitions_fr.xlf ./mdl/nvidia)
+falcor2_copy_binary(${mdl-sdk_SOURCE_DIR}/examples/mdl/nvidia/sdk_examples/gltf_support.mdl ./mdl/nvidia/sdk_examples)
+
+# Pinned BSD-3-Clause OmniPBR and OmniSurfaceLite fallback. Keep sources and notices in every deployment.
+set(_omni_pbr_files
+    OmniPBR.mdl
+    OmniPBRBase.mdl
+    OmniPBR_ClearCoat.mdl
+    OmniPBR_ClearCoat_Opacity.mdl
+    OmniPBR_Opacity.mdl
+    OmniSurfaceLite.mdl
+    OmniSurface/OmniSurfaceLiteBase.mdl
+    OmniSurface/OmniShared.mdl
+    OmniSurface/OmniImage.mdl
+    nvidia/aux_definitions.mdl
+    nvidia/core_definitions.mdl
+    nvidia/support_definitions.mdl
+    LICENSE
+    README.md
+)
+foreach(_omni_pbr_file IN LISTS _omni_pbr_files)
+    get_filename_component(_omni_pbr_directory "${_omni_pbr_file}" DIRECTORY)
+    falcor2_copy_binary(
+        "${CMAKE_CURRENT_SOURCE_DIR}/omni_pbr/${_omni_pbr_file}"
+        "mdl_libraries/omni_pbr/${_omni_pbr_directory}"
+    )
+endforeach()
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/omni_pbr/LICENSE"
+    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/licenses/falcor2" RENAME OmniPBR.txt)
 
 # -----------------------------------------------------------------------------
 # NVIDIA NGX / DLSS SDK
 # -----------------------------------------------------------------------------
 
-set(FALCOR_DLSS_DLL_VERSION "310.6.0" CACHE STRING "NVIDIA DLSS DLL version")
+set(FALCOR_DLSS_DLL_VERSION "310.9.1" CACHE STRING "NVIDIA DLSS DLL version")
 set(FALCOR_DLSS_LOCAL_SDK_DIR "" CACHE PATH "Optional local NVIDIA DLSS SDK path. Leave empty to fetch from GitHub releases.")
 
 if(FALCOR_ENABLE_NGX)
@@ -82,15 +112,19 @@ if(FALCOR_ENABLE_NGX)
             "${FALCOR_DLSS_SDK_DIR}/lib/Windows_x86_64/rel/nvngx_dlssg.dll"
         )
     elseif(FALCOR_LINUX)
-        if(NOT FALCOR_ARCHITECTURE MATCHES "x86_64")
-            message(FATAL_ERROR "NGX is only wired for Linux x86_64 SDK binaries in this integration.")
+        if(FALCOR_ARCHITECTURE STREQUAL "x86_64")
+            set(_falcor_dlss_linux_dir "${FALCOR_DLSS_SDK_DIR}/lib/Linux_x86_64")
+        elseif(FALCOR_ARCHITECTURE MATCHES "^(aarch64|arm64)$")
+            set(_falcor_dlss_linux_dir "${FALCOR_DLSS_SDK_DIR}/lib/Linux_aarch64")
+        else()
+            message(FATAL_ERROR "NGX requires x86_64 or ARM64 on Linux.")
         endif()
-        set(FALCOR_DLSS_NGX_LIBRARY_DEBUG "${FALCOR_DLSS_SDK_DIR}/lib/Linux_x86_64/libnvsdk_ngx.a")
+        set(FALCOR_DLSS_NGX_LIBRARY_DEBUG "${_falcor_dlss_linux_dir}/libnvsdk_ngx.a")
         set(FALCOR_DLSS_NGX_LIBRARY_RELEASE "${FALCOR_DLSS_NGX_LIBRARY_DEBUG}")
         set(FALCOR_DLSS_RUNTIME_BINARIES
-            "${FALCOR_DLSS_SDK_DIR}/lib/Linux_x86_64/rel/libnvidia-ngx-dlss.so.${FALCOR_DLSS_DLL_VERSION}"
-            "${FALCOR_DLSS_SDK_DIR}/lib/Linux_x86_64/rel/libnvidia-ngx-dlssd.so.${FALCOR_DLSS_DLL_VERSION}"
-            "${FALCOR_DLSS_SDK_DIR}/lib/Linux_x86_64/rel/libnvidia-ngx-dlssg.so.${FALCOR_DLSS_DLL_VERSION}"
+            "${_falcor_dlss_linux_dir}/rel/libnvidia-ngx-dlss.so.${FALCOR_DLSS_DLL_VERSION}"
+            "${_falcor_dlss_linux_dir}/rel/libnvidia-ngx-dlssd.so.${FALCOR_DLSS_DLL_VERSION}"
+            "${_falcor_dlss_linux_dir}/rel/libnvidia-ngx-dlssg.so.${FALCOR_DLSS_DLL_VERSION}"
         )
     else()
         message(FATAL_ERROR "NGX is not supported on ${FALCOR_PLATFORM}.")
@@ -98,7 +132,6 @@ if(FALCOR_ENABLE_NGX)
 
     foreach(FALCOR_DLSS_RUNTIME_BINARY IN LISTS FALCOR_DLSS_RUNTIME_BINARIES)
         falcor2_copy_binary("${FALCOR_DLSS_RUNTIME_BINARY}" .)
-        install(FILES "${FALCOR_DLSS_RUNTIME_BINARY}" DESTINATION ${CMAKE_INSTALL_BINDIR})
     endforeach()
     message(STATUS "NGX enabled using DLSS SDK: ${FALCOR_DLSS_SDK_DIR}")
 
@@ -187,40 +220,8 @@ foreach(_mtlx_target MaterialXCore MaterialXFormat MaterialXGenShader)
     endif()
 endforeach()
 
-# -----------------------------------------------------------------------------
-# USD plugins
-# Copy USD plugins as described here: https://github.com/microsoft/vcpkg/issues/37947
-# -----------------------------------------------------------------------------
-
-# Validate USD plugin paths before copying.
-set(_pxr_usd_lib_dir "${pxr_DIR}/../../lib/usd")
-get_filename_component(_pxr_usd_lib_dir "${_pxr_usd_lib_dir}" ABSOLUTE)
-if(NOT EXISTS "${_pxr_usd_lib_dir}")
-    message(FATAL_ERROR "USD plugin lib directory not found: ${_pxr_usd_lib_dir}\n"
-        "The pxr package layout may have changed. pxr_DIR is: ${pxr_DIR}")
-endif()
-
-# These targets always run but cost is mitigated by copy_directory_if_different
-# on CMake >= 3.26.
-if(FALCOR_LINUX OR FALCOR_MACOS)
-    add_custom_target(falcor2_copy_usd_plugins ALL
-        COMMAND ${CMAKE_COMMAND} -E ${FALCOR_COPY_DIRECTORY} "${_pxr_usd_lib_dir}" "${FALCOR_OUTPUT_DIRECTORY}/usd"
-        VERBATIM
-    )
-else()
-    set(_pxr_usd_bin_dir "${pxr_DIR}/../../bin/usd")
-    get_filename_component(_pxr_usd_bin_dir "${_pxr_usd_bin_dir}" ABSOLUTE)
-    if(NOT EXISTS "${_pxr_usd_bin_dir}")
-        message(FATAL_ERROR "USD plugin bin directory not found: ${_pxr_usd_bin_dir}\n"
-            "The pxr package layout may have changed. pxr_DIR is: ${pxr_DIR}")
-    endif()
-    add_custom_target(falcor2_copy_usd_plugins ALL
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${FALCOR_OUTPUT_DIRECTORY}/usd/"
-        COMMAND ${CMAKE_COMMAND} -E ${FALCOR_COPY_DIRECTORY} "${_pxr_usd_lib_dir}" "${FALCOR_OUTPUT_DIRECTORY}/usd"
-        COMMAND ${CMAKE_COMMAND} -E ${FALCOR_COPY_DIRECTORY} "${_pxr_usd_bin_dir}" "${FALCOR_OUTPUT_DIRECTORY}/usd"
-        VERBATIM
-    )
-endif()
+# OpenUSD plugin, runtime, Python package, notice, and install staging.
+include(falcor2_usd_deployment)
 
 # -----------------------------------------------------------------------------
 # OpenPBR shaders
@@ -243,3 +244,37 @@ add_custom_target(falcor2_copy_openpbr ALL
 # header only
 add_library(falcor2_header_only INTERFACE)
 target_include_directories(falcor2_header_only INTERFACE include)
+
+# -----------------------------------------------------------------------------
+# OpenH264
+# -----------------------------------------------------------------------------
+
+set(FALCOR_OPENH264_SOURCE_DIR "" CACHE PATH "OpenH264 2.6.0 source checkout (headers only)")
+
+if(FALCOR_ENABLE_STREAMING)
+    if(NOT FALCOR_OPENH264_SOURCE_DIR)
+        FetchContent_Declare(falcor_openh264
+            GIT_REPOSITORY https://github.com/cisco/openh264.git
+            GIT_TAG 652bdb7719f30b52b08e506645a7322ff1b2cc6f
+            GIT_SUBMODULES ""
+            SOURCE_SUBDIR falcor-headers-only
+        )
+        FetchContent_MakeAvailable(falcor_openh264)
+        set(FALCOR_OPENH264_SOURCE_DIR "${falcor_openh264_SOURCE_DIR}")
+    endif()
+    find_path(FALCOR_OPENH264_INCLUDE_DIR wels/codec_api.h
+        PATHS "${FALCOR_OPENH264_SOURCE_DIR}/codec/api" NO_DEFAULT_PATH REQUIRED)
+    # Normalize checkout line endings before verifying the pinned API.
+    file(READ "${FALCOR_OPENH264_INCLUDE_DIR}/wels/codec_api.h" openh264_api)
+    string(REPLACE "\r\n" "\n" openh264_api "${openh264_api}")
+    string(SHA256 openh264_api_hash "${openh264_api}")
+    if(NOT openh264_api_hash STREQUAL "21f29b20c24f7c7946f2e243d0bc2532fb3542f6c28af338209477e70d9036c9")
+        message(FATAL_ERROR "Streaming requires the pinned OpenH264 2.6.0 headers")
+    endif()
+
+    # Only headers are needed at build time; the codec binary is loaded at runtime.
+    add_library(falcor2_openh264 INTERFACE)
+    target_include_directories(falcor2_openh264 INTERFACE "${FALCOR_OPENH264_INCLUDE_DIR}")
+    install(FILES "${FALCOR_OPENH264_SOURCE_DIR}/LICENSE"
+        DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/licenses/falcor2/streaming" RENAME "openh264-source.txt")
+endif()

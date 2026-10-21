@@ -53,6 +53,36 @@ public struct Scene
         return object_from_world[uint(get_geometry_instance_desc(id).header.transform_id)];
     }
 
+    /// Get the geometry-instance ID carried by a real surface interaction.
+    /// Returns false and GeometryInstanceID::invalid for synthetic interactions.
+    public bool try_get_geometry_instance_id(const SurfaceInteraction si, out GeometryInstanceID id)
+    {
+        id = GeometryInstanceID::invalid;
+        if (let packed_hit = si.hit_info.get()) {
+            if (packed_hit.geometry_type != GeometryType::invalid) {
+                id = packed_hit.geometry_instance_id;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Get the world-from-object transform for the geometry instance at a surface interaction.
+    public float4x4
+    get_geometry_world_from_object(const SurfaceInteraction si, const float4x4 fallback = GEOMETRY_IDENTITY_4X4)
+    {
+        GeometryInstanceID id;
+        return try_get_geometry_instance_id(si, id) ? get_world_from_object(id) : fallback;
+    }
+
+    /// Get the object-from-world transform for the geometry instance at a surface interaction.
+    public float4x4
+    get_geometry_object_from_world(const SurfaceInteraction si, const float4x4 fallback = GEOMETRY_IDENTITY_4X4)
+    {
+        GeometryInstanceID id;
+        return try_get_geometry_instance_id(si, id) ? get_object_from_world(id) : fallback;
+    }
+
     public float4x4 get_prev_world_from_object(TransformID id) { return prev_world_from_object[uint(id)]; }
 
     public float4x4 get_prev_world_from_object(GeometryInstanceID id)

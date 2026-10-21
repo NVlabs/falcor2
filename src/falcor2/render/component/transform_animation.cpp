@@ -3,11 +3,35 @@
 
 #include "transform_animation.h"
 
+#include <algorithm>
+
 namespace falcor {
+
+TransformAnimation::~TransformAnimation()
+{
+    unregister_animation();
+}
+
+void TransformAnimation::unregister_animation()
+{
+    if (m_animation)
+        std::erase(m_animation->m_transform_animations, this);
+}
+
+void TransformAnimation::remove()
+{
+    if (!is_valid())
+        return;
+    // Removal unregisters the consumer but preserves its retained animation reference.
+    unregister_animation();
+    mark_dirty(DirtyFlags::animation_state);
+    Component::remove();
+}
 
 void TransformAnimation::clear_invalid_references()
 {
     if (m_animation && !m_animation->is_valid()) {
+        unregister_animation();
         m_animation = nullptr;
         mark_dirty(DirtyFlags::animation_state);
     }
@@ -15,8 +39,18 @@ void TransformAnimation::clear_invalid_references()
 
 void TransformAnimation::set_animation(Animation* animation)
 {
-    if (animation != m_animation) {
-        m_animation = animation;
+    FALCOR_CHECK(is_valid() && scene(), "TransformAnimation must be live");
+    if (animation) {
+        FALCOR_CHECK(
+            animation->is_valid() && animation->scene() == scene(),
+            "Animation must be live in the same Scene"
+        );
+    }
+    if (animation != m_animation.get()) {
+        if (animation)
+            animation->m_transform_animations.push_back(this);
+        unregister_animation();
+        m_animation = ref(animation);
         mark_dirty(DirtyFlags::animation_state);
     }
 }

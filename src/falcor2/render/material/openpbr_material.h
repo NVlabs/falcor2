@@ -48,6 +48,8 @@ public:
     }
     virtual OpacityDesc opacity_desc() const override;
 
+    virtual SceneCapabilities required_capabilities() const override;
+
     /// Reflect this class.
     template<reflection::ClassReflector R>
     static void reflect(R& r)
@@ -67,9 +69,6 @@ private:
 
     template<typename CursorT>
     void write_to_cursor_impl(CursorT cursor) const;
-
-    void require_update() { mark_dirty(DirtyFlags::properties); }
-    void require_load_resources() { mark_dirty(DirtyFlags::resources); }
 
     enum class AttributeType {
         float_,
@@ -108,8 +107,10 @@ private:
         // Property values.
         AttributeValue value;
         ref<sgl::Texture> texture;
+        ref<sgl::Sampler> texture_sampler;
         std::filesystem::path texture_path;
         uint32_t texture_channel{0};
+        uint32_t texture_texcoord{0};
 
         // Runtime state.
         TextureHandle texture_handle;
@@ -192,16 +193,21 @@ private:
     ref<sgl::Buffer> m_attributes_buffer;
 
     ref<sgl::Texture> m_opacity_texture;
+    ref<sgl::Sampler> m_opacity_texture_sampler;
     std::filesystem::path m_opacity_texture_path;
     uint32_t m_opacity_texture_channel{3};
+    uint32_t m_opacity_texture_texcoord{0};
     float m_opacity_factor{1.f};
     float m_opacity_threshold{0.f};
     TextureHandle m_opacity_texture_handle;
     ref<sgl::Texture> m_normal_texture;
+    ref<sgl::Sampler> m_normal_texture_sampler;
     std::filesystem::path m_normal_texture_path;
     float m_normal_texture_scale{1.f};
+    uint32_t m_normal_texture_texcoord{0};
     TextureHandle m_normal_texture_handle;
     bool m_geometry_thin_walled{false};
+    bool m_use_vertex_color{false};
 
     const Attribute& attribute_by_name(std::string_view name) const;
 };

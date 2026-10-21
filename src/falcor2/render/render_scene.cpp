@@ -3,10 +3,13 @@
 
 #include "render_scene.h"
 
-#include "falcor2/render/hit_group_policy.h"
+#include "falcor2/render/ray_tracing_policy.h"
 #include "falcor2/render/utils/check_struct.h"
 
+#include <sgl/core/maths.h>
 #include <sgl/device/kernel.h>
+
+#include <algorithm>
 
 #include <slang-rhi/acceleration-structure-utils.h>
 
@@ -20,6 +23,22 @@ static constexpr size_t MAX_BUFFER_SIZE = 2ull * 1024 * 1024 * 1024;
 /// This is used for testing purposes.
 static constexpr bool FORCE_PROCEDURAL_LSS = false;
 
+size_t get_additional_attribute_type_size(shared::AdditionalAttributeType type)
+{
+    switch (type) {
+    case shared::AdditionalAttributeType::bool_:
+        return sizeof(uint8_t);
+    case shared::AdditionalAttributeType::int32:
+        return sizeof(int32_t);
+    case shared::AdditionalAttributeType::float16:
+        return sizeof(uint16_t);
+    case shared::AdditionalAttributeType::float32:
+        return sizeof(float);
+    default:
+        FALCOR_THROW("Unsupported additional geometry attribute type");
+    }
+}
+
 template<typename T>
 void remove(std::vector<T>& vector, const T& item)
 {
@@ -27,6 +46,171 @@ void remove(std::vector<T>& vector, const T& item)
     if (it != vector.end()) {
         vector.erase(it);
     }
+}
+
+// ----------------------------------------------------------------------------
+// RenderGeometryAdditionalAttributeStorage
+// ----------------------------------------------------------------------------
+
+RenderGeometryAdditionalAttributeStorage::RenderGeometryAdditionalAttributeStorage(
+    std::string_view desc_label,
+    std::string_view data_label
+)
+    : m_descs({.label = std::string(desc_label)})
+    , m_data(data_label)
+{
+}
+
+void RenderGeometryAdditionalAttributeStorage::destroy(
+    uint32_t geometry_index,
+    std::vector<RenderGeometryAdditionalAttribute>& attributes
+)
+{
+    if (!attributes.empty()) {
+        FALCOR_ASSERT(m_geometry_count > 0);
+        --m_geometry_count;
+    }
+    for (const RenderGeometryAdditionalAttribute& attribute : attributes) {
+        if (attribute.allocation.is_valid())
+            m_data.free(attribute.allocation);
+    }
+    attributes.clear();
+
+    const size_t descriptor_offset = geometry_index * ADDITIONAL_ATTRIBUTE_DESC_ROW_SIZE;
+    if (descriptor_offset < m_descs.size()) {
+        std::memset(
+            m_descs.data() + descriptor_offset,
+            0,
+            ADDITIONAL_ATTRIBUTE_DESC_ROW_SIZE * sizeof(shared::PackedAdditionalAttribute)
+        );
+        m_descs.mark_dirty(descriptor_offset, descriptor_offset + ADDITIONAL_ATTRIBUTE_DESC_ROW_SIZE);
+    }
+}
+
+void RenderGeometryAdditionalAttributeStorage::update(
+    uint32_t geometry_index,
+    uint32_t vertex_count,
+    std::vector<RenderGeometryAdditionalAttribute>& attributes,
+    std::span<const RenderGeometryAdditionalAttributeData> data
+)
+{
+    const bool had_attributes = !attributes.empty();
+    std::vector<RenderGeometryAdditionalAttribute> updated_attributes;
+    updated_attributes.reserve(data.size());
+    uint32_t attribute_mask = 0;
+    for (const RenderGeometryAdditionalAttributeData& input : data) {
+        FALCOR_CHECK(input.mask_bit < MAX_ADDITIONAL_GEOMETRY_ATTRIBUTES, "Additional attribute mask bit out of range");
+        FALCOR_CHECK(
+            input.component_count > 0 && input.component_count <= 4,
+            "Invalid additional attribute component count"
+        );
+        FALCOR_CHECK(
+            input.data.size()
+                == size_t(vertex_count) * input.component_count * get_additional_attribute_type_size(input.type),
+            "Additional attribute data size does not match geometry vertex count"
+        );
+        const uint32_t bit = uint32_t(1) << input.mask_bit;
+        FALCOR_CHECK((attribute_mask & bit) == 0, "Duplicate additional attribute mask bit");
+        attribute_mask |= bit;
+
+        const size_t byte_size = sgl::div_round_up(input.data.size(), size_t(ADDITIONAL_ATTRIBUTE_STREAM_ALIGNMENT))
+            * ADDITIONAL_ATTRIBUTE_STREAM_ALIGNMENT;
+        auto existing = std::find_if(
+            attributes.begin(),
+            attributes.end(),
+            [&](const RenderGeometryAdditionalAttribute& attribute)
+            {
+                return attribute.mask_bit == input.mask_bit;
+            }
+        );
+        OffsetAllocator::Allocation allocation;
+        if (existing != attributes.end() && existing->type == input.type
+            && existing->component_count == input.component_count
+            && m_data.allocation_size(existing->allocation) == byte_size) {
+            allocation = existing->allocation;
+        } else {
+            if (existing != attributes.end())
+                m_data.free(existing->allocation);
+            allocation = m_data.allocate(byte_size);
+        }
+
+        m_data.write(allocation, input.data);
+        updated_attributes.push_back({input.mask_bit, input.type, input.component_count, allocation});
+    }
+
+    std::sort(
+        updated_attributes.begin(),
+        updated_attributes.end(),
+        [](const auto& a, const auto& b)
+        {
+            return a.mask_bit < b.mask_bit;
+        }
+    );
+
+    for (const RenderGeometryAdditionalAttribute& attribute : attributes) {
+        auto updated = std::find_if(
+            updated_attributes.begin(),
+            updated_attributes.end(),
+            [&](const RenderGeometryAdditionalAttribute& item)
+            {
+                return item.mask_bit == attribute.mask_bit;
+            }
+        );
+        if (updated == updated_attributes.end())
+            m_data.free(attribute.allocation);
+    }
+    attributes = std::move(updated_attributes);
+    update_descs(geometry_index, attributes);
+
+    const bool has_attributes = !attributes.empty();
+    if (had_attributes != has_attributes) {
+        if (has_attributes) {
+            ++m_geometry_count;
+        } else {
+            FALCOR_ASSERT(m_geometry_count > 0);
+            --m_geometry_count;
+        }
+    }
+}
+
+void RenderGeometryAdditionalAttributeStorage::update_descs(
+    uint32_t geometry_index,
+    const std::vector<RenderGeometryAdditionalAttribute>& attributes
+)
+{
+    const size_t offset = geometry_index * ADDITIONAL_ATTRIBUTE_DESC_ROW_SIZE;
+    m_descs.ensure_size(offset + ADDITIONAL_ATTRIBUTE_DESC_ROW_SIZE);
+    std::memset(
+        m_descs.data() + offset,
+        0,
+        ADDITIONAL_ATTRIBUTE_DESC_ROW_SIZE * sizeof(shared::PackedAdditionalAttribute)
+    );
+    uint32_t attribute_mask = 0;
+    for (size_t index = 0; index < attributes.size(); ++index) {
+        const RenderGeometryAdditionalAttribute& attribute = attributes[index];
+        attribute_mask |= uint32_t(1) << attribute.mask_bit;
+        m_descs.data()[offset + 1 + index] = {
+            .byte_offset = m_data.byte_offset(attribute.allocation),
+            .format = (uint32_t(attribute.type) << 8) | attribute.component_count,
+        };
+    }
+    m_descs.data()[offset].byte_offset = attribute_mask;
+    m_descs.mark_dirty(offset, offset + ADDITIONAL_ATTRIBUTE_DESC_ROW_SIZE);
+}
+
+void RenderGeometryAdditionalAttributeStorage::update_buffers(sgl::CommandEncoder* command_encoder)
+{
+    m_descs.update_buffer(command_encoder);
+    if (has_attributes())
+        m_data.update_buffer(command_encoder);
+}
+
+void RenderGeometryAdditionalAttributeStorage::bind(sgl::ShaderCursor cursor) const
+{
+    if (m_descs.buffer())
+        cursor["additional_attributes"] = m_descs.buffer();
+    if (has_attributes())
+        cursor["additional_attribute_data"] = m_data.buffer();
 }
 
 // ----------------------------------------------------------------------------
@@ -49,6 +233,10 @@ RenderTriangleGeometries::RenderTriangleGeometries(sgl::Device* device)
       })
     , m_vertex_allocator(static_cast<uint32_t>(MAX_BUFFER_SIZE / sizeof(shared::PackedTriangleVertex)))
     , m_index_allocator(static_cast<uint32_t>(MAX_BUFFER_SIZE / sizeof(uint32_t)))
+    , m_additional_attributes(
+          "TriangleGeometryData::additional_attributes",
+          "TriangleGeometryData::additional_attribute_data"
+      )
 {
     FALCOR_UNUSED(device);
 }
@@ -105,6 +293,8 @@ void RenderTriangleGeometries::destroy(RenderTriangleGeometryHandle handle)
     if (geometry.index_allocation.is_valid())
         m_index_allocator.free(geometry.index_allocation);
 
+    m_additional_attributes.destroy(handle.index(), geometry.additional_attributes);
+
     // Clear descriptor.
     m_descs[handle.index()] = {};
     m_descs.mark_dirty(handle.index(), handle.index() + 1);
@@ -115,7 +305,6 @@ void RenderTriangleGeometries::destroy(RenderTriangleGeometryHandle handle)
 void RenderTriangleGeometries::update(RenderTriangleGeometryHandle handle, const RenderTriangleGeometryData& data)
 {
     RenderTriangleGeometry& geometry = m_pool[handle];
-
     // Copy vertex data.
     FALCOR_CHECK_EQ(data.vertices.size(), geometry.vertex_count);
     std::memcpy(m_vertices.data() + geometry.vertex_offset, data.vertices.data(), data.vertices.size_bytes());
@@ -125,6 +314,9 @@ void RenderTriangleGeometries::update(RenderTriangleGeometryHandle handle, const
     FALCOR_CHECK_EQ(data.indices.size(), geometry.index_count);
     std::memcpy(m_indices.data() + geometry.index_offset, data.indices.data(), data.indices.size_bytes());
     m_indices.mark_dirty(geometry.index_offset, geometry.index_offset + geometry.index_count);
+
+    m_additional_attributes
+        .update(handle.index(), geometry.vertex_count, geometry.additional_attributes, data.additional_attributes);
 
     m_pool.mark_dirty(handle, true);
 }
@@ -168,6 +360,7 @@ void RenderTriangleGeometries::update_buffers(sgl::CommandEncoder* command_encod
     m_descs.update_buffer(command_encoder);
     m_vertices.update_buffer(command_encoder);
     m_indices.update_buffer(command_encoder);
+    m_additional_attributes.update_buffers(command_encoder);
 }
 
 void RenderTriangleGeometries::bind(sgl::ShaderCursor cursor) const
@@ -178,13 +371,14 @@ void RenderTriangleGeometries::bind(sgl::ShaderCursor cursor) const
         cursor["vertices"] = m_vertices.buffer();
     if (m_indices.buffer())
         cursor["indices"] = m_indices.buffer();
+    m_additional_attributes.bind(cursor);
 }
 
 // ----------------------------------------------------------------------------
 // RenderLSSGeometry
 // ----------------------------------------------------------------------------
 
-RenderLSSGeometries::RenderLSSGeometries(sgl::Device* device, RenderLSSMode lss_mode)
+RenderLSSGeometries::RenderLSSGeometries(sgl::Device* device, LSSIntersectionMode intersection_mode)
     : m_descs({
           .label = "LSSGeometryData::descs",
       })
@@ -200,9 +394,10 @@ RenderLSSGeometries::RenderLSSGeometries(sgl::Device* device, RenderLSSMode lss_
       })
     , m_vertex_allocator(static_cast<uint32_t>(MAX_BUFFER_SIZE / sizeof(shared::PackedLSSVertex)))
     , m_index_allocator(static_cast<uint32_t>(MAX_BUFFER_SIZE / sizeof(uint32_t)))
-    , m_lss_mode(lss_mode)
+    , m_additional_attributes("LSSGeometryData::additional_attributes", "LSSGeometryData::additional_attribute_data")
+    , m_intersection_mode(intersection_mode)
 {
-    if (m_lss_mode == RenderLSSMode::procedural) {
+    if (m_intersection_mode == LSSIntersectionMode::procedural) {
         m_compute_aabbs_kernel = device->create_compute_kernel({
             .program = device->load_program("falcor2/render/kernels/lss_kernels.slang", {"compute_lss_aabbs"}),
         });
@@ -261,6 +456,8 @@ void RenderLSSGeometries::destroy(RenderLSSGeometryHandle handle)
     if (geometry.index_allocation.is_valid())
         m_index_allocator.free(geometry.index_allocation);
 
+    m_additional_attributes.destroy(handle.index(), geometry.additional_attributes);
+
     // Clear descriptor.
     m_descs[handle.index()] = {};
     m_descs.mark_dirty(handle.index(), handle.index() + 1);
@@ -281,6 +478,9 @@ void RenderLSSGeometries::update(RenderLSSGeometryHandle handle, const RenderLSS
     FALCOR_CHECK_EQ(data.indices.size(), geometry.index_count);
     std::memcpy(m_indices.data() + geometry.index_offset, data.indices.data(), data.indices.size_bytes());
     m_indices.mark_dirty(geometry.index_offset, geometry.index_offset + geometry.index_count);
+
+    m_additional_attributes
+        .update(handle.index(), geometry.vertex_count, geometry.additional_attributes, data.additional_attributes);
 
     m_pool.mark_dirty(handle, true);
 }
@@ -306,7 +506,7 @@ void RenderLSSGeometries::write_acceleration_structure_build_input(
 ) const
 {
     const RenderLSSGeometry& geometry = m_pool[handle];
-    if (m_lss_mode == RenderLSSMode::procedural) {
+    if (m_intersection_mode == LSSIntersectionMode::procedural) {
         sgl::AccelerationStructureBuildInputProceduralPrimitives procedural;
         procedural.aabb_buffers = {sgl::BufferOffsetPair(m_aabb_buffer, geometry.index_offset * sizeof(rhi::AABB))};
         procedural.aabb_stride = sizeof(rhi::AABB);
@@ -342,8 +542,9 @@ void RenderLSSGeometries::update_buffers(sgl::CommandEncoder* command_encoder)
     m_descs.update_buffer(command_encoder);
     m_vertices.update_buffer(command_encoder);
     m_indices.update_buffer(command_encoder);
+    m_additional_attributes.update_buffers(command_encoder);
 
-    if (m_lss_mode == RenderLSSMode::procedural && m_pool.is_dirty()) {
+    if (m_intersection_mode == LSSIntersectionMode::procedural && m_pool.is_dirty()) {
         // Compute total number of segments (indices) across all geometries.
         uint32_t total_segments = 0;
         for (const auto& [handle, geometry] : m_pool) {
@@ -394,6 +595,65 @@ void RenderLSSGeometries::bind(sgl::ShaderCursor cursor) const
         cursor["vertices"] = m_vertices.buffer();
     if (m_indices.buffer())
         cursor["indices"] = m_indices.buffer();
+    m_additional_attributes.bind(cursor);
+}
+
+// ----------------------------------------------------------------------------
+// RenderAreaLightGeometry
+// ----------------------------------------------------------------------------
+
+RenderAreaLightGeometries::RenderAreaLightGeometries()
+    : m_aabbs({
+          .usage = sgl::BufferUsage::acceleration_structure_build_input,
+          .label = "AreaLightGeometryData::aabbs",
+      })
+{
+    m_aabbs.resize(1);
+    m_aabbs[0] = rhi::AABB{-1.f, -1.f, -1.f, 1.f, 1.f, 1.f};
+    m_aabbs.mark_all_dirty();
+}
+
+RenderAreaLightGeometryHandle RenderAreaLightGeometries::create(const RenderAreaLightGeometryDesc& desc)
+{
+    FALCOR_UNUSED(desc);
+
+    RenderAreaLightGeometryHandle handle = m_pool.allocate();
+    m_pool.mark_dirty(handle, true);
+    return handle;
+}
+
+void RenderAreaLightGeometries::destroy(RenderAreaLightGeometryHandle handle)
+{
+    m_pool.free(handle);
+}
+
+void RenderAreaLightGeometries::write_geometry_instance_desc(
+    RenderAreaLightGeometryHandle handle,
+    shared::GeometryInstanceDesc& desc
+) const
+{
+    desc.header.type = shared::GeometryType::area_light;
+    desc.header.geometry_id = shared::GeometryID{handle.index()};
+}
+
+void RenderAreaLightGeometries::write_acceleration_structure_build_input(
+    RenderAreaLightGeometryHandle handle,
+    sgl::AccelerationStructureBuildInput& build_input
+) const
+{
+    FALCOR_UNUSED(handle);
+
+    sgl::AccelerationStructureBuildInputProceduralPrimitives procedural;
+    procedural.aabb_buffers = {sgl::BufferOffsetPair(m_aabbs.buffer(), 0)};
+    procedural.aabb_stride = sizeof(rhi::AABB);
+    procedural.primitive_count = 1;
+    procedural.flags = sgl::AccelerationStructureGeometryFlags::opaque;
+    build_input = procedural;
+}
+
+void RenderAreaLightGeometries::update_buffers(sgl::CommandEncoder* command_encoder)
+{
+    m_aabbs.update_buffer(command_encoder);
 }
 
 // ----------------------------------------------------------------------------
@@ -464,6 +724,11 @@ inline void check_shared_types(sgl::SlangModule* module)
     CHECK_STRUCT_FIELD(index_count);
     CHECK_STRUCT_END();
 
+    CHECK_STRUCT_BEGIN(module, "PackedAdditionalAttribute", shared::PackedAdditionalAttribute);
+    CHECK_STRUCT_FIELD(byte_offset);
+    CHECK_STRUCT_FIELD(format);
+    CHECK_STRUCT_END();
+
     CHECK_STRUCT_BEGIN(module, "TriangleGeometryInstanceDesc", shared::TriangleGeometryInstanceDesc);
     CHECK_STRUCT_FIELD(header);
     CHECK_STRUCT_FIELD(vertex_offset);
@@ -475,6 +740,7 @@ inline void check_shared_types(sgl::SlangModule* module)
     CHECK_STRUCT_BEGIN(module, "PackedLSSVertex", shared::PackedLSSVertex);
     CHECK_STRUCT_FIELD(position);
     CHECK_STRUCT_FIELD(radius);
+    CHECK_STRUCT_FIELD(texcoord);
     CHECK_STRUCT_END();
 
     CHECK_STRUCT_BEGIN(module, "LSSGeometryDesc", shared::LSSGeometryDesc);
@@ -491,6 +757,13 @@ inline void check_shared_types(sgl::SlangModule* module)
     CHECK_STRUCT_FIELD(index_offset);
     CHECK_STRUCT_FIELD(index_count);
     CHECK_STRUCT_END();
+
+    CHECK_STRUCT_BEGIN(module, "AreaLightGeometryInstanceDesc", shared::AreaLightGeometryInstanceDesc);
+    CHECK_STRUCT_FIELD(header);
+    CHECK_STRUCT_FIELD(light_id);
+    CHECK_STRUCT_FIELD(flags);
+    CHECK_STRUCT_FIELD(reserved);
+    CHECK_STRUCT_END();
 }
 
 RenderScene::RenderScene(sgl::Device* device)
@@ -499,8 +772,8 @@ RenderScene::RenderScene(sgl::Device* device)
     , m_lss_geometries(
           device,
           (FORCE_PROCEDURAL_LSS || !device->has_feature(sgl::Feature::acceleration_structure_linear_swept_spheres))
-              ? RenderLSSMode::procedural
-              : RenderLSSMode::hardware
+              ? LSSIntersectionMode::procedural
+              : LSSIntersectionMode::hardware
       )
     , m_geometry_instance_descs({
           .usage = sgl::BufferUsage::shader_resource,
@@ -584,6 +857,26 @@ RenderLSSGeometry& RenderScene::get_lss_geometry(RenderLSSGeometryHandle handle)
     return m_lss_geometries.m_pool[handle];
 }
 
+RenderAreaLightGeometryHandle RenderScene::create_area_light_geometry(const RenderAreaLightGeometryDesc& desc)
+{
+    return m_area_light_geometries.create(desc);
+}
+
+void RenderScene::destroy_area_light_geometry(RenderAreaLightGeometryHandle handle)
+{
+    m_area_light_geometries.destroy(handle);
+}
+
+const RenderAreaLightGeometry& RenderScene::get_area_light_geometry(RenderAreaLightGeometryHandle handle) const
+{
+    return m_area_light_geometries.m_pool[handle];
+}
+
+RenderAreaLightGeometry& RenderScene::get_area_light_geometry(RenderAreaLightGeometryHandle handle)
+{
+    return m_area_light_geometries.m_pool[handle];
+}
+
 void RenderScene::update_lss_geometry(RenderLSSGeometryHandle handle, const RenderLSSGeometryData& data)
 {
     m_lss_geometries.update(handle, data);
@@ -612,6 +905,13 @@ RenderGeometryGroupHandle RenderScene::create_geometry_group(const RenderGeometr
             FALCOR_ASSERT(geometry_type == shared::GeometryType::invalid || geometry_type == shared::GeometryType::lss);
             geometry_type = shared::GeometryType::lss;
             break;
+        case RenderObjectType::area_light_geometry:
+            get_area_light_geometry(RenderAreaLightGeometryHandle{geometry_handle}).geometry_groups.push_back(handle);
+            FALCOR_ASSERT(
+                geometry_type == shared::GeometryType::invalid || geometry_type == shared::GeometryType::area_light
+            );
+            geometry_type = shared::GeometryType::area_light;
+            break;
         default:
             FALCOR_THROW("Unsupported geometry type in geometry group");
         }
@@ -634,6 +934,9 @@ void RenderScene::destroy_geometry_group(RenderGeometryGroupHandle handle)
         case RenderObjectType::lss_geometry:
             remove(get_lss_geometry(RenderLSSGeometryHandle{geometry_handle}).geometry_groups, handle);
             break;
+        case RenderObjectType::area_light_geometry:
+            remove(get_area_light_geometry(RenderAreaLightGeometryHandle{geometry_handle}).geometry_groups, handle);
+            break;
         default:
             FALCOR_THROW("Unsupported geometry type in geometry group");
         }
@@ -655,6 +958,9 @@ RenderGeometryInstanceHandle RenderScene::create_geometry_instance(const RenderG
     geometry_instance.geometry_group = desc.geometry_group;
     geometry_instance.transform = desc.transform;
     geometry_instance.material_ids.assign(desc.material_ids.begin(), desc.material_ids.end());
+    geometry_instance.payload_override = desc.payload_override;
+    geometry_instance.instance_mask = desc.instance_mask;
+    geometry_instance.enable_backface_culling = desc.enable_backface_culling;
     get_transform(desc.transform).geometry_instances.push_back(handle);
     return handle;
 }
@@ -670,6 +976,40 @@ void RenderScene::destroy_geometry_instance(RenderGeometryInstanceHandle handle)
 const RenderGeometryInstance& RenderScene::get_geometry_instance(RenderGeometryInstanceHandle handle) const
 {
     return m_geometry_instance_pool[handle];
+}
+
+void RenderScene::update_geometry_instance_payload(
+    RenderGeometryInstanceHandle handle,
+    const shared::GeometryInstanceDescPayload& payload
+)
+{
+    RenderGeometryInstance& geometry_instance = m_geometry_instance_pool[handle];
+    if (geometry_instance.payload_override
+        && std::memcmp(&geometry_instance.payload_override.value(), &payload, sizeof(payload)) == 0)
+        return;
+    geometry_instance.payload_override = payload;
+    m_geometry_instance_pool.mark_dirty(handle, RenderGeometryInstanceDirtyFlags::payload);
+}
+
+void RenderScene::update_geometry_instance_mask(RenderGeometryInstanceHandle handle, uint8_t instance_mask)
+{
+    RenderGeometryInstance& geometry_instance = m_geometry_instance_pool[handle];
+    if (geometry_instance.instance_mask == instance_mask)
+        return;
+    geometry_instance.instance_mask = instance_mask;
+    m_geometry_instance_pool.mark_dirty(handle, RenderGeometryInstanceDirtyFlags::instance_mask);
+}
+
+void RenderScene::update_geometry_instance_backface_culling(
+    RenderGeometryInstanceHandle handle,
+    bool enable_backface_culling
+)
+{
+    RenderGeometryInstance& geometry_instance = m_geometry_instance_pool[handle];
+    if (geometry_instance.enable_backface_culling == enable_backface_culling)
+        return;
+    geometry_instance.enable_backface_culling = enable_backface_culling;
+    m_geometry_instance_pool.mark_dirty(handle, RenderGeometryInstanceDirtyFlags::culling);
 }
 
 size_t RenderScene::geometry_instance_desc_count() const
@@ -789,6 +1129,8 @@ bool RenderScene::has_geometry_type(shared::GeometryType type) const
         return has_triangle_geometry();
     case shared::GeometryType::lss:
         return has_lss_geometry();
+    case shared::GeometryType::area_light:
+        return has_area_light_geometry();
     default:
         return false;
     }
@@ -879,6 +1221,7 @@ bool RenderScene::update(UpdateContext& ctx)
     // Update all device-side geometry buffers (vertices, indices, descriptors).
     m_triangle_geometries.update_buffers(ctx.command_encoder());
     m_lss_geometries.update_buffers(ctx.command_encoder());
+    m_area_light_geometries.update_buffers(ctx.command_encoder());
     // TODO(scene): This is where we might call back to user code to run compute shaders on vertex data (displacement
     // shaders).
     // Check for dirty triangle geometry and mark geometry groups as dirty.
@@ -898,6 +1241,14 @@ bool RenderScene::update(UpdateContext& ctx)
                 for (const RenderGeometryGroupHandle& geometry_group : geometry.geometry_groups) {
                     m_geometry_group_pool.mark_dirty(geometry_group, true);
                 }
+            }
+        }
+    }
+    if (m_area_light_geometries.m_pool.is_dirty()) {
+        for (const auto& [handle, geometry] : m_area_light_geometries.m_pool) {
+            if (m_area_light_geometries.m_pool.is_dirty(handle)) {
+                for (const RenderGeometryGroupHandle& geometry_group : geometry.geometry_groups)
+                    m_geometry_group_pool.mark_dirty(geometry_group, true);
             }
         }
     }
@@ -956,18 +1307,22 @@ bool RenderScene::update(UpdateContext& ctx)
                 ? float3x4(m_transform_pool[geometry_instance.transform].world_from_object)
                 : float3x4::identity();
             instance_desc.instance_id = geometry_instance_desc_index;
-            instance_desc.instance_mask = 0xff;
+            instance_desc.instance_mask = geometry_instance.instance_mask;
             instance_desc.instance_contribution_to_hit_group_index
                 = hit_group_policy.instance_contribution_to_hit_group_index(
                     uint32_t(geometry_group.geometry_type),
                     geometry_instance_desc_index
                 );
             instance_desc.flags = sgl::AccelerationStructureInstanceFlags::none;
+            if (geometry_group.geometry_type == shared::GeometryType::triangle
+                && !geometry_instance.enable_backface_culling)
+                instance_desc.flags
+                    = instance_desc.flags | sgl::AccelerationStructureInstanceFlags::triangle_facing_cull_disable;
             // Set the no_opaque flag for ALL triangle geometry if opacity evaluation is required.
             // TODO: We could make this more fine-grained by checking the material IDs of the geometry instance and only
             // setting no_opaque if any of the materials are non-opaque.
             if (m_requires_opacity_evaluation && geometry_group.geometry_type == shared::GeometryType::triangle)
-                instance_desc.flags = sgl::AccelerationStructureInstanceFlags::no_opaque;
+                instance_desc.flags = instance_desc.flags | sgl::AccelerationStructureInstanceFlags::no_opaque;
             instance_desc.acceleration_structure = geometry_group.blas->handle();
             m_tlas_instance_descs[tlas_instance_desc_index] = instance_desc;
 
@@ -987,6 +1342,12 @@ bool RenderScene::update(UpdateContext& ctx)
                         geometry_instance_desc
                     );
                     break;
+                case RenderObjectType::area_light_geometry:
+                    m_area_light_geometries.write_geometry_instance_desc(
+                        RenderAreaLightGeometryHandle(geometry_handle),
+                        geometry_instance_desc
+                    );
+                    break;
                 default:
                     FALCOR_THROW("Unsupported geometry type in geometry instance");
                 }
@@ -994,6 +1355,8 @@ bool RenderScene::update(UpdateContext& ctx)
                 geometry_instance_desc.header.material_id = geometry_index < geometry_instance.material_ids.size()
                     ? geometry_instance.material_ids[geometry_index]
                     : shared::MaterialID{0};
+                if (geometry_instance.payload_override)
+                    geometry_instance_desc.payload = *geometry_instance.payload_override;
                 m_geometry_instance_descs[geometry_instance_desc_index] = geometry_instance_desc;
                 ++geometry_instance_desc_index;
             }
@@ -1009,11 +1372,13 @@ bool RenderScene::update(UpdateContext& ctx)
     build_tlas(ctx);
 
     bool changed = m_triangle_geometries.m_pool.is_dirty() || m_lss_geometries.m_pool.is_dirty()
-        || m_geometry_group_pool.is_dirty() || m_geometry_instance_pool.is_dirty() || m_transform_pool.is_dirty();
+        || m_area_light_geometries.m_pool.is_dirty() || m_geometry_group_pool.is_dirty()
+        || m_geometry_instance_pool.is_dirty() || m_transform_pool.is_dirty();
 
     // Reset dirty flags.
     m_triangle_geometries.m_pool.reset_dirty_flags();
     m_lss_geometries.m_pool.reset_dirty_flags();
+    m_area_light_geometries.m_pool.reset_dirty_flags();
     m_geometry_group_pool.reset_dirty_flags();
     m_geometry_instance_pool.reset_dirty_flags();
     m_transform_pool.reset_dirty_flags();
@@ -1039,6 +1404,12 @@ void RenderScene::update_blases(UpdateContext& ctx)
             case RenderObjectType::lss_geometry:
                 m_lss_geometries.write_acceleration_structure_build_input(
                     RenderLSSGeometryHandle{geometry_handle},
+                    input
+                );
+                break;
+            case RenderObjectType::area_light_geometry:
+                m_area_light_geometries.write_acceleration_structure_build_input(
+                    RenderAreaLightGeometryHandle{geometry_handle},
                     input
                 );
                 break;
@@ -1068,11 +1439,14 @@ void RenderScene::update_blases(UpdateContext& ctx)
 
 void RenderScene::build_tlas(UpdateContext& ctx)
 {
-    bool dirty_transforms
-        = (m_geometry_instance_pool.combined_dirty_flags() & RenderGeometryInstanceDirtyFlags::transform)
+    const RenderGeometryInstanceDirtyFlags dirty_flags = m_geometry_instance_pool.combined_dirty_flags();
+    const RenderGeometryInstanceDirtyFlags tlas_dirty_flags = dirty_flags & ~RenderGeometryInstanceDirtyFlags::payload;
+    bool dirty_transforms = (tlas_dirty_flags & RenderGeometryInstanceDirtyFlags::transform)
         == RenderGeometryInstanceDirtyFlags::transform;
-    bool dirty_instance_data
-        = (m_geometry_instance_pool.combined_dirty_flags() != RenderGeometryInstanceDirtyFlags::none);
+    bool dirty_instance_data = tlas_dirty_flags != RenderGeometryInstanceDirtyFlags::none;
+
+    if (!dirty_instance_data)
+        return;
 
     rhi::AccelerationStructureInstanceDescType native_instance_desc_type
         = rhi::getAccelerationStructureInstanceDescType(static_cast<rhi::DeviceType>(m_device->type()));
@@ -1138,8 +1512,7 @@ void RenderScene::build_tlas(UpdateContext& ctx)
             | sgl::AccelerationStructureBuildFlags::prefer_fast_trace;
 
         // Use TLAS refit when only transforms changed and refit is preferred.
-        bool transforms_only = dirty_transforms
-            && (m_geometry_instance_pool.combined_dirty_flags() == RenderGeometryInstanceDirtyFlags::transform);
+        bool transforms_only = dirty_transforms && tlas_dirty_flags == RenderGeometryInstanceDirtyFlags::transform;
         bool refit = transforms_only && m_tlas_prefer_refit;
         if (refit)
             build_desc.mode = sgl::AccelerationStructureBuildMode::update;

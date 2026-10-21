@@ -14,6 +14,10 @@ class AnimationChannel;
 
 class Component;
 
+// component/light.h
+
+class Light;
+
 // emissive_geometry_system.h
 
 class EmissiveGeometrySystem;
@@ -86,6 +90,10 @@ using EntityCollection = SceneObjectCollection<Entity>;
 using EntityCollectionView = SceneObjectCollectionView<Entity>;
 using ComponentCollection = SceneObjectCollection<Component>;
 using ComponentCollectionView = SceneObjectCollectionView<Component>;
+
+// source_asset_ref.h
+
+struct SourceAssetRef;
 
 // texture_manager.h
 

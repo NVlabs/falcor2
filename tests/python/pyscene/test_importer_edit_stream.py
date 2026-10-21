@@ -164,6 +164,7 @@ def test_material_collection_validates_input() -> None:
         importer.materials["Material"].replace(dict)
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_material_replacement_builds_live_scene(device_type: spy.DeviceType) -> None:
     device = helpers.get_device(device_type)
@@ -186,6 +187,7 @@ def test_material_replacement_builds_live_scene(device_type: spy.DeviceType) -> 
     assert any(material in list(instance.materials) for instance in instances)
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_material_replacement_accepts_native_material_class(device_type: spy.DeviceType) -> None:
     device = helpers.get_device(device_type)
@@ -202,6 +204,7 @@ def test_material_replacement_accepts_native_material_class(device_type: spy.Dev
     assert float(material.roughness_factor) == pytest.approx(0.375)
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_scene_from_importer_runs_scene_loaded_callback_once(
     device_type: spy.DeviceType,
@@ -225,6 +228,7 @@ def test_scene_from_importer_runs_scene_loaded_callback_once(
     assert scene.entities.find("RecordedCameraNode") is not None
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_explicit_importer_scene_preparation_adds_best_view_camera_only_when_missing(
     device_type: spy.DeviceType,
@@ -254,6 +258,7 @@ def test_explicit_importer_scene_preparation_adds_best_view_camera_only_when_mis
     assert authored_scene.entities.find("AutoCamera_BestView") is None
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_scene_append_supports_importer_scene_and_importer(
     device_type: spy.DeviceType,
@@ -282,6 +287,7 @@ def test_scene_append_supports_importer_scene_and_importer(
     assert callback_count == 1
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_scene_append_python_path_runs_callback_after_existing_content(
     device_type: spy.DeviceType, workspace_tmp_path: Path
@@ -315,6 +321,7 @@ def test_scene_append_python_path_runs_callback_after_existing_content(
     assert scene.entities.find("AppendedNode") is not None
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_scene_load_executes_python_scene_file(
     device_type: spy.DeviceType, workspace_tmp_path: Path
@@ -340,6 +347,7 @@ def test_scene_load_executes_python_scene_file(
     assert scene.active_camera.fov_y == pytest.approx(70.0)
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_scene_create_resolves_source_relative_assets_from_unrelated_cwd(
     device_type: spy.DeviceType,
@@ -374,6 +382,7 @@ def test_scene_create_resolves_source_relative_assets_from_unrelated_cwd(
     assert Path(env_map.env_map_path) == expected_env_path
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_scene_loaded_hook_can_create_active_camera(
     device_type: spy.DeviceType, workspace_tmp_path: Path
@@ -405,6 +414,7 @@ def test_scene_loaded_hook_can_create_active_camera(
     assert scene.active_camera.name == "HookCamera"
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_scene_create_python_exception_restores_current_importer(
     device_type: spy.DeviceType, workspace_tmp_path: Path
@@ -450,6 +460,7 @@ def test_scene_create_python_exception_restores_current_importer(
     assert len(post_load_scene.cameras) == 0
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_scene_create_skips_main_guard(
     device_type: spy.DeviceType, workspace_tmp_path: Path
@@ -468,6 +479,7 @@ def test_scene_create_skips_main_guard(
     assert scene is not None
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_scene_loaded_hook_exception_restores_current_importer(
     device_type: spy.DeviceType, workspace_tmp_path: Path
@@ -498,6 +510,7 @@ def test_scene_loaded_hook_exception_restores_current_importer(
     assert restored_scene.cameras[0].name == "BeforeCallbackFailure"
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_data_checker_material_python_scene_loads(device_type: spy.DeviceType) -> None:
     device = helpers.get_device(device_type)

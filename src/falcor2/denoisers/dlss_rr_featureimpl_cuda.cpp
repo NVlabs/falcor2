@@ -149,6 +149,21 @@ private:
         );
 
         sgl::Device* device = m_ngx->device();
+#if SGL_LINUX && defined(__aarch64__)
+        // SDK 310.9.1 defaults to preset F, whose CUDA PTX fails to load on
+        // GB300 with driver 610.57.04. Use the working transformer preset E
+        // for every quality mode on Linux ARM64.
+        for (const char* preset : {
+                 NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_DLAA,
+                 NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Quality,
+                 NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Balanced,
+                 NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Performance,
+                 NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraPerformance,
+                 NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraQuality,
+             }) {
+            m_params->Set(preset, static_cast<unsigned int>(NVSDK_NGX_RayReconstruction_Hint_Render_Preset_E));
+        }
+#endif
         ref<sgl::CommandEncoder> command_encoder = device->create_command_encoder();
 
         bool callback_called = false;

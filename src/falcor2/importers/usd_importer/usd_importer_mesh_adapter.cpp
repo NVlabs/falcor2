@@ -4,6 +4,7 @@
 #include "usd_importer_mesh_adapter.h"
 #include "usd_importer_utils.h"
 #include "falcor2/core/error.h"
+#include "falcor2/importers/importer.h"
 #include "falcor2/importers/mesh_tessellator/mesh_tessellator.h"
 
 BEGIN_DISABLE_USD_WARNINGS
@@ -12,14 +13,17 @@ BEGIN_DISABLE_USD_WARNINGS
 #include <pxr/base/tf/token.h>
 #include <pxr/base/vt/array.h>
 #include <pxr/usd/usd/attribute.h>
+#include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usdGeom/primvarsAPI.h>
 #include <pxr/usd/usdGeom/subset.h>
 #include <pxr/usd/usdGeom/tokens.h>
 END_DISABLE_USD_WARNINGS
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <span>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -144,9 +148,94 @@ MeshAttributeStream make_mesh_attribute_stream(
     };
 }
 
+MeshAttributeStream make_mesh_attribute_stream(
+    ImporterMeshDefaultAttribute attribute,
+    const pxr::TfToken& interpolation,
+    const std::vector<float>& values,
+    const pxr::VtArray<int>* indices = nullptr
+)
+{
+    return {
+        .attribute = std::move(attribute),
+        .interpolation = get_mesh_interpolation(interpolation),
+        .values = values,
+        .indices = indices ? std::span<const int>(indices->cdata(), indices->size()) : std::span<const int>(),
+    };
+}
+
+/// Look up a GetPrimvarName-style name (without "primvars:"); unlike USD's GetBaseName, preserve sub-namespaces.
+pxr::UsdGeomPrimvar get_primvar_by_name(const pxr::UsdGeomMesh& mesh, std::string_view primvar_name)
+{
+    return pxr::UsdGeomPrimvar(mesh.GetPrim().GetAttribute(pxr::TfToken("primvars:" + std::string(primvar_name))));
+}
+
+/// Component count for supported named float32 primvars, including USD role aliases; zero means unsupported.
+uint32_t get_named_float_component_count(const pxr::SdfValueTypeName& type_name)
+{
+    using namespace pxr;
+
+    if (type_name == SdfValueTypeNames->FloatArray)
+        return 1;
+    if (type_name == SdfValueTypeNames->Float2Array || type_name == SdfValueTypeNames->TexCoord2fArray)
+        return 2;
+    if (type_name == SdfValueTypeNames->Float3Array || type_name == SdfValueTypeNames->Point3fArray
+        || type_name == SdfValueTypeNames->Normal3fArray || type_name == SdfValueTypeNames->Vector3fArray
+        || type_name == SdfValueTypeNames->Color3fArray || type_name == SdfValueTypeNames->TexCoord3fArray)
+        return 3;
+    if (type_name == SdfValueTypeNames->Float4Array || type_name == SdfValueTypeNames->Color4fArray)
+        return 4;
+    return 0;
+}
+
+/// Pack vector elements contiguously for a Falcor MeshAttributeStream without expanding USD primvar indices.
+template<typename T>
+bool get_float_values(
+    const pxr::UsdGeomPrimvar& primvar,
+    uint32_t component_count,
+    std::vector<float>& values,
+    pxr::UsdTimeCode time
+)
+{
+    pxr::VtArray<T> source;
+    if (!primvar.Get(&source, time))
+        return false;
+    values.resize(source.size() * component_count);
+    for (size_t value_index = 0; value_index < source.size(); ++value_index) {
+        for (uint32_t component = 0; component < component_count; ++component)
+            values[value_index * component_count + component] = source[value_index][component];
+    }
+    return true;
+}
+
+/// Read a supported named float32 primvar into the tessellator's scalar-packed value array.
+bool get_named_float_values(
+    const pxr::UsdGeomPrimvar& primvar,
+    uint32_t component_count,
+    std::vector<float>& values,
+    pxr::UsdTimeCode time
+)
+{
+    if (component_count == 1) {
+        pxr::VtArray<float> source;
+        if (!primvar.Get(&source, time))
+            return false;
+        values.assign(source.begin(), source.end());
+        return true;
+    }
+    if (component_count == 2)
+        return get_float_values<pxr::GfVec2f>(primvar, component_count, values, time);
+    if (component_count == 3)
+        return get_float_values<pxr::GfVec3f>(primvar, component_count, values, time);
+    return get_float_values<pxr::GfVec4f>(primvar, component_count, values, time);
+}
+
 } // namespace
 
-ImporterMesh convert_usd_mesh(const pxr::UsdGeomMesh& usd_mesh, const ResolveMeshMaterial& resolve_material)
+ImporterMesh convert_usd_mesh(
+    const pxr::UsdGeomMesh& usd_mesh,
+    const ResolveMaterial& resolve_material,
+    const ImportOptions& import_options
+)
 {
     using namespace pxr;
     using namespace mesh_tessellator;
@@ -155,6 +244,11 @@ ImporterMesh convert_usd_mesh(const pxr::UsdGeomMesh& usd_mesh, const ResolveMes
     UsdGeomPrimvarsAPI primvar_API(usd_mesh);
 
     TessellatorInputMesh input;
+    input.properties = ImporterMesh::make_properties(import_options);
+    read_import_property<int>(usd_mesh.GetPrim(), "refinementLevel", input.properties, "refinement_level");
+    read_import_property<bool>(usd_mesh.GetPrim(), "falcor:recomputeNormals", input.properties, "recompute_normals");
+    const int refinement_level = input.properties.get<int>("refinement_level");
+    const auto& texcoord_primvar_names = import_options.usd_texcoord_primvar_names;
     input.name = mesh_name;
     input.subdivision_scheme = get_subdivision_scheme(
         get_attribute(usd_mesh.GetSubdivisionSchemeAttr(), UsdGeomTokens->catmullClark),
@@ -170,86 +264,211 @@ ImporterMesh convert_usd_mesh(const pxr::UsdGeomMesh& usd_mesh, const ResolveMes
         mesh_name
     );
 
-    VtArray<GfVec3f> positions;
+    UsdGeomPrimvar normals_primvar = primvar_API.GetPrimvar(TfToken("primvars:normals"));
+    // USD-authored normals apply only to polygonal meshes. Subdivision schemes define their own normals, including
+    // when refinement zero selects the control-cage representation below.
+    const UsdAttribute normal_attribute = input.subdivision_scheme == SubdivisionScheme::none
+        ? (normals_primvar && normals_primvar.HasValue() ? normals_primvar.GetAttr() : usd_mesh.GetNormalsAttr())
+        : UsdAttribute();
+    std::vector<UsdAttribute> sampled_attributes = {usd_mesh.GetPointsAttr()};
+    if (normal_attribute)
+        sampled_attributes.push_back(normal_attribute);
+    const GeometrySampleTimes times(usd_mesh.GetPrim(), sampled_attributes, import_options.import_mesh_motion);
+    const auto& sample_times = times.sample_times;
+    // Only position and normal values vary across motion samples.
+    const UsdTimeCode initial_time = sample_times.front();
+
+    std::vector<VtArray<GfVec3f>> sampled_positions(sample_times.size());
+    std::vector<MeshAttributeStream> position_samples(sampled_positions.size());
+    for (size_t sample = 0; sample < sampled_positions.size(); ++sample) {
+        usd_mesh.GetPointsAttr().Get(&sampled_positions[sample], sample_times[sample]);
+        FALCOR_CHECK(
+            sampled_positions[sample].size() == sampled_positions[0].size(),
+            "Mesh motion '{}' changes point count",
+            mesh_name
+        );
+        position_samples[sample] = make_mesh_attribute_stream(
+            {ImporterSemantic::position, 0, 3},
+            UsdGeomTokens->vertex,
+            sampled_positions[sample]
+        );
+    }
+    input.positions = position_samples;
     VtArray<int> face_vertex_counts;
     VtArray<int> face_vertex_indices;
     VtArray<int> hole_indices;
-    usd_mesh.GetPointsAttr().Get(&positions);
-    input.positions = make_mesh_attribute_stream({ImporterSemantic::position, 0, 3}, UsdGeomTokens->vertex, positions);
-    usd_mesh.GetFaceVertexCountsAttr().Get(&face_vertex_counts);
-    usd_mesh.GetFaceVertexIndicesAttr().Get(&face_vertex_indices);
+    read_fixed_indices(
+        usd_mesh.GetFaceVertexCountsAttr(),
+        face_vertex_counts,
+        initial_time,
+        import_options.import_mesh_motion
+    );
+    read_fixed_indices(
+        usd_mesh.GetFaceVertexIndicesAttr(),
+        face_vertex_indices,
+        initial_time,
+        import_options.import_mesh_motion
+    );
     input.face_vertex_counts = std::span<const int>(face_vertex_counts.cdata(), face_vertex_counts.size());
     input.face_vertex_indices = std::span<const int>(face_vertex_indices.cdata(), face_vertex_indices.size());
 
     if (auto attr = usd_mesh.GetHoleIndicesAttr(); attr)
-        attr.Get(&hole_indices);
+        read_fixed_indices(attr, hole_indices, initial_time, import_options.import_mesh_motion);
     input.hole_indices = std::span<const int>(hole_indices.cdata(), hole_indices.size());
 
-    bool apply_override = true;
-    if (auto attr = usd_mesh.GetPrim().GetAttribute(TfToken("refinementEnableOverride")); attr)
-        attr.Get<bool>(&apply_override);
-    if (apply_override) {
-        if (auto attr = usd_mesh.GetPrim().GetAttribute(TfToken("refinementLevel")); attr)
-            attr.Get<int>(&input.refinement_level);
+    std::vector<std::string> secondary_primvar_names;
+    secondary_primvar_names.reserve(texcoord_primvar_names.size());
+    for (const std::string& configured_name : texcoord_primvar_names) {
+        if (!configured_name.empty())
+            secondary_primvar_names.emplace_back(strip_primvars_name(configured_name));
     }
 
-    VtArray<GfVec2f> uvs;
-    VtArray<int> uv_indices;
-    if (UsdGeomPrimvar uv_primvar = get_uv_primvar(usd_mesh); uv_primvar && uv_primvar.HasValue()) {
+    std::array<UsdGeomPrimvar, 8> uv_primvars;
+    uv_primvars[0] = get_uv_primvar(usd_mesh, secondary_primvar_names);
+    for (size_t slot = 0; slot < texcoord_primvar_names.size(); ++slot) {
+        const std::string& configured_name = texcoord_primvar_names[slot];
+        if (!configured_name.empty())
+            uv_primvars[slot + 1] = get_primvar_by_name(usd_mesh, strip_primvars_name(configured_name));
+    }
+
+    // Primvars handled by the UV/normal paths must not also become named additional attributes below.
+    std::vector<std::string> claimed_primvar_names;
+    auto claim_primvar = [&](const UsdGeomPrimvar& primvar)
+    {
+        const std::string name = primvar.GetPrimvarName().GetString();
+        if (std::find(claimed_primvar_names.begin(), claimed_primvar_names.end(), name) == claimed_primvar_names.end())
+            claimed_primvar_names.push_back(name);
+    };
+
+    std::array<VtArray<GfVec2f>, 8> uv_values;
+    std::array<VtArray<int>, 8> uv_indices;
+    for (size_t slot = 0; slot < uv_primvars.size(); ++slot) {
+        const UsdGeomPrimvar& uv_primvar = uv_primvars[slot];
+        if (!uv_primvar || !uv_primvar.HasValue())
+            continue;
+
         const int element_size = uv_primvar.GetElementSize();
         FALCOR_CHECK(
             element_size == 1,
-            "UV primvar '{}' on mesh '{}' has unsupported elementSize {}; expected 1.",
+            "UV{} primvar '{}' on mesh '{}' has unsupported elementSize {}; expected 1.",
+            slot,
             uv_primvar.GetName().GetText(),
             usd_mesh.GetPath().GetText(),
             element_size
         );
 
-        uv_primvar.Get(&uvs);
-        uv_primvar.GetIndices(&uv_indices);
-        if (!uvs.empty()) {
+        FALCOR_CHECK(
+            has_uv_primvar_value(uv_primvar),
+            "UV{} primvar '{}' on mesh '{}' has unsupported type '{}'.",
+            slot,
+            uv_primvar.GetName().GetText(),
+            usd_mesh.GetPath().GetText(),
+            uv_primvar.GetTypeName().GetAsToken().GetText()
+        );
+
+        claim_primvar(uv_primvar);
+        get_uv_values(uv_primvar, uv_values[slot], initial_time);
+        read_fixed_indices(
+            uv_primvar.GetIndicesAttr(),
+            uv_indices[slot],
+            initial_time,
+            import_options.import_mesh_motion
+        );
+        if (!uv_values[slot].empty()) {
             input.streams.push_back(make_mesh_attribute_stream(
-                {ImporterSemantic::tex_coord, 0, 2},
+                {ImporterSemantic::tex_coord, static_cast<uint32_t>(slot), 2},
                 uv_primvar.GetInterpolation(),
-                uvs,
-                &uv_indices
+                uv_values[slot],
+                &uv_indices[slot]
             ));
         }
     }
 
-    VtArray<GfVec3f> normals;
+    std::vector<VtArray<GfVec3f>> sampled_normals;
+    std::vector<MeshAttributeStream> normal_samples;
     VtArray<int> normal_indices;
-    if (UsdGeomPrimvar normals_primvar = primvar_API.GetPrimvar(TfToken("primvars:normals"));
-        normals_primvar && normals_primvar.HasValue()) {
-        const int element_size = normals_primvar.GetElementSize();
-        FALCOR_CHECK(
-            element_size == 1,
-            "Normal primvar '{}' on mesh '{}' has unsupported elementSize {}; expected 1.",
-            normals_primvar.GetName().GetText(),
-            usd_mesh.GetPath().GetText(),
-            element_size
-        );
+    if (normals_primvar && normals_primvar.HasValue())
+        claim_primvar(normals_primvar);
 
-        normals_primvar.Get(&normals);
-        const bool indexed = normals_primvar.GetIndices(&normal_indices);
-        if (!normals.empty()) {
-            input.streams.push_back(make_mesh_attribute_stream(
+    if (normal_attribute && normal_attribute.HasValue()) {
+        TfToken normal_interpolation = usd_mesh.GetNormalsInterpolation();
+        bool indexed = false;
+        if (normals_primvar && normals_primvar.HasValue()) {
+            const int element_size = normals_primvar.GetElementSize();
+            FALCOR_CHECK(
+                element_size == 1,
+                "Normal primvar '{}' on mesh '{}' has unsupported elementSize {}; expected 1.",
+                normals_primvar.GetName().GetText(),
+                usd_mesh.GetPath().GetText(),
+                element_size
+            );
+
+            normal_interpolation = normals_primvar.GetInterpolation();
+            indexed = read_fixed_indices(
+                normals_primvar.GetIndicesAttr(),
+                normal_indices,
+                initial_time,
+                import_options.import_mesh_motion
+            );
+        }
+
+        sampled_normals.resize(input.positions.size());
+        normal_samples.reserve(input.positions.size());
+        for (size_t sample = 0; sample < sampled_normals.size(); ++sample) {
+            const bool has_normals = normal_attribute.Get(&sampled_normals[sample], sample_times[sample]);
+            if (sample == 0 && sampled_normals[sample].empty())
+                break;
+            FALCOR_CHECK(
+                has_normals && sampled_normals[sample].size() == sampled_normals[0].size(),
+                "Mesh motion '{}' changes normal count",
+                mesh_name
+            );
+            normal_samples.push_back(make_mesh_attribute_stream(
                 {ImporterSemantic::normal, 0, 3},
-                normals_primvar.GetInterpolation(),
-                normals,
+                normal_interpolation,
+                sampled_normals[sample],
                 indexed ? &normal_indices : nullptr
             ));
         }
-    } else if (usd_mesh.GetNormalsAttr().IsAuthored()) {
-        // Normals specified via the attribute cannot be indexed, so there is no need to flatten them.
-        usd_mesh.GetNormalsAttr().Get(&normals);
-        if (!normals.empty()) {
-            input.streams.push_back(make_mesh_attribute_stream(
-                {ImporterSemantic::normal, 0, 3},
-                usd_mesh.GetNormalsInterpolation(),
-                normals
-            ));
+    }
+
+    // Own the converted values/indices referenced by MeshAttributeStream spans until tessellation completes.
+    struct NamedAttributeStorage {
+        std::vector<float> values;
+        VtArray<int> indices;
+    };
+    const std::vector<UsdGeomPrimvar> all_primvars = primvar_API.GetPrimvars();
+    std::vector<NamedAttributeStorage> named_attribute_storage;
+    named_attribute_storage.reserve(all_primvars.size());
+    for (const UsdGeomPrimvar& primvar : all_primvars) {
+        const std::string name = primvar.GetPrimvarName().GetString();
+        if (!primvar.HasValue()
+            || std::find(claimed_primvar_names.begin(), claimed_primvar_names.end(), name)
+                != claimed_primvar_names.end()
+            || primvar.GetElementSize() != 1)
+            continue;
+
+        const uint32_t component_count = get_named_float_component_count(primvar.GetTypeName());
+        if (component_count == 0)
+            continue;
+
+        NamedAttributeStorage& storage = named_attribute_storage.emplace_back();
+        if (!get_named_float_values(primvar, component_count, storage.values, initial_time) || storage.values.empty()) {
+            named_attribute_storage.pop_back();
+            continue;
         }
+        const bool indexed = read_fixed_indices(
+            primvar.GetIndicesAttr(),
+            storage.indices,
+            initial_time,
+            import_options.import_mesh_motion
+        );
+        input.streams.push_back(make_mesh_attribute_stream(
+            {ImporterSemantic::unknown, 0, component_count, name},
+            primvar.GetInterpolation(),
+            storage.values,
+            indexed ? &storage.indices : nullptr
+        ));
     }
 
     std::vector<UsdGeomSubset> geom_subsets;
@@ -260,7 +479,7 @@ ImporterMesh convert_usd_mesh(const pxr::UsdGeomMesh& usd_mesh, const ResolveMes
     }
     struct SubgeometryStorage {
         std::string name;
-        std::string material_name;
+        int material_index = -1;
         VtArray<int> face_indices;
     };
     std::vector<SubgeometryStorage> subgeometry_storage;
@@ -270,29 +489,50 @@ ImporterMesh convert_usd_mesh(const pxr::UsdGeomMesh& usd_mesh, const ResolveMes
         UsdAttribute indices_attr = geom_subset.GetIndicesAttr();
         if (indices_attr) {
             SubgeometryStorage& subgeometry = subgeometry_storage.emplace_back();
-            indices_attr.Get(&subgeometry.face_indices);
+            read_fixed_indices(indices_attr, subgeometry.face_indices, initial_time, import_options.import_mesh_motion);
             subgeometry.name = geom_subset.GetPath().GetString();
-            subgeometry.material_name = resolve_material(UsdShadeMaterialBindingAPI(geom_subset), mesh_name);
+            subgeometry.material_index = resolve_material(UsdShadeMaterialBindingAPI(geom_subset), mesh_name);
         }
     }
 
     VtArray<int> unassigned_indices
-        = UsdGeomSubset::GetUnassignedIndices(geom_subsets, input.face_vertex_counts.size());
+        = UsdGeomSubset::GetUnassignedIndices(geom_subsets, input.face_vertex_counts.size(), initial_time);
     if (!unassigned_indices.empty()) {
         SubgeometryStorage& subgeometry = subgeometry_storage.emplace_back();
         subgeometry.face_indices = std::move(unassigned_indices);
         subgeometry.name = mesh_name;
-        subgeometry.material_name = resolve_material(UsdShadeMaterialBindingAPI(usd_mesh), mesh_name);
+        subgeometry.material_index = resolve_material(UsdShadeMaterialBindingAPI(usd_mesh), mesh_name);
     }
 
     input.subgeometries.reserve(subgeometry_storage.size());
     for (SubgeometryStorage& source : subgeometry_storage) {
         input.subgeometries.push_back({
             .name = std::move(source.name),
-            .material_name = std::move(source.material_name),
+            .material_index = source.material_index,
             .face_indices = std::span<const int>(source.face_indices.cdata(), source.face_indices.size()),
         });
     }
+
+    // Refinement zero triangulates the control cage. For smooth subdivision schemes, match Storm's smooth-hull
+    // shading instead of Falcor1's faceted missing-normal fallback. Bilinear and polygonal control cages remain
+    // faceted.
+    const bool generate_smooth_normals = refinement_level == 0
+        && (input.subdivision_scheme == SubdivisionScheme::catmull_clark
+            || input.subdivision_scheme == SubdivisionScheme::loop);
+    std::vector<std::vector<float>> generated_normal_values;
+    if (generate_smooth_normals) {
+        generated_normal_values.resize(input.positions.size());
+        normal_samples.resize(input.positions.size());
+        for (size_t sample = 0; sample < input.positions.size(); ++sample) {
+            calculate_smooth_normals(input, sample, generated_normal_values[sample]);
+            normal_samples[sample] = {
+                .attribute = {ImporterSemantic::normal, 0, 3},
+                .interpolation = MeshInterpolation::varying,
+                .values = generated_normal_values[sample],
+            };
+        }
+    }
+    input.normals = normal_samples;
 
     const bool has_authored_texcoords = std::any_of(
         input.streams.begin(),
@@ -304,12 +544,22 @@ ImporterMesh convert_usd_mesh(const pxr::UsdGeomMesh& usd_mesh, const ResolveMes
     );
 
     ImporterMesh result = tessellate(input);
+    // Sample payloads are no longer needed during deduplication and tangent generation.
+    sampled_positions.clear();
+    sampled_normals.clear();
+    generated_normal_values.clear();
     if (!result.position_stream().valid())
         return result;
+
+    result.motion_times = times.motion_times;
+    result.motion_interpolation_mode = times.interpolation;
 
     // Compact the tessellated streams before generating tangents. MikkTSpace may then split shared vertices where its
     // per-corner tangent frames differ, but it deliberately does not merge vertices itself.
     result.deduplicate_vertices();
+    // The shared options pass prepares both base and samples before transferring tangents.
+    if (!result.motion_times.empty() && result.properties.get<bool>("recompute_normals"))
+        return result;
     if (has_authored_texcoords) {
         result.add_tangents_from_uvs();
     } else {

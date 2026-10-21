@@ -19,9 +19,6 @@ using namespace nb::literals;
 namespace {
 
 /// Convert native MDL discovery records into plain Python dictionaries.
-///
-/// The neutral material-image schema lives in Python, so the binding deliberately
-/// avoids exposing C++ schema concepts here.
 nb::list
 discover_mdl_materials_impl(const std::filesystem::path& library_path, const std::vector<std::string>& include_modules)
 {

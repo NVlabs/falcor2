@@ -10,8 +10,11 @@ from pathlib import Path
 import falcor2 as f2
 import falcor2.ngx as fngx
 import slangpy as spy
-from falcor2.editor import Editor, EditorConfig
-from falcor2.editor.utils import get_slang_include_paths
+from falcor2.editor import (
+    Editor,
+    EditorConfig,
+    EditorArgumentParser,
+)
 from falcor2.rendergraph import ContainerSpec
 from falcor2.rendernodes import (
     AccumulatorNode,
@@ -72,19 +75,21 @@ def validate_samples_per_frame(samples_per_frame: int) -> int:
     return samples_per_frame
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=DESCRIPTION)
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = EditorArgumentParser(
+        description=DESCRIPTION,
+        editor_defaults=EditorConfig(
+            width=DEFAULT_WIDTH,
+            height=DEFAULT_HEIGHT,
+            title=DESCRIPTION,
+            vsync=False,
+        ),
+    )
     parser.add_argument(
         "--scene-path",
         type=Path,
         default=DEFAULT_SCENE_PATH,
         help="Path to a scene file.",
-    )
-    parser.add_argument(
-        "--device-type",
-        choices=("automatic", "d3d12", "vulkan", "cuda"),
-        default="automatic",
-        help="Device type used for renderer.",
     )
     parser.add_argument(
         "--quality",
@@ -113,18 +118,14 @@ def parse_args() -> argparse.Namespace:
         default=32,
         help="Path-tracer samples accumulated before each DLSS evaluate.",
     )
-    parser.add_argument("--width", type=int, default=DEFAULT_WIDTH)
-    parser.add_argument("--height", type=int, default=DEFAULT_HEIGHT)
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def create_ngx_ready_device(device_type: spy.DeviceType) -> spy.Device:
     """Create a device with any extra hooks NGX needs before device creation."""
-    compiler_options = {"include_paths": get_slang_include_paths()}
     kwargs = {
         "type": device_type,
         "enable_debug_layers": True,
-        "compiler_options": compiler_options,
     }
 
     if device_type == spy.DeviceType.vulkan:
@@ -132,7 +133,7 @@ def create_ngx_ready_device(device_type: spy.DeviceType) -> spy.Device:
         kwargs["additional_vulkan_instance_extensions"] = info.required_vulkan_instance_extensions
         kwargs["additional_vulkan_device_extensions"] = info.required_vulkan_device_extensions
 
-    return spy.Device(**kwargs)
+    return f2.create_device(kwargs)
 
 
 def make_texture(
@@ -175,6 +176,8 @@ class DlssViewer:
         self._samples_per_frame = validate_samples_per_frame(samples_per_frame)
         self._path_tracer = self._create_path_tracer()
         self._accumulation_path_tracer = self._create_path_tracer()
+        self._path_tracer.pixel_filter = f2.BoxReconstructionFilter(width=0)
+        self._accumulation_path_tracer.pixel_filter = f2.BoxReconstructionFilter(width=0)
         self._accumulator = AccumulatorNode.create(device)
         self._prev_camera_uniforms = None
 
@@ -207,8 +210,10 @@ class DlssViewer:
         self._view_name = self._view_names[(index + 1) % len(self._view_names)]
         print(f"DLSS view: {self._view_name}")
 
-    def render(self, scene: f2.Scene) -> spy.Texture | None:
+    def render(self, scene: f2.Scene | None) -> spy.Texture | None:
         """Render one frame and return the currently selected view texture."""
+        if scene is None:
+            return None
         camera = scene.active_camera
         if camera is None:
             return None
@@ -300,7 +305,7 @@ class DlssViewer:
         camera: f2.Camera,
         color_spec: ContainerSpec,
         guide_specs: dict[str, ContainerSpec],
-        subpixel_offset: spy.float2,
+        pixel_offset: spy.float2,
     ) -> tuple[spy.Texture, dict[str, spy.Texture | None]]:
         """Render guides once and accumulate several color samples for this frame."""
         base_iteration = self._iteration * self._samples_per_frame
@@ -317,8 +322,7 @@ class DlssViewer:
             scene,
             camera,
             iteration=base_iteration,
-            subpixel_offset=subpixel_offset,
-            subpixel_random_jitter=0.0,
+            pixel_offset=pixel_offset,
         )
         accumulated_color = self._accumulator(first_color)
 
@@ -329,8 +333,7 @@ class DlssViewer:
                 scene,
                 camera,
                 iteration=base_iteration + sample_index,
-                subpixel_offset=subpixel_offset,
-                subpixel_random_jitter=0.01,
+                pixel_offset=pixel_offset,
             )
             accumulated_color = self._accumulator(sample_color)
 
@@ -469,21 +472,13 @@ def main() -> None:
 
     editor = Editor.create(
         device,
-        config=EditorConfig(
-            width=args.width,
-            height=args.height,
-            title=DESCRIPTION,
-            vsync=False,
-        ),
+        config=args.editor_config,
         scene=scene,
     )
     editor._cycle_render_mode = viewer.cycle_view
     print(f"DLSS view: {viewer.view_name}")
 
-    while editor.update():
-        if editor.needs_render:
-            image = viewer.render(scene)
-            editor.present(image)
+    editor.run(viewer.render)
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ from falcor2.rendernodes.pathtracer_pipeline_node import AccumulationMode, PathT
 from falcor2.rendernodes.reference_pathtracer_node import (
     ReferencePathTracerNode,
     SchedulingMode,
+    VisibilityRayPlacement,
     VisibilityRayMode,
 )
 from falcor2.rendernodes.tonemapper_node import (
@@ -23,3 +24,5 @@ from falcor2.rendernodes.tonemapper_node import (
     TonemapperNode,
     TonemappingOperator,
 )
+
+from falcor2.utils.sample_generators import SampleGeneratorType

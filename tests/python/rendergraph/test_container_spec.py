@@ -283,6 +283,41 @@ def test_torch_render_layout_converts_chw_to_hwc():
     assert tuple(int(dim) for dim in render_layout.shape) == (5, 6, 4)
 
 
+@pytest.mark.nightly_if(
+    device_type=(spy.DeviceType.d3d12,),
+    format_value=(
+        spy.Format.r16_float,
+        spy.Format.rg16_float,
+        spy.Format.rgba16_float,
+        spy.Format.r32_float,
+        spy.Format.rgb32_float,
+        spy.Format.rgba32_float,
+        spy.Format.r32_sint,
+        spy.Format.rg32_sint,
+        spy.Format.rgb32_sint,
+        spy.Format.rgba32_sint,
+        spy.Format.r32_uint,
+        spy.Format.rg32_uint,
+        spy.Format.rgb32_uint,
+    ),
+)
+@pytest.mark.nightly_if(
+    device_type=(spy.DeviceType.cuda,),
+    format_value=(
+        spy.Format.rg16_float,
+        spy.Format.rgba16_float,
+        spy.Format.r32_float,
+        spy.Format.rg32_float,
+        spy.Format.rgb32_float,
+        spy.Format.rgba32_float,
+        spy.Format.r32_sint,
+        spy.Format.rg32_sint,
+        spy.Format.rgb32_sint,
+        spy.Format.r32_uint,
+        spy.Format.rg32_uint,
+        spy.Format.rgba32_uint,
+    ),
+)
 @pytest.mark.parametrize(
     ("format_value", "clear_value", "expected_values"),
     [
@@ -374,6 +409,7 @@ def test_container_clear_requires_int4_for_sint_format(device_type: spy.DeviceTy
         Container.clear(tensor, spy.float4(1.0, 2.0, 3.0, 4.0))
 
 
+@pytest.mark.nightly_if(expected_values=((0.25, 0.5), (0.25, 0.5, 0.75, 1.0)))
 @pytest.mark.parametrize(
     ("clear_value", "expected_values"),
     [

@@ -3,12 +3,15 @@
 
 #include "testing.h"
 #include "falcor2/importers/importer_types.h"
+#include "falcor2/importers/importer.h"
 #include "falcor2/importers/mesh_tessellator/mesh_tessellator.h"
 #include "falcor2/importers/usd_importer/usd_importer.h"
 
 #include <sgl/core/platform.h>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdint>
 #include <deque>
 #include <filesystem>
@@ -51,7 +54,7 @@ class TestTessellatorInput {
 public:
     mesh_tessellator::TessellatorInputMesh input;
 
-    TestTessellatorInput() = default;
+    TestTessellatorInput() { input.properties = ImporterMesh::make_properties({}); }
     TestTessellatorInput(const TestTessellatorInput&) = delete;
     TestTessellatorInput& operator=(const TestTessellatorInput&) = delete;
     TestTessellatorInput(TestTessellatorInput&&) noexcept = default;
@@ -74,7 +77,8 @@ public:
     void set_positions(std::initializer_list<float> values)
     {
         m_positions = values;
-        input.positions.values = m_positions;
+        m_position_streams = {{.attribute = {ImporterSemantic::position, 0, 3}, .values = m_positions}};
+        input.positions = m_position_streams;
     }
 
     void set_positions(std::initializer_list<float3> values)
@@ -86,7 +90,8 @@ public:
             m_positions.push_back(value.y);
             m_positions.push_back(value.z);
         }
-        input.positions.values = m_positions;
+        m_position_streams = {{.attribute = {ImporterSemantic::position, 0, 3}, .values = m_positions}};
+        input.positions = m_position_streams;
     }
 
     void add_stream(
@@ -99,12 +104,15 @@ public:
         AttributeStorage& storage = m_attributes.emplace_back();
         storage.values = values;
         storage.indices = indices;
-        input.streams.push_back({
+        auto& streams
+            = attribute.semantic == ImporterSemantic::normal && attribute.index == 0 ? m_normal_streams : input.streams;
+        streams.push_back({
             .attribute = attribute,
             .interpolation = interpolation,
             .values = storage.values,
             .indices = storage.indices,
         });
+        input.normals = m_normal_streams;
     }
 
     void add_subgeometry(std::string name, std::initializer_list<int> face_indices)
@@ -123,6 +131,8 @@ private:
     std::vector<int> m_face_vertex_indices;
     std::vector<int> m_hole_indices;
     std::vector<float> m_positions;
+    std::vector<mesh_tessellator::MeshAttributeStream> m_position_streams;
+    std::vector<mesh_tessellator::MeshAttributeStream> m_normal_streams;
     std::deque<AttributeStorage> m_attributes;
     std::deque<std::vector<int>> m_subgeometry_faces;
 };
@@ -135,7 +145,7 @@ TEST_CASE("subdivision patches share topological boundary vertices")
     TessellatorInputMesh& input = storage.input;
     input.name = "Tetrahedron";
     input.subdivision_scheme = SubdivisionScheme::loop;
-    input.refinement_level = 2;
+    input.properties.set("refinement_level", 2);
     storage.set_topology({3, 3, 3, 3}, {0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3});
     storage.set_positions({{1.f, 1.f, 1.f}, {-1.f, -1.f, 1.f}, {-1.f, 1.f, -1.f}, {1.f, -1.f, -1.f}});
     storage.add_subgeometry(input.name, {0, 1, 2, 3});
@@ -145,7 +155,7 @@ TEST_CASE("subdivision patches share topological boundary vertices")
     auto normals = mesh.normal_stream();
     REQUIRE(positions.valid());
     REQUIRE(normals.valid());
-    CHECK_EQ(mesh.vertex_count(), 34);
+    CHECK_EQ(mesh.vertex_count(), 20);
 
     std::unordered_map<uint64_t, int> edge_use_counts;
     size_t triangle_count = 0;
@@ -163,7 +173,7 @@ TEST_CASE("subdivision patches share topological boundary vertices")
             }
         }
     }
-    CHECK_EQ(triangle_count, 64);
+    CHECK_EQ(triangle_count, 36);
     for (const auto& [edge, use_count] : edge_use_counts) {
         CAPTURE(edge);
         CHECK_EQ(use_count, 2);
@@ -181,7 +191,7 @@ TEST_CASE("subdivision patches share boundaries across Bfr parameterizations")
     TessellatorInputMesh& input = storage.input;
     input.name = "TriangleAndQuad";
     input.subdivision_scheme = SubdivisionScheme::catmull_clark;
-    input.refinement_level = 2;
+    input.properties.set("refinement_level", 2);
     storage.set_topology({3, 4}, {0, 1, 2, 1, 0, 3, 4});
     storage.set_positions({
         {0.f, 0.f, 0.f},
@@ -202,7 +212,7 @@ TEST_CASE("subdivision patches share boundaries across Bfr parameterizations")
     for (uint32_t vertex : triangle_vertices)
         shared_vertex_count += quad_vertices.contains(vertex);
 
-    CHECK_EQ(shared_vertex_count, 5);
+    CHECK_EQ(shared_vertex_count, 4);
 }
 
 TEST_CASE("subdivision patch stitching preserves face-varying UV seams")
@@ -213,7 +223,7 @@ TEST_CASE("subdivision patch stitching preserves face-varying UV seams")
     TessellatorInputMesh& input = storage.input;
     input.name = "Plane";
     input.subdivision_scheme = SubdivisionScheme::loop;
-    input.refinement_level = 1;
+    input.properties.set("refinement_level", 1);
     storage.set_topology({3, 3}, {0, 1, 2, 0, 2, 3});
     storage.set_positions({
         {-1.f, 0.f, -1.f},
@@ -268,7 +278,7 @@ TEST_CASE("stream tessellator handles multiple runtime-sized attribute streams")
     input.orientation = MeshOrientation::right_handed;
     input.face_varying_linear_interpolation = FaceVaryingLinearInterpolation::corners_plus_1;
     input.vertex_boundary_interpolation = VertexBoundaryInterpolation::edge_and_corner;
-    input.refinement_level = 2;
+    input.properties.set("refinement_level", 2);
     storage.set_topology({4, 4}, {0, 1, 4, 3, 1, 2, 5, 4});
     storage.set_positions({
         -1.f,
@@ -332,9 +342,9 @@ TEST_CASE("stream tessellator handles multiple runtime-sized attribute streams")
     storage.add_subgeometry(input.name, {0, 1});
 
     ImporterMesh mesh = tessellate(input);
-    REQUIRE_EQ(mesh.vertex_count(), 50);
+    REQUIRE_EQ(mesh.vertex_count(), 32);
     REQUIRE_EQ(mesh.subgeometries.size(), 1);
-    REQUIRE_EQ(mesh.subgeometries[0].indices.size(), 64);
+    REQUIRE_EQ(mesh.subgeometries[0].indices.size(), 36);
 
     auto positions = mesh.position_stream();
     auto uv0 = mesh.find_stream<float2>(ImporterSemantic::tex_coord, 0);
@@ -363,7 +373,158 @@ TEST_CASE("stream tessellator handles multiple runtime-sized attribute streams")
             CHECK_EQ(uv0[first], uv0[second]);
         }
     }
-    CHECK_EQ(split_uv1_pairs, 5);
+    CHECK_EQ(split_uv1_pairs, 4);
+}
+
+TEST_CASE("mesh tessellator preserves named attribute identities")
+{
+    using namespace mesh_tessellator;
+
+    const auto make_input = [](SubdivisionScheme subdivision_scheme)
+    {
+        TestTessellatorInput storage;
+        TessellatorInputMesh& input = storage.input;
+        input.name = "NamedStreams";
+        input.subdivision_scheme = subdivision_scheme;
+        input.properties.set("refinement_level", 1);
+        storage.set_topology({3, 3}, {0, 1, 2, 0, 2, 3});
+        storage.set_positions({
+            {-1.f, 0.f, -1.f},
+            {1.f, 0.f, -1.f},
+            {1.f, 0.f, 1.f},
+            {-1.f, 0.f, 1.f},
+        });
+        storage.add_stream(
+            {ImporterSemantic::unknown, 0, 3, "Pref"},
+            MeshInterpolation::face_varying,
+            {
+                0.f,
+                0.f,
+                0.f,
+                2.f,
+                0.f,
+                0.f,
+                2.f,
+                2.f,
+                0.f,
+                10.f,
+                0.f,
+                0.f,
+                12.f,
+                2.f,
+                0.f,
+                10.f,
+                2.f,
+                0.f,
+            },
+            {2, 0, 1, 5, 3, 4}
+        );
+        storage.add_stream({ImporterSemantic::unknown, 0, 1, "shaderContract"}, MeshInterpolation::uniform, {3.f, 7.f});
+        storage.add_subgeometry("FirstFace", {0});
+        storage.add_subgeometry("SecondFace", {1});
+        return storage;
+    };
+
+    const auto check_named_attributes
+        = [](const ImporterMeshAttribute& pref_attribute, const ImporterMeshAttribute& contract_attribute)
+    {
+        CHECK_EQ(pref_attribute.name, "Pref");
+        CHECK_EQ(pref_attribute.semantic, ImporterSemantic::unknown);
+        CHECK_EQ(pref_attribute.type, sgl::DataType::float32);
+        CHECK_EQ(pref_attribute.num_components, 3);
+        CHECK_EQ(contract_attribute.name, "shaderContract");
+        CHECK_EQ(contract_attribute.semantic, ImporterSemantic::unknown);
+        CHECK_EQ(contract_attribute.type, sgl::DataType::float32);
+        CHECK_EQ(contract_attribute.num_components, 1);
+    };
+
+    SUBCASE("ordinary polygon triangulation")
+    {
+        TestTessellatorInput storage = make_input(SubdivisionScheme::none);
+        ImporterMesh mesh = tessellate(storage.input);
+        REQUIRE_EQ(mesh.vertex_count(), 6);
+
+        const ImporterMeshAttribute* pref_attribute = mesh.find_attribute("Pref");
+        const ImporterMeshAttribute* contract_attribute = mesh.find_attribute("shaderContract");
+        REQUIRE(pref_attribute);
+        REQUIRE(contract_attribute);
+        CHECK(mesh.find_attribute("pref") == nullptr);
+        check_named_attributes(*pref_attribute, *contract_attribute);
+        auto pref = mesh.get_stream<float3>(*pref_attribute);
+        auto contract = mesh.get_stream<float>(*contract_attribute);
+        REQUIRE(pref.valid());
+        REQUIRE(contract.valid());
+        const std::array expected_pref{
+            float3(2.f, 2.f, 0.f),
+            float3(0.f, 0.f, 0.f),
+            float3(2.f, 0.f, 0.f),
+            float3(10.f, 2.f, 0.f),
+            float3(10.f, 0.f, 0.f),
+            float3(12.f, 2.f, 0.f),
+        };
+        for (size_t i = 0; i < mesh.vertex_count(); ++i) {
+            CHECK_EQ(pref[i], expected_pref[i]);
+            CHECK_EQ(contract[i], i < 3 ? 3.f : 7.f);
+        }
+    }
+
+    SUBCASE("subdivision")
+    {
+        TestTessellatorInput storage = make_input(SubdivisionScheme::loop);
+        ImporterMesh mesh = tessellate(storage.input);
+        REQUIRE_EQ(mesh.subgeometries.size(), 2);
+
+        const ImporterMeshAttribute* pref_attribute = mesh.find_attribute("Pref");
+        const ImporterMeshAttribute* contract_attribute = mesh.find_attribute("shaderContract");
+        REQUIRE(pref_attribute);
+        REQUIRE(contract_attribute);
+        auto pref = mesh.get_stream<float3>(*pref_attribute);
+        auto contract = mesh.get_stream<float>(*contract_attribute);
+        REQUIRE(pref.valid());
+        REQUIRE(contract.valid());
+
+        const auto first_vertices = referenced_vertices(mesh.subgeometries[0]);
+        const auto second_vertices = referenced_vertices(mesh.subgeometries[1]);
+        for (uint32_t vertex : first_vertices) {
+            CHECK_FALSE(second_vertices.contains(vertex));
+            CHECK_EQ(contract[vertex], 3.f);
+            CHECK_GE(pref[vertex].x, -1e-5f);
+            CHECK_LE(pref[vertex].x, 2.f + 1e-5f);
+        }
+        for (uint32_t vertex : second_vertices) {
+            CHECK_EQ(contract[vertex], 7.f);
+            CHECK_GE(pref[vertex].x, 10.f - 1e-5f);
+            CHECK_LE(pref[vertex].x, 12.f + 1e-5f);
+        }
+
+        const std::array authored_pref{
+            float3(0.f, 0.f, 0.f),
+            float3(2.f, 0.f, 0.f),
+            float3(2.f, 2.f, 0.f),
+            float3(10.f, 0.f, 0.f),
+            float3(12.f, 2.f, 0.f),
+            float3(10.f, 2.f, 0.f),
+        };
+        bool saw_interpolated_pref = false;
+        for (size_t i = 0; i < mesh.vertex_count(); ++i) {
+            saw_interpolated_pref
+                |= std::find(authored_pref.begin(), authored_pref.end(), pref[i]) == authored_pref.end();
+        }
+        CHECK(saw_interpolated_pref);
+    }
+
+    SUBCASE("duplicate exact name")
+    {
+        for (SubdivisionScheme scheme : {SubdivisionScheme::none, SubdivisionScheme::loop}) {
+            TestTessellatorInput storage = make_input(scheme);
+            storage.add_stream(
+                {ImporterSemantic::unknown, 0, 4, "Pref"},
+                MeshInterpolation::constant,
+                {1.f, 2.f, 3.f, 4.f}
+            );
+            CHECK_THROWS_WITH(tessellate(storage.input), doctest::Contains("stream named 'Pref'"));
+        }
+    }
 }
 
 TEST_CASE("USD tessellator adapter follows PxOsd token fallbacks")
@@ -459,6 +620,108 @@ def Mesh "Triangle"
     REQUIRE(uvs.valid());
     for (size_t i = 0; i < mesh.vertex_count(); ++i)
         CHECK_EQ(uvs[i], float2(0.f));
+}
+
+TEST_CASE("USD tessellator adapter follows subdivision normal policy at refinement zero")
+{
+    const auto load_fold = [](std::string_view subdivision_scheme, bool authored_normals)
+    {
+        std::string source = R"usd(#usda 1.0
+
+def Mesh "Fold"
+{
+    uniform token subdivisionScheme = ")usd";
+        source += subdivision_scheme;
+        source += R"usd("
+    int refinementLevel = 0
+    int[] faceVertexCounts = [4, 4]
+    int[] faceVertexIndices = [0, 1, 2, 3, 1, 4, 5, 2]
+)usd";
+        if (authored_normals) {
+            source
+                += R"usd(    normal3f[] normals = [(0, 0, 2), (0, 0, 2), (0, 0, 2), (0, 0, 2), (0, 0, 2), (0, 0, 2)] (
+        interpolation = "varying"
+    )
+)usd";
+        }
+        source += R"usd(    point3f[] points = [(-1, 0, -1), (0, 0, -1), (0, 0, 1), (-1, 0, 1), (1, 1, -1), (1, 1, 1)]
+}
+)usd";
+        const std::string file_name
+            = std::string(subdivision_scheme) + (authored_normals ? "_authored" : "_missing") + "_normals_level_0.usda";
+        return load_test_usda(file_name, source);
+    };
+
+    const auto check_generated_normals = [&](std::string_view subdivision_scheme, size_t expected_vertex_count)
+    {
+        const ref<ImporterScene> scene = load_fold(subdivision_scheme, true);
+        REQUIRE(scene);
+        REQUIRE_EQ(scene->meshes.size(), 1);
+        const ImporterMesh& mesh = scene->meshes.front();
+        CHECK_EQ(mesh.vertex_count(), expected_vertex_count);
+        const auto normals = mesh.normal_stream();
+        REQUIRE(normals.valid());
+        for (size_t vertex = 0; vertex < normals.size; ++vertex)
+            CHECK(sgl::math::length(normals[vertex]) == doctest::Approx(1.f).epsilon(1e-6));
+    };
+
+    SUBCASE("bilinear control cages remain faceted without authored normals")
+    {
+        const ref<ImporterScene> scene = load_fold("bilinear", false);
+        REQUIRE(scene);
+        REQUIRE_EQ(scene->meshes.size(), 1);
+        CHECK_EQ(scene->meshes.front().vertex_count(), 8);
+    }
+
+    SUBCASE("Catmull-Clark control cages are smooth without authored normals")
+    {
+        const ref<ImporterScene> scene = load_fold("catmullClark", false);
+        REQUIRE(scene);
+        REQUIRE_EQ(scene->meshes.size(), 1);
+        CHECK_EQ(scene->meshes.front().vertex_count(), 6);
+    }
+
+    SUBCASE("Loop control cages are smooth without authored normals")
+    {
+        const ref<ImporterScene> scene = load_test_usda(
+            "loop_smooth_normals_level_0.usda",
+            R"usd(#usda 1.0
+
+def Mesh "Fold"
+{
+    uniform token subdivisionScheme = "loop"
+    int refinementLevel = 0
+    int[] faceVertexCounts = [3, 3]
+    int[] faceVertexIndices = [0, 1, 2, 1, 3, 2]
+    point3f[] points = [(-1, 0, -1), (0, 0, -1), (-1, 0, 1), (1, 1, 1)]
+}
+)usd"
+        );
+        REQUIRE(scene);
+        REQUIRE_EQ(scene->meshes.size(), 1);
+        CHECK_EQ(scene->meshes.front().vertex_count(), 4);
+    }
+
+    SUBCASE("polygonal meshes preserve authored normals")
+    {
+        const ref<ImporterScene> scene = load_fold("none", true);
+        REQUIRE(scene);
+        REQUIRE_EQ(scene->meshes.size(), 1);
+        const auto normals = scene->meshes.front().normal_stream();
+        REQUIRE(normals.valid());
+        for (size_t vertex = 0; vertex < normals.size; ++vertex)
+            CHECK_EQ(normals[vertex], float3(0.f, 0.f, 2.f));
+    }
+
+    SUBCASE("bilinear control cages ignore authored normals")
+    {
+        check_generated_normals("bilinear", 8);
+    }
+
+    SUBCASE("Catmull-Clark control cages ignore authored normals")
+    {
+        check_generated_normals("catmullClark", 6);
+    }
 }
 
 TEST_CASE("USD tessellator adapter imports only face material-binding subsets")
@@ -576,6 +839,27 @@ TEST_CASE("stream tessellator preserves ordinary streams and subgeometry topolog
     }
 }
 
+TEST_CASE_NIGHTLY("subdivision validates later position samples")
+{
+    using namespace mesh_tessellator;
+    TestTessellatorInput storage;
+    storage.input.properties.set("refinement_level", 1);
+    storage.set_topology({3}, {0, 1, 2});
+    storage.set_positions({0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f, 0.f});
+    std::array<MeshAttributeStream, 2> positions{storage.input.positions[0], storage.input.positions[0]};
+    storage.input.positions = positions;
+
+    positions[1].values = positions[0].values.first(6);
+    CHECK_THROWS_WITH(tessellate(storage.input), doctest::Contains("requires 3"));
+    positions[1] = positions[0];
+    positions[1].attribute.components = 1;
+    CHECK_THROWS_WITH(tessellate(storage.input), doctest::Contains("three components"));
+    positions[1] = positions[0];
+    const std::array<int, 3> indices{0, 1, 2};
+    positions[1].indices = indices;
+    CHECK_THROWS_WITH(tessellate(storage.input), doctest::Contains("cannot be indexed separately"));
+}
+
 TEST_CASE("stream tessellator validates face metadata while constructing the output mapping")
 {
     using namespace mesh_tessellator;
@@ -589,6 +873,13 @@ TEST_CASE("stream tessellator validates face metadata while constructing the out
         storage.set_positions({0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f, 0.f});
         return storage;
     };
+
+    SUBCASE("missing refinement property")
+    {
+        TestTessellatorInput storage = make_input();
+        storage.input.properties = Properties{};
+        CHECK_THROWS_WITH(tessellate(storage.input), doctest::Contains("refinement_level"));
+    }
 
     SUBCASE("out-of-range subgeometry face")
     {
@@ -628,7 +919,7 @@ TEST_CASE("stream tessellator preserves orientation in winding and generated nor
         input.name = "oriented quad";
         input.subdivision_scheme = subdivision_scheme;
         input.orientation = left_handed ? MeshOrientation::left_handed : MeshOrientation::right_handed;
-        input.refinement_level = 1;
+        input.properties.set("refinement_level", 1);
         if (left_handed)
             storage.set_topology({4}, {0, 3, 2, 1});
         else
@@ -702,6 +993,20 @@ TEST_CASE("stream tessellator preserves orientation in winding and generated nor
         const TestTessellatorInput input = make_input(SubdivisionScheme::none, true);
         check_orientation(tessellate(input.input));
     }
+    SUBCASE("small faces retain their normals and collapsed faces use the fallback")
+    {
+        for (float scale : {0.f, 1e-3f, 1e-8f}) {
+            TestTessellatorInput input = make_input(SubdivisionScheme::none, false);
+            input.set_positions({float3(0), float3(0, scale, 0), float3(0, scale, scale), float3(0, 0, scale)});
+            ImporterMesh mesh = tessellate(input.input);
+            const float3 expected = scale > 0.f ? float3(1, 0, 0) : float3(0, 0, 1);
+            for (size_t vertex = 0; vertex < mesh.vertex_count(); ++vertex)
+                CHECK_GT(sgl::math::dot(mesh.normal_stream()[vertex], expected), 0.999f);
+            mesh.add_normals_from_faces();
+            for (size_t vertex = 0; vertex < mesh.vertex_count(); ++vertex)
+                CHECK_GT(sgl::math::dot(mesh.normal_stream()[vertex], expected), 0.999f);
+        }
+    }
     SUBCASE("Catmull-Clark right-handed")
     {
         const TestTessellatorInput input = make_input(SubdivisionScheme::catmull_clark, false);
@@ -712,9 +1017,33 @@ TEST_CASE("stream tessellator preserves orientation in winding and generated nor
         const TestTessellatorInput input = make_input(SubdivisionScheme::catmull_clark, true);
         check_orientation(tessellate(input.input));
     }
+
+    const auto check_smooth_control_cage_orientation = [&](bool left_handed)
+    {
+        TestTessellatorInput input = make_input(SubdivisionScheme::catmull_clark, left_handed);
+        input.input.properties.set("refinement_level", 0);
+        std::vector<float> normal_values;
+        calculate_smooth_normals(input.input, 0, normal_values);
+        const MeshAttributeStream normals{
+            .attribute = {ImporterSemantic::normal, 0, 3},
+            .interpolation = MeshInterpolation::varying,
+            .values = normal_values,
+        };
+        input.input.normals = {&normals, 1};
+        check_orientation(tessellate(input.input));
+    };
+
+    SUBCASE("smooth control cage right-handed")
+    {
+        check_smooth_control_cage_orientation(false);
+    }
+    SUBCASE("smooth control cage left-handed")
+    {
+        check_smooth_control_cage_orientation(true);
+    }
 }
 
-TEST_CASE("ordinary triangulation skips holes independently of face eligibility")
+TEST_CASE("ordinary triangulation and smooth normals skip holes independently of face eligibility")
 {
     using namespace mesh_tessellator;
 
@@ -723,14 +1052,76 @@ TEST_CASE("ordinary triangulation skips holes independently of face eligibility"
     input.name = "ordinary holes";
     input.subdivision_scheme = SubdivisionScheme::none;
     input.orientation = MeshOrientation::right_handed;
-    storage.set_topology({2, 3, 3, 4}, {0, 1, 0, 1, 2, 0, 2, 3, 0, 1, 2, 3}, {1, 2});
-    storage.set_positions({0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 1.f, 1.f, 0.f, 0.f, 1.f, 0.f});
+    storage.set_topology({2, 3, 3, 4}, {4, 5, 4, 5, 6, 4, 6, 7, 0, 1, 2, 3}, {1, 2});
+    storage.set_positions({
+        0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 1.f, 1.f, 0.f, 0.f, 1.f, 0.f,
+        0.f, 0.f, 1.f, 1.f, 0.f, 1.f, 1.f, 1.f, 1.f, 0.f, 1.f, 1.f,
+    });
     storage.add_subgeometry(input.name, {0, 1, 3});
+
+    std::vector<float> normal_values;
+    calculate_smooth_normals(input, 0, normal_values);
+    const MeshAttributeStream normals{
+        .attribute = {ImporterSemantic::normal, 0, 3},
+        .interpolation = MeshInterpolation::varying,
+        .values = normal_values,
+    };
+    input.normals = {&normals, 1};
+    REQUIRE_EQ(normal_values.size(), 8 * 3);
+    for (size_t vertex = 0; vertex < 8; ++vertex) {
+        const float3 normal{
+            normal_values[vertex * 3 + 0],
+            normal_values[vertex * 3 + 1],
+            normal_values[vertex * 3 + 2],
+        };
+        CHECK_EQ(normal, vertex < 4 ? float3(0.f, 0.f, 1.f) : float3(0.f));
+    }
 
     const ImporterMesh mesh = tessellate(input);
     REQUIRE_EQ(mesh.vertex_count(), 4);
     REQUIRE_EQ(mesh.subgeometries.size(), 1);
     CHECK(mesh.subgeometries[0].indices == std::vector<uint3>{{0, 1, 2}, {0, 2, 3}});
+}
+
+TEST_CASE("smooth normal generation accumulates control-cage face corners")
+{
+    using namespace mesh_tessellator;
+
+    TestTessellatorInput storage;
+    TessellatorInputMesh& input = storage.input;
+    storage.set_topology({4, 4}, {0, 1, 2, 3, 1, 4, 5, 2});
+    storage.set_positions({
+        {-1.f, 0.f, -1.f},
+        {0.f, 0.f, -1.f},
+        {0.f, 0.f, 1.f},
+        {-1.f, 0.f, 1.f},
+        {1.f, 1.f, -1.f},
+        {1.f, 1.f, 1.f},
+    });
+
+    std::vector<float> normal_values;
+    calculate_smooth_normals(input, 0, normal_values);
+
+    const float inverse_sqrt_2 = 1.f / std::sqrt(2.f);
+    const float inverse_sqrt_5 = 1.f / std::sqrt(5.f);
+    const std::vector<float3> expected_normals{
+        {0.f, -1.f, 0.f},
+        {inverse_sqrt_5, -2.f * inverse_sqrt_5, 0.f},
+        {inverse_sqrt_5, -2.f * inverse_sqrt_5, 0.f},
+        {0.f, -1.f, 0.f},
+        {inverse_sqrt_2, -inverse_sqrt_2, 0.f},
+        {inverse_sqrt_2, -inverse_sqrt_2, 0.f},
+    };
+    REQUIRE_EQ(normal_values.size(), expected_normals.size() * 3);
+    for (size_t vertex = 0; vertex < expected_normals.size(); ++vertex) {
+        const float3 normal{
+            normal_values[vertex * 3 + 0],
+            normal_values[vertex * 3 + 1],
+            normal_values[vertex * 3 + 2],
+        };
+        CAPTURE(vertex);
+        CHECK(sgl::math::length(normal - expected_normals[vertex]) == doctest::Approx(0.f).epsilon(1e-6));
+    }
 }
 
 TEST_CASE("subdivision patch stitching follows normal continuity")
@@ -743,7 +1134,7 @@ TEST_CASE("subdivision patch stitching follows normal continuity")
         TessellatorInputMesh& input = storage.input;
         input.name = "Fold";
         input.subdivision_scheme = subdivision_scheme;
-        input.refinement_level = 1;
+        input.properties.set("refinement_level", 1);
         storage.set_topology({4, 4}, {0, 1, 2, 3, 1, 4, 5, 2});
         storage.set_positions({
             {-1.f, 0.f, -1.f},
@@ -815,7 +1206,7 @@ TEST_CASE("subdivision patch stitching follows UV interpolation")
         TessellatorInputMesh& input = storage.input;
         input.name = "Plane";
         input.subdivision_scheme = SubdivisionScheme::loop;
-        input.refinement_level = 1;
+        input.properties.set("refinement_level", 1);
         storage.set_topology({3, 3}, {0, 1, 2, 0, 2, 3});
         storage.set_positions({
             {-1.f, 0.f, -1.f},
@@ -839,7 +1230,7 @@ TEST_CASE("subdivision patch stitching follows UV interpolation")
         TessellatorInputMesh& input = storage.input;
         input.name = "Plane";
         input.subdivision_scheme = SubdivisionScheme::loop;
-        input.refinement_level = 1;
+        input.properties.set("refinement_level", 1);
         storage.set_topology({3, 3}, {0, 1, 2, 0, 2, 3});
         storage.set_positions({
             {-1.f, 0.f, -1.f},

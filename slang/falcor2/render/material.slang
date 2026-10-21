@@ -21,7 +21,7 @@ public struct MaterialSample
     public bool has_flag(const BSDFFlags flags) { return is_set(this.flags, flags); }
 }
 
-public enum MaterialInstanceHints : uint {
+public enum class MaterialInstanceHints : uint {
     none = 0,
     /// Turn off normal mapping if supported.
     disable_normal_mapping = 0x1,
@@ -38,6 +38,13 @@ public struct HomogeneousMediumProperties
     public float3 sigma_s = {};
     public float anisotropy = 0.0;
 };
+
+/// Minimal writer contract used by materials to publish numeric AOVs.
+public interface IMaterialAOVWriter
+{
+    public static void generic_data(uint2 coord, uint id, float4 value);
+    public static bool generic_data_enabled(uint id);
+}
 
 /// Scattering and emission at a geometrically accepted surface hit.
 public interface IMaterialInstance
@@ -93,6 +100,29 @@ public interface IMaterialInstance
 public interface IMaterial
 {
     associatedtype MaterialInstance : IMaterialInstance;
+
+    /// Evaluate and write material-authored numeric outputs when the compiled capability is enabled,
+    /// without constructing a scattering instance.
+    public void write_material_aovs<Writer : IMaterialAOVWriter, LodSampler : ILodSampler>(
+        uint2 coord,
+        const SurfaceInteraction si,
+        const LodSampler lod_sampler,
+        const MaterialInstanceHints hints = MaterialInstanceHints::none
+    )
+    {
+        if (ENABLE_MATERIAL_AOVS)
+            write_material_aovs_impl<Writer, LodSampler>(coord, si, lod_sampler, hints);
+    }
+
+    /// Producer hook; consumers call write_material_aovs() to respect the compiled capability.
+    public void write_material_aovs_impl<Writer : IMaterialAOVWriter, LodSampler : ILodSampler>(
+        uint2 coord,
+        const SurfaceInteraction si,
+        const LodSampler lod_sampler,
+        const MaterialInstanceHints hints = MaterialInstanceHints::none
+    )
+    {
+    }
 
     /// Setup a material instance for a given surface interaction.
     /// @param si Surface interaction.

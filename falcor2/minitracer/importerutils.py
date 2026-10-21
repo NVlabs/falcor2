@@ -67,15 +67,20 @@ def convert_importer_scene_to_scene(
 
     # Create materials
     start = time.time()
-    materials: Dict[str, Material] = {}
-    if trivial_materials or len(importer_scene.materials) == 0:
-        white_material = scene.create_material("white_material")
-        white_material.albedo = MaterialTexture(scene.create_texture(16, 16, float3(0.8, 0.8, 0.8)))
-        materials["white_material"] = white_material
-        print(f"Created white material in {time.time() - start:.2f} seconds")
-    else:
-        materials = load_full_materials(scene, importer_scene)
-        print(f"Loaded materials in {time.time() - start:.2f} seconds")
+    materials = [] if trivial_materials else load_full_materials(scene, importer_scene)
+    default_material: Material | None = None
+    print(f"Loaded materials in {time.time() - start:.2f} seconds")
+
+    def resolve_material(material_index: int) -> Material:
+        nonlocal default_material
+        if 0 <= material_index < len(materials):
+            return materials[material_index]
+        if default_material is None:
+            default_material = scene.create_material("white_material")
+            default_material.albedo = MaterialTexture(
+                scene.create_texture(16, 16, float3(0.8, 0.8, 0.8))
+            )
+        return default_material
 
     # Process meshes and nodes
     start = time.time()
@@ -188,12 +193,7 @@ def convert_importer_scene_to_scene(
                 geometry_instance.transform = decompose_matrix(world_from_local)
 
                 # Assign material
-                material_name = (
-                    subgeo.material_name if subgeo.material_name in materials else "white_material"
-                )
-                if material_name not in materials:
-                    material_name = "white_material"
-                geometry_instance.material = materials[material_name]
+                geometry_instance.material = resolve_material(subgeo.material_index)
 
                 instance_name = f"{node.name}_{subgeo.name}"
                 instances[instance_name] = geometry_instance
@@ -357,10 +357,10 @@ class TextureCache:
             raise ValueError(f"Unsupported normal map parameter type: {type(param)}")
 
 
-def load_full_materials(scene: Scene, importer_scene: falcor2.ImporterScene) -> Dict[str, Material]:
-    """Load full materials from importer materials."""
+def load_full_materials(scene: Scene, importer_scene: falcor2.ImporterScene) -> list[Material]:
+    """Load full materials in importer material index order."""
 
-    materials: Dict[str, Material] = {}
+    materials: list[Material] = []
     texture_cache = TextureCache(scene, importer_scene)
 
     def get_material_texture_info(
@@ -374,14 +374,14 @@ def load_full_materials(scene: Scene, importer_scene: falcor2.ImporterScene) -> 
         scale = spy.float2(1.0, 1.0)
         rotation = 0.0
         texcoord = 0
-        if f"{param}_offset" in importer_material.params:
-            offset = importer_material.params.get_float2(f"{param}_offset")
-        if f"{param}_scale" in importer_material.params:
-            scale = importer_material.params.get_float2(f"{param}_scale")
-        if f"{param}_rotation" in importer_material.params:
-            rotation = importer_material.params.get_float(f"{param}_rotation")
-        if f"{param}_texcoord" in importer_material.params:
-            texcoord = importer_material.params.get_int(f"{param}_texcoord")
+        if f"{param}:offset" in importer_material.params:
+            offset = importer_material.params.get_float2(f"{param}:offset")
+        if f"{param}:scale" in importer_material.params:
+            scale = importer_material.params.get_float2(f"{param}:scale")
+        if f"{param}:rotation" in importer_material.params:
+            rotation = importer_material.params.get_float(f"{param}:rotation")
+        if f"{param}:texcoord" in importer_material.params:
+            texcoord = importer_material.params.get_int(f"{param}:texcoord")
 
         # Extract wrap and filter properties from ImporterTexture if available
         if importer_texture is not None:
@@ -409,14 +409,14 @@ def load_full_materials(scene: Scene, importer_scene: falcor2.ImporterScene) -> 
         scale = spy.float2(1.0, 1.0)
         rotation = 0.0
         texcoord = 0
-        if f"{param}_offset" in importer_material.params:
-            offset = importer_material.params.get_float2(f"{param}_offset")
-        if f"{param}_scale" in importer_material.params:
-            scale = importer_material.params.get_float2(f"{param}_scale")
-        if f"{param}_rotation" in importer_material.params:
-            rotation = importer_material.params.get_float(f"{param}_rotation")
-        if f"{param}_texcoord" in importer_material.params:
-            texcoord = importer_material.params.get_int(f"{param}_texcoord")
+        if f"{param}:offset" in importer_material.params:
+            offset = importer_material.params.get_float2(f"{param}:offset")
+        if f"{param}:scale" in importer_material.params:
+            scale = importer_material.params.get_float2(f"{param}:scale")
+        if f"{param}:rotation" in importer_material.params:
+            rotation = importer_material.params.get_float(f"{param}:rotation")
+        if f"{param}:texcoord" in importer_material.params:
+            texcoord = importer_material.params.get_int(f"{param}:texcoord")
 
         # Extract wrap and filter properties from ImporterTexture if available
         if importer_texture is not None:
@@ -619,9 +619,9 @@ def load_full_materials(scene: Scene, importer_scene: falcor2.ImporterScene) -> 
             if "normalTexture" in importer_material.params:
                 material.normal = get_material_normalmap_info(importer_material, "normalTexture")
 
-            if "normalTexture_strength" in importer_material.params:
+            if "normalTexture:strength" in importer_material.params:
                 material.normal_map_strength = importer_material.params.get_float(
-                    "normalTexture_strength"
+                    "normalTexture:strength"
                 )
             if "doubleSided" in importer_material.params:
                 material.double_sided = importer_material.params.get_bool("doubleSided")
@@ -632,7 +632,7 @@ def load_full_materials(scene: Scene, importer_scene: falcor2.ImporterScene) -> 
             if "alphaCutoff" in importer_material.params:
                 material.alpha_cutoff = importer_material.params.get_float("alphaCutoff")
 
-        materials[importer_material.name] = material
+        materials.append(material)
     return materials
 
 

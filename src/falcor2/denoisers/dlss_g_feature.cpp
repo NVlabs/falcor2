@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "falcor2/denoisers/dlss_g_feature.h"
+#include "falcor2/core/config.h"
 
 #if FALCOR_ENABLE_NGX
 #include "falcor2/denoisers/dlss_g_feature_impl.h"

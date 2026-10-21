@@ -33,43 +33,45 @@ ScenePicker::ScenePicker(ref<sgl::Device> device)
 
 void ScenePicker::create_pipelines(const Scene* scene)
 {
-    // Early out if the pipelines are already created and the scene requirements haven't changed.
-    if (m_use_raytracing_pipeline) {
-        if (m_render_ids_rt.pipeline && m_requirements_generation == scene->requirements_generation())
-            return;
-    } else {
-        if (m_render_ids_cs.kernel && m_requirements_generation == scene->requirements_generation())
-            return;
+    const auto& requirements = scene->requirements();
+    const bool pipeline_ready
+        = m_use_raytracing_pipeline ? bool(m_render_ids_rt.pipeline) : bool(m_render_ids_cs.kernel);
+    const bool reusable = pipeline_ready
+        && (m_use_raytracing_pipeline ? requirements->matches(m_scene_requirements.get())
+                                      : requirements->matches_shader_inputs(m_scene_requirements.get()));
+    if (reusable) {
+        m_scene_requirements = requirements;
+        return;
     }
-
-    m_requirements_generation = scene->requirements_generation();
-
-    const SceneRequirements& requirements = scene->requirements();
 
     std::vector<ref<sgl::SlangModule>> modules;
     modules.push_back(m_device->load_module("falcor2/ui/kernels/scene_picker.slang"));
-    modules.insert(modules.end(), requirements.modules.begin(), requirements.modules.end());
-    ref<sgl::SlangModule> module = m_device->compose_modules("scene_picker", modules, requirements.type_conformances);
+    modules.insert(modules.end(), requirements->modules.begin(), requirements->modules.end());
+    ref<sgl::SlangModule> module = m_device->compose_modules("scene_picker", modules, requirements->type_conformances);
 
     if (m_use_raytracing_pipeline) {
         SceneRayTracingSetup::RayDesc intersect_ray_type;
         intersect_ray_type.name = "intersect";
         intersect_ray_type.has_miss = true;
         intersect_ray_type.has_closest_hit = true;
-        SceneRayTracingSetup rt_setup = SceneRayTracingSetup::create(scene, {intersect_ray_type});
+        SceneRayTracingSetup rt_setup = SceneRayTracingSetup::create(scene, {intersect_ray_type}, requirements.get());
 
-        m_render_ids_rt.program = rt_setup.link_program(module, {"render_ids_ray_gen"});
-        m_render_ids_rt.pipeline = rt_setup.create_pipeline({
-            .program = m_render_ids_rt.program,
+        RenderIdsRT render_ids_rt;
+        render_ids_rt.program = rt_setup.link_program(module, {"render_ids_ray_gen"});
+        render_ids_rt.pipeline = rt_setup.create_pipeline({
+            .program = render_ids_rt.program,
             .max_recursion = 1,
             .max_ray_payload_size = 128,
         });
-        m_render_ids_rt.shader_table = rt_setup.create_shader_table(m_render_ids_rt.program, {"render_ids_ray_gen"});
+        render_ids_rt.shader_table = rt_setup.create_shader_table(render_ids_rt.program, {"render_ids_ray_gen"});
+        m_render_ids_rt = std::move(render_ids_rt);
     } else {
         m_render_ids_cs.kernel = m_device->create_compute_kernel({
             .program = m_device->link_program({module}, {module->entry_point("render_ids_compute")}),
         });
     }
+
+    m_scene_requirements = requirements;
 }
 
 void ScenePicker::render(sgl::CommandEncoder* command_encoder, const Scene* scene, const Camera* camera)

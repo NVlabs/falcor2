@@ -72,7 +72,11 @@ def analyze_meshes(scene: f2.ImporterScene, verbose: bool = False) -> Dict[str, 
             subgeom_data = {
                 "index": j,
                 "name": subgeom.name,
-                "material_name": subgeom.material_name,
+                "material_name": (
+                    scene.materials[subgeom.material_index].name
+                    if 0 <= subgeom.material_index < len(scene.materials)
+                    else ""
+                ),
                 "triangle_count": triangle_count,
             }
             mesh_data["subgeometries"].append(subgeom_data)

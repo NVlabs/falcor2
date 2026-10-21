@@ -15,6 +15,23 @@ include(utils)
 
 set(VCPKG_INSTALL_OPTIONS "--no-print-usage" "--allow-unsupported" "--x-buildtrees-root=${CMAKE_CURRENT_SOURCE_DIR}/build/buildtrees")
 
+# Define dependency options before project() invokes vcpkg so their defaults
+# also select the appropriate manifest features on a clean configure.
+
+option(FALCOR_ENABLE_CRASHPAD "Enable Crashpad integration" OFF)
+set(SGL_ENABLE_CRASHPAD ${FALCOR_ENABLE_CRASHPAD})
+if(FALCOR_ENABLE_CRASHPAD)
+    list(APPEND VCPKG_MANIFEST_FEATURES crashpad)
+endif()
+
+option(FALCOR_ENABLE_STREAMING "Enable video encoding and WebRTC streaming support" ON)
+if(FALCOR_ENABLE_STREAMING)
+    list(APPEND VCPKG_MANIFEST_FEATURES webrtc)
+endif()
+
+include(falcor2_usd_fbx)
+include(falcor2_python_bootstrap)
+
 project(falcor2)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -64,9 +81,8 @@ option(FALCOR_BUILD_TESTS "Build tests" ON)
 # Enable/disable precompiled headers.
 option(FALCOR_ENABLE_PCH "Enable precompiled headers" OFF)
 
-# Enable/disable Crashpad integration through SlangPy/SGL.
-option(FALCOR_ENABLE_CRASHPAD "Enable Crashpad integration" OFF)
-set(SGL_ENABLE_CRASHPAD ${FALCOR_ENABLE_CRASHPAD})
+# Falcor2 supplies SlangPy's optional dependencies through its vcpkg manifest.
+set(SGL_BUILD_STANDALONE OFF)
 
 set(FALCOR_PROJECT_DIR ${CMAKE_CURRENT_SOURCE_DIR} CACHE STRING "Project directory (defaults to CMAKE_CURRENT_SOURCE_DIR)")
 
@@ -101,7 +117,8 @@ message(STATUS "Platform: ${FALCOR_PLATFORM}")
 determine_target_architecture(FALCOR_ARCHITECTURE)
 message(STATUS "Architecture: ${FALCOR_ARCHITECTURE}")
 
-if((FALCOR_WINDOWS OR FALCOR_LINUX) AND FALCOR_ARCHITECTURE MATCHES "x86_64")
+if(((FALCOR_WINDOWS OR FALCOR_LINUX) AND FALCOR_ARCHITECTURE STREQUAL "x86_64")
+    OR (FALCOR_LINUX AND FALCOR_ARCHITECTURE MATCHES "^(aarch64|arm64)$"))
     set(FALCOR_ENABLE_NGX_DEFAULT ON)
 else()
     set(FALCOR_ENABLE_NGX_DEFAULT OFF)
@@ -113,7 +130,7 @@ option(FALCOR_ENABLE_NGX "Enable NVIDIA NGX support for DLSS" ${FALCOR_ENABLE_NG
 # -----------------------------------------------------------------------------
 
 if(FALCOR_BUILD_PYTHON)
-    find_package(Python 3.9 COMPONENTS Interpreter Development.Module REQUIRED)
+    find_package(Python 3.10 COMPONENTS Interpreter Development.Module REQUIRED)
 endif()
 
 # -----------------------------------------------------------------------------
@@ -166,6 +183,8 @@ endif()
 
 set(FALCOR_SHADER_OUTPUT_DIRECTORY ${FALCOR_OUTPUT_DIRECTORY}/shaders)
 
+falcor2_generate_usd_fbx_config()
+
 # -----------------------------------------------------------------------------
 # Version
 # -----------------------------------------------------------------------------
@@ -186,12 +205,8 @@ function(falcor2_copy_binary src dst_dir)
    set(dst ${FALCOR_OUTPUT_DIRECTORY}/${dst_dir}/${filename})
    set_property(GLOBAL APPEND PROPERTY FALCOR_BINARY_FILES_SRC ${src})
    set_property(GLOBAL APPEND PROPERTY FALCOR_BINARY_FILES_DST ${dst})
-   ## Complains about:
-   # [cmake] CMake Warning (dev) at CMakeLists.txt:186 (install):
-   # [cmake]   Policy CMP0177 is not set: install() DESTINATION paths are normalized.  Run
-   # [cmake]   "cmake --help-policy CMP0177" for policy details.  Use the cmake_policy
-   # [cmake]   command to set the policy and suppress this warning.
-   #install(FILES ${src} DESTINATION ${CMAKE_INSTALL_BINDIR}/${dst_dir})
+   cmake_path(SET install_dir NORMALIZE "${CMAKE_INSTALL_BINDIR}/${dst_dir}")
+   install(FILES ${src} DESTINATION ${install_dir})
 endfunction()
 
 function(falcor2_copy_library target)
@@ -203,12 +218,17 @@ endfunction()
 # Dependencies
 # -----------------------------------------------------------------------------
 
-# Require for Usd importer
-find_package(pxr REQUIRED)
+# Required for USD importer and Falcor-owned Python bindings.
+include(falcor2_usd)
+
 # Required to add tangents to meshes
 find_package(mikktspace REQUIRED)
 # Required to tessellate subdivs
 find_package(OpenSubdiv REQUIRED)
+# Required for streaming support
+if(FALCOR_ENABLE_STREAMING)
+    find_package(LibDataChannel 0.24.5 EXACT CONFIG REQUIRED)
+endif()
 
 # -----------------------------------------------------------------------------
 # Sources
@@ -229,9 +249,11 @@ get_property(binary_files_src GLOBAL PROPERTY FALCOR_BINARY_FILES_SRC)
 get_property(binary_files_dst GLOBAL PROPERTY FALCOR_BINARY_FILES_DST)
 foreach(file IN ZIP_LISTS binary_files_src binary_files_dst)
    get_filename_component(filename ${file_0} NAME)
+   get_filename_component(destination_directory ${file_1} DIRECTORY)
    add_custom_command(
        OUTPUT ${file_1}
        DEPENDS ${file_0}
+       COMMAND ${CMAKE_COMMAND} -E make_directory ${destination_directory}
        COMMAND ${CMAKE_COMMAND} -E copy ${file_0} ${file_1}
        COMMENT "Copying binary file ${filename} to ${file_1}"
    )
@@ -257,16 +279,13 @@ merge_natvis_files("${natvis_files}" "all.natvis")
 # install
 # -----------------------------------------------------------------------------
 
-# Install binaries.
-install(
-    TARGETS sgl
-    LIBRARY DESTINATION ${CMAKE_INSTALL_BINDIR}
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-)
-
-# Install header files.
-install(
-    DIRECTORY src/sgl
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-    FILES_MATCHING PATTERN "*.h"
-)
+# Collect notices for all installed target-triplet packages, including transitive
+# dependencies. Keep non-vcpkg dependencies' notices with their own install rules.
+file(GLOB vcpkg_copyright_files CONFIGURE_DEPENDS
+    "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/*/copyright")
+foreach(copyright_file IN LISTS vcpkg_copyright_files)
+    get_filename_component(port_directory "${copyright_file}" DIRECTORY)
+    get_filename_component(port_name "${port_directory}" NAME)
+    install(FILES "${copyright_file}"
+        DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/licenses/falcor2/vcpkg/${port_name}")
+endforeach()

@@ -207,44 +207,45 @@ void SelectionOverlay::create_probe_kernel(const Scene* scene)
 {
     FALCOR_ASSERT(scene);
 
-    if (m_use_raytracing_pipeline) {
-        if (m_probe_rt.pipeline && m_requirements_generation == scene->requirements_generation())
-            return;
-    } else {
-        if (m_probe_kernel && m_scene_requirements == scene->requirements())
-            return;
+    const auto& requirements = scene->requirements();
+    const bool pipeline_ready = m_use_raytracing_pipeline ? bool(m_probe_rt.pipeline) : bool(m_probe_kernel);
+    const bool reusable = pipeline_ready
+        && (m_use_raytracing_pipeline ? requirements->matches(m_scene_requirements.get())
+                                      : requirements->matches_shader_inputs(m_scene_requirements.get()));
+    if (reusable) {
+        m_scene_requirements = requirements;
+        return;
     }
-
-    m_requirements_generation = scene->requirements_generation();
-    m_scene_requirements = scene->requirements();
-
-    const SceneRequirements& requirements = scene->requirements();
 
     std::vector<ref<sgl::SlangModule>> modules;
     modules.push_back(m_device->load_module("falcor2/ui/kernels/selection_probe.slang"));
-    modules.insert(modules.end(), requirements.modules.begin(), requirements.modules.end());
+    modules.insert(modules.end(), requirements->modules.begin(), requirements->modules.end());
     ref<sgl::SlangModule> module
-        = m_device->compose_modules("selection_probe", modules, requirements.type_conformances);
+        = m_device->compose_modules("selection_probe", modules, requirements->type_conformances);
 
     if (m_use_raytracing_pipeline) {
         SceneRayTracingSetup::RayDesc probe_ray_type;
         probe_ray_type.name = "probe";
         probe_ray_type.has_miss = true;
         probe_ray_type.has_any_hit = true;
-        SceneRayTracingSetup rt_setup = SceneRayTracingSetup::create(scene, {probe_ray_type});
+        SceneRayTracingSetup rt_setup = SceneRayTracingSetup::create(scene, {probe_ray_type}, requirements.get());
 
-        m_probe_rt.program = rt_setup.link_program(module, {"selection_probe_ray_gen"});
-        m_probe_rt.pipeline = rt_setup.create_pipeline({
-            .program = m_probe_rt.program,
+        ProbeRT probe_rt;
+        probe_rt.program = rt_setup.link_program(module, {"selection_probe_ray_gen"});
+        probe_rt.pipeline = rt_setup.create_pipeline({
+            .program = probe_rt.program,
             .max_recursion = 1,
             .max_ray_payload_size = 128,
         });
-        m_probe_rt.shader_table = rt_setup.create_shader_table(m_probe_rt.program, {"selection_probe_ray_gen"});
+        probe_rt.shader_table = rt_setup.create_shader_table(probe_rt.program, {"selection_probe_ray_gen"});
+        m_probe_rt = std::move(probe_rt);
     } else {
         m_probe_kernel = m_device->create_compute_kernel({
             .program = m_device->link_program({module}, {module->entry_point("selection_probe")}),
         });
     }
+
+    m_scene_requirements = requirements;
 }
 
 void SelectionOverlay::update_aabb()

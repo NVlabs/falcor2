@@ -8,8 +8,6 @@
 
 #include "falcor2/core/types.h"
 
-#include "falcor2/utils/managed_buffer.h"
-
 #include "codegen/codegen.h"
 
 #include <sgl/core/crypto.h>
@@ -50,6 +48,7 @@ public:
     virtual void update(SceneUpdateContext& ctx) override;
     virtual shared::MaterialFlags flags() const override;
     virtual OpacityDesc opacity_desc() const override;
+    virtual SceneCapabilities required_capabilities() const override;
     virtual ref<sgl::SlangModule> required_module() const override;
 
     /// List the texture handles used by this material's bound parameters.
@@ -94,17 +93,19 @@ public:
             .def_rw(
                 "mtlx_editable_params",
                 &MaterialXMaterial::m_mtlx_editable_params,
-                "Editable MaterialX parameters: empty follows the class-compilation default, '*' exposes every "
-                "supported unbound input, and a comma-separated list exposes only the matching generated input "
-                "names.",
+                "Editable MaterialX parameters: empty exposes no optional inputs, '*' exposes every supported "
+                "unbound input, and a comma-separated list selects authored names without the 'inputs:' prefix "
+                "(bare names such as 'base' for selected-root inputs, 'node_input' such as 'surface_base' otherwise). "
+                "Use full input paths such as 'NG/surface/base' for ambiguous names; ambiguous short names throw.",
                 reflection::default_value(std::string{}),
                 reflection::on_change(&MaterialXMaterial::require_codegen)
             )
             .def_rw(
-                "mtlx_class_compilation",
-                &MaterialXMaterial::m_mtlx_class_compilation,
-                "Generate a canonical reusable MaterialX class. With empty mtlx_editable_params, every supported "
-                "unbound input is exposed.",
+                "mtlx_canonicalize_names",
+                &MaterialXMaterial::m_mtlx_canonicalize_names,
+                "Use structural canonical names for reusable MaterialX shader identity. This does not make any "
+                "optional parameter editable; use mtlx_editable_params for runtime inputs. This property replaces "
+                "mtlx_class_compilation, whose implicit all-live behavior was removed.",
                 reflection::default_value(false),
                 reflection::on_change(&MaterialXMaterial::require_codegen)
             )
@@ -119,7 +120,7 @@ public:
                 "mtlx_layeringmethod",
                 &MaterialXMaterial::m_mtlx_layeringmethod,
                 // TODO(@tdavidovic): Turn into enum or bool
-                "Layering method. (normal, positionfree).",
+                "Layering method. Only normal layering is currently supported.",
                 reflection::default_value("normal"),
                 reflection::on_change(&MaterialXMaterial::require_codegen),
                 reflection::UIFlags::advanced
@@ -147,24 +148,6 @@ public:
                 "Use upstream Slang ddx/ddy derivative implementations where available. Keep disabled for path "
                 "tracing/ray-tracing materials.",
                 reflection::default_value(false),
-                reflection::on_change(&MaterialXMaterial::require_codegen),
-                reflection::UIFlags::advanced
-            )
-            .def_prop_rw(
-                "mtlx_geomprop_names",
-                &MaterialXMaterial::mtlx_geomprop_names_property,
-                &MaterialXMaterial::set_mtlx_geomprop_names_property,
-                "MaterialX geomprop stream names with explicit provider IDs.",
-                reflection::default_value(detail::PropertyList::create(std::vector<std::string>{})),
-                reflection::on_change(&MaterialXMaterial::require_codegen),
-                reflection::UIFlags::advanced
-            )
-            .def_prop_rw(
-                "mtlx_geomprop_ids",
-                &MaterialXMaterial::mtlx_geomprop_ids_property,
-                &MaterialXMaterial::set_mtlx_geomprop_ids_property,
-                "MaterialX geomprop provider IDs matching mtlx_geomprop_names.",
-                reflection::default_value(detail::PropertyList::create(std::vector<int64_t>{})),
                 reflection::on_change(&MaterialXMaterial::require_codegen),
                 reflection::UIFlags::advanced
             )
@@ -251,10 +234,6 @@ public:
 private:
     void require_codegen();
     void run_codegen();
-    detail::PropertyList mtlx_geomprop_names_property() const;
-    void set_mtlx_geomprop_names_property(const detail::PropertyList& value);
-    detail::PropertyList mtlx_geomprop_ids_property() const;
-    void set_mtlx_geomprop_ids_property(const detail::PropertyList& value);
 
     template<typename CursorT>
     void write_to_cursor_impl(CursorT cursor) const;
@@ -267,7 +246,7 @@ private:
     std::string m_mtlx_search_paths;
     std::filesystem::path m_mtlx_path;
     std::string m_mtlx_editable_params;
-    bool m_mtlx_class_compilation{false};
+    bool m_mtlx_canonicalize_names{false};
     std::string m_mtlx_node_name;
     std::string m_mtlx_layeringmethod;
     std::string m_mtlx_transmissive_bsdfs;
@@ -279,8 +258,6 @@ private:
         mtlx::ZeltnerSheenCoefficientMode::analytic_fit
     };
     bool m_mtlx_use_slang_derivatives{false};
-    std::vector<std::string> m_mtlx_geomprop_names;
-    std::vector<uint32_t> m_mtlx_geomprop_ids;
     std::string m_debug_write_shader_path;
     std::string m_debug_load_shader_path;
     // std::string m_volume_sigmaA;
@@ -299,7 +276,6 @@ private:
 
     mtlx::CodeGenDesc m_codegen_desc;
     std::unique_ptr<mtlx::CodeGenResult> m_codegen_result;
-    ref<ManagedBuffer> m_data_buffer;
 
     // When true, PathState must allow storing volume properties (sigmaA, sigmaS, and a flag they're set).
     // Left separated out so we don't forget about it, but it really should be only on-demand obtained,

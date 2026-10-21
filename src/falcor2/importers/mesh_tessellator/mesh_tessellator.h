@@ -70,6 +70,8 @@ struct MeshAttributeStream {
 /// hole, and subgeometry indices must be mutually consistent and in range. Positions must be an unindexed float3
 /// vertex stream. Only faces assigned to a subgeometry are emitted; holes remain in the subdivision topology but are
 /// not emitted. A refinement level of zero, or a subdivision scheme of none, selects ordinary polygon triangulation.
+/// Primary normal streams are used by ordinary polygon triangulation. Refined subdivision surfaces generate normals
+/// from position derivatives instead.
 struct TessellatorInputMesh {
     std::string name;
     SubdivisionScheme subdivision_scheme = SubdivisionScheme::catmull_clark;
@@ -80,22 +82,30 @@ struct TessellatorInputMesh {
     std::span<const int> face_vertex_counts;
     std::span<const int> face_vertex_indices;
     std::span<const int> hole_indices;
-    int refinement_level = 0;
+    /// Import-processing properties, initialized with ImporterMesh::make_properties().
+    Properties properties;
 
-    MeshAttributeStream positions{
-        .attribute = {ImporterSemantic::position, 0, 3},
-        .interpolation = MeshInterpolation::vertex,
-    };
+    /// Ordered samples with shared topology and attribute layouts. Normals are empty or match the position sample
+    /// count. Each output position/normal attribute uses its sample index; zero is the reference geometry.
+    std::span<const MeshAttributeStream> positions;
+    std::span<const MeshAttributeStream> normals;
+    /// Static attributes other than primary positions and normals.
     std::vector<MeshAttributeStream> streams;
 
     struct Subgeometry {
         std::string name;
-        std::string material_name;
+        int material_index = -1;
         std::span<const int> face_indices;
     };
 
     std::vector<Subgeometry> subgeometries;
 };
+
+/// Generate smooth normals for one sample by accumulating incident face-corner cross products over the coarse
+/// topology. normal_values must be empty, separate storage; the result has one float3 per position and is suitable
+/// for a varying normal stream to shade the control cage smoothly.
+FALCOR_API void
+calculate_smooth_normals(const TessellatorInputMesh& input, size_t sample, std::vector<float>& normal_values);
 
 FALCOR_API ImporterMesh tessellate(const TessellatorInputMesh& input);
 

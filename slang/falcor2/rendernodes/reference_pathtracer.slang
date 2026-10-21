@@ -31,6 +31,10 @@ extern static const bool ENABLE_DEPTH_OF_FIELD = true;
 extern static const SchedulingMode SCHEDULING_MODE = SchedulingMode::simple;
 /// Visibility traversal implementation.
 extern static const VisibilityRayMode VISIBILITY_RAY_MODE = VisibilityRayMode::ray_query;
+/// Placement of visibility traversal relative to direct-light evaluation and scatter sampling.
+extern static const VisibilityRayPlacement VISIBILITY_RAY_PLACEMENT = VisibilityRayPlacement::early;
+
+public extern struct SampleGenerator : ISampleGenerator = UniformSampleGenerator;
 
 public extern struct LightSampler : ILightSampler = PowerLightSampler;
 
@@ -49,6 +53,11 @@ public enum class VisibilityRayMode : uint {
     trace_ray = 1,
 };
 
+public enum class VisibilityRayPlacement : uint {
+    early = 0,
+    late = 1,
+};
+
 // Path state
 
 struct PathVertex : IDifferentiable
@@ -56,17 +65,22 @@ struct PathVertex : IDifferentiable
     float3 pos_ws = {};
     no_diff float3 normal_ws = {};
     no_diff bool front_facing = {};
+    no_diff Conditional<float, ENABLE_PRECISE_RAY_OFFSETS> ray_offset
+        = Conditional<float, ENABLE_PRECISE_RAY_OFFSETS>(0.0);
+
+    __init() { }
 
     __init(const SurfaceInteraction si)
     {
         pos_ws = si.position_ws;
         normal_ws = si.normal_ws;
         front_facing = si.front_facing;
+        ray_offset = si.ray_offset;
     }
 
     float3 ray_origin_for_direction(const float3 dir_ws)
     {
-        return offset_ray_origin(pos_ws, dot(dir_ws, normal_ws) >= 0.0 ? normal_ws : -normal_ws);
+        return offset_surface_ray_origin(pos_ws, dot(dir_ws, normal_ws) >= 0.0 ? normal_ws : -normal_ws, ray_offset);
     }
 
     float3 oriented_normal() { return front_facing ? normal_ws : -normal_ws; }
@@ -95,6 +109,15 @@ enum class PathFlags {
     volume_event = (1 << 5),
 };
 
+#ifdef __TARGET_CUDA__
+struct OptixPayloadPadding<SG : ISampleGenerator>
+{
+    // Defer sizeof until specialization; directly sizing an array with the extern
+    // SampleGenerator folds its unresolved size to zero in Slang 2026.19.
+    uint words[6 - sizeof(SG) / 4] = {};
+}
+#endif
+
 struct PathState : IDifferentiable
 {
     static const uint DEPTH_BIT_COUNT = 8;
@@ -105,20 +128,29 @@ struct PathState : IDifferentiable
     static const uint SKIPPED_INTERFACES_MASK = 0xff << SKIPPED_INTERFACES_BIT_OFFSET;
     static const uint MAX_SKIPPED_INTERFACES = (ENABLE_INTERIOR_TRACKING && ENABLE_NESTED_INTERIORS) ? 8 : 0;
 
-    no_diff UniformSampleGenerator sg;
+    no_diff SampleGenerator sg;
     no_diff uint path_id = {};
     no_diff uint flags_and_depth = {};
     no_diff InteriorList interior_list = {};
 
     float3 ray_origin_ws = {};
     float3 ray_dir_ws = {};
+    float segment_t_min = {};
 
     float3 scatter_normal_ws = {};
     float scatter_pdf = {};
     float3 throughput = float3(1.0);
     float3 radiance = {};
 
-    __init(UniformSampleGenerator sg, uint path_id, Ray ray)
+#ifdef __TARGET_CUDA__
+    // Slang's CUDA/OptiX lowering passes 32 payload registers while allocating only the 17-31 words
+    // actually present, causing out-of-bounds reads: https://github.com/shader-slang/slang/issues/12528.
+    // Non-sampler fields occupy 26 words. Pad the selected sampler to exactly 32 total words.
+    // This is independent of the material-sampling RNG workaround below.
+    no_diff OptixPayloadPadding<SampleGenerator> optix_payload_padding = {};
+#endif
+
+    __init(SampleGenerator sg, uint path_id, Ray ray)
     {
         this.sg = sg;
         this.path_id = path_id;
@@ -220,6 +252,21 @@ struct PathState : IDifferentiable
 
     /// Helpers
 
+    bool is_segment_continuation() { return segment_t_min > 0.0; }
+
+    /// Start a new ray segment.
+    [mutating]
+    void start_segment(const float3 ray_origin_ws, const float3 ray_dir_ws)
+    {
+        this.ray_origin_ws = ray_origin_ws;
+        this.ray_dir_ws = ray_dir_ws;
+        this.segment_t_min = 0.0;
+    }
+
+    /// Continue the prepared segment after an additive non-scattering event.
+    [mutating]
+    void continue_segment_after(const float ray_t) { segment_t_min = asfloat(asuint(max(ray_t, 0.0)) + 1); }
+
     /// Advance to the next accepted scattering vertex.
     [mutating]
     void advance_depth()
@@ -263,9 +310,17 @@ struct PathState : IDifferentiable
     uint2 pixel_id(const uint2 dims) { return uint2(path_id % dims.x, path_id / dims.x); }
 };
 
-Ray prepare_path_segment(inout PathState path)
+void prepare_trace_segment(inout PathState path, inout OpacityEvaluator opacity_evaluator, inout Ray ray)
 {
-    Ray ray = Ray(path.ray_origin_ws, path.ray_dir_ws);
+    // A positive t_min denotes continuation of an already prepared segment. New
+    // segments start at zero and still need their homogeneous-medium event sampled.
+    if (path.is_segment_continuation()) {
+        ray.t_min = path.segment_t_min;
+        return;
+    }
+
+    ray = Ray(path.ray_origin_ws, path.ray_dir_ws);
+    path.segment_t_min = ray.t_min;
 
     // If the path is inside a homogeneous medium, sample a distance to the next scattering event.
     if (HANDLE_HOMOGENEOUS_MEDIA) {
@@ -274,17 +329,31 @@ Ray prepare_path_segment(inout PathState path)
             const HomogeneousMediumProperties medium = path.interior_list.active_medium();
             const HomogeneousVolumeSampler sampler = HomogeneousVolumeSampler(medium);
             float distance;
-            if (!sampler.sample_distance(path.throughput, path.sg, distance))
-                return ray;
-
-            if (isfinite(distance) && distance < ray.t_max) {
-                ray.t_max = distance;
-                path.set_volume_event();
+            if (sampler.sample_distance(path.throughput, path.sg, distance)) {
+                if (isfinite(distance) && distance < ray.t_max) {
+                    ray.t_max = distance;
+                    path.set_volume_event();
+                }
             }
         }
     }
 
-    return ray;
+    opacity_evaluator = OpacityEvaluator(path.sg.next_uint());
+}
+
+float3 eval_segment_throughput(const PathState path, const float distance)
+{
+    if (HANDLE_HOMOGENEOUS_MEDIA) {
+        if (path.is_inside_homogeneous_medium()) {
+            const HomogeneousMediumProperties medium = path.interior_list.active_medium();
+            const HomogeneousVolumeSampler sampler = HomogeneousVolumeSampler(medium);
+            const float3 weight = sampler.has_scattering() ? sampler.eval_surface_weight(path.throughput, distance)
+                                                           : sampler.eval_transmittance(distance);
+            return path.throughput * weight;
+        }
+    }
+
+    return path.throughput;
 }
 
 public struct TracePathContext
@@ -358,10 +427,25 @@ bool is_direction_in_sampled_hemispheres(
     return is_direction_in_sampled_hemispheres(vertex.oriented_normal(), hemispheres, dir_ws);
 }
 
-bool was_direction_sampled_by_nee(const PathState path, const float3 dir_ws)
+bool is_direction_covered_by_nee(const PathState path, const float3 dir_ws)
 {
     return path.is_light_samplable() && path.is_light_sampled()
         && is_direction_in_sampled_hemispheres(path.scatter_normal_ws, path.light_sampled_hemispheres(), dir_ws);
+}
+
+struct EmitterHitMISPolicy
+{
+    bool include_hit_contribution;
+    bool apply_mis;
+};
+
+EmitterHitMISPolicy get_emitter_hit_mis_policy(const PathState path)
+{
+    const bool covered_by_nee = is_direction_covered_by_nee(path, path.ray_dir_ws);
+    return {
+        !(ENABLE_NEE && !ENABLE_MIS && covered_by_nee),
+        ENABLE_NEE && ENABLE_MIS && covered_by_nee,
+    };
 }
 
 SurfaceInteraction make_scatter_interaction(const PathState path)
@@ -397,8 +481,8 @@ Ray create_visibility_ray(const PathVertex shading_vertex, const LightSample sam
     ray.dir = sample.dir_ws;
     ray.t_min = 0.0;
     ray.t_max = sample.distance;
-    if (sample.emitter_type == EmitterType::emissive_triangle) {
-        PathVertex target_vertex;
+    if (sample.has_flag(LightSampleFlags::has_surface_point)) {
+        PathVertex target_vertex = {};
         target_vertex.pos_ws = sample.pos_ws;
         target_vertex.normal_ws = sample.normal_ws;
         target_vertex.front_facing = true;
@@ -467,6 +551,9 @@ public interface IWriteGuide
     [OutputSpec("r32_uint", "0", "increment")]
     public static void nan_count(uint2 coord, uint value);
     public static bool nan_count_enabled();
+
+    public static void generic_data(uint2 coord, uint id, float4 value);
+    public static bool generic_data_enabled(uint id);
 }
 
 // Native callers do not bind guide outputs. Python can override this default with
@@ -511,10 +598,23 @@ public struct NoWriteGuide : IWriteGuide
 
     public static override void nan_count(uint2 coord, uint value) { }
     public static bool nan_count_enabled() { return false; }
+
+    public static override void generic_data(uint2 coord, uint id, float4 value) { }
+    public static bool generic_data_enabled(uint id) { return false; }
 };
 
 // The prelude also exports this WriteGuide type to be the implementation it generates.
 extern struct WriteGuide : IWriteGuide = NoWriteGuide;
+
+/// Adapt the path tracer's reflected writer to the core material-AOV contract.
+public struct MaterialAOVWriteGuide : IMaterialAOVWriter
+{
+    public static override void generic_data(uint2 coord, uint id, float4 value)
+    {
+        WriteGuide::generic_data(coord, id, value);
+    }
+    public static bool generic_data_enabled(uint id) { return WriteGuide::generic_data_enabled(id); }
+}
 
 // These link-time constants are also generated in the prelude. They let the
 // shader specialize away guide work when a corresponding output is not bound.
@@ -534,7 +634,23 @@ extern static const bool WriteGuide_emission = false;
 extern static const bool WriteGuide_geometry_id = false;
 extern static const bool WriteGuide_nan_count = false;
 
-void sample_direct_lighting<VisibilityQuery : IVisibilityQuery>(
+/// Local direct-light result. Its contribution includes throughput before scattering and roulette.
+struct PendingDirectLighting
+{
+    bool valid = false;
+    Ray visibility_ray;
+    uint opacity_seed = {};
+    float3 contribution = {};
+
+    __init() { visibility_ray = Ray(float3(0.0), float3(0.0)); }
+
+    bool is_visible<VisibilityQuery : IVisibilityQuery>(VisibilityQuery visibility_query)
+    {
+        return !visibility_query.is_occluded(visibility_ray, OpacityEvaluator(opacity_seed));
+    }
+};
+
+PendingDirectLighting prepare_direct_lighting<VisibilityQuery : IVisibilityQuery>(
     VisibilityQuery visibility_query,
     const SurfaceInteraction si,
     const MaterialID material_id,
@@ -543,39 +659,57 @@ void sample_direct_lighting<VisibilityQuery : IVisibilityQuery>(
     inout PathState path
 )
 {
+    PendingDirectLighting pending = {};
     path.set_light_sampled_hemispheres(HemisphereFlags::none);
     if (!ENABLE_NEE)
-        return;
+        return pending;
 
     BSDFFlags lobe_types = material_instance.get_lobe_types(si);
     HemisphereFlags sampled_hemispheres = get_material_nee_hemispheres(lobe_types)
         & get_nee_visibility_supported_hemispheres(si.front_facing, material_id, is_thin_walled, path.interior_list);
     path.set_light_sampled_hemispheres(sampled_hemispheres);
     if (sampled_hemispheres == HemisphereFlags::none)
-        return;
+        return pending;
 
     LightSample sample = {};
     PathVertex vertex = { si };
     LightSampleContext light_ctx = make_light_sample_context(si, sampled_hemispheres);
     if (!light_sampler.sample(light_ctx, path.sg, sample))
-        return;
+        return pending;
     if (!is_direction_in_sampled_hemispheres(vertex, sampled_hemispheres, sample.dir_ws))
-        return;
+        return pending;
 
-    OpacityEvaluator opacity_evaluator = OpacityEvaluator(path.sg.next_uint());
-    if (visibility_query.is_occluded(create_visibility_ray(vertex, sample), opacity_evaluator))
-        return;
+    pending.visibility_ray = create_visibility_ray(vertex, sample);
+    pending.opacity_seed = path.sg.next_uint();
+    if (VISIBILITY_RAY_PLACEMENT == VisibilityRayPlacement::early && !pending.is_visible(visibility_query))
+        return pending;
 
     float mis_weight = 1.0;
     float3 scatter_eval;
-    if (ENABLE_MIS && !sample.nee_only) {
+    if (ENABLE_MIS && !sample.has_flag(LightSampleFlags::nee_only)) {
         const BSDFEval scatter = material_instance.eval_with_pdf(si, sample.dir_ws, path.sg);
         scatter_eval = scatter.value;
         mis_weight = mis_heuristic(1, sample.pdf, 1, scatter.pdf);
     } else {
         scatter_eval = material_instance.eval(si, sample.dir_ws, path.sg);
     }
-    path.radiance += path.throughput * scatter_eval * sample.weight * mis_weight;
+    pending.valid = true;
+    pending.contribution = path.throughput * scatter_eval * sample.weight * mis_weight;
+    return pending;
+}
+
+void resolve_direct_lighting<VisibilityQuery : IVisibilityQuery>(
+    VisibilityQuery visibility_query,
+    const PendingDirectLighting pending,
+    inout PathState path
+)
+{
+    if (!pending.valid)
+        return;
+
+    // Early visibility was already resolved before BSDF evaluation.
+    if (VISIBILITY_RAY_PLACEMENT == VisibilityRayPlacement::early || pending.is_visible(visibility_query))
+        path.radiance += pending.contribution;
 }
 
 bool generate_scatter_ray(const SurfaceInteraction si, const MaterialSample sample, inout PathState path)
@@ -585,8 +719,7 @@ bool generate_scatter_ray(const SurfaceInteraction si, const MaterialSample samp
     path.scatter_normal_ws = si.front_normal_ws();
     path.set_delta(sample.has_flag(BSDFFlags::delta));
     const float3 offset_normal_ws = dot(sample.wo_ws, si.normal_ws) >= 0.0 ? si.normal_ws : -si.normal_ws;
-    path.ray_origin_ws = offset_ray_origin(si.position_ws, offset_normal_ws);
-    path.ray_dir_ws = sample.wo_ws;
+    path.start_segment(offset_surface_ray_origin(si.position_ws, offset_normal_ws, si.ray_offset), sample.wo_ws);
 
     return any(path.throughput > 0.0);
 }
@@ -661,7 +794,7 @@ public struct PathTracer
 
         path.throughput *= phase_sample.weight;
         path.scatter_pdf = phase_sample.pdf;
-        path.ray_dir_ws = phase_sample.wo_ws;
+        path.start_segment(path.ray_origin_ws, phase_sample.wo_ws);
         if (!any(path.throughput > 0.0) || should_terminate_by_russian_roulette(path))
             path.terminate();
     }
@@ -680,145 +813,89 @@ public struct PathTracer
             path.set_volume_event(false);
         }
 
-        bool is_primary_miss = path.depth == 0;
-        bool has_environment_lights = g_scene.has_environment_lights();
-        bool show_environment_background = has_environment_lights && is_primary_miss && !settings.use_background_color;
-        bool nee_sampled_direction = was_direction_sampled_by_nee(path, path.ray_dir_ws);
-        bool nee_replaces_environment_hit = ENABLE_NEE && !ENABLE_MIS && nee_sampled_direction;
-        bool apply_environment_mis = ENABLE_NEE && ENABLE_MIS && nee_sampled_direction;
-        bool handle_environment_light = has_environment_lights && !is_primary_miss && !nee_replaces_environment_hit;
-
-        if (show_environment_background || handle_environment_light) {
-            SurfaceInteraction scatter_si = make_scatter_interaction(path);
-            LightSampleContext light_ctx = make_light_sample_context(scatter_si, path.light_sampled_hemispheres());
-            float mis_weight = 1.0;
-            if (handle_environment_light && apply_environment_mis) {
-                float light_pdf = light_sampler.eval_environment_pdf(light_ctx, path.ray_dir_ws);
-                mis_weight = mis_heuristic(1, path.scatter_pdf, 1, light_pdf);
-            }
-            let eval = g_scene.light_system.eval_environment_radiance(light_ctx, path.ray_dir_ws);
-            path.radiance += path.throughput * eval * mis_weight;
-        } else if (is_primary_miss && settings.use_background_color) {
+        if (path.depth == 0 && settings.use_background_color) {
             path.radiance += settings.background_color;
+        } else if (g_scene.has_environment_lights()) {
+            const EmitterHitMISPolicy mis_policy = get_emitter_hit_mis_policy(path);
+            if (mis_policy.include_hit_contribution) {
+                SurfaceInteraction scatter_si = make_scatter_interaction(path);
+                LightSampleContext light_ctx = make_light_sample_context(scatter_si, path.light_sampled_hemispheres());
+
+                float mis_weight = 1.0;
+                if (mis_policy.apply_mis) {
+                    const float light_pdf = light_sampler.eval_environment_pdf(light_ctx, path.ray_dir_ws);
+                    mis_weight = mis_heuristic(1, path.scatter_pdf, 1, light_pdf);
+                }
+
+                const float3 radiance = g_scene.light_system.eval_environment_radiance(light_ctx, path.ray_dir_ws);
+                path.radiance += path.throughput * radiance * mis_weight;
+            }
         }
 
         path.terminate();
     }
 
-    void handle_hit<VisibilityQuery : IVisibilityQuery>(
-        VisibilityQuery visibility_query,
-        no_diff IHitInfo hit,
-        inout PathState path,
-        const TracePathContext context
-    )
+    void handle_area_light_hit(const AreaLightHitInfo hit, inout PathState path, const TracePathContext context)
     {
-        uint2 id = context.pixel_id(path);
+        const float3 emitter_pos_ws = path.ray_origin_ws + hit.ray_t * path.ray_dir_ws;
+        const LightID light_id = get_area_light_id(hit.geometry_instance_id);
+        const bool surface_visible = is_area_light_visible(hit.geometry_instance_id);
+        const float3 emitter_throughput = eval_segment_throughput(path, hit.ray_t);
 
-        // Make surface interaction at hit point.
-        SurfaceInteraction si = g_scene.make_surface_interaction(hit, -path.ray_dir_ws);
-        if (HANDLE_HOMOGENEOUS_MEDIA) {
-            float segment_length = length(si.position_ws - path.ray_origin_ws);
-            const HomogeneousMediumProperties medium = path.interior_list.active_medium();
-            const HomogeneousVolumeSampler sampler = HomogeneousVolumeSampler(medium);
-            if (sampler.has_scattering())
-                path.throughput *= sampler.eval_surface_weight(path.throughput, segment_length);
-            else
-                path.throughput *= sampler.eval_transmittance(segment_length);
-        }
-        path.set_volume_event(false);
-        MaterialID material_id = g_scene.get_geometry_instance_desc(hit.geometry_instance_id).header.material_id;
-        MaterialHeader material_header = g_scene.material_system.get_material_data(material_id).header;
-
-        // Reject backfaces of materials that cannot interact with both sides of the surface.
-        bool surface_visible = si.front_facing || is_set(material_header.flags, MaterialFlags::two_sided);
-        if (!surface_visible) {
-            path.terminate();
-            return;
-        }
-
-        if (ENABLE_INTERIOR_TRACKING)
-            si.exterior_ior = path.interior_list.exterior_ior(material_id, si.front_facing);
-
-        // Make material instance.
-        let lod_sampler = ExplicitLodSampler(0);
-        let material_instance
-            = g_scene.get_material_instance(hit, si, lod_sampler, MaterialInstanceHints::adjust_shading_normal);
-        bool is_thin_walled = is_set(material_header.flags, MaterialFlags::thin_walled);
-        bool is_unlit = is_set(material_header.flags, MaterialFlags::unlit);
-
-        if (should_skip_nested_interface(path, material_header)) {
-            if (!path.try_increment_skipped_interfaces()) {
-                path.terminate();
-                return;
-            }
-            InteriorListUpdateResult result = cross_interior_boundary(
-                si.front_facing,
-                material_id,
-                material_header.nested_priority,
-                material_instance,
-                path.interior_list
-            );
-            if (result != InteriorListUpdateResult::success) {
-                path.terminate();
-                return;
-            }
-
-            float3 offset_normal_ws = dot(path.ray_dir_ws, si.normal_ws) >= 0.f ? si.normal_ws : -si.normal_ws;
-            path.ray_origin_ws = offset_ray_origin(si.position_ws, offset_normal_ws);
-            return;
-        }
-
-        path.advance_depth();
-        bool is_primary_hit = path.depth == 1;
-
-        if (is_primary_hit)
-            write_primary_surface_interaction(id, hit, si, context.current_camera, context.previous_camera);
-
-        // If the primary hit sampled a specular reflection, record the scatter path length to this hit.
-        if (WriteGuide::specular_hit_distance_enabled() && path.is_primary_specular_reflection()) {
-            write_specular_hit_distance(id, length(si.position_ws - path.ray_origin_ws));
+        if (surface_visible && WriteGuide::specular_hit_distance_enabled() && path.is_primary_specular_reflection()) {
+            write_specular_hit_distance(context.pixel_id(path), hit.ray_t);
             path.set_primary_specular_reflection(false);
         }
 
-        if (is_primary_hit)
-            write_primary_material(id, si, material_instance);
+        ILight light = g_scene.light_system.get_light(light_id);
+        const float3 emitter_normal_ws = light.eval_surface_normal(emitter_pos_ws);
+        const float3 emitted_radiance
+            = light.eval_surface_radiance(path.ray_origin_ws, emitter_pos_ws, emitter_normal_ws);
 
-        // Unlit materials are not lit by any future events, so terminate path immediately.
-        if (is_unlit) {
-            path.radiance += path.throughput * material_instance.eval_emissive_radiance();
-            path.terminate();
-            return;
-        }
-
-        // Add emissive triangle contribution.
-        bool nee_sampled_direction = was_direction_sampled_by_nee(path, path.ray_dir_ws);
-        bool nee_replaces_emitter_hit = ENABLE_NEE && !ENABLE_MIS && nee_sampled_direction;
-        bool apply_emitter_mis = !is_primary_hit && ENABLE_NEE && ENABLE_MIS && nee_sampled_direction;
-        bool handle_emission = g_scene.has_emissive_triangles() && (is_primary_hit || !nee_replaces_emitter_hit);
-        if (handle_emission && any(material_instance.is_emissive())) {
+        const EmitterHitMISPolicy mis_policy = get_emitter_hit_mis_policy(path);
+        if (mis_policy.include_hit_contribution && any(emitted_radiance > 0.0)) {
             float mis_weight = 1.0;
-            if (apply_emitter_mis) {
+            if (mis_policy.apply_mis) {
                 SurfaceInteraction scatter_si = make_scatter_interaction(path);
                 LightSampleContext light_ctx = make_light_sample_context(scatter_si, path.light_sampled_hemispheres());
-                EmissiveTriangleID triangle_id
-                    = g_scene.emissive_geometry.get_triangle_id(hit.geometry_instance_id, hit.primitive_index);
-                float light_pdf = light_sampler.eval_emissive_pdf(light_ctx, triangle_id, si.position_ws, si.normal_ws);
+                const float light_pdf
+                    = light_sampler.eval_area_light_pdf(light_ctx, light_id, emitter_pos_ws, emitter_normal_ws);
                 mis_weight = mis_heuristic(1, path.scatter_pdf, 1, light_pdf);
             }
-            path.radiance += path.throughput * material_instance.eval_emissive_radiance() * mis_weight;
+            path.radiance += emitter_throughput * emitted_radiance * mis_weight;
         }
 
-        if (path.depth >= settings.max_depth) {
+        if (surface_visible) {
             path.terminate();
-            return;
+        } else {
+            path.continue_segment_after(hit.ray_t);
         }
+    }
 
-        // Add NEE (next event estimation) contribution.
-        sample_direct_lighting(visibility_query, si, material_id, is_thin_walled, material_instance, path);
-
-        // Sample BRDF to generate next path segment.
+    void sample_scatter(
+        const SurfaceInteraction si,
+        const MaterialID material_id,
+        const MaterialHeader material_header,
+        const bool is_thin_walled,
+        IMaterialInstance material_instance,
+        const bool is_primary_hit,
+        inout PathState path
+    )
+    {
         MaterialSample sample = {};
-        if (!material_instance.sample(si, path.sg, sample)) {
+#ifdef __TARGET_CUDA__
+        // Work around CUDA device-compiler wrong code for a direct `inout` reference to the first
+        // subobject of an OptiX register payload. The defect affects targets through compute_90;
+        // compute_100 and newer do not need the workaround. See
+        // https://github.com/shader-slang/slang/issues/12916. An explicit local preserves the
+        // intended copy-in/copy-out semantics without blocking inlining of handle_surface_hit().
+        SampleGenerator material_sg = path.sg;
+        const bool sampled_material = material_instance.sample(si, material_sg, sample);
+        path.sg = material_sg;
+#else
+        const bool sampled_material = material_instance.sample(si, path.sg, sample);
+#endif
+        if (!sampled_material) {
             path.terminate();
             return;
         }
@@ -850,6 +927,128 @@ public struct PathTracer
 
         if (!valid_scatter || should_terminate_by_russian_roulette(path))
             path.terminate();
+    }
+
+    void handle_surface_hit<VisibilityQuery : IVisibilityQuery>(
+        VisibilityQuery visibility_query,
+        no_diff IHitInfo hit,
+        const float ray_t_current,
+        inout PathState path,
+        const TracePathContext context
+    )
+    {
+        uint2 id = context.pixel_id(path);
+
+        // Make surface interaction at hit point.
+        SurfaceInteraction si = g_scene.make_surface_interaction(hit, -path.ray_dir_ws);
+        path.throughput = eval_segment_throughput(path, ray_t_current);
+        path.set_volume_event(false);
+        MaterialID material_id = g_scene.get_geometry_instance_desc(hit.geometry_instance_id).header.material_id;
+        MaterialHeader material_header = g_scene.material_system.get_material_data(material_id).header;
+
+        // Reject backfaces of materials that cannot interact with both sides of the surface.
+        bool surface_visible = si.front_facing || is_set(material_header.flags, MaterialFlags::two_sided);
+        if (!surface_visible) {
+            path.terminate();
+            return;
+        }
+
+        if (ENABLE_INTERIOR_TRACKING)
+            si.exterior_ior = path.interior_list.exterior_ior(material_id, si.front_facing);
+
+        // Make material instance.
+        let lod_sampler = ExplicitLodSampler(0);
+        MaterialInstanceHints material_instance_hints = MaterialInstanceHints::adjust_shading_normal;
+        let material = g_scene.get_material(material_id);
+        let material_instance = material.setup_material_instance(si, lod_sampler, material_instance_hints);
+        bool is_thin_walled = is_set(material_header.flags, MaterialFlags::thin_walled);
+        bool is_unlit = is_set(material_header.flags, MaterialFlags::unlit);
+
+        if (should_skip_nested_interface(path, material_header)) {
+            if (!path.try_increment_skipped_interfaces()) {
+                path.terminate();
+                return;
+            }
+            InteriorListUpdateResult result = cross_interior_boundary(
+                si.front_facing,
+                material_id,
+                material_header.nested_priority,
+                material_instance,
+                path.interior_list
+            );
+            if (result != InteriorListUpdateResult::success) {
+                path.terminate();
+                return;
+            }
+
+            float3 offset_normal_ws = dot(path.ray_dir_ws, si.normal_ws) >= 0.0 ? si.normal_ws : -si.normal_ws;
+            path.start_segment(
+                offset_surface_ray_origin(si.position_ws, offset_normal_ws, si.ray_offset),
+                path.ray_dir_ws
+            );
+            return;
+        }
+
+        path.advance_depth();
+        bool is_primary_hit = path.depth == 1;
+
+        if (is_primary_hit)
+            write_primary_surface_interaction(id, hit, si, context.current_camera, context.previous_camera);
+
+        // If the primary hit sampled a specular reflection, record the scatter path length to this hit.
+        if (WriteGuide::specular_hit_distance_enabled() && path.is_primary_specular_reflection()) {
+            write_specular_hit_distance(id, ray_t_current);
+            path.set_primary_specular_reflection(false);
+        }
+
+        if (is_primary_hit) {
+            material.write_material_aovs<MaterialAOVWriteGuide>(id, si, lod_sampler, material_instance_hints);
+            write_primary_material(id, si, material_instance);
+        }
+
+        // Unlit materials are not lit by any future events, so terminate path immediately.
+        if (is_unlit) {
+            path.radiance += path.throughput * material_instance.eval_emissive_radiance();
+            path.terminate();
+            return;
+        }
+
+        // Only triangle emitters participate in light sampling. Other surface emitters
+        // have no competing NEE technique, so keep their full hit contribution.
+        const EmitterHitMISPolicy mis_policy = get_emitter_hit_mis_policy(path);
+        const bool is_triangle = hit.geometry_type == GeometryType::triangle;
+        const bool handle_emission
+            = !is_triangle || (g_scene.has_emissive_triangles() && mis_policy.include_hit_contribution);
+        if (handle_emission && material_instance.is_emissive()) {
+            float mis_weight = 1.0;
+            if (is_triangle && mis_policy.apply_mis) {
+                SurfaceInteraction scatter_si = make_scatter_interaction(path);
+                LightSampleContext light_ctx = make_light_sample_context(scatter_si, path.light_sampled_hemispheres());
+                EmissiveTriangleID triangle_id
+                    = g_scene.emissive_geometry.get_triangle_id(hit.geometry_instance_id, hit.primitive_index);
+                float light_pdf = light_sampler.eval_emissive_pdf(light_ctx, triangle_id, si.position_ws, si.normal_ws);
+                mis_weight = mis_heuristic(1, path.scatter_pdf, 1, light_pdf);
+            }
+            path.radiance += path.throughput * material_instance.eval_emissive_radiance() * mis_weight;
+        }
+
+        if (path.depth >= settings.max_depth) {
+            path.terminate();
+            return;
+        }
+
+        PendingDirectLighting pending_direct
+            = prepare_direct_lighting(visibility_query, si, material_id, is_thin_walled, material_instance, path);
+
+        if (VISIBILITY_RAY_PLACEMENT == VisibilityRayPlacement::early)
+            resolve_direct_lighting(visibility_query, pending_direct, path);
+
+        sample_scatter(si, material_id, material_header, is_thin_walled, material_instance, is_primary_hit, path);
+
+        // All material work is finished, so the instance and surface interaction need not survive traversal.
+        // Resolve even when scattering or roulette terminated the continuation path.
+        if (VISIBILITY_RAY_PLACEMENT == VisibilityRayPlacement::late)
+            resolve_direct_lighting(visibility_query, pending_direct, path);
     }
 };
 
@@ -898,8 +1097,7 @@ public struct VisibilityPayload
     __init()
     {
         visible = false;
-        // TODO(slang): Enabling this crashes slang compiler
-        // opacity_evaluator = {};
+        opacity_evaluator = {};
     }
 };
 
@@ -910,7 +1108,8 @@ public struct InlineVisibilityQuery : IVisibilityQuery
 {
     public bool is_occluded(Ray ray, OpacityEvaluator opacity_evaluator)
     {
-        RayQuerySceneIntersector intersector = RayQuerySceneIntersector(opacity_evaluator);
+        RayQuerySceneIntersector intersector
+            = RayQuerySceneIntersector(opacity_evaluator, INSTANCE_INCLUSION_MASK_VISIBILITY_RAY);
         return intersector.is_occluded(ray, MaterialInstanceHints::adjust_shading_normal);
     }
 };
@@ -923,8 +1122,9 @@ public struct TraceRayVisibilityQuery : IVisibilityQuery
         payload.opacity_evaluator = opacity_evaluator;
         TraceRay(
             g_scene.tlas,
-            RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | OpacityEvaluator.RAY_FLAGS,
-            0xff,
+            RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER
+                | TRIANGLE_BACKFACE_CULLING_RAY_FLAG | OpacityEvaluator.RAY_FLAGS,
+            INSTANCE_INCLUSION_MASK_VISIBILITY_RAY,
             VISIBILITY_RAY_INDEX,
             0 /* MultiplierForGeometryContributionHitGroupIndex */,
             VISIBILITY_RAY_INDEX,
@@ -935,17 +1135,6 @@ public struct TraceRayVisibilityQuery : IVisibilityQuery
     }
 };
 
-void handle_scatter_hit<D : IDeferredHitInfo>(inout PathPayload payload, D deferred_hit)
-{
-    if (VISIBILITY_RAY_MODE == VisibilityRayMode::ray_query) {
-        InlineVisibilityQuery visibility_query;
-        g_path_tracer.handle_hit(visibility_query, deferred_hit.create(), payload.path, g_trace_path_context);
-    } else if (VISIBILITY_RAY_MODE == VisibilityRayMode::trace_ray) {
-        TraceRayVisibilityQuery visibility_query;
-        g_path_tracer.handle_hit(visibility_query, deferred_hit.create(), payload.path, g_trace_path_context);
-    }
-}
-
 SCENE_RAY_TYPE_MISS(scatter, scatter_miss, PathPayload);
 void scatter_miss(inout PathPayload payload)
 {
@@ -955,7 +1144,30 @@ void scatter_miss(inout PathPayload payload)
 SCENE_RAY_TYPE_CLOSEST_HIT(scatter, scatter_closest_hit, PathPayload);
 void scatter_closest_hit<D : IDeferredHitInfo>(inout PathPayload payload, D deferred_hit)
 {
-    handle_scatter_hit(payload, deferred_hit);
+    if (VISIBILITY_RAY_MODE == VisibilityRayMode::ray_query) {
+        InlineVisibilityQuery visibility_query;
+        g_path_tracer.handle_surface_hit(
+            visibility_query,
+            deferred_hit.create(),
+            RayTCurrent(),
+            payload.path,
+            g_trace_path_context
+        );
+    } else if (VISIBILITY_RAY_MODE == VisibilityRayMode::trace_ray) {
+        TraceRayVisibilityQuery visibility_query;
+        g_path_tracer.handle_surface_hit(
+            visibility_query,
+            deferred_hit.create(),
+            RayTCurrent(),
+            payload.path,
+            g_trace_path_context
+        );
+    }
+}
+
+void scatter_closest_hit(inout PathPayload payload, DeferredAreaLightHitInfo deferred_hit)
+{
+    g_path_tracer.handle_area_light_hit(deferred_hit.create_hit(), payload.path, g_trace_path_context);
 }
 
 SCENE_RAY_TYPE_ANY_HIT(scatter, scatter_any_hit, PathPayload);
@@ -986,18 +1198,17 @@ void visibility_any_hit<D : IDeferredHitInfo>(inout VisibilityPayload payload, D
 
 public struct SimpleScheduler
 {
-    public float3 trace_path(no_diff Ray ray, no_diff uint path_id, no_diff UniformSampleGenerator sg)
+    public float3 trace_path(no_diff Ray ray, no_diff uint path_id, no_diff SampleGenerator sg)
     {
         PathPayload payload;
         payload.path = PathState(sg, path_id, ray);
 
         while (payload.path.is_active()) {
-            ray = prepare_path_segment(payload.path);
-            payload.opacity_evaluator = OpacityEvaluator(payload.path.sg.next_uint());
+            prepare_trace_segment(payload.path, payload.opacity_evaluator, ray);
             TraceRay(
                 g_scene.tlas,
-                OpacityEvaluator.RAY_FLAGS,
-                0xff,
+                TRIANGLE_BACKFACE_CULLING_RAY_FLAG | OpacityEvaluator.RAY_FLAGS,
+                payload.path.depth == 0 ? INSTANCE_INCLUSION_MASK_PRIMARY_RAY : INSTANCE_INCLUSION_MASK_SECONDARY_RAY,
                 SCATTER_RAY_INDEX,
                 0 /* MultiplierForGeometryContributionHitGroupIndex */,
                 SCATTER_RAY_INDEX,
@@ -1034,18 +1245,24 @@ uint get_ser_coherence_hint(const HitObject hit_object, const PathState path)
     } else {
         GeometryInstanceID geometry_instance_id
             = GeometryInstanceID(hit_object.GetInstanceID() + hit_object.GetGeometryIndex());
-        MaterialID material_id = g_scene.get_geometry_instance_desc(geometry_instance_id).header.material_id;
-        MaterialHeader material_header = g_scene.material_system.get_material_data(material_id).header;
+        GeometryInstanceDesc geometry_instance_desc = g_scene.get_geometry_instance_desc(geometry_instance_id);
+        if (geometry_instance_desc.header.type == GeometryType::area_light) {
+            work_class = is_area_light_visible(geometry_instance_id) ? SERWorkClass::unlit_terminal
+                                                                     : SERWorkClass::nested_passthrough;
+        } else {
+            MaterialID material_id = geometry_instance_desc.header.material_id;
+            MaterialHeader material_header = g_scene.material_system.get_material_data(material_id).header;
 
-        material_type = material_header.type_id & MATERIAL_TYPE_MASK;
-        if (should_skip_nested_interface(path, material_header))
-            work_class = SERWorkClass::nested_passthrough;
-        else if (is_set(material_header.flags, MaterialFlags::unlit))
-            work_class = SERWorkClass::unlit_terminal;
-        else if (path.depth + 1 >= g_path_tracer.settings.max_depth)
-            work_class = SERWorkClass::depth_terminal;
-        else
-            work_class = SERWorkClass::surface_scatter;
+            material_type = material_header.type_id & MATERIAL_TYPE_MASK;
+            if (should_skip_nested_interface(path, material_header))
+                work_class = SERWorkClass::nested_passthrough;
+            else if (is_set(material_header.flags, MaterialFlags::unlit))
+                work_class = SERWorkClass::unlit_terminal;
+            else if (path.depth + 1 >= g_path_tracer.settings.max_depth)
+                work_class = SERWorkClass::depth_terminal;
+            else
+                work_class = SERWorkClass::surface_scatter;
+        }
     }
 
     // The high byte groups paths by expected shader work. The low byte provides material-type
@@ -1055,7 +1272,7 @@ uint get_ser_coherence_hint(const HitObject hit_object, const PathState path)
         coherence_hint |= CAMERA_SEGMENT_BIT;
     if (path.is_inside_homogeneous_medium())
         coherence_hint |= ACTIVE_MEDIUM_BIT;
-    if (was_direction_sampled_by_nee(path, path.ray_dir_ws))
+    if (is_direction_covered_by_nee(path, path.ray_dir_ws))
         coherence_hint |= EMITTER_MIS_PATH_BIT;
     coherence_hint |= material_type;
 
@@ -1064,18 +1281,17 @@ uint get_ser_coherence_hint(const HitObject hit_object, const PathState path)
 
 public struct ReorderingScheduler
 {
-    public float3 trace_path(no_diff Ray ray, no_diff uint path_id, no_diff UniformSampleGenerator sg)
+    public float3 trace_path(no_diff Ray ray, no_diff uint path_id, no_diff SampleGenerator sg)
     {
         PathPayload payload;
         payload.path = PathState(sg, path_id, ray);
 
         while (payload.path.is_active()) {
-            ray = prepare_path_segment(payload.path);
-            payload.opacity_evaluator = OpacityEvaluator(payload.path.sg.next_uint());
+            prepare_trace_segment(payload.path, payload.opacity_evaluator, ray);
             HitObject hit_object = HitObject::TraceRay(
                 g_scene.tlas,
-                OpacityEvaluator.RAY_FLAGS,
-                0xff,
+                TRIANGLE_BACKFACE_CULLING_RAY_FLAG | OpacityEvaluator.RAY_FLAGS,
+                payload.path.depth == 0 ? INSTANCE_INCLUSION_MASK_PRIMARY_RAY : INSTANCE_INCLUSION_MASK_SECONDARY_RAY,
                 SCATTER_RAY_INDEX,
                 0 /* MultiplierForGeometryContributionHitGroupIndex */,
                 SCATTER_RAY_INDEX,
@@ -1091,7 +1307,7 @@ public struct ReorderingScheduler
     }
 };
 
-public float3 trace_path(no_diff Ray ray, no_diff uint path_id, no_diff UniformSampleGenerator sg)
+public float3 trace_path(no_diff Ray ray, no_diff uint path_id, no_diff SampleGenerator sg)
 {
     if (SCHEDULING_MODE == SchedulingMode::simple) {
         SimpleScheduler scheduler;
@@ -1104,24 +1320,11 @@ public float3 trace_path(no_diff Ray ray, no_diff uint path_id, no_diff UniformS
     }
 }
 
-// Calculate primary ray UV coordinates.
-//
-// The base sample is pixel center. Random jitter and the explicit offset are
-// center-relative, then clamped so the final sample remains inside the pixel.
-float2 get_primary_uv(
-    RaySampler ray_sampler,
-    inout UniformSampleGenerator sg,
-    float2 subpixel_offset,
-    float subpixel_random_jitter
-)
+// The output address remains the owning pixel even when the ray leaves its footprint.
+public float2 get_primary_uv(RaySampler ray_sampler, float2 offset)
 {
-    float2 pixel_offset = float2(0.5, 0.5);
-    if (subpixel_random_jitter != 0.0) {
-        pixel_offset += (next_float2(sg) - 0.5) * subpixel_random_jitter;
-    }
-    pixel_offset = saturate(pixel_offset + subpixel_offset);
-
-    float2 uv = (float2(ray_sampler.id) + pixel_offset) / float2(ray_sampler.camera.dims);
+    float2 film_position = float2(ray_sampler.id) + (float2(0.5) + offset);
+    float2 uv = film_position / float2(ray_sampler.camera.dims);
     uv.y = 1 - uv.y;
     return uv;
 }
@@ -1200,23 +1403,25 @@ void write_primary_surface_interaction(
 
 public void render(
     RaySampler ray_sampler,
+    IReconstructionFilter pixel_filter,
     Camera previous_camera,
     out float4 output,
     uint iteration,
-    float2 subpixel_offset,
-    float subpixel_random_jitter
+    float2 pixel_offset
 )
 {
     uint2 id = ray_sampler.id;
-    UniformSampleGenerator sg = UniformSampleGenerator(id, iteration);
+    SampleGenerator sg = SampleGenerator(id, iteration);
 
-    float2 uv = get_primary_uv(ray_sampler, sg, subpixel_offset, subpixel_random_jitter);
+    // Consume the same two camera random values even for a zero-width Box.
+    ReconstructionFilterSample filter_sample = pixel_filter.sample(next_float2(sg));
+    float2 uv = get_primary_uv(ray_sampler, pixel_offset + filter_sample.offset);
     Ray ray = ray_sampler.camera.get_ray(uv);
     if (ENABLE_DEPTH_OF_FIELD && ray_sampler.camera.aperture_radius > 0.0 && ray_sampler.camera.focus_distance > 0.0)
         ray = ray_sampler.camera.get_ray(uv, next_float2(sg));
 
     uint path_id = id.y * ray_sampler.camera.dims.x + id.x;
-    float3 radiance = trace_path(ray, path_id, sg);
+    float3 radiance = trace_path(ray, path_id, sg) * filter_sample.weight;
 
     if (WriteGuide::nan_count_enabled() && any(isnan(radiance)))
         WriteGuide::nan_count(id, 1u);

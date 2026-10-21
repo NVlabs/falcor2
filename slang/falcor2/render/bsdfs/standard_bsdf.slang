@@ -31,21 +31,21 @@ public struct StandardBSDFData : IDifferentiable
 /// Falcor-style prepared standard BSDF.
 public struct StandardBSDF : IBSDF, IDifferentiable
 {
-    DisneyDiffuseBRDF diffuse_reflection = {};
-    LambertDiffuseBTDF diffuse_transmission = {};
-    SpecularMicrofacetBRDF specular_reflection = {};
-    SpecularMicrofacetBSDF specular_transmission = {};
+    public DisneyDiffuseBRDF diffuse_reflection = {};
+    public LambertDiffuseBTDF diffuse_transmission = {};
+    public SpecularMicrofacetBRDF specular_reflection = {};
+    public SpecularMicrofacetBSDF specular_transmission = {};
 
-    float diff_trans = {};
-    float spec_trans = {};
-    float roughness = {};
-    float metallic = {};
-    BSDFFlags lobe_types = BSDFFlags::none;
+    public float diff_trans = {};
+    public float spec_trans = {};
+    public float roughness = {};
+    public float metallic = {};
+    public BSDFFlags lobe_types = BSDFFlags::none;
 
-    float p_diffuse_reflection = {};
-    float p_diffuse_transmission = {};
-    float p_specular_reflection = {};
-    float p_specular_transmission = {};
+    public float p_diffuse_reflection = {};
+    public float p_diffuse_transmission = {};
+    public float p_specular_reflection = {};
+    public float p_specular_transmission = {};
 
     public __init() { }
 

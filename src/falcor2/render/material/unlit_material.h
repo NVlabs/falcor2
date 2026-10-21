@@ -4,8 +4,10 @@
 #pragma once
 
 #include "falcor2/render/material.h"
-#include "falcor2/render/material_types.h"
+#include "falcor2/render/scene_types.h"
 #include "falcor2/render/texture_manager.h"
+
+#include <sgl/device/sampler.h>
 
 namespace falcor {
 
@@ -21,6 +23,7 @@ public:
     virtual void on_load_resources() override;
     virtual shared::MaterialFlags flags() const override;
     virtual OpacityDesc opacity_desc() const override;
+    virtual SceneCapabilities required_capabilities() const override;
 
     template<reflection::ClassReflector R>
     static void reflect(R& r)
@@ -57,11 +60,27 @@ public:
                 reflection::on_change(&UnlitMaterial::mark_dirty_resources)
             )
             .def_rw(
+                "base_color_texture_sampler",
+                &UnlitMaterial::m_base_color_texture_sampler,
+                "Texture sampler (null uses the scene default)",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&UnlitMaterial::mark_dirty_resources)
+            )
+            .def_rw(
                 "base_color_texture_path",
                 &UnlitMaterial::m_base_color_texture_path,
                 "Baked color and opacity texture path.",
                 reflection::UIFlags::advanced,
                 reflection::on_change(&UnlitMaterial::mark_dirty_resources)
+            )
+            .def_prop_rw(
+                "base_color_texture_texcoord",
+                &UnlitMaterial::base_color_texture_texcoord,
+                &UnlitMaterial::set_base_color_texture_texcoord,
+                "Texture-coordinate set used by the base color texture.",
+                reflection::default_value(0u),
+                reflection::value_range(0u, 7u),
+                reflection::UIFlags::advanced
             )
             .def_rw(
                 "base_color_factor",
@@ -70,6 +89,14 @@ public:
                 reflection::default_value(float3(1.f)),
                 reflection::value_range_positive(),
                 reflection::UIFlags::display_as_color,
+                reflection::on_change(&UnlitMaterial::mark_dirty_properties)
+            )
+            .def_rw(
+                "use_vertex_color",
+                &UnlitMaterial::m_use_vertex_color,
+                "Multiply the baked color and opacity by vertex color zero.",
+                reflection::default_value(false),
+                reflection::UIFlags::advanced,
                 reflection::on_change(&UnlitMaterial::mark_dirty_properties)
             )
             .def_rw(
@@ -88,6 +115,16 @@ private:
     void mark_dirty_resources() { mark_dirty(DirtyFlags::resources); }
     void mark_dirty_properties() { mark_dirty(DirtyFlags::properties); }
 
+    uint32_t base_color_texture_texcoord() const { return m_base_color_texture_texcoord; }
+    void set_base_color_texture_texcoord(uint32_t value)
+    {
+        FALCOR_CHECK(value < 8, "base_color_texture_texcoord must be in the range [0, 7], got {}.", value);
+        if (m_base_color_texture_texcoord != value) {
+            m_base_color_texture_texcoord = value;
+            mark_dirty_properties();
+        }
+    }
+
     template<typename CursorT>
     void write_to_cursor_impl(CursorT cursor) const;
 
@@ -95,8 +132,11 @@ private:
     float m_alpha_factor{1.f};
     float m_alpha_cutoff{0.5f};
     ref<sgl::Texture> m_base_color_texture;
+    ref<sgl::Sampler> m_base_color_texture_sampler;
     std::filesystem::path m_base_color_texture_path;
+    uint32_t m_base_color_texture_texcoord{0};
     float3 m_base_color_factor{1.f};
+    bool m_use_vertex_color{false};
     bool m_double_sided{false};
 
     TextureHandle m_base_color_texture_handle;

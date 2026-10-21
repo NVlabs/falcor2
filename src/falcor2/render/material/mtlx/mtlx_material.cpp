@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "mtlx_material.h"
+#include "falcor2/utils/buffer_suballocator.h"
 
 #include "codegen/codegen.h"
 
@@ -13,7 +14,6 @@
 #include "falcor2/core/types.h"
 
 #include "falcor2/core/asset_resolver.h"
-#include "falcor2/utils/managed_buffer.h"
 
 #include <sgl/device/device.h>
 #include <sgl/core/string.h>
@@ -23,13 +23,11 @@
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
-#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <fstream>
 #include <sstream>
-#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <variant>
@@ -43,15 +41,6 @@ inline size_t hash_add(size_t hash1, const T1& t1, const Rest&... rest)
     size_t result = sgl::hash_combine(hash1, sgl::hash(t1));
     ((result = sgl::hash_combine(result, sgl::hash(rest))), ...);
     return result;
-}
-
-template<typename T>
-inline size_t hash_add_vector(size_t hash, const std::vector<T>& values)
-{
-    hash = hash_add(hash, values.size());
-    for (const T& value : values)
-        hash = hash_add(hash, value);
-    return hash;
 }
 
 bool is_ascii_space(char c)
@@ -128,22 +117,6 @@ sgl::TextureFilteringMode materialx_filter_type_to_sgl(std::string_view filter_t
     return sgl::TextureFilteringMode::linear;
 }
 
-std::vector<uint32_t> property_list_to_uint32_vector(const falcor::detail::PropertyList& value)
-{
-    std::vector<uint32_t> result;
-    const std::vector<int64_t>& ids = value.as_vector<int64_t>();
-    result.reserve(ids.size());
-    for (int64_t id : ids) {
-        FALCOR_CHECK(
-            id >= 0 && id <= static_cast<int64_t>(std::numeric_limits<uint32_t>::max()),
-            "MaterialX geomprop ID {} is outside the uint32 range.",
-            id
-        );
-        result.push_back(static_cast<uint32_t>(id));
-    }
-    return result;
-}
-
 falcor::TextureManager::SamplerConfig
 make_materialx_sampler_config(const falcor::mtlx::params::TextureInfo& texture_info)
 {
@@ -165,11 +138,6 @@ namespace falcor {
 
 MaterialXMaterial::MaterialXMaterial()
 {
-    m_data_buffer = ManagedBuffer::create({
-        .usage = sgl::BufferUsage::shader_resource | sgl::BufferUsage::unordered_access,
-        .label = fmt::format("MaterialXMaterial::m_data_buffer ({})", (void*)this),
-    });
-
     m_material_properties.set_instance(this);
 }
 
@@ -177,6 +145,11 @@ MaterialXMaterial::~MaterialXMaterial() { }
 
 void MaterialXMaterial::set_properties(const Properties& props_)
 {
+    FALCOR_CHECK(
+        !props_.has_property("mtlx_class_compilation"),
+        "Material property 'mtlx_class_compilation' was removed. Use 'mtlx_canonicalize_names' for canonical "
+        "shader identity and set 'mtlx_editable_params' explicitly for live inputs."
+    );
     FALCOR_CHECK(
         !props_.has_property("mtlx_static_closure_pruning"),
         "Material property 'mtlx_static_closure_pruning' was removed. Use "
@@ -218,38 +191,16 @@ void MaterialXMaterial::set_properties(const Properties& props_)
 
 void MaterialXMaterial::require_codegen()
 {
-    mark_dirty(DirtyFlags::properties);
+    mark_dirty(DirtyFlags::properties | DirtyFlags::resources | DirtyFlags::emission);
     m_require_codegen = true;
-}
-
-detail::PropertyList MaterialXMaterial::mtlx_geomprop_names_property() const
-{
-    return detail::PropertyList::create(m_mtlx_geomprop_names);
-}
-
-void MaterialXMaterial::set_mtlx_geomprop_names_property(const detail::PropertyList& value)
-{
-    m_mtlx_geomprop_names = value.as_vector<std::string>();
-    require_codegen();
-}
-
-detail::PropertyList MaterialXMaterial::mtlx_geomprop_ids_property() const
-{
-    std::vector<int64_t> ids;
-    ids.reserve(m_mtlx_geomprop_ids.size());
-    for (uint32_t id : m_mtlx_geomprop_ids)
-        ids.push_back(static_cast<int64_t>(id));
-    return detail::PropertyList::create(std::move(ids));
-}
-
-void MaterialXMaterial::set_mtlx_geomprop_ids_property(const detail::PropertyList& value)
-{
-    m_mtlx_geomprop_ids = property_list_to_uint32_vector(value);
-    require_codegen();
 }
 
 void MaterialXMaterial::on_load_resources()
 {
+    // Finish generation before resource loading enumerates the complete texture parameter set.
+    if (m_require_codegen)
+        run_codegen();
+
     if (!m_codegen_result)
         return;
 
@@ -268,9 +219,8 @@ void MaterialXMaterial::on_load_resources()
                 .path = texture_info->file_name,
                 .resolver = m_mtlx_path_resolver,
                 .sampler = sampler,
-                .generate_mips = true,
                 // MaterialX shader generation performs all source-to-working-space color transforms.
-                .srgb = false,
+                .flags = TextureLoadFlags::data,
                 .usage = sgl::TextureUsage::shader_resource,
                 .load_deferred = true,
             });
@@ -308,6 +258,7 @@ void MaterialXMaterial::update(SceneUpdateContext& ctx)
 
     if (!m_codegen_result) {
         m_slang_type_name = "InvalidMaterial";
+        ensure_data_size(0);
         return;
     }
 
@@ -357,20 +308,21 @@ void MaterialXMaterial::update(SceneUpdateContext& ctx)
         reflected_stride
     );
 
-    m_data_buffer->resize(requires_data_buffer() ? reflected_stride : 0);
+    if (requires_data_buffer())
+        FALCOR_CHECK_LE(element_type_layout->alignment(), BufferSuballocator::ALIGNMENT);
+    ensure_data_size(requires_data_buffer() ? reflected_stride : 0);
     if (m_codegen_result->all_material_params.m_editable_count > 0 && requires_data_buffer()) {
         auto buffer_cursor = make_ref<sgl::BufferCursor>(
             m_scene->device()->type(),
             element_type_layout,
-            m_data_buffer->data(),
-            m_data_buffer->size()
+            mutable_data().data(),
+            reflected_stride
         );
         auto element_cursor = (*buffer_cursor)[0];
         for (auto& it : m_codegen_result->all_material_params.m_params)
             it.set_cursor(element_cursor);
         buffer_cursor->apply();
     }
-    m_data_buffer->update_buffer(ctx.command_encoder());
 
     m_has_entry_point_volume_properties = m_codegen_result->has_entry_point_volume_properties;
 }
@@ -380,7 +332,7 @@ void MaterialXMaterial::write_to_cursor_impl(CursorT cursor) const
 {
     if (m_slang_module) {
         if (requires_data_buffer()) {
-            cursor["data_buffer"] = to_handle(m_data_buffer);
+            cursor["data_buffer"] = data_ref();
         } else {
             if (m_codegen_result->all_material_params.m_params.empty())
                 return;
@@ -395,15 +347,12 @@ void MaterialXMaterial::write_to_cursor_impl(CursorT cursor) const
 template void MaterialXMaterial::write_to_cursor_impl(sgl::BufferElementCursor cursor) const;
 template void MaterialXMaterial::write_to_cursor_impl(sgl::ShaderCursor cursor) const;
 
-ref<sgl::SlangModule> MaterialXMaterial::required_module() const
-{
-    return m_slang_module;
-}
-
 shared::MaterialFlags MaterialXMaterial::flags() const
 {
     // MaterialX graphs may select transmissive closures dynamically. Keep this
     // conservative until static material capability analysis is introduced.
+    if (m_codegen_result && m_codegen_result->is_hair)
+        return shared::MaterialFlags::two_sided | shared::MaterialFlags::thin_walled;
     return shared::MaterialFlags::two_sided;
 }
 
@@ -427,6 +376,17 @@ Material::OpacityDesc MaterialXMaterial::opacity_desc() const
     return result;
 }
 
+SceneCapabilities MaterialXMaterial::required_capabilities() const
+{
+    bool uses_geometry_properties = m_codegen_result && m_codegen_result->uses_geometry_properties;
+    return material_capabilities(uses_geometry_properties);
+}
+
+ref<sgl::SlangModule> MaterialXMaterial::required_module() const
+{
+    return m_slang_module;
+}
+
 void MaterialXMaterial::run_codegen()
 {
     // If we are not forcing update and nothing has changed, bail out.
@@ -439,7 +399,7 @@ void MaterialXMaterial::run_codegen()
         m_mtlx_basepath,
         m_mtlx_search_paths,
         m_mtlx_editable_params,
-        m_mtlx_class_compilation,
+        m_mtlx_canonicalize_names,
         m_mtlx_node_name,
         m_mtlx_layeringmethod,
         m_mtlx_transmissive_bsdfs,
@@ -450,8 +410,6 @@ void MaterialXMaterial::run_codegen()
         m_mtlx_zeltner_sheen_coefficients,
         m_mtlx_use_slang_derivatives
     );
-    codegen_properties_hash = hash_add_vector(codegen_properties_hash, m_mtlx_geomprop_names);
-    codegen_properties_hash = hash_add_vector(codegen_properties_hash, m_mtlx_geomprop_ids);
     if (!m_mtlx_buffer.empty()) {
         codegen_properties_hash = hash_add(codegen_properties_hash, m_mtlx_buffer);
     } else {
@@ -460,14 +418,11 @@ void MaterialXMaterial::run_codegen()
 
     if (m_codegen_properties_hash == codegen_properties_hash)
         return;
-    m_codegen_properties_hash = codegen_properties_hash;
 
     /// We are rebuilding the material.
     Properties previous_material_properties;
     m_material_properties.write_to_properties(previous_material_properties);
-    mark_dirty(DirtyFlags::resources | DirtyFlags::properties);
-    m_slang_module.reset();
-    m_codegen_result = {};
+    mark_dirty(DirtyFlags::resources | DirtyFlags::properties | DirtyFlags::emission);
     const auto search_paths = get_materialx_search_paths(m_mtlx_basepath, m_mtlx_search_paths);
     m_mtlx_path_resolver = make_ref<AssetResolver>(std::span<const std::filesystem::path>(search_paths));
 
@@ -505,40 +460,27 @@ void MaterialXMaterial::run_codegen()
     m_codegen_desc.zeltner_sheen_coefficients = m_mtlx_zeltner_sheen_coefficients;
     m_codegen_desc.use_slang_derivatives = m_mtlx_use_slang_derivatives;
     const EditableParamSelection editable_params = parse_editable_params(m_mtlx_editable_params);
-    m_codegen_desc.class_compilation = m_mtlx_class_compilation;
+    m_codegen_desc.canonicalize_names = m_mtlx_canonicalize_names;
     m_codegen_desc.make_editable = editable_params.all;
     m_codegen_desc.editable_param_names = editable_params.names;
-    FALCOR_CHECK(
-        m_mtlx_geomprop_names.size() == m_mtlx_geomprop_ids.size(),
-        "MaterialX geomprop name/ID lists must have the same length ({} names, {} IDs).",
-        m_mtlx_geomprop_names.size(),
-        m_mtlx_geomprop_ids.size()
-    );
-    std::unordered_set<std::string> seen_geomprop_names;
-    std::unordered_map<std::string, uint32_t> geomprop_ids;
-    seen_geomprop_names.reserve(m_mtlx_geomprop_names.size());
-    geomprop_ids.reserve(m_mtlx_geomprop_names.size());
-    for (size_t i = 0; i < m_mtlx_geomprop_names.size(); ++i) {
-        const std::string& name = m_mtlx_geomprop_names[i];
-        FALCOR_CHECK(!name.empty(), "MaterialX geomprop names cannot be empty.");
-        FALCOR_CHECK(seen_geomprop_names.insert(name).second, "Duplicate MaterialX geomprop name `{}`.", name);
-        geomprop_ids.emplace(name, m_mtlx_geomprop_ids[i]);
-    }
-    if (!geomprop_ids.empty()) {
-        m_codegen_desc.geomprop_id_callback = [geomprop_ids = std::move(geomprop_ids)](
-                                                  std::string_view geomprop,
-                                                  std::string_view /*output_type*/
-                                              ) -> std::optional<uint32_t>
-        {
-            const auto it = geomprop_ids.find(std::string(geomprop));
-            if (it == geomprop_ids.end())
-                return {};
-            return it->second;
-        };
-    }
+    mtlx::CodeGenDesc codegen_desc = m_codegen_desc;
+    codegen_desc.reserve_geometry_attribute_id = [scene = m_scene](std::string_view name)
+    {
+        return scene->_reserve_geometry_attribute_id(name);
+    };
+    codegen_desc.material_aov_registry = m_scene->material_aov_registry();
 
     // We are generating new code.
-    m_codegen_result = mtlx::CodeGen::generate(m_codegen_desc);
+    std::unique_ptr<mtlx::CodeGenResult> codegen_result;
+    try {
+        codegen_result = mtlx::CodeGen::generate(codegen_desc, m_scene->materialx_codegen_cache());
+    } catch (...) {
+        m_require_codegen = true;
+        throw;
+    }
+    m_codegen_properties_hash = codegen_properties_hash;
+    m_slang_module.reset();
+    m_codegen_result = std::move(codegen_result);
 
     m_material_properties.clear();
     auto on_change = reflection::on_change<MaterialXMaterial>(
@@ -546,7 +488,7 @@ void MaterialXMaterial::run_codegen()
         {
             for (auto& param : self.m_codegen_result->all_material_params.m_params)
                 param.set_value(self.m_material_properties);
-            self.mark_dirty(DirtyFlags::properties);
+            self.mark_dirty(DirtyFlags::properties | DirtyFlags::emission);
         }
     );
     auto ui_group = reflection::ui_group("Material Parameters");
@@ -555,6 +497,10 @@ void MaterialXMaterial::run_codegen()
             continue;
 
         const std::string property_name = "inputs:" + param.param_name;
+        // One authored input can feed several generated uniforms. Keep each
+        // binding in m_params, but expose and update them through one property.
+        if (m_material_properties.has_property(property_name))
+            continue;
         if (const int* int_value = param.extract_value<int>())
             m_material_properties.add_property(property_name, *int_value, false, on_change, ui_group);
         else if (const bool* bool_value = param.extract_value<bool>())

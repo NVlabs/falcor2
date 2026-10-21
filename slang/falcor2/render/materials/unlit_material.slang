@@ -45,7 +45,9 @@ public struct UnlitMaterial : IMaterial
 
     public MaterialHeader header;
     public TextureHandle base_color_texture;
+    public uint base_color_texture_texcoord;
     public float3 base_color_factor;
+    public bool use_vertex_color;
 
     public MaterialInstance setup_material_instance<LodSampler : ILodSampler>(
         const SurfaceInteraction si,
@@ -54,9 +56,30 @@ public struct UnlitMaterial : IMaterial
     )
     {
         MaterialInstance mi = {};
-        mi.color = base_color_texture.sample(lod_sampler, si.uv, float4(1.0)).rgb * base_color_factor;
+        const float2 texture_coord = surface_material::resolve_texcoord(si, base_color_texture_texcoord);
+        float4 vertex_color = float4(1.0);
+        if (use_vertex_color)
+            vertex_color = surface_material::resolve_vertex_color(si);
+        mi.color = base_color_texture.sample(lod_sampler, texture_coord, float4(1.0)).rgb * base_color_factor
+            * vertex_color.rgb;
         return mi;
     }
 
     public override MaterialFlags flags() { return header.flags; }
+
+    public override float eval_opacity<LodSampler : ILodSampler>(
+        const SurfaceInteraction si,
+        const LodSampler lod_sampler,
+        const MaterialInstanceHints hints = MaterialInstanceHints::none
+    )
+    {
+        if (!is_set(header.opacity_flags, OpacityFlags::enabled))
+            return 1.0;
+
+        const float2 texture_coord = surface_material::resolve_texcoord(si, base_color_texture_texcoord);
+        float opacity = base_color_texture.sample(lod_sampler, texture_coord, float4(1.0)).a * header.opacity_factor;
+        if (use_vertex_color)
+            opacity *= surface_material::resolve_vertex_color(si).a;
+        return opacity;
+    }
 };

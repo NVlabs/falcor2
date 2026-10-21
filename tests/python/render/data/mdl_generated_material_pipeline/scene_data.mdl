@@ -1,0 +1,42 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+mdl 1.10;
+import ::df::*;
+import ::scene::*;
+import ::math::*;
+
+// One BSDF exercises all nine supported lookup entry points; IOR and opacity also consume hit context.
+export material Default(uniform bool choose = true, uniform float3 fallback = float3(0.11, 0.12, 0.13)) = let {
+    float f = scene::data_lookup_float("float_value", 0.9);
+    float2 f2 = scene::data_lookup_float2("float_value", float2(0.9, 0.8));
+    float3 f3 = scene::data_lookup_float3("float_value", float3(0.9, 0.8, 0.7));
+    float4 f4 = scene::data_lookup_float4("float_value", float4(0.9, 0.8, 0.7, 0.6));
+    color c = scene::data_lookup_color("float_value", color(0.9, 0.8, 0.7));
+    int i = scene::data_lookup_int("int_value", 11);
+    int2 i2 = scene::data_lookup_int2("int_value", int2(11, 13));
+    int3 i3 = scene::data_lookup_int3("int_value", int3(11, 13, 17));
+    int4 i4 = scene::data_lookup_int4("int_value", int4(11, 13, 17, 19));
+    float3 pref = scene::data_lookup_float3(choose ? "Pref" : "other", fallback);
+    float checks = (scene::data_isvalid("flag") ? 1.0 : 0.0)
+        + (scene::data_isvalid("missing") ? 2.0 : 0.0)
+        + scene::data_lookup_float("flag", 0.17)
+        + scene::data_lookup_float("int_value", 0.23)
+        + float(scene::data_lookup_int("float_value", 3))
+        + scene::data_lookup_uniform_float("float_value", 0.31)
+        + scene::data_lookup_uniform_float("missing", 0.37)
+        + float(scene::data_lookup_uniform_int("int_value", 5))
+        + float(scene::data_lookup_uniform_int("missing", 7))
+        + scene::data_lookup_float4x4("float_value", float4x4(0.41))[0][0]
+        + scene::data_lookup_float3("", float3(0.43)).x;
+} in material(
+    surface: material_surface(scattering: df::diffuse_reflection_bsdf(tint: color(
+        (f + 2 * math::dot(f2, float2(1)) + 4 * math::dot(f3, float3(1))
+            + 8 * math::dot(f4, float4(1)) + 48 * math::average(c)) / 128,
+        float(i + 2 * (i2.x + i2.y) + 4 * (i3.x + i3.y + i3.z)
+            + 8 * (i4.x + i4.y + i4.z + i4.w)) / 1024,
+        checks / 64
+    ))),
+    ior: color(1 + pref),
+    geometry: material_geometry(cutout_opacity: scene::data_isvalid("Pref") ? 0.75 : 0.25)
+);

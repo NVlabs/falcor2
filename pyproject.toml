@@ -1,6 +1,6 @@
 [build-system]
 requires = [
-    "setuptools",
+    "setuptools>=77",
     "wheel",
     "cmake==3.31.6",
     "ninja",
@@ -12,9 +12,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "falcor2"
-dynamic = ["version"]
-requires-python = ">=3.9"
-dependencies = ["typing_extensions", "numpy>=1.26.0"]
+dynamic = ["version", "dependencies"]
+requires-python = ">=3.10"
 authors = [
     { name = "Simon Kallweit", email = "skallweit@nvidia.com" },
     { name = "Chris Cummings", email = "chriscummings@nvidia.com" },
@@ -22,17 +21,31 @@ authors = [
 ]
 description = "Falcor2 render toolkit"
 readme = "README.md"
-license="Apache-2.0"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["falcor2*"]
+[project.scripts]
+f2 = "runcli:main"
+
+[project.optional-dependencies]
+streaming = ["aiohttp>=3.11,<4"]
+
+[tool.setuptools]
+py-modules = ["runcli"]
+
+[tool.setuptools.package-dir]
+"" = "tools"
+"falcor2" = "falcor2"
+"falcor2.tools.skills" = "skills"
 
 [tool.setuptools.package-data]
-"*" = ["*.py", "*.pyi", "*.json"]
+"*" = ["*.py", "*.pyi", "py.typed", "*.json"]
+"falcor2.streaming" = ["OPENH264_BINARY_LICENSE.txt", "web/*.html", "web/*.js", "web/*.css"]
+"falcor2.tools.skills" = ["user/**/*", "developer/**/*", "instructions.md", "PLANS.md"]
 
 [tool.setuptools.exclude-package-data]
 "*" = ["__pycache__/*", "*.pyc"]
+"falcor2.tools.skills" = ["**/__pycache__/*", "**/*.pyc"]
 
 [tool.black]
 line-length = 100
@@ -54,4 +67,8 @@ reportInvalidTypeForm = "warning"
 pythonpath = ["."]
 markers = [
     "slow: marks tests as slow (deselected by default)",
+    "nightly: marks tests reserved for nightly runs (--nightly also enables slow tests)",
+    "nightly_if(**parameters): defer matching explicit parameter values; keys are ANDed, markers are ORed",
+    "nightly_if_not_vk(device_param='device_type', **parameters): defer non-Vulkan backends matching all additional parameter conditions",
+    "benchmark: marks performance benchmarks (skipped unless --benchmark is used)",
 ]

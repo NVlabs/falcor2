@@ -8,7 +8,9 @@ import ::state::*;
 
 export material Default() = material(
     surface: material_surface(
-        scattering: df::diffuse_reflection_bsdf()
+        scattering: df::diffuse_reflection_bsdf(
+            tint: color(state::texture_coordinate(1).y,
+                state::texture_coordinate(3).x, state::texture_coordinate(3).y))
     ),
     ior: color(
         1.0

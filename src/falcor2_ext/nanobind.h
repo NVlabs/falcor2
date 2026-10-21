@@ -9,6 +9,8 @@
 #include <nanobind/typing.h>
 #include <nanobind/stl/unordered_map.h>
 
+#include "core/ustring.h"
+
 #include <cstddef>
 #include <initializer_list>
 #include <memory>

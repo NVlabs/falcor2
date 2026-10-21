@@ -10,12 +10,18 @@
 #include "falcor2/utils/aabb.h"
 #include "falcor2/importers/fwd.h"
 #include "falcor2/render/fwd.h"
-#include "falcor2/render/material_types.h"
+#include "falcor2/render/scene_types.h"
+#include "falcor2/render/animation_timing.h"
+#include "falcor2/render/source_asset_ref.h"
 
 #include "sgl/core/data_type.h"
+#include "sgl/core/short_vector.h"
 
 #include <cstddef>
+#include <iterator>
+#include <type_traits>
 #include <functional>
+#include <optional>
 #include <vector>
 #include <string>
 #include <map>
@@ -24,19 +30,10 @@
 
 namespace falcor {
 
-/// Texture coordinate origin convention for authored UVs.
-enum class UVOrigin {
-    upper_left,
-    lower_left,
-};
-SGL_ENUM_INFO(
-    UVOrigin,
-    {
-        {UVOrigin::upper_left, "upper_left"},
-        {UVOrigin::lower_left, "lower_left"},
-    }
-);
-SGL_ENUM_REGISTER(UVOrigin);
+namespace detail {
+/// Validate the signed import refinement level before calculating a tessellation rate.
+FALCOR_API void validate_refinement_level(int level);
+} // namespace detail
 
 /// Semantic meaning that importer assigns to a vertex attribute. For some
 /// formats this may be explicitly specified, for others it may be inferred
@@ -71,6 +68,12 @@ SGL_ENUM_INFO(
 );
 SGL_ENUM_REGISTER(ImporterSemantic);
 
+/// Four joint indices stored in an importer mesh influence stream.
+struct ImporterJointIndices {
+    uint16_t values[4] = {};
+};
+static_assert(sizeof(ImporterJointIndices) == 4 * sizeof(uint16_t));
+
 
 /// Describes an attribute of a mesh vertex
 struct FALCOR_API ImporterMeshAttribute {
@@ -81,7 +84,8 @@ struct FALCOR_API ImporterMeshAttribute {
     /// Semantic meaning of the attribute assigned by the importer
     ImporterSemantic semantic{ImporterSemantic::unknown};
 
-    /// Index for attributes that can have multiple sets, e.g., TEXCOORD_0, TEXCOORD_1
+    /// Index for attributes that can have multiple sets, e.g., TEXCOORD_0, TEXCOORD_1.
+    /// Mesh position, normal and tangent indices identify matching motion samples; zero is the reference sample.
     uint32_t index{0};
 
     /// Type of the attribute data (e.g. float for a float3)
@@ -99,54 +103,132 @@ struct FALCOR_API ImporterMeshAttribute {
     bool valid() const { return type != sgl::DataType::void_; }
 };
 
-/// Minimal information to describe an attribute to be created using ensure_attributes,
-/// given known semantic and index.
+/// Minimal information to describe an attribute to be created using ensure_attributes.
 struct FALCOR_API ImporterMeshDefaultAttribute {
     ImporterSemantic semantic{ImporterSemantic::unknown};
     uint32_t index{0};
     uint32_t components{0}; // Leave as 0 to use default for semantic
+    /// Exact authored identity for an unknown-semantic attribute.
+    std::string name;
 };
 
-/// A buffer containing vertex data. Layout is described by ImporterMeshAttribute.
-struct FALCOR_API ImporterMeshBuffer {
+/// Returns true when two attribute descriptions identify the same stream.
+/// Known semantics use semantic and index; unknown semantics use an exact nonempty name.
+inline bool importer_attribute_identity_equal(
+    ImporterSemantic lhs_semantic,
+    uint32_t lhs_index,
+    std::string_view lhs_name,
+    ImporterSemantic rhs_semantic,
+    uint32_t rhs_index,
+    std::string_view rhs_name
+)
+{
+    if (lhs_semantic == ImporterSemantic::unknown || rhs_semantic == ImporterSemantic::unknown) {
+        return lhs_semantic == ImporterSemantic::unknown && rhs_semantic == ImporterSemantic::unknown
+            && !lhs_name.empty() && lhs_name == rhs_name;
+    }
+    return lhs_semantic == rhs_semantic && lhs_index == rhs_index;
+}
 
-    /// Buffer data
-    std::vector<uint8_t> data;
+inline bool
+importer_attribute_identity_equal(const ImporterMeshDefaultAttribute& lhs, const ImporterMeshDefaultAttribute& rhs)
+{
+    return importer_attribute_identity_equal(lhs.semantic, lhs.index, lhs.name, rhs.semantic, rhs.index, rhs.name);
+}
 
-    // Stride in bytes between vertices
-    size_t stride;
-};
+inline bool importer_attribute_identity_equal(const ImporterMeshAttribute& lhs, const ImporterMeshDefaultAttribute& rhs)
+{
+    return importer_attribute_identity_equal(lhs.semantic, lhs.index, lhs.name, rhs.semantic, rhs.index, rhs.name);
+}
 
 /// Helper class to make it simple to read/write a stream of a given
 /// attribute type for the vertices of a mesh.
+/// Like std::span, constness of the wrapper does not affect element mutability.
+/// Use a const element type for read-only access.
+/// Iterators borrow the underlying storage, not this wrapper, and are invalidated when that storage moves or dies.
 template<typename T>
 struct ImporterVertexStream {
-    uint8_t* data;
+    std::conditional_t<std::is_const_v<T>, const uint8_t, uint8_t>* data;
     size_t stride;
     size_t size;
 
+    constexpr operator ImporterVertexStream<const T>() const noexcept { return {data, stride, size}; }
+
     bool valid() const { return data != nullptr; }
 
-    T* first();
-    const T* first() const;
+    T* first() const;
 
-    const T& operator[](size_t index) const;
-    T& operator[](size_t index);
+    T& operator[](size_t index) const;
+
+    class Iterator {
+    public:
+        using iterator_category = std::forward_iterator_tag;
+        using value_type = std::remove_cv_t<T>;
+        using difference_type = std::ptrdiff_t;
+        using pointer = T*;
+        using reference = T&;
+
+        Iterator() = default;
+        reference operator*() const { return *operator->(); }
+        pointer operator->() const { return reinterpret_cast<T*>(m_data + m_index * m_stride); }
+
+        Iterator& operator++()
+        {
+            ++m_index;
+            return *this;
+        }
+
+        Iterator operator++(int)
+        {
+            Iterator previous = *this;
+            ++(*this);
+            return previous;
+        }
+
+        bool operator==(const Iterator&) const = default;
+
+    private:
+        friend struct ImporterVertexStream;
+        Iterator(decltype(data) data, size_t stride, size_t index)
+            : m_data(data)
+            , m_stride(stride)
+            , m_index(index)
+        {
+        }
+
+        decltype(data) m_data = nullptr;
+        size_t m_stride = 0;
+        // A strided end pointer could exceed the allocation when the attribute has a nonzero offset.
+        size_t m_index = 0;
+    };
+
+    Iterator begin() const { return Iterator(data, stride, 0); }
+    Iterator end() const { return Iterator(data, stride, size); }
 };
 
-/// Helper class to make it simple to read/write a stream of a given
-/// attribute type for the vertices of a mesh.
-template<typename T>
-struct ImporterVertexStreamRO {
-    const uint8_t* data;
-    size_t stride;
-    size_t size;
 
-    bool valid() const { return data != nullptr; }
+/// A buffer containing vertex data with a fixed byte stride.
+struct FALCOR_API ImporterVertexBuffer {
+    /// Buffer data.
+    std::vector<uint8_t> data;
+    /// Stride in bytes between vertices.
+    size_t stride = 0;
 
-    const T* first() const;
+    /// Resize storage, preserving existing vertices. Invalidates previously acquired views on reallocation.
+    void resize_vertices(size_t count) { data.resize(count * stride); }
 
-    const T& operator[](size_t index) const;
+    /// View an attribute at a byte offset within each vertex record.
+    template<typename T>
+    ImporterVertexStream<T> get_stream(size_t offset, size_t count)
+    {
+        return {data.empty() ? nullptr : data.data() + offset, stride, count};
+    }
+
+    template<typename T>
+    ImporterVertexStream<const T> get_stream(size_t offset, size_t count) const
+    {
+        return {data.empty() ? nullptr : data.data() + offset, stride, count};
+    }
 };
 
 
@@ -156,8 +238,19 @@ struct ImporterVertexStreamRO {
 /// views, and references to subgeometry indices. Reacquire them after the operation completes.
 class FALCOR_API ImporterMesh {
 public:
+    /// Create import-processing defaults from options. Overlay authored properties afterward.
+    static Properties make_properties(const ImportOptions& options);
+    /// Import-processing properties. Initialize with make_properties() before processing.
+    Properties properties;
     /// Mesh name.
     std::string name;
+    /// Reference to the object in the source asset from which this mesh was imported.
+    std::optional<SourceAssetRef> source_asset_ref;
+
+    /// Seconds for each indexed motion sample, including sample zero. Empty for static meshes.
+    std::vector<float> motion_times;
+    /// Interpolation between motion samples.
+    AnimationInterpolationMode motion_interpolation_mode{AnimationInterpolationMode::linear};
 
     /// Authored image origin convention for this mesh's texture coordinates.
     ///
@@ -173,8 +266,8 @@ public:
         std::string name;
         /// Triangle indices.
         std::vector<uint3> indices;
-        /// Material name.
-        std::string material_name;
+        /// Index into ImporterScene::materials, or -1 if no material is assigned.
+        int material_index = -1;
     };
 
     /// List of subgeometries.
@@ -194,7 +287,7 @@ public:
         }
     }
 
-    /// Generate normals for mesh vertices based on face geometry.
+    /// Generate normals for each position sample based on its face geometry.
     void add_normals_from_faces();
 
     /// Generate tangents using UV coordinates and MikkTSpace, splitting vertices as required by its per-corner output.
@@ -204,6 +297,15 @@ public:
 
     /// Generate tangents for mesh vertices using normals (orthonormal basis).
     void add_tangents_from_normals();
+
+    /// Transfer reference tangents to additional position/normal samples without further vertex splits.
+    void update_motion_tangents();
+
+    /// Collapse exact local-space, same-material triangles with opposite winding within this mesh.
+    /// Corresponding vertices must match in every position sample.
+    /// Retains the first authored winding and all same-winding duplicates. Skips meshes with joint or weight
+    /// attributes. Removes empty subgeometries, preserves vertex data, and returns the number of removed triangles.
+    size_t collapse_exact_opposite_triangles();
 
     /// Remove duplicate vertices from mesh and update indices accordingly.
     void deduplicate_vertices();
@@ -241,10 +343,7 @@ public:
     ImporterVertexStream<T> get_stream(const ImporterMeshAttribute& attrib)
     {
         if (attrib.valid()) {
-            void* data = nullptr;
-            size_t stride = 0;
-            get_stream_info(attrib, data, stride);
-            return ImporterVertexStream<T>{reinterpret_cast<uint8_t*>(data), stride, m_vertex_count};
+            return m_buffers[attrib.buffer].get_stream<T>(attrib.offset, m_vertex_count);
         } else {
             return {};
         }
@@ -253,13 +352,10 @@ public:
     /// Get a typed 'VertexStream' for a given attribute to give an easy way
     /// to read/write the vertex data.
     template<typename T>
-    ImporterVertexStreamRO<T> get_stream(const ImporterMeshAttribute& attrib) const
+    ImporterVertexStream<const T> get_stream(const ImporterMeshAttribute& attrib) const
     {
         if (attrib.valid()) {
-            const void* data = nullptr;
-            size_t stride = 0;
-            get_stream_info(attrib, data, stride);
-            return ImporterVertexStreamRO<T>{reinterpret_cast<const uint8_t*>(data), stride, m_vertex_count};
+            return m_buffers[attrib.buffer].get_stream<T>(attrib.offset, m_vertex_count);
         } else {
             return {};
         }
@@ -280,6 +376,16 @@ public:
     {
         for (auto& attrib : m_attributes) {
             if (attrib.name == _name)
+                return &attrib;
+        }
+        return nullptr;
+    }
+
+    /// Find an attribute by its semantic/index or exact authored-name identity.
+    ImporterMeshAttribute* find_attribute(const ImporterMeshDefaultAttribute& descriptor)
+    {
+        for (auto& attrib : m_attributes) {
+            if (importer_attribute_identity_equal(attrib, descriptor))
                 return &attrib;
         }
         return nullptr;
@@ -326,42 +432,77 @@ public:
     /// Current vertex count.
     size_t vertex_count() const { return m_vertex_count; }
 
+    /// Bake a skeleton pose using one mesh-local transform per joint.
+    /// Consumes joint and weight attributes after deformation.
+    /// Fails if the mesh has additional position samples.
+    void bake_pose(std::span<const float4x4> mesh_from_bind_mesh_by_joint);
+
     /// Vertex attributes.
     const std::vector<ImporterMeshAttribute>& attributes() const { return m_attributes; }
 
     /// Vertex buffers.
-    const std::vector<ImporterMeshBuffer>& buffers() const { return m_buffers; }
-    std::vector<ImporterMeshBuffer>& buffers() { return m_buffers; }
+    const std::vector<ImporterVertexBuffer>& buffers() const { return m_buffers; }
+    std::vector<ImporterVertexBuffer>& buffers() { return m_buffers; }
 
     /// Vertex positions.
-    const ImporterMeshAttribute& position_attribute() const { return m_positions; }
-    ImporterVertexStream<float3> position_stream() { return get_stream<float3>(m_positions); }
-    ImporterVertexStreamRO<float3> position_stream() const { return get_stream<float3>(m_positions); }
+    const ImporterMeshAttribute& position_attribute(uint32_t sample_index = 0) const
+    {
+        FALCOR_CHECK(sample_index < m_positions.size(), "Position sample index out of bounds");
+        return m_positions[sample_index];
+    }
+    ImporterVertexStream<float3> position_stream(uint32_t sample_index = 0)
+    {
+        return get_stream<float3>(position_attribute(sample_index));
+    }
+    ImporterVertexStream<const float3> position_stream(uint32_t sample_index = 0) const
+    {
+        return get_stream<float3>(position_attribute(sample_index));
+    }
 
     /// Vertex normals.
-    const ImporterMeshAttribute& normal_attribute() const { return m_normals; }
-    ImporterVertexStream<float3> normal_stream() { return get_stream<float3>(m_normals); }
-    ImporterVertexStreamRO<float3> normal_stream() const { return get_stream<float3>(m_normals); }
+    const ImporterMeshAttribute& normal_attribute(uint32_t sample_index = 0) const
+    {
+        FALCOR_CHECK(sample_index < m_normals.size(), "Normal sample index out of bounds");
+        return m_normals[sample_index];
+    }
+    ImporterVertexStream<float3> normal_stream(uint32_t sample_index = 0)
+    {
+        return get_stream<float3>(normal_attribute(sample_index));
+    }
+    ImporterVertexStream<const float3> normal_stream(uint32_t sample_index = 0) const
+    {
+        return get_stream<float3>(normal_attribute(sample_index));
+    }
 
     /// Vertex tangents.
-    const ImporterMeshAttribute& tangent_attribute() const { return m_tangents; }
-    ImporterVertexStream<float3> tangent_stream() { return get_stream<float3>(m_tangents); }
-    ImporterVertexStreamRO<float3> tangent_stream() const { return get_stream<float3>(m_tangents); }
+    const ImporterMeshAttribute& tangent_attribute(uint32_t sample_index = 0) const
+    {
+        FALCOR_CHECK(sample_index < m_tangents.size(), "Tangent sample index out of bounds");
+        return m_tangents[sample_index];
+    }
+    ImporterVertexStream<float3> tangent_stream(uint32_t sample_index = 0)
+    {
+        return get_stream<float3>(tangent_attribute(sample_index));
+    }
+    ImporterVertexStream<const float3> tangent_stream(uint32_t sample_index = 0) const
+    {
+        return get_stream<float3>(tangent_attribute(sample_index));
+    }
 
     /// Vertex handedness.
     const ImporterMeshAttribute& handedness_attribute() const { return m_handedness; }
     ImporterVertexStream<float> handedness_stream() { return get_stream<float>(m_handedness); }
-    ImporterVertexStreamRO<float> handedness_stream() const { return get_stream<float>(m_handedness); }
+    ImporterVertexStream<const float> handedness_stream() const { return get_stream<float>(m_handedness); }
 
     /// Vertex texcoords (0) + helpers to access stream as float2.
     const ImporterMeshAttribute& texcoord_attribute() const { return m_texcoords; }
     ImporterVertexStream<float2> texcoord_stream() { return get_stream<float2>(m_texcoords); }
-    ImporterVertexStreamRO<float2> texcoord_stream() const { return get_stream<float2>(m_texcoords); }
+    ImporterVertexStream<const float2> texcoord_stream() const { return get_stream<float2>(m_texcoords); }
 
     /// Vertex colors (0) + helpers to access stream as rgb float3.
     const ImporterMeshAttribute& color_attribute() const { return m_colors; }
     ImporterVertexStream<float3> color_stream() { return get_stream<float3>(m_colors); }
-    ImporterVertexStreamRO<float3> color_stream() const { return get_stream<float3>(m_colors); }
+    ImporterVertexStream<const float3> color_stream() const { return get_stream<float3>(m_colors); }
 
 private:
     void apply_vertex_remap(const VertexRemap& remap);
@@ -371,12 +512,12 @@ private:
 
     // Vertex attributes and buffers
     std::vector<ImporterMeshAttribute> m_attributes;
-    std::vector<ImporterMeshBuffer> m_buffers;
+    std::vector<ImporterVertexBuffer> m_buffers;
 
     // Cached commonly used attributes for easy access
-    ImporterMeshAttribute m_positions;
-    ImporterMeshAttribute m_normals;
-    ImporterMeshAttribute m_tangents;
+    sgl::short_vector<ImporterMeshAttribute, 1> m_positions{ImporterMeshAttribute{}};
+    sgl::short_vector<ImporterMeshAttribute, 1> m_normals{ImporterMeshAttribute{}};
+    sgl::short_vector<ImporterMeshAttribute, 1> m_tangents{ImporterMeshAttribute{}};
     ImporterMeshAttribute m_handedness;
     ImporterMeshAttribute m_texcoords;
     ImporterMeshAttribute m_colors;
@@ -389,74 +530,69 @@ private:
 
 
 template<typename T>
-T* ImporterVertexStream<T>::first()
+T* ImporterVertexStream<T>::first() const
 {
     SGL_CHECK(data != nullptr, "Invalid vertex stream");
     return reinterpret_cast<T*>(data);
 }
 
 template<typename T>
-const T* ImporterVertexStream<T>::first() const
-{
-    SGL_CHECK(data != nullptr, "Invalid vertex stream");
-    return reinterpret_cast<const T*>(data);
-}
-
-template<typename T>
-inline const T& ImporterVertexStream<T>::operator[](size_t index) const
-{
-    SGL_CHECK(index < size, "Vertex index out of bounds");
-    return *reinterpret_cast<const T*>(data + index * stride);
-}
-
-template<typename T>
-inline T& ImporterVertexStream<T>::operator[](size_t index)
+inline T& ImporterVertexStream<T>::operator[](size_t index) const
 {
     SGL_CHECK(index < size, "Vertex index out of bounds");
     return *reinterpret_cast<T*>(data + index * stride);
 }
 
 
-template<typename T>
-const T* ImporterVertexStreamRO<T>::first() const
-{
-    SGL_CHECK(data != nullptr, "Invalid vertex stream");
-    return reinterpret_cast<const T*>(data);
-}
-
-template<typename T>
-inline const T& ImporterVertexStreamRO<T>::operator[](size_t index) const
-{
-    SGL_CHECK(index < size, "Vertex index out of bounds");
-    return *reinterpret_cast<const T*>(data + index * stride);
-}
-
-/// Indexing mode for curve line segments.
-enum class CurveIndexingMode {
-    /// Each segment is defined by a pair of indices: indices[2k], indices[2k+1].
-    list,
-    /// Each segment is defined by a single index: positions[indices[k]] and positions[indices[k]+1].
-    successive,
-};
-SGL_ENUM_INFO(
-    CurveIndexingMode,
-    {
-        {CurveIndexingMode::list, "list"},
-        {CurveIndexingMode::successive, "successive"},
-    }
-);
-SGL_ENUM_REGISTER(CurveIndexingMode);
-
 /// Imported curve data.
-struct FALCOR_API ImporterCurve {
+class FALCOR_API ImporterCurve {
+public:
+    /// Create import-processing defaults from options. Overlay authored properties afterward.
+    static Properties make_properties(const ImportOptions& options);
+    /// Import-processing properties. Initialize with make_properties() before processing.
+    Properties properties;
     /// Curve name.
     std::string name;
-    /// Material name.
-    std::string material_name;
-    /// Curve vertex positions.
-    std::vector<float3> positions;
-    /// Radius at each vertex.
-    std::vector<float> radii;
+    /// Reference to the object in the source asset from which this curve was imported.
+    std::optional<SourceAssetRef> source_asset_ref;
+    /// Index into ImporterScene::materials, or -1 if no material is assigned.
+    int material_index = -1;
+    /// Seconds for each motion sample, including sample zero. Empty for static curves.
+    std::vector<float> motion_times;
+    /// Interpolation between motion samples.
+    AnimationInterpolationMode motion_interpolation_mode{AnimationInterpolationMode::linear};
+
+    /// Resize all position/radius samples to the same vertex count. Invalidates previously acquired streams/views.
+    void resize_vertices(size_t vertex_count, size_t sample_count = 1);
+    size_t vertex_count() const { return m_vertex_count; }
+    size_t sample_count() const { return m_positions.size(); }
+
+    /// Curve vertex positions for a sample; zero is the reference sample.
+    ImporterVertexStream<float3> position_stream(uint32_t sample_index = 0)
+    {
+        FALCOR_CHECK(sample_index < m_positions.size(), "Position sample index out of bounds");
+        return m_positions[sample_index].get_stream<float3>(0, m_vertex_count);
+    }
+    ImporterVertexStream<const float3> position_stream(uint32_t sample_index = 0) const
+    {
+        FALCOR_CHECK(sample_index < m_positions.size(), "Position sample index out of bounds");
+        return m_positions[sample_index].get_stream<float3>(0, m_vertex_count);
+    }
+    /// Radius at each vertex for a sample; zero is the reference sample.
+    ImporterVertexStream<float> radius_stream(uint32_t sample_index = 0)
+    {
+        FALCOR_CHECK(sample_index < m_radii.size(), "Radius sample index out of bounds");
+        return m_radii[sample_index].get_stream<float>(0, m_vertex_count);
+    }
+    ImporterVertexStream<const float> radius_stream(uint32_t sample_index = 0) const
+    {
+        FALCOR_CHECK(sample_index < m_radii.size(), "Radius sample index out of bounds");
+        return m_radii[sample_index].get_stream<float>(0, m_vertex_count);
+    }
+    /// Primary texture coordinates at each curve vertex. Empty leaves render geometry UVs at zero.
+    std::vector<float2> texcoords;
+    /// Origin convention of texcoords; converted once when loaded into a render scene.
+    UVOrigin uv_origin = UVOrigin::upper_left;
     /// Pairs of indices defining line segments.
     std::vector<uint32_t> indices;
     /// Indexing mode for the index buffer.
@@ -466,6 +602,11 @@ struct FALCOR_API ImporterCurve {
 
     /// Calculate local AABB from positions and radii.
     void calculate_local_aabb();
+
+private:
+    size_t m_vertex_count = 0;
+    sgl::short_vector<ImporterVertexBuffer, 1> m_positions{ImporterVertexBuffer{.stride = sizeof(float3)}};
+    sgl::short_vector<ImporterVertexBuffer, 1> m_radii{ImporterVertexBuffer{.stride = sizeof(float)}};
 };
 
 /// Filter modes for texture sampling.
@@ -512,8 +653,12 @@ struct FALCOR_API ImporterTexture {
 
     /// Magnification filter mode
     TextureFilterMode mag_filter = TextureFilterMode::linear;
-    /// Minification filter mode (simplified from glTF mipmap modes)
+    /// Minification filter within a mip level.
     TextureFilterMode min_filter = TextureFilterMode::linear;
+    /// Filter between mip levels.
+    TextureFilterMode mip_filter = TextureFilterMode::linear;
+    /// False for non-mipmapped minification; keep image mip data for other bindings.
+    bool use_mipmaps = true;
     /// S (U) wrapping mode
     TextureWrapMode wrap_s = TextureWrapMode::repeat;
     /// T (V) wrapping mode
@@ -538,47 +683,6 @@ struct FALCOR_API ImporterPrototype {
     /// Index into ImporterScene::nodes, root node of the hierarchy.
     int root_node = -1;
 };
-
-/// Determines component count and interpolation method for animation keyframes.
-enum class AnimationValueType {
-    /// Scalar float (lerp)
-    float_,
-    /// 3-component float vector(lerp)
-    float3,
-    /// 4-component float quaternion (slerp)
-    quatf,
-};
-SGL_ENUM_INFO(
-    AnimationValueType,
-    {
-        {AnimationValueType::float_, "float"},
-        {AnimationValueType::float3, "float3"},
-        {AnimationValueType::quatf, "quatf"},
-    }
-);
-SGL_ENUM_REGISTER(AnimationValueType);
-
-/// Interpolation mode for animation keyframes.
-enum class AnimationInterpolationMode {
-    /// No interpolation, use left keyframe value
-    step,
-    /// Linear interpolation (lerp for float/float3, slerp for quatf)
-    linear,
-    /// Catmull-Rom auto-tangents
-    cubic_hermite,
-    /// Explicit in/out tangents per keyframe
-    cubic_spline,
-};
-SGL_ENUM_INFO(
-    AnimationInterpolationMode,
-    {
-        {AnimationInterpolationMode::step, "step"},
-        {AnimationInterpolationMode::linear, "linear"},
-        {AnimationInterpolationMode::cubic_hermite, "cubic_hermite"},
-        {AnimationInterpolationMode::cubic_spline, "cubic_spline"},
-    }
-);
-SGL_ENUM_REGISTER(AnimationInterpolationMode);
 
 /// A single animation channel storing typed keyframe data.
 struct FALCOR_API ImporterAnimationChannel {
@@ -605,16 +709,32 @@ struct FALCOR_API ImporterAnimationChannel {
 struct FALCOR_API ImporterAnimation {
     /// Animation name.
     std::string name;
+    /// Reference to the object in the source asset from which this animation was imported.
+    std::optional<SourceAssetRef> source_asset_ref;
     /// Flat storage of all animation channels.
     std::vector<ImporterAnimationChannel> channels;
 
-    /// The duration (max keyframe time across all channels).
-    float duration() const;
+    /// The keyframe interval across all channels in seconds; invalid when there are no keys.
+    AnimationTimeRange key_range() const;
+};
+
+/// Skeleton binding data used to deform importer meshes into an authored pose.
+struct FALCOR_API ImporterSkin {
+    /// Skin name.
+    std::string name;
+    /// Optional skeleton root node, -1 if unspecified.
+    int skeleton_root = -1;
+    /// Joint node indices. Their order defines the indices used by mesh joint attributes.
+    std::vector<int> joints;
+    /// Per-joint transforms from the mesh bind space to joint space.
+    std::vector<float4x4> joint_from_bind_mesh;
 };
 
 struct FALCOR_API ImporterNode {
     /// Node name.
     std::string name;
+    /// Reference to the object in the source asset from which this node was imported.
+    std::optional<SourceAssetRef> source_asset_ref;
     /// Node transformation matrix (i.e. transform from object space to parent or world space).
     float4x4 transform = float4x4::identity();
 
@@ -622,6 +742,8 @@ struct FALCOR_API ImporterNode {
 
     /// Index into ImporterScene::meshes, -1 if no mesh.
     int mesh_index = -1;
+    /// Index into ImporterScene::skins, -1 if the node's mesh is not skinned.
+    int skin_index = -1;
     /// Index into ImporterScene::curves, -1 if no curve.
     int curve_index = -1;
     int light_index = -1;
@@ -651,6 +773,8 @@ struct FALCOR_API ImporterMaterial {
 
     /// Material name.
     std::string name;
+    /// Reference to the object in the source asset from which this material was imported.
+    std::optional<SourceAssetRef> source_asset_ref;
 
     // TODO(chrisc): Replace use of 'int' as texture index with a proper texture id type.
 
@@ -687,6 +811,8 @@ struct FALCOR_API ImporterCamera {
 
     /// Camera name.
     std::string name;
+    /// Reference to the object in the source asset from which this camera was imported.
+    std::optional<SourceAssetRef> source_asset_ref;
     /// Focal length (millimeters).
     float focal_length = 50.f;
     /// F-stop value.
@@ -741,6 +867,8 @@ struct FALCOR_API ImporterLight {
         sphere,
         /// Sphere with zero radius.
         point,
+        /// Open cylinder centered at the origin, with its axis along X and emission from the lateral surface.
+        cylinder,
         /// Disk at the origin, in XY plane, emitting along the -Z axis, optionally with a spot profile.
         disk,
         /// Environment map.
@@ -758,20 +886,31 @@ struct FALCOR_API ImporterLight {
             {Type::rectangular, "rectangular"},
             {Type::sphere, "sphere"},
             {Type::point, "point"},
+            {Type::cylinder, "cylinder"},
             {Type::disk, "disk"},
             {Type::dome, "dome"},
             {Type::constant, "constant"},
         }
     );
 
+    /// Create import-processing defaults for the specified type. Overlay authored properties afterward.
+    static Properties make_properties(const ImportOptions& options, Type type);
+    /// Import-processing properties. Initialize with make_properties() after the light type is known.
+    Properties properties;
     /// Light name.
     std::string name;
+    /// Reference to the object in the source asset from which this light was imported.
+    std::optional<SourceAssetRef> source_asset_ref;
     /// Light type.
     Type type;
-    /// Light intensity.
-    float3 intensity = float3(1.f);
+    /// Light color in the rendering color space.
+    float3 color = float3(1.f);
+    /// Scalar light intensity.
+    float intensity = 1.f;
     /// Light exposure in stops.
     float exposure = 0.f;
+    /// Whether emission is divided by the light's world-space size factor.
+    bool normalize = false;
     /// Whether the color temperature multiplier is enabled.
     bool enable_color_temperature = false;
     /// Color temperature in Kelvin.
@@ -788,8 +927,14 @@ struct FALCOR_API ImporterLight {
     /// Height (for rectangular lights).
     float height = 1.f;
 
-    /// Radius (for sphere/disk lights).
-    float radius = 1.f;
+    /// Radius (for sphere/cylinder/disk lights).
+    float radius = 0.5f;
+    /// Length along local X (for cylinder lights).
+    float length = 1.f;
+    /// Whether a sphere light should be rendered as a zero-area point light.
+    bool treat_as_point = false;
+    /// Whether a cylinder light may be approximated as a zero-radius line light.
+    bool treat_as_line = false;
     /// Whether a sphere light keeps its sampled radius smaller than the receiver distance.
     bool enable_virtual_sphere_shrinking = false;
     /// Whether the light uses an angular emission profile.
@@ -803,11 +948,16 @@ struct FALCOR_API ImporterLight {
 
     /// Environment map path (for dome lights).
     std::string env_map_path;
+    /// Environment map pole axis in the node's local space (for dome lights).
+    EnvMapPoleAxis pole_axis = EnvMapPoleAxis::y;
 };
 SGL_ENUM_REGISTER(ImporterLight::Type);
 
 class FALCOR_API ImporterScene : public Object {
 public:
+    /// Authored texture cap for scene creation. Merging takes the smaller nonzero limit; zero means unrestricted.
+    uint32_t max_mip_count{0};
+
     /// Target image origin convention for scenes created from this importer scene.
     ///
     /// This is the preferred scene-wide destination convention. Individual
@@ -828,6 +978,8 @@ public:
     std::vector<ImporterCurve> curves;
     /// Node array.
     std::vector<ImporterNode> nodes;
+    /// Skin array.
+    std::vector<ImporterSkin> skins;
     /// Camera array.
     std::vector<ImporterCamera> cameras;
     /// Light array.
@@ -842,6 +994,16 @@ public:
 
     /// Calculate AABBs for all meshes and nodes in the scene.
     void calculate_aabbs();
+
+    /// Bake the current skeleton pose into static mesh vertices.
+    /// Consumes all skin associations and binding data after deformation.
+    void bake_pose();
+
+    /// Collapse exact opposite-winding triangles independently within each mesh, using local positions.
+    /// Never compares triangles across meshes or instances. Shared meshes are processed once without changing
+    /// mesh indices or node references. Skips meshes referenced by skinned nodes or carrying skinning attributes.
+    /// Returns the number of triangles removed from mesh definitions, independent of their instance counts.
+    size_t collapse_exact_opposite_triangles();
 
     /// Rescale the scene to fit within a uniform box of the specified size
     /// This applies a uniform scale and translation to center the scene

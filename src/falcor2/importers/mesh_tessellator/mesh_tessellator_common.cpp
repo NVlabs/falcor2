@@ -85,12 +85,15 @@ size_t OutputStreams::add(ImporterMeshDefaultAttribute attribute, const MeshAttr
     FALCOR_CHECK(m_vertex_count == 0, "Cannot add an output subdivision stream after allocating vertices");
     FALCOR_CHECK(attribute.components > 0, "Output subdivision stream has zero components");
     for (const OutputStream& stream : m_streams) {
-        FALCOR_CHECK(
-            stream.attribute.semantic != attribute.semantic || stream.attribute.index != attribute.index,
-            "Duplicate output subdivision stream for semantic {} index {}",
-            attribute.semantic,
-            attribute.index
-        );
+        if (importer_attribute_identity_equal(stream.attribute, attribute)) {
+            if (attribute.semantic == ImporterSemantic::unknown)
+                FALCOR_THROW("Duplicate output subdivision stream named '{}'", attribute.name);
+            FALCOR_THROW(
+                "Duplicate output subdivision stream for semantic {} index {}",
+                attribute.semantic,
+                attribute.index
+            );
+        }
     }
     m_streams.push_back({.attribute = attribute, .scalar_offset = m_scalar_stride, .input = input});
     m_scalar_stride += attribute.components;
@@ -116,8 +119,7 @@ void OutputStreams::write(ImporterMesh& result) const
     uint32_t buffer_index = 0;
     for (size_t stream_index = 0; stream_index < m_streams.size(); ++stream_index) {
         const OutputStream& stream = m_streams[stream_index];
-        const ImporterMeshAttribute* attribute
-            = result.find_attribute(stream.attribute.semantic, stream.attribute.index);
+        const ImporterMeshAttribute* attribute = result.find_attribute(stream.attribute);
         FALCOR_CHECK(attribute, "Failed to create output subdivision stream");
         if (stream_index == 0)
             buffer_index = attribute->buffer;
@@ -128,7 +130,7 @@ void OutputStreams::write(ImporterMesh& result) const
         );
     }
 
-    ImporterMeshBuffer& buffer = result.buffers()[buffer_index];
+    ImporterVertexBuffer& buffer = result.buffers()[buffer_index];
     FALCOR_CHECK(
         buffer.stride == m_scalar_stride * sizeof(float),
         "Output subdivision vertex stride does not match ImporterMesh"
@@ -140,19 +142,22 @@ void add_output_attribute(std::vector<ImporterMeshDefaultAttribute>& attributes,
 {
     FALCOR_CHECK(attribute.components > 0, "Output triangulation stream has zero components");
     for (const ImporterMeshDefaultAttribute& existing : attributes) {
-        FALCOR_CHECK(
-            existing.semantic != attribute.semantic || existing.index != attribute.index,
-            "Duplicate output triangulation stream for semantic {} index {}",
-            attribute.semantic,
-            attribute.index
-        );
+        if (importer_attribute_identity_equal(existing, attribute)) {
+            if (attribute.semantic == ImporterSemantic::unknown)
+                FALCOR_THROW("Duplicate output triangulation stream named '{}'", attribute.name);
+            FALCOR_THROW(
+                "Duplicate output triangulation stream for semantic {} index {}",
+                attribute.semantic,
+                attribute.index
+            );
+        }
     }
     attributes.push_back(attribute);
 }
 
 OutputBinding bind_output(ImporterMesh& result, ImporterMeshDefaultAttribute attribute)
 {
-    const ImporterMeshAttribute* output = result.find_attribute(attribute.semantic, attribute.index);
+    const ImporterMeshAttribute* output = result.find_attribute(attribute);
     FALCOR_CHECK(output, "Failed to create output triangulation stream");
     FALCOR_CHECK(output->type == sgl::DataType::float32, "Output triangulation stream is not float32");
     FALCOR_CHECK(
@@ -174,11 +179,12 @@ OutputBinding bind_output(ImporterMesh& result, ImporterMeshDefaultAttribute att
 
 void initialize_result(const TessellatorInputMesh& input, ImporterMesh& result, std::vector<int>& subgeometry_mapping)
 {
+    result.properties = input.properties;
     result.name = input.name;
     result.subgeometries.resize(input.subgeometries.size());
     subgeometry_mapping.assign(input.face_vertex_counts.size(), -1);
     for (size_t i = 0; i < input.subgeometries.size(); ++i) {
-        result.subgeometries[i].material_name = input.subgeometries[i].material_name;
+        result.subgeometries[i].material_index = input.subgeometries[i].material_index;
         result.subgeometries[i].name = input.subgeometries[i].name;
         for (int face_index : input.subgeometries[i].face_indices) {
             FALCOR_CHECK(
@@ -213,10 +219,10 @@ void exclude_holes_from_output(const TessellatorInputMesh& input, std::span<int>
 }
 
 const MeshAttributeStream*
-find_stream(std::span<const MeshAttributeStream> streams, ImporterSemantic semantic, uint32_t index)
+find_stream(std::span<const MeshAttributeStream> streams, ImporterMeshDefaultAttribute attribute)
 {
     for (const MeshAttributeStream& stream : streams) {
-        if (stream.attribute.semantic == semantic && stream.attribute.index == index)
+        if (importer_attribute_identity_equal(stream.attribute, attribute))
             return &stream;
     }
     return nullptr;

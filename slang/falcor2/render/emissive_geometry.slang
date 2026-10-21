@@ -47,6 +47,21 @@ public struct EmissiveGeometry
     public float get_triangle_flux(EmissiveTriangleID id) { return triangle_flux[uint(id)]; }
 }
 
+/// Construct the complete surface interaction for a point on an emissive triangle.
+public SurfaceInteraction make_emissive_triangle_surface_interaction(
+    const EmissiveTriangleID triangle_id,
+    const float3 barycentrics,
+    const float3 wi_ws
+)
+{
+    const EmissiveTriangle triangle = g_scene.emissive_geometry.get_triangle(triangle_id);
+    const EmissiveTriangleID first_triangle_id
+        = g_scene.emissive_geometry.geometry_instance_to_triangle_id[uint(triangle.geometry_instance_id)];
+    const uint primitive_index = uint(triangle_id) - uint(first_triangle_id);
+    const TriangleHitInfo hit = TriangleHitInfo(triangle.geometry_instance_id, primitive_index, barycentrics.yz);
+    return g_scene.make_surface_interaction(hit, wi_ws);
+}
+
 /// Samples an emissive triangle uniformly by area and evaluates the probability density function.
 /// Note that the triangle is only emitting on the front-facing side.
 /// @param shading_pos_ws Shading point in world-space.
@@ -93,10 +108,9 @@ public bool sample_emissive_triangle(
 
     // Evaluate emitted radiance.
     let material = g_scene.get_material(triangle.material_id);
-    SurfaceInteraction si = {};
-    si.wi_ws = -sample.dir_ws;
-    si.uv = triangle.get_uv(barycentrics);
+    const SurfaceInteraction si = make_emissive_triangle_surface_interaction(triangle_id, barycentrics, -sample.dir_ws);
     sample.weight = material.eval_emissive_radiance(si, ExplicitLodSampler()) / sample.pdf;
+    sample.flags = LightSampleFlags::has_surface_point;
 
     return true;
 }

@@ -13,8 +13,13 @@ namespace falcor {
 class FALCOR_API TransformAnimation : public Component {
     FALCOR_SCENE_OBJECT(TransformAnimation, Component)
 public:
+    ~TransformAnimation() override;
+
     /// The animation object containing the channels.
-    Animation* animation() const { return m_animation; }
+    /// nullptr disconnects this component and retains the last pose.
+    /// Must be live and belong to this Scene.
+    /// Retains Animation, not Scene; Scene must outlive scene-dependent operations.
+    Animation* animation() const { return m_animation.get(); }
     void set_animation(Animation* animation);
 
     /// Index into Animation::channels for translation (expects float3), -1 if none.
@@ -34,6 +39,7 @@ public:
 
     // SceneObject interface
 
+    void remove() override;
     virtual void clear_invalid_references() override;
 
     /// Reflect this class.
@@ -44,7 +50,9 @@ public:
     }
 
 private:
-    Animation* m_animation{nullptr};
+    void unregister_animation();
+
+    ref<Animation> m_animation;
     AnimationChannelIndex m_translation{-1};
     AnimationChannelIndex m_rotation{-1};
     AnimationChannelIndex m_scale{-1};

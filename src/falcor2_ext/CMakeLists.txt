@@ -1,4 +1,5 @@
 set(FALCOR_PACKAGE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../falcor2)
+set(FALCOR_PACKAGE_OUTPUT_DIR "${FALCOR_OUTPUT_DIRECTORY}/python/falcor2")
 
 set(falcor2_ext_sources
     falcor2_ext.cpp
@@ -13,6 +14,7 @@ set(falcor2_ext_sources
     core/reflection.cpp
     core/signal.cpp
     core/signal.h
+    core/ustring.h
     core/reflection/python_class_reflection.h
     core/reflection/python_class_reflection.cpp
     core/reflection/python_object_factory.h
@@ -30,13 +32,19 @@ set(falcor2_ext_sources
     importers/usd_importer.cpp
     render/mesh.cpp
     render/light_sampler.cpp
+    render/reconstruction_filter.cpp
     render/ray_tracing_setup.cpp
     render/mdl_discovery.cpp
     render/mtlx_codegen.cpp
     render/python_scene_object.h
     render/scene.cpp
+    render/scene_types.cpp
+    render/usd_stage_bridge.cpp
+    render/usd_stage_bridge.h
     render/texture_manager.cpp
     render/transform.cpp
+    streaming/video_encoder.cpp
+    streaming/webrtc.cpp
     ui/camera_controller.cpp
     ui/property_editor.cpp
     ui/scene_editor.cpp
@@ -45,16 +53,18 @@ set(falcor2_ext_sources
     ui/selection_overlay.cpp
     ui/widgets.cpp
     utils/aabb.cpp
-    utils/managed_buffer.cpp
+    utils/buffer_handle.cpp
     utils/algorithm/parallel_reduction.cpp
     utils/algorithm/prefix_sum.cpp
     utils/sampling/distribution_1d.cpp
 )
 
+
 if(FALCOR_BUILD_TESTS)
     list(APPEND falcor2_ext_sources
         testing/nanobind_reflector.cpp
         testing/reflection.cpp
+        testing/ustring.cpp
     )
 endif()
 
@@ -63,6 +73,8 @@ if(FALCOR_ENABLE_PCH)
         PRIVATE
             falcor2_ext_pch.h
     )
+    # Keep OpenUSD/Boost.Python isolated from the binding documentation macro D.
+    set_source_files_properties(render/usd_stage_bridge.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 endif()
 
 nanobind_add_module(falcor2_ext NB_STATIC LTO
@@ -71,20 +83,17 @@ nanobind_add_module(falcor2_ext NB_STATIC LTO
 
 target_include_directories(falcor2_ext PRIVATE .)
 target_link_libraries(falcor2_ext PRIVATE falcor2)
-target_compile_definitions(falcor2_ext PRIVATE FALCOR_BUILD_TESTS=$<BOOL:${FALCOR_BUILD_TESTS}>)
+target_compile_definitions(falcor2_ext PRIVATE
+    FALCOR_BUILD_TESTS=$<BOOL:${FALCOR_BUILD_TESTS}>
+)
+target_link_libraries(falcor2_ext PRIVATE falcor2_usd)
 
 set_target_properties(falcor2_ext PROPERTIES
     OUTPUT_NAME falcor2_ext
     ARCHIVE_OUTPUT_NAME falcor2_ext
-    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${FALCOR_PACKAGE_DIR}
-    LIBRARY_OUTPUT_DIRECTORY_RELEASE ${FALCOR_PACKAGE_DIR}
-    PDB_OUTPUT_DIRECTORY_RELEASE ${FALCOR_PACKAGE_DIR}
-    RUNTIME_OUTPUT_DIRECTORY_DEBUG ${FALCOR_PACKAGE_DIR}
-    LIBRARY_OUTPUT_DIRECTORY_DEBUG ${FALCOR_PACKAGE_DIR}
-    PDB_OUTPUT_DIRECTORY_DEBUG ${FALCOR_PACKAGE_DIR}
-    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO ${FALCOR_PACKAGE_DIR}
-    LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO ${FALCOR_PACKAGE_DIR}
-    PDB_OUTPUT_DIRECTORY_RELWITHDEBINFO ${FALCOR_PACKAGE_DIR}
+    RUNTIME_OUTPUT_DIRECTORY ${FALCOR_PACKAGE_OUTPUT_DIR}
+    LIBRARY_OUTPUT_DIRECTORY ${FALCOR_PACKAGE_OUTPUT_DIR}
+    PDB_OUTPUT_DIRECTORY ${FALCOR_PACKAGE_OUTPUT_DIR}
 )
 
 # Write a .build_dir file to the package directory.
@@ -103,9 +112,10 @@ add_dependencies(falcor2_ext
 nanobind_add_stub(
     falcor2_stub
     MODULE falcor2
+    PATTERN_FILE ${CMAKE_CURRENT_SOURCE_DIR}/stubgen.patterns
     PYTHON_PATH ${FALCOR_PACKAGE_DIR}/..
     OUTPUT ${FALCOR_PACKAGE_DIR}/__init__.pyi
-    DEPENDS falcor2_ext ${FALCOR_PACKAGE_DIR}/__init__.py slangpy_stub
+    DEPENDS falcor2_ext ${FALCOR_PACKAGE_DIR}/__init__.py slangpy_stubs
     INCLUDE_PRIVATE # allow us to have functions/variables that start with _
 )
 
@@ -113,20 +123,37 @@ nanobind_add_stub(
 postprocess_stub(${FALCOR_PACKAGE_DIR}/__init__.pyi  "--submodule")
 
 # Generate submodule stub files.
-foreach(submodule IN ITEMS ngx platform reflection ui)
+set(FALCOR2_STUB_SUBMODULES ngx platform reflection streaming ui)
+set(FALCOR2_STUB_TARGETS falcor2_stub)
+foreach(submodule IN LISTS FALCOR2_STUB_SUBMODULES)
     string(REPLACE "." "/" submodule_path ${submodule})
+    set(submodule_stub_target falcor2_${submodule}_stub)
     nanobind_add_stub(
-        falcor2_${submodule}_stub
+        ${submodule_stub_target}
         MODULE falcor2.${submodule}
         PYTHON_PATH ${FALCOR_PACKAGE_DIR}/..
         OUTPUT ${FALCOR_PACKAGE_DIR}/${submodule_path}/__init__.pyi
-        DEPENDS falcor2_ext ${FALCOR_PACKAGE_DIR}/${submodule_path}/__init__.py slangpy_stub
+        DEPENDS falcor2_ext ${FALCOR_PACKAGE_DIR}/${submodule_path}/__init__.py slangpy_stubs
         INCLUDE_PRIVATE # allow us to have functions/variables that start with _
     )
 
     # Post-process the submodule stub file.
     postprocess_stub(${FALCOR_PACKAGE_DIR}/${submodule_path}/__init__.pyi "--submodule")
+    list(APPEND FALCOR2_STUB_TARGETS ${submodule_stub_target})
+endforeach()
 
+add_custom_target(falcor2_stubs ALL
+    DEPENDS ${FALCOR2_STUB_TARGETS}
+)
+install(
+    FILES ${FALCOR_PACKAGE_DIR}/__init__.pyi ${FALCOR_PACKAGE_DIR}/py.typed
+    DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+foreach(submodule IN LISTS FALCOR2_STUB_SUBMODULES)
+    install(
+        FILES ${FALCOR_PACKAGE_DIR}/${submodule}/__init__.pyi
+        DESTINATION ${CMAKE_INSTALL_BINDIR}/${submodule}
+    )
 endforeach()
 
 # Recursively collect include directories from a target and all its transitive dependencies.
@@ -163,9 +190,16 @@ function(collect_include_dirs_recursive TARGET OUT_VAR VISITED_VAR)
     endforeach()
 
     # Recurse into linked libraries
+    # Extraction also parses private headers; their dependencies are not part of
+    # a shared library's public link interface.
     get_target_property(_libs ${TARGET} INTERFACE_LINK_LIBRARIES)
+    get_target_property(_private_libs ${TARGET} LINK_LIBRARIES)
+    if(_private_libs)
+        list(APPEND _libs ${_private_libs})
+    endif()
     if(_libs)
         foreach(_lib ${_libs})
+            string(REGEX REPLACE "\\$<LINK_ONLY:([^>]+)>" "\\1" _lib "${_lib}")
             # Skip generator expressions
             if(_lib MATCHES "^\\$<.*>$")
                 continue()
@@ -200,6 +234,9 @@ foreach(_dir ${_all_include_dirs})
 endforeach()
 
 list(APPEND MKDOC_ARGS -DNOMINMAX)
+if(WIN32)
+    list(APPEND MKDOC_ARGS -D_MT -D_DLL)
+endif()
 
 file(GLOB_RECURSE FALCOR_HEADER_FILES "${CMAKE_CURRENT_SOURCE_DIR}/../falcor2/*.h")
 # Exclude fwd.h files, they generate duplicate pydoc entries!
@@ -217,12 +254,18 @@ list(FILTER FALCOR_HEADER_FILES EXCLUDE REGEX ".*/mdl/.*\.h")
 # clang python package to add the following lines:
 # > # A concept declaration
 # > CursorKind.CONCEPT_DECL = CursorKind(604)
-add_custom_target(falcor2_pydoc COMMAND
-    COMMAND ${Python_EXECUTABLE} -m pybind11_mkdoc -std=c++20 -stdlib=libc++
+set(MKDOC_COMMAND_ARGS
+    -std=c++20 -stdlib=libc++
     ${MKDOC_ARGS}
     -I${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include
     ${FALCOR_HEADER_FILES}
     -o ${CMAKE_CURRENT_SOURCE_DIR}/py_doc.h
+)
+string(JOIN "\n" MKDOC_COMMAND_ARGS_TEXT ${MKDOC_COMMAND_ARGS})
+set(MKDOC_ARGS_FILE "${CMAKE_CURRENT_BINARY_DIR}/mkdoc-$<CONFIG>.args")
+file(GENERATE OUTPUT "${MKDOC_ARGS_FILE}" CONTENT "${MKDOC_COMMAND_ARGS_TEXT}\n")
+add_custom_target(falcor2_pydoc
+    COMMAND ${Python_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/run_pydoc.py "${MKDOC_ARGS_FILE}"
 )
 
 install(

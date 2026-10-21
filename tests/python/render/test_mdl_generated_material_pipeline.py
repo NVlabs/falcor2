@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from pathlib import Path
+import re
 from typing import Any, Optional, cast
 
 import numpy as np
@@ -12,34 +13,188 @@ import falcor2 as f2
 import falcor2.testing.helpers as helpers
 from falcor2.editor import SceneShaderHelper
 
+from .geometry_property_helpers import TRIANGLE_POSITIONS, TRIANGLE_INDICES, read_material_probe
+
 
 MDL_LIBRARY = Path(__file__).parent / "data/mdl_generated_material_pipeline"
 
-GEOMPROP_SAMPLING_MODULE = """
-import slangpy;
-module mdl_geomprop_sampling_test;
 
-__exported import falcor2.render;
-__exported import falcor2.utils;
-import falcor2.render.materials.mtlx.test_geomprop_provider;
+def _named_attribute(name: str, values: np.ndarray) -> f2.MeshVertexAttribute:
+    return f2.MeshVertexAttribute(f2.MeshAttributeSemantic.unknown, 0, values, name=name)
 
-public float material_interior_ior_with_test_geomprops(IMaterial material, float2 uv)
-{
-    SurfaceInteraction si;
-    si.position_ws = float3(uv, 0);
-    si.wi_ws = float3(0, 1, 0);
-    si.uv = uv;
-    si.shading_frame_ws = Frame(float3(0, 1, 0));
-    si.normal_ws = si.shading_frame_ws.normal;
-    si.front_facing = dot(si.wi_ws, si.normal_ws) >= 0;
-    si.exterior_ior = 1.0;
 
-    let material_instance = material.setup_material_instance(
-        si, ExplicitLodSampler(0), MaterialInstanceHints::none
-    );
-    return material_instance.get_interior_ior();
-}
-"""
+def _mdl_properties(name: str, shader_path: Path) -> f2.Properties:
+    return f2.Properties(
+        {
+            "mdl_library_path": str(MDL_LIBRARY),
+            "mdl_material_name": name,
+            "debug_write_shader_path": str(shader_path),
+        }
+    )
+
+
+@pytest.mark.nightly_if_not_vk
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_mdl_scene_data_callbacks(
+    device_type: spy.DeviceType,
+    tmp_path: Path,
+) -> None:
+    device = helpers.get_device(device_type)
+    helper = SceneShaderHelper(device)
+    scene = f2.Scene.create(device)
+    shader_path = tmp_path / "scene_data.slang"
+    material = scene.create_material(
+        f2.MDLMaterial, _mdl_properties("scene_data::Default", shader_path)
+    )
+    attributes = [
+        _named_attribute(
+            "Pref", np.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6], [0.7, 0.8, 0.9]], dtype=np.float32)
+        ),
+        _named_attribute("other", np.full((3, 3), 0.6, dtype=np.float32)),
+        _named_attribute(
+            "float_value", np.tile(np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32), (3, 1))
+        ),
+        _named_attribute(
+            "int_value",
+            np.array([[2, 3, 5, 7], [11, 13, 17, 19], [23, 29, 31, 37]], dtype=np.int32),
+        ),
+        _named_attribute("flag", np.array([True, False, False], dtype=np.bool_)),
+        _named_attribute("pref", np.full((3, 3), 0.7, dtype=np.float32)),
+        _named_attribute("texcoord_1", np.full((3, 3), 0.8, dtype=np.float32)),
+        f2.MeshVertexAttribute(
+            f2.MeshAttributeSemantic.tex_coord, 1, np.full((3, 2), 0.1, dtype=np.float32)
+        ),
+    ]
+    instances = []
+    for present in (True, False):
+        geometry = scene.create_geometry(f2.StaticMeshGeometry)
+        geometry.set_mesh_data(
+            positions=TRIANGLE_POSITIONS,
+            sub_mesh_indices=[TRIANGLE_INDICES],
+            vertex_attributes=attributes if present else [],
+        )
+        instance = scene.create_entity().create_component(f2.GeometryInstance)
+        instance.geometry = geometry
+        instance.materials = [material]
+        instances.append(instance)
+    scene.update()
+    assert scene.required_capabilities.has(f2.SceneCapabilityFlags.geometry_properties)
+    source = shader_path.read_text(encoding="utf-8")
+    assert "#define MDL_HAS_SCENE_DATA 1" in source
+    assert "GeomPropProvider" not in source
+    synthetic = read_material_probe(
+        device, scene, instances[0], "synthetic_material_probe", helper=helper
+    )
+    assert synthetic["interior_ior"] == pytest.approx(1.12)
+    assert synthetic["opacity"] == pytest.approx(0.25)
+
+    # Interleave present/missing/present hits: callback context must belong to this material instance's hit.
+    results = read_material_probe(
+        device, scene, [instances[index] for index in (0, 1, 0)], helper=helper
+    )
+    for index, result in zip((0, 1, 0), results):
+        available = index == 0
+        fv = [0.1, 0.2, 0.3, 0.4] if available else [0.9, 0.8, 0.7, 0.6]
+        iv = [2, 3, 5, 7] if available else [11, 13, 17, 19]
+        floats = sum((1 << n) * sum(fv[: n + 1]) for n in range(4)) + 16 * sum(fv[:3])
+        ints = sum((1 << n) * sum(iv[: n + 1]) for n in range(4))
+        checks = int(available) + 0.17 + 0.23 + 3 + 0.31 + 0.37 + 5 + 7 + 0.41 + 0.43
+        np.testing.assert_allclose(
+            result["diffuse_reflection_albedo"], [floats / 128, ints / 1024, checks / 64], atol=1e-6
+        )
+        assert result["interior_ior"] == pytest.approx(1.44 if available else 1.12)
+        assert result["opacity"] == pytest.approx(0.75 if available else 0.25)
+
+    # One real curve hit covers the other production accessor and presence dispatch, without a new renderer.
+    curve = scene.create_geometry(f2.StaticCurveGeometry)
+    curve.set_curve_data(
+        np.array([[0, 0, 0], [1, 0, 0]], dtype=np.float32),
+        np.full(2, 0.1, dtype=np.float32),
+        np.array([0], dtype=np.uint32),
+        f2.CurveIndexingMode.successive,
+        vertex_attributes=[
+            _named_attribute("Pref", np.array([[0.1, 0.2, 0.3], [0.6, 0.7, 0.8]], dtype=np.float32))
+        ],
+    )
+    curve_instance = scene.create_entity().create_component(f2.GeometryInstance)
+    curve_instance.geometry = curve
+    curve_instance.materials = [material]
+    scene.update()
+    curve_result = read_material_probe(
+        device, scene, curve_instance, "lss_material_probe", helper=helper
+    )
+    assert curve_result["interior_ior"] == pytest.approx(1.3)
+    assert curve_result["opacity"] == pytest.approx(0.75)
+
+    # Keep these scenarios in regular Vulkan runs and on the original backend at night.
+    if device_type not in (helpers.DEFAULT_DEVICE_TYPES[0], spy.DeviceType.vulkan):
+        return
+
+    unchanged_source = shader_path.read_text(encoding="utf-8")
+    material["choose"] = False
+    scene.update()
+    assert shader_path.read_text(encoding="utf-8") == unchanged_source
+    assert read_material_probe(device, scene, instances[0], helper=helper)[
+        "interior_ior"
+    ] == pytest.approx(1.6)
+    assert material["choose"] is False
+    # Missing defaults are editable numeric inputs; no string-editing interface is introduced.
+    material["fallback"] = spy.float3(0.41, 0.12, 0.13)
+    scene.update()
+    assert read_material_probe(device, scene, instances[1], helper=helper)[
+        "interior_ior"
+    ] == pytest.approx(1.22)
+    missing_geometry = instances[1].geometry
+    missing_geometry.set_mesh_data(
+        positions=TRIANGLE_POSITIONS,
+        sub_mesh_indices=[TRIANGLE_INDICES],
+        vertex_attributes=attributes,
+    )
+    scene.update()
+    assert read_material_probe(device, scene, instances[1], helper=helper)[
+        "interior_ior"
+    ] == pytest.approx(1.6)
+
+    # Captured default strings are absent from the target constant table but must have SDK runtime IDs.
+    material.set_properties(
+        f2.Properties({"mdl_material_name": "scene_data_metadata::DynamicName"})
+    )
+    scene.update()
+    first_binding = re.findall(r"case \d+u: return \d+u;", shader_path.read_text(encoding="utf-8"))
+    assert read_material_probe(device, scene, instances[0], helper=helper)[
+        "interior_ior"
+    ] == pytest.approx(0.44)
+    # Changing source/name rebuilds this material's mapping; a differently cased name is not an alias.
+    material.set_properties(f2.Properties({"mdl_material_name": "scene_data_metadata::ExactNames"}))
+    scene.update()
+    assert read_material_probe(device, scene, instances[0], helper=helper)[
+        "interior_ior"
+    ] == pytest.approx(1.5)
+
+    # A second Scene offers geometry first and gives Pref a different ID. The same SDK source must rebind locally.
+    second = f2.Scene.create(device)
+    geometry = second.create_geometry(f2.StaticMeshGeometry)
+    geometry.set_mesh_data(
+        positions=TRIANGLE_POSITIONS,
+        sub_mesh_indices=[TRIANGLE_INDICES],
+        vertex_attributes=[
+            _named_attribute("prior_reservation", np.ones(3, dtype=np.float32)),
+            *attributes,
+        ],
+    )
+    second.update()
+    second_path = tmp_path / "second.slang"
+    second_material = second.create_material(
+        f2.MDLMaterial, _mdl_properties("scene_data_metadata::DynamicName", second_path)
+    )
+    instance = second.create_entity().create_component(f2.GeometryInstance)
+    instance.geometry = geometry
+    instance.materials = [second_material]
+    second.update()
+    assert read_material_probe(device, second, instance)["interior_ior"] == pytest.approx(0.44)
+    assert first_binding != re.findall(
+        r"case \d+u: return \d+u;", second_path.read_text(encoding="utf-8")
+    )
 
 
 def _compile_material(
@@ -49,7 +204,6 @@ def _compile_material(
     class_compilation: bool,
     learnable: bool = False,
     debug_write_shader_path: Optional[Path] = None,
-    geomprop_streams: Optional[dict[str, int]] = None,
 ) -> tuple[f2.Scene, f2.Material]:
     scene = f2.Scene.create(helpers.get_device(device_type))
     properties = f2.Properties(
@@ -62,9 +216,6 @@ def _compile_material(
     )
     if debug_write_shader_path is not None:
         properties["debug_write_shader_path"] = str(debug_write_shader_path)
-    if geomprop_streams is not None:
-        properties["mdl_geomprop_names"] = list(geomprop_streams)
-        properties["mdl_geomprop_ids"] = list(geomprop_streams.values())
 
     material = scene.create_material(
         "MDLMaterial",
@@ -83,7 +234,7 @@ def _read_extra_bsdf_properties(
 ) -> dict[str, Any]:
     device = helpers.get_device(device_type)
     helper = SceneShaderHelper(device)
-    module = helper.get_module(scene, "falcor2.tools.materials.scene_sampling_tools")
+    module, _ = helper.prepare(scene, "falcor2.tools.materials.scene_sampling_tools")
     extra_func = (
         module["material_collect_extra_bsdf_properties_simple"].as_func().write(helper.bind_scene)
     )
@@ -96,6 +247,7 @@ def _read_extra_bsdf_properties(
     return cast(dict[str, Any], extra_cursor[0].read())
 
 
+@pytest.mark.nightly
 @pytest.mark.slow
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
 def test_modified_material_does_not_reanalyze_source_module(
@@ -154,47 +306,63 @@ def test_modified_material_parameter_names_are_collision_safe(
     assert material["mollify_1"] == pytest.approx(0.01)
 
 
+@pytest.mark.nightly_if(uv_origin=(f2.UVOrigin.lower_left,))
 @pytest.mark.slow
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
-def test_state_dependent_ior_and_secondary_texture_space_compile(
+@pytest.mark.parametrize("uv_origin", [f2.UVOrigin.lower_left, f2.UVOrigin.upper_left])
+def test_state_dependent_ior_and_secondary_texture_spaces(
     device_type: spy.DeviceType,
     tmp_path: Path,
+    uv_origin: f2.UVOrigin,
 ) -> None:
-    scene, material = _compile_material(
-        device_type,
-        "state_dependent_ior",
-        class_compilation=False,
-        geomprop_streams={"texcoord_1": 11},
-    )
-    fallback_shader_path = tmp_path / "state_dependent_ior_fallback.slang"
-    fallback_scene, fallback_material = _compile_material(
-        device_type,
-        "state_dependent_ior",
-        class_compilation=False,
-        debug_write_shader_path=fallback_shader_path,
-    )
-
-    assert "GeomPropProvider::get_float2" not in fallback_shader_path.read_text(encoding="utf-8")
-
     device = helpers.get_device(device_type)
-    source_module = spy.Module(
-        device.load_module_from_source("mdl_geomprop_sampling_test", GEOMPROP_SAMPLING_MODULE)
+    scene = f2.Scene.create(
+        device,
+        f2.SceneConfig(uv_origin=uv_origin),
     )
-    uvs = np.array([(0.0, 0.25), (0.5, 0.75), (1.0, 0.5)], dtype=np.float32)
-
-    def evaluate_iors(evaluation_scene: f2.Scene, evaluation_material: f2.Material) -> list[float]:
-        helper = SceneShaderHelper(device)
-        module = helper.get_module(evaluation_scene, source_module)
-        ior_func = (
-            module["material_interior_ior_with_test_geomprops"].as_func().write(helper.bind_scene)
+    shader_path = tmp_path / "uv.slang"
+    material = scene.create_material(
+        f2.MDLMaterial,
+        f2.Properties(
+            {
+                "mdl_library_path": str(MDL_LIBRARY),
+                "mdl_material_name": "state_dependent_ior::Default",
+                "mdl_class_compilation": False,
+                "debug_write_shader_path": str(shader_path),
+            }
+        ),
+    )
+    instances = []
+    for present in (True, False):
+        geometry = scene.create_geometry(f2.StaticMeshGeometry)
+        attributes = [
+            f2.MeshVertexAttribute(
+                f2.MeshAttributeSemantic.tex_coord,
+                index,
+                np.tile(np.array(uv, dtype=np.float32), (3, 1)),
+            )
+            for index, uv in [(0, (0.2, 0.3))]
+            + ([(1, (0.6, 0.7)), (3, (0.8, 0.9))] if present else [])
+        ]
+        geometry.set_mesh_data(
+            positions=TRIANGLE_POSITIONS,
+            sub_mesh_indices=[TRIANGLE_INDICES],
+            vertex_attributes=attributes,
         )
-        iors = cast(spy.Tensor, ior_func(evaluation_material, uvs))
-        ior_cursor = iors.cursor()
-        ior_cursor.load()
-        return [cast(float, ior_cursor[index].read()) for index in range(len(uvs))]
-
-    mapped_iors = evaluate_iors(scene, material)
-    fallback_iors = evaluate_iors(fallback_scene, fallback_material)
-    for index, uv in enumerate(uvs):
-        assert mapped_iors[index] == pytest.approx(1.0 + uv[0] + 0.25 * uv[1])
-        assert fallback_iors[index] == pytest.approx(1.0 + 1.25 * uv[0])
+        instance = scene.create_entity().create_component(f2.GeometryInstance)
+        instance.geometry = geometry
+        instance.materials = [material]
+        instances.append(instance)
+    scene.update()
+    assert scene.required_capabilities.has(f2.SceneCapabilityFlags.geometry_properties)
+    source = shader_path.read_text(encoding="utf-8")
+    assert "GeomPropProvider" not in source
+    assert "#define MDL_HAS_SCENE_DATA 0" in source
+    for present, instance in zip((True, False), instances):
+        result = read_material_probe(device, scene, instance)
+        available = present
+        assert result["interior_ior"] == pytest.approx(1.2 + (0.15 if available else 0))
+        v1, u3, v3 = (0.7, 0.8, 0.9) if available else (0, 0, 0)
+        if uv_origin == f2.UVOrigin.upper_left:
+            v1, v3 = 1 - v1, 1 - v3
+        np.testing.assert_allclose(result["diffuse_reflection_albedo"], (v1, u3, v3), atol=1e-6)

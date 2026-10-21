@@ -32,6 +32,27 @@ std::string get_current_test_case_name()
     return doctest::detail::g_cs->currentTest->m_name;
 }
 
+// Keep the doctest registry dependency beside the existing context helpers in
+// this implementation TU. Removing reserved nightly metadata before Context::run
+// also applies to list/count queries and does not override user filters or skips.
+static void select_test_tier()
+{
+    if (options().nightly)
+        return;
+
+    auto& tests = doctest::detail::getRegisteredTests();
+    size_t excluded = 0;
+    for (auto it = tests.begin(); it != tests.end();) {
+        if (is_nightly_test(*it)) {
+            it = tests.erase(it);
+            ++excluded;
+        } else {
+            ++it;
+        }
+    }
+    std::printf("[falcor2] Excluded %zu nightly test cases; use -nightly for the full suite.\n", excluded);
+}
+
 } // namespace falcor::testing
 
 int main(int argc, char** argv)
@@ -39,6 +60,7 @@ int main(int argc, char** argv)
     // Parse extra command line options.
     {
         auto& options = falcor::testing::options();
+        options.nightly = doctest::parseFlag(argc, argv, "nightly");
         if (doctest::parseFlag(argc, argv, "module-cache"))
             options.module_cache_enabled = true;
         if (doctest::parseFlag(argc, argv, "no-module-cache"))
@@ -74,6 +96,7 @@ int main(int argc, char** argv)
     {
         falcor::testing::static_init();
 
+        falcor::testing::select_test_tier();
         doctest::Context context(argc, argv);
 
         // Select specific test suite to run
@@ -87,6 +110,7 @@ int main(int argc, char** argv)
             || doctest::parseFlag(argc, argv, "?")) {
             std::printf(
                 "\nAdditional options:\n"
+                " -nightly                            Include nightly cases and subcases\n"
                 " -module-cache                       Enable the persistent module cache\n"
                 " -no-module-cache                    Disable the persistent module cache\n"
                 " -shader-cache                       Enable the persistent shader cache\n"

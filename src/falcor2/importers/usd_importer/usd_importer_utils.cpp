@@ -5,6 +5,7 @@
 #include "usd_importer_macros.h"
 
 BEGIN_DISABLE_USD_WARNINGS
+#include <pxr/base/gf/numericCast.h>
 #include <pxr/base/gf/vec2d.h>
 #include <pxr/base/gf/vec2h.h>
 #include <pxr/base/gf/vec2i.h>
@@ -27,13 +28,110 @@ BEGIN_DISABLE_USD_WARNINGS
 END_DISABLE_USD_WARNINGS
 
 #include <array>
-#include <cmath>
-#include <limits>
 #include <stdexcept>
 #include <vector>
 
 namespace falcor {
 namespace usd_importer {
+
+pxr::VtArray<int> compute_curve_varying_counts(const pxr::UsdGeomBasisCurves& curves, pxr::UsdTimeCode time)
+{
+    // USD specifies one varying value per span boundary: segment count + 1 for open curves,
+    // segment count for periodic curves. In particular, pinned B-spline/Catmull-Rom curves
+    // with N points have N varying values. ComputeVaryingDataSize() and Storm's topology
+    // helper instead use the nonperiodic count (N - 2), and the former also underflows on
+    // short pinned curves. See OpenUSD issue #2775 and docs/design/usd-curve-attributes.md.
+    // ComputeSegmentCounts() handles pinned end spans correctly, so derive our counts from it.
+    auto counts = curves.ComputeSegmentCounts(time);
+    pxr::TfToken wrap;
+    curves.GetWrapAttr().Get(&wrap, time);
+    if (wrap != pxr::UsdGeomTokens->periodic) {
+        for (int& count : counts)
+            ++count;
+    }
+    return counts;
+}
+
+bool read_fixed_indices(
+    const pxr::UsdAttribute& attribute,
+    pxr::VtArray<int>& indices,
+    pxr::UsdTimeCode time,
+    bool import_motion
+)
+{
+    if (!attribute)
+        return false;
+    if (!import_motion)
+        return attribute.Get(&indices, time);
+
+    const bool present = attribute.Get(&indices, time.IsDefault() ? pxr::UsdTimeCode::EarliestTime() : time);
+    // Index changes are held in USD and cannot be represented by interpolating our fixed-layout samples.
+    std::vector<double> times;
+    attribute.GetTimeSamples(&times);
+    pxr::VtArray<int> sampled_indices;
+    for (double sample_time : times) {
+        FALCOR_CHECK(
+            attribute.Get(&sampled_indices, sample_time) && present && sampled_indices == indices,
+            "Motion import changes indices in '{}'",
+            attribute.GetPath().GetString()
+        );
+    }
+    return present;
+}
+
+GeometrySampleTimes::GeometrySampleTimes(
+    const pxr::UsdPrim& prim,
+    const std::vector<pxr::UsdAttribute>& attributes,
+    bool import_motion,
+    pxr::UsdTimeCode no_samples
+)
+{
+    std::vector<double> authored_times;
+    if (import_motion)
+        pxr::UsdAttribute::GetUnionedTimeSamples(attributes, &authored_times);
+    sample_times.assign(authored_times.begin(), authored_times.end());
+    if (sample_times.empty())
+        sample_times.push_back(import_motion ? no_samples : pxr::UsdTimeCode::Default());
+    if (authored_times.size() > 1) {
+        interpolation = prim.GetStage()->GetInterpolationType() == pxr::UsdInterpolationTypeHeld
+            ? AnimationInterpolationMode::step
+            : AnimationInterpolationMode::linear;
+        double rate = prim.GetStage()->GetTimeCodesPerSecond();
+        if (rate <= 0.0)
+            rate = 24.0;
+        for (double time : authored_times)
+            motion_times.push_back(static_cast<float>(time / rate));
+    }
+}
+
+/// Read USD's half/float/double texture-coordinate arrays into Falcor's float2 UV storage, retaining separate indices.
+bool get_uv_values(
+    const pxr::UsdGeomPrimvar& primvar,
+    pxr::VtArray<pxr::GfVec2f>& values,
+    pxr::UsdTimeCode time,
+    bool flatten
+)
+{
+    using namespace pxr;
+
+    const SdfValueTypeName type_name = primvar.GetTypeName();
+    if (type_name == SdfValueTypeNames->Float2Array || type_name == SdfValueTypeNames->TexCoord2fArray)
+        return flatten ? primvar.ComputeFlattened(&values, time) : primvar.Get(&values, time);
+
+    if (type_name != SdfValueTypeNames->Half2Array && type_name != SdfValueTypeNames->TexCoord2hArray
+        && type_name != SdfValueTypeNames->Double2Array && type_name != SdfValueTypeNames->TexCoord2dArray)
+        return false;
+
+    VtValue source;
+    if (!(flatten ? primvar.ComputeFlattened(&source, time) : primvar.Get(&source, time)))
+        return false;
+    source.Cast<VtArray<GfVec2f>>();
+    if (!source.IsHolding<VtArray<GfVec2f>>())
+        return false;
+    values = source.UncheckedGet<VtArray<GfVec2f>>();
+    return true;
+}
+
 
 bool is_package_asset(const std::filesystem::path& path)
 {
@@ -69,53 +167,13 @@ bool try_set_exact(Properties& props, std::string_view name, const pxr::VtValue&
     return true;
 }
 
-template<typename To, typename From>
-std::optional<To> try_numeric_convert(From value)
-{
-    if constexpr (std::is_integral_v<To> && std::is_integral_v<From>) {
-        if constexpr (std::is_signed_v<From>) {
-            long long signed_value = static_cast<long long>(value);
-            if constexpr (std::is_unsigned_v<To>) {
-                if (signed_value < 0)
-                    return {};
-                if (static_cast<unsigned long long>(signed_value)
-                    > static_cast<unsigned long long>(std::numeric_limits<To>::max()))
-                    return {};
-            } else {
-                if (signed_value < static_cast<long long>(std::numeric_limits<To>::min())
-                    || signed_value > static_cast<long long>(std::numeric_limits<To>::max()))
-                    return {};
-            }
-        } else {
-            unsigned long long unsigned_value = static_cast<unsigned long long>(value);
-            if (unsigned_value > static_cast<unsigned long long>(std::numeric_limits<To>::max()))
-                return {};
-        }
-
-        return static_cast<To>(value);
-    } else if constexpr (std::is_floating_point_v<To> && std::is_convertible_v<From, To>) {
-        return static_cast<To>(value);
-    } else if constexpr (std::is_integral_v<To> && std::is_floating_point_v<From>) {
-        if (!std::isfinite(value))
-            return {};
-        if (std::floor(value) != value)
-            return {};
-        if (value < static_cast<From>(std::numeric_limits<To>::min())
-            || value > static_cast<From>(std::numeric_limits<To>::max()))
-            return {};
-        return static_cast<To>(value);
-    } else {
-        return {};
-    }
-}
-
 template<typename Target, typename Source>
 bool try_set_numeric(Properties& props, std::string_view name, const pxr::VtValue& value)
 {
     if (!value.IsHolding<Source>())
         return false;
 
-    auto converted = try_numeric_convert<Target>(value.UncheckedGet<Source>());
+    auto converted = pxr::GfNumericCast<Target>(value.UncheckedGet<Source>());
     if (!converted)
         return false;
 
@@ -139,7 +197,7 @@ bool try_set_numeric_array(Properties& props, std::string_view name, const pxr::
     std::vector<Target> converted;
     converted.reserve(source.size());
     for (const auto& element : source) {
-        auto converted_value = try_numeric_convert<Target>(element);
+        auto converted_value = pxr::GfNumericCast<Target>(element);
         if (!converted_value)
             return false;
         converted.push_back(*converted_value);
@@ -168,7 +226,7 @@ std::optional<TargetVector> try_convert_vector(const SourceVector& value)
     static_assert(N >= 2 && N <= 4, "Vector conversion only supports 2, 3, or 4 components");
     TargetVector components{};
     for (int index = 0; index < N; ++index) {
-        auto converted = try_numeric_convert<TargetComponent>(value[index]);
+        auto converted = pxr::GfNumericCast<TargetComponent>(value[index]);
         if (!converted)
             return {};
         components[index] = *converted;

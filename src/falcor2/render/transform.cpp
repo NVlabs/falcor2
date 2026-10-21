@@ -15,12 +15,19 @@ Transform::Transform(const float3& translation, const quatf& rotation, const flo
 
 Transform::Transform(const float4x4& matrix)
 {
-    float3 skew = {};
-    float4 perspective = {};
-    if (!sgl::math::decompose(matrix, m_scale, m_rotation, m_translation, skew, perspective)) {
+    float3x3 rotation_matrix;
+    if (!sgl::math::decompose_trs(matrix, m_scale, m_rotation, m_translation, rotation_matrix)) {
         reset();
+        return;
     }
-    mark_dirty();
+    // Cache the corrected basis directly to avoid a float quaternion round trip.
+    // Component edits invalidate this cache and restore quaternion-based composition.
+    for (int row = 0; row < 3; ++row) {
+        for (int col = 0; col < 3; ++col)
+            m_matrix[row][col] = rotation_matrix[row][col] * m_scale[col];
+        m_matrix[row][3] = m_translation[row];
+    }
+    update_identity_flags();
 }
 
 void Transform::reset()
@@ -115,7 +122,7 @@ std::string Transform::to_string() const
     );
 }
 
-void Transform::update_matrix() const
+void Transform::update_identity_flags() const
 {
     m_identity_flags = IdentityFlags::none;
     if (m_translation == float3(0.f))
@@ -124,6 +131,11 @@ void Transform::update_matrix() const
         m_identity_flags |= IdentityFlags::rotation;
     if (m_scale == float3(1.f))
         m_identity_flags |= IdentityFlags::scale;
+}
+
+void Transform::update_matrix() const
+{
+    update_identity_flags();
 
     if (m_identity_flags == IdentityFlags::all) {
         m_matrix = float4x4::identity();

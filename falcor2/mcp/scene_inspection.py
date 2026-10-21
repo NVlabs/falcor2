@@ -220,16 +220,19 @@ def _environment_map_summary(component: Any, properties: JsonObject) -> JsonObje
         exposure_value = properties.get("exposure", 0.0)
     exposure = float(exposure_value) if isinstance(exposure_value, (int, float)) else 0.0
     exposure_scale = 2.0**exposure
-    tint = _rgb_value(properties.get("tint", properties.get("color")), 1.0)
-    base_intensity = _rgb_value(properties.get("intensity"), 1.0)
+    color = _rgb_value(properties.get("color"), 1.0)
+    intensity_value = properties.get("intensity", 1.0)
+    intensity = (
+        float(intensity_value)
+        if isinstance(intensity_value, (int, float)) and not isinstance(intensity_value, bool)
+        else 1.0
+    )
     result["lighting"] = {
         "active": bool(active_value),
         "exposure": exposure,
-        "intensity": base_intensity,
-        "tint": tint,
-        "effective_intensity": [
-            base_intensity[index] * tint[index] * exposure_scale for index in range(3)
-        ],
+        "intensity": intensity,
+        "color": color,
+        "effective_intensity": [intensity * color[index] * exposure_scale for index in range(3)],
     }
 
     texture_value = None

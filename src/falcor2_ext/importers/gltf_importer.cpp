@@ -13,5 +13,11 @@ FALCOR_PY_EXPORT(importers_gltf_importer)
 
     nb::class_<GltfImporter, Object>(m, "GltfImporter", D(GltfImporter))
         .def(nb::init<>())
-        .def("load_scene", &GltfImporter::load_scene, "path"_a, D(GltfImporter, load_scene));
+        .def(
+            "load_scene",
+            nb::overload_cast<const std::filesystem::path&, const ImportOptions&>(&GltfImporter::load_scene),
+            "path"_a,
+            "import_options"_a = ImportOptions(),
+            "Load a glTF scene with optional import options."
+        );
 }

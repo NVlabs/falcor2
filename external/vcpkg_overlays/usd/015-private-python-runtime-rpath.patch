@@ -1,0 +1,21 @@
+diff --git a/cmake/macros/Private.cmake b/cmake/macros/Private.cmake
+index 01962291e..ccb6e11ad 100644
+--- a/cmake/macros/Private.cmake
++++ b/cmake/macros/Private.cmake
+@@ -1054,6 +1054,16 @@ function(_pxr_python_module NAME)
+         "${CMAKE_INSTALL_PREFIX}/${args_WRAPPED_LIB_INSTALL_PREFIX}")
+     _pxr_add_rpath(rpath "${CMAKE_INSTALL_PREFIX}/lib")
+     _pxr_install_rpath(rpath ${LIBRARY_NAME})
++
++    # Falcor2 relocates pxr modules from lib/python/pxr/<module> to
++    # falcor2/pxr/<module> and places their private runtimes in falcor2.
++    # Retain OpenUSD's build-package paths and add the final wheel layout.
++    if(APPLE)
++        set(_falcor2_python_origin "@loader_path")
++    else()
++        set(_falcor2_python_origin "$ORIGIN")
++    endif()
++    set_property(TARGET ${LIBRARY_NAME} APPEND PROPERTY INSTALL_RPATH "${_falcor2_python_origin}/../..")
+ 
+     _get_folder("_python" folder)
+     set_target_properties(${LIBRARY_NAME}

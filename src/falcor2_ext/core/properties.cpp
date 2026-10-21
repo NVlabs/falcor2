@@ -280,7 +280,9 @@ FALCOR_PY_EXPORT(core_properties)
             [](Properties& self, std::string_view key, Object* value)
             {
                 self.set(key, ref<Object>(value));
-            }
+            },
+            "key"_a,
+            "value"_a.none()
         )
         .def(
             "__setitem__",

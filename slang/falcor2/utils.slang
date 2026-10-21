@@ -6,6 +6,7 @@ import slangpy;
 
 __include "utils/accumulator.slang";
 __include "utils/buffer_handle.slang";
+__include "utils/buffer_offset_pair.slang";
 __include "utils/chi2.slang";
 __include "utils/enum.slang";
 __include "utils/fill.slang";
@@ -17,6 +18,7 @@ __include "utils/color/helpers.slang";
 
 __include "utils/geometry/frame.slang";
 __include "utils/geometry/intersection.slang";
+__include "utils/geometry/precise_ray_spawn.slang";
 __include "utils/geometry/raytracing.slang";
 
 __include "utils/materials/fresnel.slang";
@@ -47,3 +49,5 @@ __include "utils/sampling/rng/xorshift32.slang";
 __include "utils/sampling/rng/xoshiro128starstar.slang";
 __include "utils/sampling/sample_generator/tiny_uniform_sample_generator.slang";
 __include "utils/sampling/sample_generator/uniform_sample_generator.slang";
+
+__include "utils/sampling/sample_generator/pbrt_sobol_sample_generator.slang";

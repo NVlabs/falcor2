@@ -15,7 +15,9 @@ FALCOR_PY_DECLARE(core_asset_resolver);
 
 FALCOR_PY_DECLARE(render_static_mesh_geometry);
 FALCOR_PY_DECLARE(render_light_sampler);
+FALCOR_PY_DECLARE(render_reconstruction_filter);
 FALCOR_PY_DECLARE(render_scene);
+FALCOR_PY_DECLARE(render_scene_types);
 FALCOR_PY_DECLARE(render_ray_tracing_setup);
 FALCOR_PY_DECLARE(render_mdl_discovery);
 FALCOR_PY_DECLARE(render_mtlx_codegen);
@@ -23,7 +25,7 @@ FALCOR_PY_DECLARE(render_texture_manager);
 FALCOR_PY_DECLARE(render_transform);
 
 FALCOR_PY_DECLARE(utils_aabb);
-FALCOR_PY_DECLARE(utils_managed_buffer);
+FALCOR_PY_DECLARE(utils_buffer_handle);
 
 FALCOR_PY_DECLARE(utils_algorithm_parallel_reduction);
 FALCOR_PY_DECLARE(utils_algorithm_prefix_sum);
@@ -49,9 +51,13 @@ FALCOR_PY_DECLARE(ui_scene_picker);
 FALCOR_PY_DECLARE(ui_selection_overlay);
 FALCOR_PY_DECLARE(ui_widgets);
 
+FALCOR_PY_DECLARE(streaming_video_encoder);
+FALCOR_PY_DECLARE(streaming_webrtc);
+
 #if FALCOR_BUILD_TESTS
 FALCOR_PY_DECLARE(testing_nanobind_reflector);
 FALCOR_PY_DECLARE(testing_reflection);
+FALCOR_PY_DECLARE(testing_ustring);
 #endif
 
 NB_MODULE(falcor2_ext, m_)
@@ -72,7 +78,7 @@ NB_MODULE(falcor2_ext, m_)
     m.attr("FALCOR_BUILD_TYPE") = FALCOR_BUILD_TYPE;
 
     FALCOR_PY_IMPORT(utils_aabb);
-    FALCOR_PY_IMPORT(utils_managed_buffer);
+    FALCOR_PY_IMPORT(utils_buffer_handle);
     FALCOR_PY_IMPORT(utils_algorithm_parallel_reduction);
     FALCOR_PY_IMPORT(utils_algorithm_prefix_sum);
     FALCOR_PY_IMPORT(utils_sampling_distribution_1d);
@@ -96,8 +102,10 @@ NB_MODULE(falcor2_ext, m_)
     FALCOR_PY_IMPORT(core_reflection);
     FALCOR_PY_IMPORT(core_signal);
 
+    FALCOR_PY_IMPORT(render_scene_types);
     FALCOR_PY_IMPORT(render_scene);
     FALCOR_PY_IMPORT(render_light_sampler);
+    FALCOR_PY_IMPORT(render_reconstruction_filter);
     FALCOR_PY_IMPORT(render_ray_tracing_setup);
     FALCOR_PY_IMPORT(render_mdl_discovery);
     FALCOR_PY_IMPORT(render_static_mesh_geometry);
@@ -113,9 +121,13 @@ NB_MODULE(falcor2_ext, m_)
     FALCOR_PY_IMPORT(ui_selection_overlay);
     FALCOR_PY_IMPORT(ui_widgets);
 
+    FALCOR_PY_IMPORT(streaming_video_encoder);
+    FALCOR_PY_IMPORT(streaming_webrtc);
+
 #if FALCOR_BUILD_TESTS
     FALCOR_PY_IMPORT(testing_nanobind_reflector);
     FALCOR_PY_IMPORT(testing_reflection);
+    FALCOR_PY_IMPORT(testing_ustring);
 #endif
 
     nanobind_falcor2_ext_module.m_free = [](void*)

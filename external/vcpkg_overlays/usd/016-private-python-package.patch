@@ -1,0 +1,34 @@
+--- a/cmake/macros/Private.cmake
++++ b/cmake/macros/Private.cmake
+@@ -1080,6 +1080,8 @@
+     _pxr_target_link_libraries(${LIBRARY_NAME}
+         ${NAME}
+         ${PXR_MALLOC_LIBRARY}
++        ${PYTHON_LIBRARIES}
++        TBB::tbb
+     )
+ 
+     # All Python modules require support code from tf.  Linking with the
+--- a/cmake/macros/moduleDeps.cpp.in
++++ b/cmake/macros/moduleDeps.cpp.in
+@@ -21,7 +21,7 @@
+ ${reqLibs}
+     }\;
+     TfScriptModuleLoader::GetInstance().
+-        RegisterLibrary(TfToken("${libraryName}"), TfToken("pxr.${moduleName}"), reqs)\;
++        RegisterLibrary(TfToken("${libraryName}"), TfToken("falcor2.pxr.${moduleName}"), reqs)\;
+ }
+ 
+ PXR_NAMESPACE_CLOSE_SCOPE
+\ No newline at end of file
+--- a/pxr/base/tf/wrapException.cpp
++++ b/pxr/base/tf/wrapException.cpp
+@@ -107,7 +107,7 @@
+ 
+ void wrapException()
+ {
+-    char excClassName[] = "pxr.Tf.CppException"; // XXX: Custom py NS here?
++    char excClassName[] = "falcor2.pxr.Tf.CppException";
+     tfExceptionClass = PyErr_NewException(excClassName, NULL, NULL);
+ 
+     // Expose the exception class to python.

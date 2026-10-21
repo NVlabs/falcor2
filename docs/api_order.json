@@ -1,0 +1,7 @@
+{
+    "falcor2": ["falcor2\\.[^.]+"],
+    "falcor2.ui": ["falcor2\\.ui\\..*"],
+    "falcor2.reflection": ["falcor2\\.reflection\\..*"],
+    "falcor2.platform": ["falcor2\\.platform\\..*"],
+    "falcor2.ngx": ["falcor2\\.ngx\\..*"]
+}

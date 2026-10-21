@@ -79,6 +79,7 @@ def test_dlss_rr_get_optimal_specs_returns_color_and_guide_specs(
     assert all(spec.dims == (480, 853) for spec in guide_specs.values())
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_dlss_rr_forward_rejects_missing_guides(
     device_type: spy.DeviceType, device: spy.Device

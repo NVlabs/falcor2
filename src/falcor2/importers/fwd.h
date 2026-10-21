@@ -12,9 +12,9 @@ struct VertexRemap;
 
 struct ImporterMeshAttribute;
 struct ImporterMeshDefaultAttribute;
-struct ImporterMeshBuffer;
+struct ImporterVertexBuffer;
 class ImporterMesh;
-struct ImporterCurve;
+class ImporterCurve;
 struct ImporterTexture;
 struct ImporterNode;
 struct ImporterMaterial;
@@ -22,9 +22,11 @@ struct ImporterCamera;
 struct ImporterLight;
 struct ImporterAnimationChannel;
 struct ImporterAnimation;
+struct ImporterSkin;
 class ImporterScene;
 
 // importer.h
+struct ImportOptions;
 struct ImporterSelector;
 struct ImporterCameraSelector;
 struct ImporterNodeSelector;

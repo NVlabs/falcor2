@@ -13,10 +13,16 @@
 #include <ctime>
 #include <fstream>
 #include <string>
+#include <string_view>
 
 using namespace sgl;
 
 namespace falcor::testing {
+
+bool is_nightly_test(const doctest::TestCaseData& test)
+{
+    return test.m_description && std::string_view(test.m_description) == NIGHTLY_TEST_DESCRIPTION;
+}
 
 // Cached devices.
 static std::map<DeviceType, ref<Device>> g_cached_devices;
@@ -88,6 +94,7 @@ sgl::DeviceDesc make_test_device_desc(sgl::DeviceType device_type)
                 // slangpy module
                 project_directory() / "external" / "slangpy" / "slangpy" / "slang",
             },
+            .floating_point_mode = sgl::SlangFloatingPointMode::fast,
         }
     };
 
@@ -190,17 +197,9 @@ void static_shutdown()
 
 void run_gpu_test(void (*func)(GpuTestContext&))
 {
-#if SGL_WINDOWS
-    std::vector<DeviceType> device_types{DeviceType::d3d12, DeviceType::vulkan};
-#elif SGL_LINUX
-    std::vector<DeviceType> device_types{DeviceType::vulkan};
-#elif SGL_MACOS
-    std::vector<DeviceType> device_types{DeviceType::metal};
-#endif
-
     bool use_cached_device = true;
 
-    for (DeviceType device_type : device_types) {
+    for (DeviceType device_type : DEFAULT_DEVICE_TYPES) {
         SUBCASE(enum_to_string(device_type).c_str())
         {
             ref<Device> device;
@@ -227,3 +226,38 @@ void run_gpu_test(void (*func)(GpuTestContext&))
 }
 
 } // namespace falcor::testing
+
+TEST_SUITE("test tiers")
+{
+    TEST_CASE("test tier metadata preserves ordinary descriptions")
+    {
+        doctest::TestCaseData test{};
+        CHECK_FALSE(falcor::testing::is_nightly_test(test));
+        test.m_description = "an ordinary description";
+        CHECK_FALSE(falcor::testing::is_nightly_test(test));
+        test.m_description = falcor::testing::NIGHTLY_TEST_DESCRIPTION;
+        CHECK(falcor::testing::is_nightly_test(test));
+    }
+
+    TEST_CASE("test tier named subcases enter only their selected bodies")
+    {
+        SUBCASE("regular")
+        {
+            CHECK_EQ(falcor::testing::get_current_test_suite_name(), "test tiers");
+        }
+        SUBCASE_NIGHTLY("nightly")
+        {
+            CHECK(falcor::testing::options().nightly);
+        }
+    }
+
+    TEST_CASE_NIGHTLY("test tier nightly case is selected before entering its body")
+    {
+        CHECK(falcor::testing::options().nightly);
+        CHECK_EQ(falcor::testing::get_current_test_suite_name(), "test tiers");
+        CHECK_EQ(
+            falcor::testing::get_current_test_case_name(),
+            "test tier nightly case is selected before entering its body"
+        );
+    }
+}

@@ -38,21 +38,21 @@ public:
                 reflection::default_value(float3(1.f)),
                 reflection::value_range_positive(),
                 reflection::UIFlags::display_as_color,
-                reflection::on_change(&EmissionOnlyMaterial::mark_dirty_properties)
+                reflection::on_change(&EmissionOnlyMaterial::mark_dirty_emission_properties)
             )
             .def_rw(
                 "emission_color_texture",
                 &EmissionOnlyMaterial::m_emission_color_texture,
                 "Unitless scene-linear emission color texture (takes precedence over path).",
                 reflection::UIFlags::advanced,
-                reflection::on_change(&EmissionOnlyMaterial::mark_dirty_resources)
+                reflection::on_change(&EmissionOnlyMaterial::mark_dirty_emission_resources)
             )
             .def_rw(
                 "emission_color_texture_path",
                 &EmissionOnlyMaterial::m_emission_color_texture_path,
                 "Emission color texture path. The texture is decoded from sRGB to scene-linear color.",
                 reflection::UIFlags::advanced,
-                reflection::on_change(&EmissionOnlyMaterial::mark_dirty_resources)
+                reflection::on_change(&EmissionOnlyMaterial::mark_dirty_emission_resources)
             )
             .def_prop_rw(
                 "enable_color_temperature",
@@ -76,14 +76,11 @@ public:
                 "texture.",
                 reflection::default_value(0.f),
                 reflection::value_range_positive(),
-                reflection::on_change(&EmissionOnlyMaterial::mark_dirty_properties)
+                reflection::on_change(&EmissionOnlyMaterial::mark_dirty_emission_properties)
             );
     }
 
 private:
-    void mark_dirty_resources() { mark_dirty(DirtyFlags::resources); }
-    void mark_dirty_properties() { mark_dirty(DirtyFlags::properties); }
-
     template<typename CursorT>
     void write_to_cursor_impl(CursorT cursor) const;
 

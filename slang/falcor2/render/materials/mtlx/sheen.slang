@@ -66,7 +66,7 @@ public struct MxContyKullaSheenMtx
 // Spec compliance: the MaterialX specification requires the Zeltner roughness
 // r to be clamped to [0.01, 1]. The original Falcor OSL/BSDL port used a 0.02
 // minimum for its LUT sampling path.
-public static constexpr float MX_ZELTNER_SHEEN_MIN_ROUGHNESS = 0.01;
+public static const float MX_ZELTNER_SHEEN_MIN_ROUGHNESS = 0.01;
 
 public interface IMxZeltnerSheenCoefficientPolicy
 {

@@ -80,6 +80,13 @@ void CameraController::set_move_speed(float speed)
     m_move_speed = std::clamp(speed, MIN_MOVE_SPEED, MAX_MOVE_SPEED);
 }
 
+void CameraController::set_world_up(const float3& world_up)
+{
+    m_world_up = normalize(world_up);
+    m_orbit_velocity = float2(0.f);
+    m_look_velocity = float2(0.f);
+}
+
 void CameraController::set_smoothing(bool enabled)
 {
     m_smoothing_enabled = enabled;
@@ -198,16 +205,18 @@ bool CameraController::handle_mouse_event(const sgl::MouseEvent& event)
     }
 
     if (event.is_move()) {
-        m_mouse_delta = event.pos - m_mouse_pos;
         if (m_first_mouse_delta) {
-            m_mouse_delta = float2(0.f);
             m_first_mouse_delta = false;
+            m_mouse_delta = float2(0.f);
+        } else {
+            // Window and remote input can deliver several moves between updates.
+            m_mouse_delta += event.pos - m_mouse_pos;
         }
         m_mouse_pos = event.pos;
     }
 
     if (event.is_scroll()) {
-        m_mouse_scroll_delta = event.scroll;
+        m_mouse_scroll_delta += event.scroll;
         handled = true;
     }
 
@@ -350,14 +359,14 @@ bool CameraController::update_first_person(float dt, bool apply_smoothing)
         float blend = 1.f - std::exp(-dt / LOOK_SMOOTH_TIME);
         m_look_velocity += (target_look - m_look_velocity) * blend;
         if (length(m_look_velocity) > LOOK_STOP_THRESHOLD) {
-            quatf horiz = sgl::math::quat_from_angle_axis(m_look_velocity.x * dt, float3(0, 1, 0));
+            quatf horiz = sgl::math::quat_from_angle_axis(m_look_velocity.x * dt, m_world_up);
             quatf vert = sgl::math::quat_from_angle_axis(m_look_velocity.y * dt, float3(1, 0, 0));
             m_transform.set_rotation(mul(mul(horiz, m_transform.rotation()), vert));
             changed = true;
         }
     } else {
         if (length(m_mouse_delta) > 0.f) {
-            quatf horiz = sgl::math::quat_from_angle_axis(-m_mouse_delta.x * m_rotate_speed, float3(0, 1, 0));
+            quatf horiz = sgl::math::quat_from_angle_axis(-m_mouse_delta.x * m_rotate_speed, m_world_up);
             quatf vert = sgl::math::quat_from_angle_axis(-m_mouse_delta.y * m_rotate_speed, float3(1, 0, 0));
             m_transform.set_rotation(mul(mul(horiz, m_transform.rotation()), vert));
             changed = true;
@@ -422,7 +431,8 @@ bool CameraController::apply_orbit_delta(float yaw_delta, float pitch_delta)
     if (dist < 1e-6f)
         return false;
 
-    float3 dir = offset / dist;
+    const quatf up_rotation = sgl::math::quat_from_rotation_between_vectors(float3(0.f, 1.f, 0.f), m_world_up);
+    float3 dir = sgl::math::transform_vector(sgl::math::inverse(up_rotation), offset / dist);
 
     // Extract spherical angles from offset direction.
     // Using explicit spherical coordinates avoids the degenerate cross product
@@ -439,13 +449,14 @@ bool CameraController::apply_orbit_delta(float yaw_delta, float pitch_delta)
     float cos_pitch = std::cos(new_pitch);
     float3 new_dir = float3(cos_pitch * std::sin(new_yaw), std::sin(new_pitch), cos_pitch * std::cos(new_yaw));
 
+    new_dir = sgl::math::transform_vector(up_rotation, new_dir);
     float3 new_pos = m_pivot + new_dir * dist;
     m_transform.set_translation(new_pos);
 
     // Build orientation from spherical angles.
     // The right vector is always horizontal, derived directly from yaw.
     float3 fwd = normalize(m_pivot - new_pos);
-    float3 new_right = float3(std::cos(new_yaw), 0.f, -std::sin(new_yaw));
+    float3 new_right = sgl::math::transform_vector(up_rotation, float3(std::cos(new_yaw), 0.f, -std::sin(new_yaw)));
     float3 new_up = cross(new_right, fwd);
     float3x3 rot_mat;
     rot_mat.set_col(0, new_right);

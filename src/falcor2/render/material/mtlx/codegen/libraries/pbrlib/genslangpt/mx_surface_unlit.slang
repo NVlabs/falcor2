@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+[mutating]
 void mx_surface_unlit(
     float emission,
     float3 emission_color,
@@ -16,10 +17,16 @@ void mx_surface_unlit(
         BSDF transparent_bsdf = {};
         transparent_bsdf.set_bsdf(mx_stack_next_bsdf++);
         int transparent_index = transparent_bsdf.get_index();
+#ifdef MTLX_SCALARIZED_GRAPH_STORAGE
+        mx_stack.set_bsdf_weight(transparent_index, float3(1.0));
+        mx_stack.set_bsdf_transmission_scale(transparent_index, float3(1.0));
+        mx_stack.set_bsdf_frame(transparent_index, float3(0.0, 0.0, 1.0), float3(1.0, 0.0, 0.0));
+#else
         mx_stack.bsdf_weights[transparent_index] = float3(1.0);
         mx_stack.bsdf_transmission_scales[transparent_index] = float3(1.0);
         mx_stack.bsdf_n[transparent_index] = float3(0.0, 0.0, 1.0);
         mx_stack.bsdf_t[transparent_index] = float3(1.0, 0.0, 0.0);
+#endif
 #ifdef MTLX_STACK_HAS_BSDF_FRAMES
         // bsdf_mix layering samples through stored frames rather than n/t pairs.
         mx_stack.bsdf_frames[transparent_index]

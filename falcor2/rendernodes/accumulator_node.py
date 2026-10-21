@@ -170,7 +170,8 @@ class AccumulatorNode(RenderNode):
                 {
                     "include_paths": self._device.slang_session.desc.compiler_options.include_paths,
                     "floating_point_mode": spy.SlangFloatingPointMode.precise,
-                }
+                },
+                cache_path=self._device.desc.module_cache_path,
             )
             self._compensated_session = session
             self._compensated_module = spy.Module(session.load_module(_ACCUMULATOR_MODULE))

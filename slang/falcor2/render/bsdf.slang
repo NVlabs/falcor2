@@ -23,7 +23,7 @@ import falcor2.utils;
 /// Minimum cos(theta) for the incident and outgoing vectors.
 /// Some BSDF functions are not robust for cos(theta) == 0.0,
 /// so using a small epsilon for consistency.
-public static constexpr float BSDF_MIN_COS_THETA = 1e-6;
+public static const float BSDF_MIN_COS_THETA = 1e-6;
 
 public enum BSDFFlags : uint {
     none = 0x00,
@@ -219,7 +219,7 @@ public struct BSDFContext
 /// contract would invalidate eval_pdf() and must be treated with utmost care.
 public struct EvalPdfFallbackSampleGenerator : ISampleGenerator
 {
-    public __init(uint seed) { }
+    public __init(uint seed, uint scrambling_seed = 0) { }
     public __init(uint2 pixel, uint sample_index) { }
 
     [mutating]

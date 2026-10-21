@@ -14,6 +14,7 @@
 #include <opensubdiv/sdc/types.h>
 
 #include <algorithm>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -32,7 +33,6 @@ using namespace OpenSubdiv;
 
 namespace {
 
-constexpr int MAX_REFINEMENT_LEVEL = 8;
 constexpr int CONTINUOUS_REGION = 0;
 
 using Surface = Bfr::Surface<float>;
@@ -368,23 +368,14 @@ size_t estimate_output_vertex_capacity(
 
 } // namespace
 
-ImporterMesh tessellate_subdivision_surface(const TessellatorInputMesh& input)
+ImporterMesh tessellate_subdivision_surface(const TessellatorInputMesh& input, int refinement_level)
 {
-    FALCOR_CHECK(
-        input.refinement_level >= 0 && input.refinement_level <= MAX_REFINEMENT_LEVEL,
-        "Subdivision refinement level must be between 0 and {}",
-        MAX_REFINEMENT_LEVEL
-    );
-
-    const size_t vertex_count = input.positions.value_count();
-    check_stream_layout(
-        input.positions,
-        input.face_vertex_counts.size(),
-        vertex_count,
-        input.face_vertex_indices.size()
-    );
-    FALCOR_CHECK(input.positions.component_count() == 3, "Subdivision positions must have three components");
-    FALCOR_CHECK(input.positions.indices.empty(), "Subdivision positions cannot be indexed separately");
+    const size_t vertex_count = input.positions[0].value_count();
+    for (const MeshAttributeStream& positions : input.positions) {
+        check_stream_layout(positions, input.face_vertex_counts.size(), vertex_count, input.face_vertex_indices.size());
+        FALCOR_CHECK(positions.component_count() == 3, "Subdivision positions must have three components");
+        FALCOR_CHECK(positions.indices.empty(), "Subdivision positions cannot be indexed separately");
+    }
 
     MeshAttributeStream default_uv;
     const std::vector<const MeshAttributeStream*> source_streams = collect_streams(input, default_uv);
@@ -399,12 +390,17 @@ ImporterMesh tessellate_subdivision_surface(const TessellatorInputMesh& input)
     const bool left_handed = is_left_handed(input.orientation);
 
     // Position and generated normal use the same storage and boundary handling as all authored attributes.
+    const size_t sample_count = input.positions.size();
+    const size_t static_stream_start = 2 * sample_count;
     OutputStreams output;
-    output.reserve(source_streams.size() + 2);
-    const size_t position_stream_index = output.add(input.positions.attribute, &input.positions);
-    const size_t normal_stream_index = output.add({ImporterSemantic::normal, 0, 3});
-    output[normal_stream_index].region_mode
-        = input.subdivision_scheme == SubdivisionScheme::bilinear ? RegionMode::per_face : RegionMode::continuous;
+    output.reserve(source_streams.size() + static_stream_start);
+    for (size_t sample = 0; sample < sample_count; ++sample)
+        output.add({ImporterSemantic::position, uint32_t(sample), 3}, &input.positions[sample]);
+    for (size_t sample = 0; sample < sample_count; ++sample) {
+        const size_t normal_stream_index = output.add({ImporterSemantic::normal, uint32_t(sample), 3});
+        output[normal_stream_index].region_mode
+            = input.subdivision_scheme == SubdivisionScheme::bilinear ? RegionMode::per_face : RegionMode::continuous;
+    }
 
     for (const MeshAttributeStream* stream : source_streams) {
         if (stream->attribute.semantic == ImporterSemantic::normal && stream->attribute.index == 0)
@@ -428,14 +424,14 @@ ImporterMesh tessellate_subdivision_surface(const TessellatorInputMesh& input)
     }
 
     std::vector<Far::TopologyDescriptor::FVarChannel> fvar_channels;
-    fvar_channels.reserve(output.size() - 2);
+    fvar_channels.reserve(output.size() - static_stream_start);
     // OpenSubdiv requires one value index per face vertex for every fvar channel. Unindexed USD primvars use this
     // shared identity mapping; it remains empty when every fvar channel already provides indices.
     std::vector<Far::Index> unindexed_fvar_indices;
     bool has_varying_stream = false;
     // Bfr accepts authored indices directly for face-varying channels. Prepare dense control values for the
     // vertex and varying surfaces, which have no independent topology channel.
-    for (OutputStream& stream : output.streams().subspan(2)) {
+    for (OutputStream& stream : output.streams().subspan(static_stream_start)) {
         if (stream.input->interpolation == MeshInterpolation::face_varying) {
             stream.fvar_channel = int(fvar_channels.size());
             Far::TopologyDescriptor::FVarChannel channel;
@@ -480,8 +476,11 @@ ImporterMesh tessellate_subdivision_surface(const TessellatorInputMesh& input)
 
     using SurfaceFactory = Bfr::RefinerSurfaceFactory<>;
     SurfaceFactory::Options surface_options;
-    surface_options.SetApproxLevelSmooth(std::max(2, input.refinement_level));
-    surface_options.SetApproxLevelSharp(std::max(6, input.refinement_level));
+    // Bfr takes subdivision depths: bit_width(N) is ceil(log2(N+1)) for positive N.
+    // Minimum depths 2/6 preserve rates 4/64 (public levels 3/63) for smooth/sharp features.
+    const int depth = std::bit_width(static_cast<unsigned>(refinement_level));
+    surface_options.SetApproxLevelSmooth(std::max(2, depth));
+    surface_options.SetApproxLevelSharp(std::max(6, depth));
     SurfaceFactory surface_factory(*refiner, surface_options);
     const Far::TopologyLevel& base_level = refiner->GetLevel(0);
 
@@ -496,9 +495,11 @@ ImporterMesh tessellate_subdivision_surface(const TessellatorInputMesh& input)
     initialize_result(input, result, subgeometry_mapping);
     exclude_holes_from_output(input, subgeometry_mapping);
 
-    const int tessellation_rate = 1 << input.refinement_level;
+    const int tessellation_rate = refinement_level + 1;
     const int samples_per_edge = tessellation_rate - 1;
-    output.reserve_vertices(estimate_output_vertex_capacity(output.streams(), vertex_count, size_t(tessellation_rate)));
+    const size_t output_capacity
+        = estimate_output_vertex_capacity(output.streams(), vertex_count, size_t(tessellation_rate));
+    output.reserve_vertices(output_capacity);
     SharedBoundary shared_boundary(base_level.GetNumVertices(), base_level.GetNumEdges(), samples_per_edge);
 
     std::vector<float2> coordinates;
@@ -616,17 +617,19 @@ ImporterMesh tessellate_subdivision_surface(const TessellatorInputMesh& input)
         output.resize_vertices(size_t(next_vertex_index));
 
         // Phase 3: with final indices fixed, evaluate each stream over the face coordinates in one tight loop.
-        evaluate_positions_and_normals(
-            output,
-            position_stream_index,
-            normal_stream_index,
-            vertex_surface,
-            coordinates,
-            coordinate_vertex_indices,
-            stream_actions,
-            patch_points
-        );
-        for (size_t stream_index = 2; stream_index < output.size(); ++stream_index) {
+        for (size_t sample = 0; sample < sample_count; ++sample) {
+            evaluate_positions_and_normals(
+                output,
+                sample,
+                sample_count + sample,
+                vertex_surface,
+                coordinates,
+                coordinate_vertex_indices,
+                stream_actions,
+                patch_points
+            );
+        }
+        for (size_t stream_index = static_stream_start; stream_index < output.size(); ++stream_index) {
             evaluate_authored_stream(
                 output,
                 stream_index,

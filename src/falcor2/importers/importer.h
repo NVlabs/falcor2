@@ -11,26 +11,83 @@
 #include "falcor2/importers/fwd.h"
 #include "falcor2/importers/importer_collections.h"
 
+#include <array>
 #include <filesystem>
 #include <functional>
 #include <memory>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace falcor {
 
 class Scene;
 
+/// Selects the runtime material used for glTF PBR materials. Unlit materials keep their native type.
+enum class GLTFMaterialMode {
+    /// Historical name for the dedicated native GLTFMaterial/GLTFSpecGlossMaterial route.
+    standard,
+    /// Use native glTF for supported combinations, otherwise use the MDL SDK route.
+    automatic,
+    /// Use the MDL SDK glTF material for all PBR materials.
+    mdl,
+    /// Explicitly select dedicated native glTF materials.
+    gltf,
+    /// Convert to StandardMaterial/StandardSpecGlossMaterial as an approximate compatibility target.
+    standard_material,
+    /// Generate a MaterialX graph using its existing glTF material definition.
+    materialx,
+    /// Convert supported inputs to OpenPBR without extending its GPU implementation.
+    openpbr,
+};
+SGL_ENUM_INFO(
+    GLTFMaterialMode,
+    {
+        {GLTFMaterialMode::standard, "standard"},
+        {GLTFMaterialMode::automatic, "automatic"},
+        {GLTFMaterialMode::mdl, "mdl"},
+        {GLTFMaterialMode::gltf, "gltf"},
+        {GLTFMaterialMode::standard_material, "standard_material"},
+        {GLTFMaterialMode::materialx, "materialx"},
+        {GLTFMaterialMode::openpbr, "openpbr"},
+    }
+);
+SGL_ENUM_REGISTER(GLTFMaterialMode);
+
 /// Options used when importing source scene assets.
 struct ImportOptions {
-    /// Recompute mesh normals and tangents after asset import.
+    /// Import USD mesh position and normal time samples. Scene loading uses sample zero; curves are unaffected.
+    bool import_mesh_motion = false;
+
+    /// Import USD curve position, width, and ribbon normal time samples. Scene loading uses sample zero.
+    /// Oriented ribbons store these as mesh samples; this option also controls their import.
+    bool import_curve_motion = false;
+
+    /// Attempt to detect, report and fix invalid geometry.
+    bool repair_broken_geometry = true;
+    /// Default for per-mesh normal and tangent recomputation after asset import.
     bool recompute_normals = false;
-    /// Force rectangular analytic lights to emissive triangle geometry regardless of source visibility.
+    /// Bake skeleton poses into static geometry. USD scenes with skinning are frozen at frame zero,
+    /// with refinement zero on skinned meshes. glTF uses the authored default pose. Disabled by default.
+    /// With import_mesh_motion, USD instead bakes at mesh sample times and preserves scene animation;
+    /// meshes without samples use frame zero. This mode does not support blend shapes or instanced skinning.
+    bool bake_poses = false;
+    /// Default mesh refinement level, in [0, 256]. Zero selects the control cage; positive N uses N+1 edge segments.
+    int mesh_refinement_level = 0;
+    /// Default curve refinement level, in [0, 256]. Zero selects CVs; positive N uses N+1 segments per cubic span.
+    int curve_refinement_level = 0;
+    /// Default for converting rectangular analytic lights to emissive geometry regardless of source visibility.
     bool force_rectangle_lights_to_geometry = false;
-    /// Force disk analytic lights to emissive triangle geometry regardless of source visibility.
+    /// Default for converting disk analytic lights to emissive geometry regardless of source visibility.
     bool force_disk_lights_to_geometry = false;
-    /// Force sphere analytic lights to emissive triangle geometry regardless of source visibility.
+    /// Default for converting finite sphere analytic lights to emissive geometry regardless of source visibility.
     bool force_sphere_lights_to_geometry = false;
+    /// Exact, case-sensitive USD primvar names imported as texture coordinate sets 1 through 7.
+    /// One leading "primvars:" prefix is optional; an empty name disables that set.
+    std::array<std::string, 7> usd_texcoord_primvar_names = {"st1", "st2", "st3", "st4", "st5", "st6", "st7"};
+    /// Select the runtime material when importing glTF PBR materials. Standard is the default;
+    /// the choice is retained with each imported material, including deferred imports and append.
+    GLTFMaterialMode gltf_material_mode = GLTFMaterialMode::standard;
 };
 
 /// Native importer edit stream used to build ImporterScene instances.
@@ -135,5 +192,12 @@ FALCOR_API void set_importer_cache(ref<BlobCache> cache);
 
 /// Get the global blob cache used by importers. May return nullptr if not set.
 FALCOR_API ref<BlobCache> importer_cache();
+
+namespace detail {
+
+/// Apply generic import options to imported CPU-side scene data.
+void apply_import_options(ImporterScene& scene, const ImportOptions& options);
+
+} // namespace detail
 
 } // namespace falcor

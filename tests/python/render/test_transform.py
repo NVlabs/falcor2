@@ -61,6 +61,80 @@ def test_transform_construction_from_matrix():
     np.testing.assert_allclose([s.x, s.y, s.z], [1.0, 1.0, 1.0], rtol=1e-6)
 
 
+def test_matrix_rotation_preserved_with_large_child_translation() -> None:
+    matrix = spy.float4x4(
+        np.array([[1, 0, 0, 0], [0, 0, -1, 0], [0, 1, 0, 0], [0, 0, 0, 1]], dtype=np.float32)
+    )
+    original = f2.Transform(matrix)
+    child = spy.float4(811685.375, 816883.6875, 6.166900157928467, 1)
+    expected = spy.float4(child.x, -child.z, child.y, 1)
+    for transform in (original, f2.Transform(original)):
+        assert transform.matrix == matrix
+        assert not transform.is_identity()
+        assert spy.math.mul(transform.matrix, child) == expected
+
+
+def test_matrix_matches_components_after_orthogonality_correction() -> None:
+    matrix = np.eye(4, dtype=np.float32)
+    matrix[0, 1] = 4 * np.finfo(np.float32).eps
+    transform = f2.Transform(spy.float4x4(matrix))
+    reconstructed = f2.Transform(transform.translation, transform.rotation, transform.scale)
+    assert transform.matrix == reconstructed.matrix
+    assert transform.matrix != spy.float4x4(matrix)
+    assert transform.is_identity() == reconstructed.is_identity()
+
+
+@pytest.mark.parametrize("edit", ["translation", "rotation", "scale", "composition_order", "reset"])
+def test_matrix_cache_invalidated_by_edit(edit):
+    matrix = spy.float4x4(
+        np.array([[0, -1, 0, 2], [1, 0, 0, 3], [0, 0, 1, 4], [0, 0, 0, 1]], dtype=np.float32)
+    )
+    transform = f2.Transform(matrix)
+    expected = f2.Transform(transform.translation, transform.rotation, transform.scale)
+    for value in (transform, expected):
+        if edit == "translation":
+            value.translation = spy.float3(5, 6, 7)
+        elif edit == "rotation":
+            value.rotation = spy.quatf(0, 0, 0, 1)
+        elif edit == "scale":
+            value.scale = spy.float3(2, 3, 4)
+        elif edit == "composition_order":
+            value.composition_order = f2.Transform.CompositionOrder.str
+        else:
+            value.reset()
+    assert transform.matrix == expected.matrix
+    assert transform.is_identity() == expected.is_identity()
+
+
+@pytest.mark.parametrize("scales", [[1, 1, 1], [-2, 3, 4], [1e-30, 1, 1e30]])
+def test_transform_matrix_with_subnormal_decomposition_residual(scales: list[float]) -> None:
+    # A glTF root rotation whose negligible skew residual underflows float.
+    matrix = np.array(
+        [
+            [2.220446049250313e-16, 1, 2.465190328815662e-32, 2],
+            [-5.053215392444312e-16, 7.395570986446986e-32, 1, -3],
+            [1, -2.220446049250313e-16, 5.053215392444312e-16, 4],
+            [0, 0, 0, 1],
+        ],
+        dtype=np.float32,
+    )
+    matrix[:3, :3] *= np.asarray(scales, dtype=np.float32)
+    result = f2.Transform(spy.float4x4(matrix)).matrix
+    actual = np.array([[result[i, j] for j in range(4)] for i in range(4)])
+    # Measure each column in its own units, including widely different scales.
+    np.testing.assert_allclose(
+        actual[:3, :3] / np.abs(scales), matrix[:3, :3] / np.abs(scales), atol=1e-6, rtol=1e-6
+    )
+    np.testing.assert_allclose(actual[:, 3], matrix[:, 3], atol=1e-6)
+
+
+@pytest.mark.parametrize("value", [0, np.inf, np.nan])
+def test_transform_failed_decomposition_retains_identity_fallback(value: float) -> None:
+    matrix = np.eye(4, dtype=np.float32)
+    matrix[0, 0] = value
+    assert f2.Transform(spy.float4x4(matrix)).is_identity()
+
+
 def test_transform_copy_construction():
     """Test Transform copy construction."""
     original = f2.Transform(spy.float3(1, 2, 3), spy.quatf(0, 0, 0, 1), spy.float3(2, 2, 2))
@@ -307,6 +381,22 @@ def test_transform_repr():
     assert "translation" in repr_str
     assert "rotation" in repr_str
     assert "scale" in repr_str
+
+
+def test_transform_rejects_perspective() -> None:
+    matrix = np.eye(4, dtype=np.float32)
+    matrix[3, 0] = 0.1
+    transform = f2.Transform(spy.float4x4(matrix))
+    assert transform.is_identity()
+    assert transform.matrix == spy.float4x4.identity()
+
+
+def test_transform_orthogonalizes_sheared_matrix() -> None:
+    matrix = np.array([[2, 1.5, -2, 5], [0, 3, 1, 6], [0, 0, 4, 7], [0, 0, 0, 1]], dtype=np.float32)
+    transform = f2.Transform(spy.float4x4(matrix))
+    expected = np.array([[2, 0, 0, 5], [0, 3, 0, 6], [0, 0, 4, 7], [0, 0, 0, 1]], dtype=np.float32)
+    np.testing.assert_allclose(transform.matrix.to_numpy(), expected, atol=1e-6)
+    assert not transform.is_identity()
 
 
 if __name__ == "__main__":

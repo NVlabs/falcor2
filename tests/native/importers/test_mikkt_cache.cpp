@@ -627,6 +627,35 @@ TEST_CASE("Parallel MikkTSpace preserves UV-degenerate traversal order")
     check_parallel_matches_official(make_tangent_test_mesh(positions, normals, uvs, reversed_faces));
 }
 
+TEST_CASE("fresh tangents for constant UVs form a valid frame")
+{
+    BlobCache cache(make_cache_options());
+    for (const float sign : {1.f, -1.f}) {
+        ImporterMesh source = make_textured_quad();
+        for (size_t i = 0; i < source.vertex_count(); ++i) {
+            source.position_stream()[i] = float3(0.f, source.position_stream()[i].x, source.position_stream()[i].y);
+            source.normal_stream()[i] = float3(sign, 0.f, 0.f);
+            source.texcoord_stream()[i] = float2(0.f);
+        }
+        // Exercise direct generation, a fresh cache entry, then reuse of the repaired entry.
+        for (int run = 0; run < 3; ++run) {
+            ImporterMesh mesh = source;
+            if (run == 0)
+                mikkt_generate_tangent_space(mesh);
+            else
+                mikkt_generate_tangent_space(mesh, cache);
+            for (size_t i = 0; i < mesh.vertex_count(); ++i) {
+                const float3 normal = mesh.normal_stream()[i];
+                const float3 tangent = mesh.tangent_stream()[i];
+                CHECK(dot(normal, tangent) == doctest::Approx(0.f).epsilon(1e-6));
+                CHECK(length(tangent) == doctest::Approx(1.f));
+                CHECK(length(cross(normal, tangent)) == doctest::Approx(1.f));
+                CHECK(abs(mesh.handedness_stream()[i]) == 1.f);
+            }
+        }
+    }
+}
+
 TEST_CASE("cache hit loads cached tangent data")
 {
     BlobCache::Options opts = make_cache_options();
@@ -804,6 +833,30 @@ TEST_CASE("importer cache accessor retains a safe reference")
     set_importer_cache(nullptr);
     CHECK_FALSE(importer_cache());
     set_importer_cache(previous_cache);
+}
+
+
+TEST_CASE_NIGHTLY("motion samples follow tangent splits on cache miss and hit")
+{
+    BlobCache cache(make_cache_options());
+    for (int pass = 0; pass < 2; ++pass) {
+        auto mesh = make_indexed_tangent_discontinuity();
+        const size_t original_count = mesh.vertex_count();
+        mesh.ensure_attributes({{ImporterSemantic::position, 1}, {ImporterSemantic::normal, 1}});
+        for (size_t i = 0; i < original_count; ++i) {
+            const float3 p = mesh.position_stream()[i];
+            mesh.position_stream(1)[i] = float3(-p.y, p.x, p.z);
+            mesh.normal_stream(1)[i] = mesh.normal_stream()[i];
+        }
+        mikkt_generate_tangent_space(mesh, cache);
+        CHECK_GT(mesh.vertex_count(), original_count);
+        for (size_t i = 0; i < mesh.vertex_count(); ++i) {
+            const float3 p = mesh.position_stream()[i];
+            const float3 t = mesh.tangent_stream()[i];
+            CHECK_EQ(mesh.position_stream(1)[i], float3(-p.y, p.x, p.z));
+            CHECK(length(mesh.tangent_stream(1)[i] - float3(-t.y, t.x, t.z)) < 1e-6f);
+        }
+    }
 }
 
 TEST_SUITE_END();
