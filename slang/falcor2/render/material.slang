@@ -5,6 +5,16 @@ implementing render;
 
 import falcor2.utils;
 
+/// Shares the uniform sample coordinates and auxiliary random bits documented by BSDFSampleInput.
+/// No coordinate-frame conversion is needed when forwarding these inputs to a BSDF.
+public typealias MaterialSampleInput = BSDFSampleInput;
+
+/// Consume exactly four scalar dimensions using the BSDF input field order.
+public MaterialSampleInput make_material_sample_input<S : ISampleGenerator>(inout S sg)
+{
+    return make_bsdf_sample_input(sg);
+}
+
 /// Result of a material sample. Contains the sampled direction, pdf, weight, and BSDF flags.
 public struct MaterialSample
 {
@@ -50,28 +60,24 @@ public interface IMaterialAOVWriter
 public interface IMaterialInstance
 {
     /// Evaluates the scattering value. This is a convenience alias for eval_with_pdf().
-    public float3 eval<S : ISampleGenerator>(const SurfaceInteraction si, const float3 wo_ws, inout S sg)
+    public float3 eval(const SurfaceInteraction si, const float3 wo_ws)
     {
-        return eval_with_pdf<BSDFEvalHints::eval>(si, wo_ws, sg).value;
+        return eval_with_pdf<BSDFEvalHints::eval>(si, wo_ws).value;
     }
 
     /// Evaluates the scattering value and directional PDF together.
     /// Prefer this operation when both results are needed, so shared work is performed only once.
-    /// The sample generator may affect only the value calculation; the PDF must be deterministic and
-    /// generator-independent.
-    public BSDFEval eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both, S : ISampleGenerator>(
-        const SurfaceInteraction si,
-        const float3 wo_ws,
-        inout S sg
-    );
+    public BSDFEval
+    eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both>(const SurfaceInteraction si, const float3 wo_ws);
 
-    public bool sample<S : ISampleGenerator>(const SurfaceInteraction si, inout S sg, out MaterialSample sample);
+    /// Sample scattering using caller-owned coordinates and auxiliary seed bits.
+    /// Returns false on rejection; sample is valid only on success.
+    public bool sample(const SurfaceInteraction si, const MaterialSampleInput input, out MaterialSample sample);
 
     /// Evaluates the directional PDF. This is a convenience alias for eval_with_pdf().
     public float eval_pdf(const SurfaceInteraction si, const float3 wo_ws)
     {
-        EvalPdfFallbackSampleGenerator sg = EvalPdfFallbackSampleGenerator(0u);
-        return eval_with_pdf<BSDFEvalHints::pdf>(si, wo_ws, sg).pdf;
+        return eval_with_pdf<BSDFEvalHints::pdf>(si, wo_ws).pdf;
     }
 
     /// Returns true if the material is emissive and thus can contribute to lighting.

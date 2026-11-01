@@ -700,3 +700,63 @@ def test_held_animation_interpolation() -> None:
     imported = f2.UsdImporter().import_stage(stage)
     assert len(imported.animation.channels) == 1
     assert imported.animation.channels[0].interpolation_mode == f2.AnimationInterpolationMode.step
+    assert not any(node.name.endswith(("_pivot", "_pivot_inverse")) for node in imported.nodes)
+
+
+@pytest.mark.parametrize("animated", [False, True])
+def test_pivot_transform(animated: bool) -> None:
+    from falcor2.pxr import Gf, Usd, UsdGeom
+
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageMetersPerUnit(stage, 1)
+    UsdGeom.SetStageUpAxis(stage, "Y")
+    camera = UsdGeom.Camera.Define(stage, "/Camera")
+    api = UsdGeom.XformCommonAPI(camera)
+    api.SetPivot(Gf.Vec3f(1, 2, 3))
+    api.SetRotate(Gf.Vec3f(0, 0, 45))
+    if animated:
+        api.SetPivot(Gf.Vec3f(1, 2, 3), 0)
+        api.SetPivot(Gf.Vec3f(2, 3, 4), 24)
+        api.SetRotate(Gf.Vec3f(0, 0, 45), time=0)
+        api.SetRotate(Gf.Vec3f(0, 0, 90), time=24)
+
+    imported = f2.UsdImporter().import_stage(stage)
+    nodes = {node.name: node for node in imported.nodes}
+    authored = nodes["/Camera"]
+    matrix = authored.transform.to_numpy()
+    if animated:
+        pivot, inverse = nodes["/Camera_pivot"], nodes["/Camera_pivot_inverse"]
+        assert imported.nodes[authored.parent].name == pivot.name
+        assert imported.nodes[inverse.parent].name == authored.name
+        assert inverse.camera_index >= 0
+        assert authored.animation_rotation >= 0
+        for node, sign in ((pivot, 1), (inverse, -1)):
+            assert node.animation_translation >= 0
+            channel = imported.animation.channels[node.animation_translation]
+            np.testing.assert_allclose(channel.values, np.array([1, 2, 3, 2, 3, 4]) * sign)
+        matrix = pivot.transform.to_numpy() @ matrix @ inverse.transform.to_numpy()
+    else:
+        assert "/Camera_pivot" not in nodes
+        assert authored.camera_index >= 0
+    np.testing.assert_allclose(matrix, np.array(camera.GetLocalTransformation(0)).T, atol=2e-6)
+
+
+def test_inherited_mesh_primvars() -> None:
+    from falcor2.pxr import Sdf, Usd, UsdGeom
+
+    stage = Usd.Stage.CreateInMemory()
+    parent = UsdGeom.Scope.Define(stage, "/Parent")
+    mesh = UsdGeom.Mesh.Define(stage, "/Parent/Mesh")
+    mesh.CreateSubdivisionSchemeAttr("none")
+    mesh.CreatePointsAttr([(0, 0, 0), (1, 0, 0), (0, 1, 0)])
+    mesh.CreateFaceVertexCountsAttr([3])
+    mesh.CreateFaceVertexIndicesAttr([0, 1, 2])
+    api = UsdGeom.PrimvarsAPI(parent)
+    api.CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, "constant").Set([(0.25, 0.75)])
+    api.CreatePrimvar("normals", Sdf.ValueTypeNames.Normal3fArray, "constant").Set([(0, 1, 0)])
+    api.CreatePrimvar("weight", Sdf.ValueTypeNames.FloatArray, "constant").Set([0.7])
+
+    result = f2.UsdImporter().import_stage(stage).meshes[0]
+    np.testing.assert_allclose(result.texcoords(0), [(0.25, 0.75)] * 3)
+    np.testing.assert_allclose(result.normals, [(0, 1, 0)] * 3)
+    np.testing.assert_allclose(np.asarray(result.find_stream("weight")).ravel(), [0.7] * 3)

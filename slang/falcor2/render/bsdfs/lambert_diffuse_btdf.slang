@@ -15,15 +15,13 @@ public struct LambertDiffuseBTDF : IBSDF, IDifferentiable
 
 
     [Differentiable]
-    public override
-        float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        return eval_with_pdf(wi, wo, sg, bc).value;
+        return eval_with_pdf(wi, wo, bc).value;
     }
 
     [Differentiable]
-    public BSDFEval
-    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
         if (min(wi.z, -wo.z) < BSDF_MIN_COS_THETA)
             return BSDFEval();
@@ -32,11 +30,11 @@ public struct LambertDiffuseBTDF : IBSDF, IDifferentiable
         return BSDFEval(albedo * pdf, pdf);
     }
 
-    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
 
-        sample.wo = square_to_cosine_hemisphere_concentric(next_float2(sg));
+        sample.wo = square_to_cosine_hemisphere_concentric(input.u_dir);
         sample.pdf = square_to_cosine_hemisphere_concentric_pdf(sample.wo);
         sample.wo.z = -sample.wo.z;
         sample.flags = BSDFFlags::diffuse_transmission;

@@ -108,8 +108,9 @@ struct ClassifiedLayering {
     struct BsdfDesc {
         const MaterialX::ShaderNode* shader_node = nullptr;
         std::vector<std::string> invocation_chain;
-        // Retain a colon-terminated invocation path alongside the typed chain
-        // because generated frame slots use it as their stable key.
+        // Complex-mix frame equivalence spells the invocation identity as a
+        // colon-terminated path. Retain that spelling alongside the typed
+        // chain because generated frame slots use it as their stable key.
         std::string nodegraph_instance_path;
         std::string node_path;
         std::string node_impl;

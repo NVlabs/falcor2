@@ -183,6 +183,40 @@ bool is_finite(const ScalarStaticConstant& value)
     return true;
 }
 
+ScalarStaticValue evaluate_convert(const mx::ShaderNode& node, const OutputStaticValueMap& current)
+{
+    if (!has_single_output(node, mx::Type::FLOAT) || !has_input(node, "in", mx::Type::INTEGER))
+        return ScalarStaticValue::unknown();
+
+    const auto value = expand_static_value(scalar_of(node.getInput("in"), current), 1);
+    if (!value || !is_finite(*value))
+        return ScalarStaticValue::unknown();
+
+    // Integer static facts already store the result of the integer-to-float conversion.
+    return make_static_value(*value);
+}
+
+ScalarStaticValue evaluate_subtract(const mx::ShaderNode& node, const OutputStaticValueMap& current)
+{
+    if (!has_single_output(node, mx::Type::FLOAT) || !has_input(node, "in1", mx::Type::FLOAT)
+        || !has_input(node, "in2", mx::Type::FLOAT))
+        return ScalarStaticValue::unknown();
+
+    const auto a = expand_static_value(scalar_of(node.getInput("in1"), current), 1);
+    const auto b = expand_static_value(scalar_of(node.getInput("in2"), current), 1);
+    if (!a || !b || !is_finite(*a) || !is_finite(*b))
+        return ScalarStaticValue::unknown();
+
+    const float difference = a->values[0] - b->values[0];
+    if (!std::isfinite(difference))
+        return ScalarStaticValue::unknown();
+
+    ScalarStaticConstant result;
+    result.values[0] = difference;
+    result.size = 1;
+    return make_static_value(result);
+}
+
 ScalarStaticValue evaluate_luminance(const mx::ShaderNode& node, const OutputStaticValueMap& current)
 {
     const mx::ShaderInput* input = node.getInput("in");
@@ -440,6 +474,12 @@ void classify_node_into(const mx::ShaderNode& node, OutputStaticValueMap& curren
                 scalar_out = scalar_of(*v, current);
                 has_scalar_rule = true;
             }
+        } else if (operation == FormalNodeOperation::convert) {
+            scalar_out = evaluate_convert(node, current);
+            has_scalar_rule = true;
+        } else if (operation == FormalNodeOperation::subtract) {
+            scalar_out = evaluate_subtract(node, current);
+            has_scalar_rule = true;
         } else if (is_scalar_or_color_multiply_node(node)) {
             const ScalarStaticValue input1_value = scalar_of(node.getInput("in1"), current);
             const ScalarStaticValue input2_value = scalar_of(node.getInput("in2"), current);

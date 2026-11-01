@@ -1257,7 +1257,29 @@ R"doc(An object used to convert CPU Buffer to the GPU BufferHandle, by
 converting to either pointer or descriptor handle, based on the
 backend.)doc";
 
-static const char *mkd_doc_falcor_BufferHandle_BufferHandle = R"doc()doc";
+static const char *mkd_doc_falcor_BufferHandleTable =
+R"doc(Stable indices into one GPU handle table. Owners retain the referenced
+buffers.)doc";
+
+static const char *mkd_doc_falcor_BufferHandleTable_BufferHandleTable = R"doc()doc";
+
+static const char *mkd_doc_falcor_BufferHandleTable_buffer = R"doc()doc";
+
+static const char *mkd_doc_falcor_BufferHandleTable_m_count = R"doc()doc";
+
+static const char *mkd_doc_falcor_BufferHandleTable_m_handles = R"doc()doc";
+
+static const char *mkd_doc_falcor_BufferHandleTable_reserve =
+R"doc(Reserve consecutive entries. Entries remain reserved for the owner's
+lifetime.
+
+)doc";
+
+static const char *mkd_doc_falcor_BufferHandleTable_set = R"doc()doc";
+
+static const char *mkd_doc_falcor_BufferHandleTable_update_buffer = R"doc(Call after all owners have updated their buffers and table entries.)doc";
+
+static const char *mkd_doc_falcor_BufferHandle_BufferHandle = R"doc(Construct an invalid handle.)doc";
 
 static const char *mkd_doc_falcor_BufferHandle_BufferHandle_2 = R"doc()doc";
 
@@ -1266,8 +1288,6 @@ static const char *mkd_doc_falcor_BufferHandle_data = R"doc(Data for direct uplo
 static const char *mkd_doc_falcor_BufferHandle_m_handle_data = R"doc()doc";
 
 static const char *mkd_doc_falcor_BufferHandle_slangpy_imports = R"doc()doc";
-
-static const char *mkd_doc_falcor_BufferHandle_use_gpu_pointer = R"doc()doc";
 
 static const char *mkd_doc_falcor_BufferHandle_write_to_cursor = R"doc()doc";
 
@@ -1345,6 +1365,10 @@ model.)doc";
 
 static const char *mkd_doc_falcor_CameraUniforms_dims = R"doc(Viewport dimensions in pixels.)doc";
 
+static const char *mkd_doc_falcor_CameraUniforms_exposure_scale =
+R"doc(Linear RGB multiplier corresponding to the camera's exposure
+compensation.)doc";
+
 static const char *mkd_doc_falcor_CameraUniforms_focus_distance =
 R"doc(Focus-plane distance along image_w in world units. Zero selects the
 pinhole model.)doc";
@@ -1398,6 +1422,8 @@ static const char *mkd_doc_falcor_Camera_depth_range = R"doc(Depth range (near, 
 
 static const char *mkd_doc_falcor_Camera_enable_depth_of_field = R"doc(Whether thin-lens depth of field is enabled.)doc";
 
+static const char *mkd_doc_falcor_Camera_exposure = R"doc(Exposure compensation in stops: +1 doubles rendered RGB; -1 halves it.)doc";
+
 static const char *mkd_doc_falcor_Camera_focal_length = R"doc(Focal length in mm.)doc";
 
 static const char *mkd_doc_falcor_Camera_focus_distance = R"doc(Focus distance in world units.)doc";
@@ -1416,6 +1442,8 @@ static const char *mkd_doc_falcor_Camera_height = R"doc(Viewport height in pixel
 static const char *mkd_doc_falcor_Camera_m_depth_range = R"doc(Depth range (near, far) in world units.)doc";
 
 static const char *mkd_doc_falcor_Camera_m_enable_depth_of_field = R"doc(Whether thin-lens depth of field is enabled.)doc";
+
+static const char *mkd_doc_falcor_Camera_m_exposure = R"doc(Exposure compensation in stops.)doc";
 
 static const char *mkd_doc_falcor_Camera_m_focal_length = R"doc(Focal length in mm.)doc";
 
@@ -1448,6 +1476,8 @@ static const char *mkd_doc_falcor_Camera_sensor_height = R"doc(Physical vertical
 static const char *mkd_doc_falcor_Camera_set_depth_range = R"doc()doc";
 
 static const char *mkd_doc_falcor_Camera_set_enable_depth_of_field = R"doc()doc";
+
+static const char *mkd_doc_falcor_Camera_set_exposure = R"doc()doc";
 
 static const char *mkd_doc_falcor_Camera_set_focal_length = R"doc()doc";
 
@@ -1651,6 +1681,61 @@ static const char *mkd_doc_falcor_CylinderLight_write_to_cursor_2 = R"doc()doc";
 
 static const char *mkd_doc_falcor_CylinderLight_write_to_cursor_impl = R"doc()doc";
 
+static const char *mkd_doc_falcor_DeviceVector =
+R"doc(Growable device-local storage with no host copy or automatic
+initialization. Growth preserves existing elements by recording a copy
+on the caller's encoder. Use an open encoder from the buffer's device,
+outside a pass, and submit work in dependency order. Rebind the buffer
+and reacquire device addresses after growth. Storage has exactly
+capacity() * sizeof(T) bytes; callers must satisfy shader-view layout
+requirements (D3D12 raw views expose complete four-byte units).)doc";
+
+static const char *mkd_doc_falcor_DeviceVectorDesc = R"doc()doc";
+
+static const char *mkd_doc_falcor_DeviceVectorDesc_label = R"doc()doc";
+
+static const char *mkd_doc_falcor_DeviceVectorDesc_max_buffer_size = R"doc(Maximum size of the device buffer in bytes.)doc";
+
+static const char *mkd_doc_falcor_DeviceVectorDesc_usage = R"doc()doc";
+
+static const char *mkd_doc_falcor_DeviceVector_DeviceVector = R"doc(Starts empty with zero capacity and a null buffer.)doc";
+
+static const char *mkd_doc_falcor_DeviceVector_DeviceVector_2 = R"doc()doc";
+
+static const char *mkd_doc_falcor_DeviceVector_DeviceVector_3 = R"doc()doc";
+
+static const char *mkd_doc_falcor_DeviceVector_buffer = R"doc(Device buffer, available after allocating nonzero capacity.)doc";
+
+static const char *mkd_doc_falcor_DeviceVector_capacity = R"doc()doc";
+
+static const char *mkd_doc_falcor_DeviceVector_ensure_size = R"doc(Increase size to at least this many elements; never shrink it.)doc";
+
+static const char *mkd_doc_falcor_DeviceVector_m_buffer = R"doc()doc";
+
+static const char *mkd_doc_falcor_DeviceVector_m_desc = R"doc()doc";
+
+static const char *mkd_doc_falcor_DeviceVector_m_size = R"doc()doc";
+
+static const char *mkd_doc_falcor_DeviceVector_operator_assign = R"doc()doc";
+
+static const char *mkd_doc_falcor_DeviceVector_operator_assign_2 = R"doc()doc";
+
+static const char *mkd_doc_falcor_DeviceVector_reserve =
+R"doc(Ensure capacity for this many elements without changing size or
+shrinking storage. Growth is geometric, capped by max_buffer_size /
+sizeof(T).
+
+)doc";
+
+static const char *mkd_doc_falcor_DeviceVector_resize =
+R"doc(Set the logical element count, preserving the retained prefix.
+Shrinking retains capacity. Elements exposed by growth, including
+shrink followed by regrowth, are uninitialized.
+
+)doc";
+
+static const char *mkd_doc_falcor_DeviceVector_size = R"doc()doc";
+
 static const char *mkd_doc_falcor_DiscreteDistribution1D =
 R"doc(Discrete 1D probability distribution for importance sampling.
 
@@ -1823,6 +1908,8 @@ static const char *mkd_doc_falcor_EmissionOnlyMaterial_on_load_resources = R"doc
 static const char *mkd_doc_falcor_EmissionOnlyMaterial_reflect = R"doc()doc";
 
 static const char *mkd_doc_falcor_EmissionOnlyMaterial_reflected_class_name = R"doc()doc";
+
+static const char *mkd_doc_falcor_EmissionOnlyMaterial_required_capabilities = R"doc()doc";
 
 static const char *mkd_doc_falcor_EmissionOnlyMaterial_set_color_temperature = R"doc()doc";
 
@@ -2404,6 +2491,96 @@ static const char *mkd_doc_falcor_FNVHash_m_state = R"doc()doc";
 
 static const char *mkd_doc_falcor_FNVHash_operator_le = R"doc()doc";
 
+static const char *mkd_doc_falcor_GLTFContext =
+R"doc(Selects and tracks the active shader specializations for native glTF
+materials.)doc";
+
+static const char *mkd_doc_falcor_GLTFContext_2 = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFContext_GLTFContext = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFContext_WorkflowState = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFContext_WorkflowState_active = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFContext_WorkflowState_effective_union = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFContext_WorkflowState_nontransmissive_union = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFContext_WorkflowState_transmissive_union = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFContext_m_allowed_features = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFContext_m_metallic_roughness = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFContext_m_mode = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFContext_m_specular_glossiness = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFContext_metallic_roughness_specializations = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFContext_specular_glossiness_specializations = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFContext_update =
+R"doc(Recompute the live masks and assign compile masks before type
+conformances are collected.
+
+)doc";
+
+static const char *mkd_doc_falcor_GLTFFeatureFlags =
+R"doc(Feature bits that native glTF materials may use at runtime and in
+shader specializations.)doc";
+
+static const char *mkd_doc_falcor_GLTFFeatureFlags_all = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFFeatureFlags_anisotropy = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFFeatureFlags_clearcoat = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFFeatureFlags_diffuse_transmission = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFFeatureFlags_emission = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFFeatureFlags_info = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFFeatureFlags_ior = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFFeatureFlags_iridescence = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFFeatureFlags_multiscatter = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFFeatureFlags_none = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFFeatureFlags_normal = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFFeatureFlags_sheen = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFFeatureFlags_specular = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFFeatureFlags_transmission = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFFeatureFlags_vertex_color = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFFeatureFlags_volume = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMasks =
+R"doc(Four shader specialization masks. Runtime masks must be contained in
+their selected compile masks.)doc";
+
+static const char *mkd_doc_falcor_GLTFMasks_covers = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMasks_features = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMasks_merged = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMasks_nonzero_texcoords = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMasks_operator_le = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMasks_textures = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMasks_transforms = R"doc()doc";
+
 static const char *mkd_doc_falcor_GLTFMaterial =
 R"doc(glTF metallic-roughness material with thin or solid transmission and
 homogeneous absorption.)doc";
@@ -2438,363 +2615,185 @@ static const char *mkd_doc_falcor_GLTFMaterialMode_standard_material =
 R"doc(Convert to StandardMaterial/StandardSpecGlossMaterial as an
 approximate compatibility target.)doc";
 
+static const char *mkd_doc_falcor_GLTFMaterial_AnisotropyInputs = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_AnisotropyInputs_rotation = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_AnisotropyInputs_strength = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_AnisotropyInputs_texture = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_BindingFieldProperty = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_BindingFieldProperty_get = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_BindingFieldProperty_set = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_ClearcoatInputs = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_ClearcoatInputs_factor = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_ClearcoatInputs_normal_texture = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_ClearcoatInputs_normal_texture_scale = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_ClearcoatInputs_roughness_factor = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_ClearcoatInputs_roughness_texture = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_ClearcoatInputs_texture = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_CoreInputs = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_CoreInputs_alpha_cutoff = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_CoreInputs_alpha_factor = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_CoreInputs_alpha_mode = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_CoreInputs_base_color = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_CoreInputs_base_color_factor = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_CoreInputs_double_sided = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_CoreInputs_emissive = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_CoreInputs_emissive_factor = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_CoreInputs_ior = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_CoreInputs_metallic_factor = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_CoreInputs_metallic_roughness = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_CoreInputs_normal = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_CoreInputs_normal_texture_scale = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_CoreInputs_roughness_factor = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_CoreInputs_use_vertex_color = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_DiffuseTransmissionInputs = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_DiffuseTransmissionInputs_color_factor = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_DiffuseTransmissionInputs_color_texture = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_DiffuseTransmissionInputs_factor = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_DiffuseTransmissionInputs_texture = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_FieldProperty = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_FieldProperty_get = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_FieldProperty_set = R"doc()doc";
+
 static const char *mkd_doc_falcor_GLTFMaterial_GLTFMaterial = R"doc(Constructor.)doc";
 
-static const char *mkd_doc_falcor_GLTFMaterial_anisotropy_texture_offset = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFMaterial_IridescenceInputs = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFMaterial_anisotropy_texture_rotation = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFMaterial_IridescenceInputs_factor = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFMaterial_anisotropy_texture_texcoord = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFMaterial_IridescenceInputs_ior = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFMaterial_anisotropy_texture_uv_scale = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFMaterial_IridescenceInputs_texture = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFMaterial_base_color_texture_offset = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFMaterial_IridescenceInputs_thickness_maximum = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFMaterial_base_color_texture_rotation = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFMaterial_IridescenceInputs_thickness_minimum = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFMaterial_base_color_texture_texcoord = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFMaterial_IridescenceInputs_thickness_texture = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFMaterial_base_color_texture_uv_scale = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFMaterial_SheenInputs = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_SheenInputs_color_factor = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_SheenInputs_color_texture = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_SheenInputs_roughness_factor = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_SheenInputs_roughness_texture = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_SpecularInputs = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_SpecularInputs_color_factor = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_SpecularInputs_color_texture = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_SpecularInputs_factor = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_SpecularInputs_texture = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_TexcoordProperty = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_TexcoordProperty_get = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_TransformProperty = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_TransformProperty_get = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_TransformProperty_set = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_TransmissionInputs = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_TransmissionInputs_factor = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_TransmissionInputs_texture = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_VolumeInputs = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_VolumeInputs_attenuation_color = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_VolumeInputs_attenuation_distance = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFMaterial_VolumeInputs_thickness_factor = R"doc()doc";
 
 static const char *mkd_doc_falcor_GLTFMaterial_class_descriptor = R"doc()doc";
 
 static const char *mkd_doc_falcor_GLTFMaterial_class_name = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFMaterial_clearcoat_normal_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_clearcoat_normal_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_clearcoat_normal_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_clearcoat_normal_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_clearcoat_roughness_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_clearcoat_roughness_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_clearcoat_roughness_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_clearcoat_roughness_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_clearcoat_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_clearcoat_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_clearcoat_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_clearcoat_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_diffuse_transmission_color_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_diffuse_transmission_color_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_diffuse_transmission_color_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_diffuse_transmission_color_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_diffuse_transmission_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_diffuse_transmission_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_diffuse_transmission_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_diffuse_transmission_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_emissive_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_emissive_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_emissive_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_emissive_texture_uv_scale = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFMaterial_effective_masks = R"doc(Return the feature masks computed by the most recent material update.)doc";
 
 static const char *mkd_doc_falcor_GLTFMaterial_flags = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFMaterial_iridescence_texture_offset = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFMaterial_m_anisotropy = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFMaterial_iridescence_texture_rotation = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFMaterial_m_clearcoat = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFMaterial_iridescence_texture_texcoord = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFMaterial_m_core = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFMaterial_iridescence_texture_uv_scale = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFMaterial_m_diffuse_transmission = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFMaterial_iridescence_thickness_texture_offset = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFMaterial_m_feature_mask = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFMaterial_iridescence_thickness_texture_rotation = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFMaterial_m_feature_mask_filter = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFMaterial_iridescence_thickness_texture_texcoord = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFMaterial_m_iridescence = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFMaterial_iridescence_thickness_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_alpha_cutoff = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_alpha_factor = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_alpha_mode = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_anisotropy_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_anisotropy_strength = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_anisotropy_texture = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_anisotropy_texture_handle = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_anisotropy_texture_path = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_anisotropy_texture_sampler = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_anisotropy_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_attenuation_color = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_attenuation_distance = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_base_color_factor = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_base_color_texture = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_base_color_texture_handle = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_base_color_texture_path = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_base_color_texture_sampler = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_base_color_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_clearcoat_factor = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_clearcoat_normal_texture = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_clearcoat_normal_texture_handle = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_clearcoat_normal_texture_path = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_clearcoat_normal_texture_sampler = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_clearcoat_normal_texture_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_clearcoat_normal_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_clearcoat_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_clearcoat_roughness_factor = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_clearcoat_roughness_texture = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_clearcoat_roughness_texture_handle = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_clearcoat_roughness_texture_path = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_clearcoat_roughness_texture_sampler = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_clearcoat_roughness_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_clearcoat_texture = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_clearcoat_texture_handle = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_clearcoat_texture_path = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_clearcoat_texture_sampler = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_clearcoat_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_diffuse_transmission_color_factor = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_diffuse_transmission_color_texture = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_diffuse_transmission_color_texture_handle = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_diffuse_transmission_color_texture_path = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_diffuse_transmission_color_texture_sampler = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_diffuse_transmission_color_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_diffuse_transmission_factor = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_diffuse_transmission_texture = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_diffuse_transmission_texture_handle = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_diffuse_transmission_texture_path = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_diffuse_transmission_texture_sampler = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_diffuse_transmission_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_double_sided = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_emissive_factor = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_emissive_texture = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_emissive_texture_handle = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_emissive_texture_path = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_emissive_texture_sampler = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_emissive_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_has_surface_extensions = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_ior = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_iridescence_factor = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_iridescence_ior = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_iridescence_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_iridescence_texture = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_iridescence_texture_handle = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_iridescence_texture_path = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_iridescence_texture_sampler = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_iridescence_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_iridescence_thickness_maximum = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_iridescence_thickness_minimum = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_iridescence_thickness_texture = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_iridescence_thickness_texture_handle = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_iridescence_thickness_texture_path = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_iridescence_thickness_texture_sampler = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_iridescence_thickness_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_metallic_factor = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_metallic_roughness_texture = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_metallic_roughness_texture_handle = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_metallic_roughness_texture_path = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_metallic_roughness_texture_sampler = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_metallic_roughness_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_normal_texture = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_normal_texture_handle = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_normal_texture_path = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_normal_texture_sampler = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_normal_texture_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_normal_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_roughness_factor = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFMaterial_m_nonzero_texcoord_mask = R"doc()doc";
 
 static const char *mkd_doc_falcor_GLTFMaterial_m_scattering_globals = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFMaterial_m_sheen_color_factor = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFMaterial_m_sheen = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFMaterial_m_sheen_color_texture = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFMaterial_m_specular = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFMaterial_m_sheen_color_texture_handle = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_sheen_color_texture_path = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_sheen_color_texture_sampler = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_sheen_color_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_sheen_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_sheen_roughness_factor = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_sheen_roughness_texture = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_sheen_roughness_texture_handle = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_sheen_roughness_texture_path = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_sheen_roughness_texture_sampler = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_sheen_roughness_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_specular_color_factor = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_specular_color_texture = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_specular_color_texture_handle = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_specular_color_texture_path = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_specular_color_texture_sampler = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_specular_color_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_specular_factor = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_specular_texture = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_specular_texture_handle = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_specular_texture_path = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_specular_texture_sampler = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_specular_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_texture_transforms = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_thickness_factor = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFMaterial_m_texture_mask = R"doc()doc";
 
 static const char *mkd_doc_falcor_GLTFMaterial_m_transform_mask = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFMaterial_m_transform_offset = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFMaterial_m_transmission = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFMaterial_m_transforms_dirty = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_transmission_factor = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_transmission_texture = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_transmission_texture_handle = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_transmission_texture_path = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_transmission_texture_sampler = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_transmission_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_m_use_vertex_color = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFMaterial_m_volume = R"doc()doc";
 
 static const char *mkd_doc_falcor_GLTFMaterial_mark_dirty_clearcoat = R"doc()doc";
 
 static const char *mkd_doc_falcor_GLTFMaterial_mark_dirty_extensions = R"doc()doc";
 
 static const char *mkd_doc_falcor_GLTFMaterial_mark_dirty_volume = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_metallic_roughness_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_metallic_roughness_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_metallic_roughness_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_metallic_roughness_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_normal_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_normal_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_normal_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_normal_texture_uv_scale = R"doc()doc";
 
 static const char *mkd_doc_falcor_GLTFMaterial_on_load_resources = R"doc()doc";
 
@@ -2806,185 +2805,15 @@ static const char *mkd_doc_falcor_GLTFMaterial_reflected_class_name = R"doc()doc
 
 static const char *mkd_doc_falcor_GLTFMaterial_required_capabilities = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFMaterial_set_anisotropy_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_anisotropy_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_anisotropy_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_anisotropy_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_base_color_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_base_color_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_base_color_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_base_color_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_clearcoat_normal_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_clearcoat_normal_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_clearcoat_normal_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_clearcoat_normal_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_clearcoat_roughness_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_clearcoat_roughness_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_clearcoat_roughness_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_clearcoat_roughness_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_clearcoat_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_clearcoat_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_clearcoat_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_clearcoat_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_diffuse_transmission_color_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_diffuse_transmission_color_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_diffuse_transmission_color_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_diffuse_transmission_color_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_diffuse_transmission_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_diffuse_transmission_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_diffuse_transmission_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_diffuse_transmission_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_emissive_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_emissive_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_emissive_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_emissive_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_iridescence_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_iridescence_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_iridescence_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_iridescence_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_iridescence_thickness_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_iridescence_thickness_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_iridescence_thickness_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_iridescence_thickness_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_metallic_roughness_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_metallic_roughness_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_metallic_roughness_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_metallic_roughness_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_normal_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_normal_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_normal_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_normal_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_sheen_color_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_sheen_color_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_sheen_color_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_sheen_color_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_sheen_roughness_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_sheen_roughness_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_sheen_roughness_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_sheen_roughness_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_specular_color_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_specular_color_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_specular_color_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_specular_color_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_specular_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_specular_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_specular_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_specular_texture_uv_scale = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFMaterial_set_compile_masks = R"doc()doc";
 
 static const char *mkd_doc_falcor_GLTFMaterial_set_texture_texcoord = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFMaterial_set_transmission_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_transmission_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_transmission_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_set_transmission_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_sheen_color_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_sheen_color_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_sheen_color_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_sheen_color_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_sheen_roughness_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_sheen_roughness_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_sheen_roughness_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_sheen_roughness_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_specular_color_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_specular_color_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_specular_color_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_specular_color_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_specular_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_specular_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_specular_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_specular_texture_uv_scale = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFMaterial_set_texture_transform = R"doc()doc";
 
 static const char *mkd_doc_falcor_GLTFMaterial_static_class_descriptor = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFMaterial_transmission_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_transmission_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_transmission_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFMaterial_transmission_texture_uv_scale = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFMaterial_texture_bindings = R"doc()doc";
 
 static const char *mkd_doc_falcor_GLTFMaterial_update = R"doc()doc";
 
@@ -2998,157 +2827,112 @@ static const char *mkd_doc_falcor_GLTFSpecGlossMaterial =
 R"doc(Reflective glTF specular-glossiness material with emission and alpha
 coverage. Physical transmission and volume are not supported.)doc";
 
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_CoreInputs =
+R"doc(Authored scalar inputs for this workflow. Texture inputs live beside
+these in m_textures so each slot owns its sampler, UV selector, and
+transform.)doc";
+
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_CoreInputs_alpha_cutoff = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_CoreInputs_alpha_factor = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_CoreInputs_alpha_mode = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_CoreInputs_diffuse_factor = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_CoreInputs_double_sided = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_CoreInputs_emissive_factor = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_CoreInputs_glossiness_factor = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_CoreInputs_normal_texture_scale = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_CoreInputs_specular_factor = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_CoreInputs_use_vertex_color = R"doc()doc";
+
 static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_GLTFSpecGlossMaterial = R"doc(Constructor.)doc";
+
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_TextureRegistration = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_TextureRegistration_emission = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_TextureRegistration_object_doc = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_TextureRegistration_path_doc = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_TextureRegistration_property_prefix = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_TextureRegistration_slot = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_TextureRegistration_texcoord_doc = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_TextureSlot = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_TextureSlot_count = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_TextureSlot_diffuse = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_TextureSlot_emissive = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_TextureSlot_normal = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_TextureSlot_specular_glossiness = R"doc()doc";
 
 static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_class_descriptor = R"doc()doc";
 
 static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_class_name = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_diffuse_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_diffuse_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_diffuse_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_diffuse_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_emissive_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_emissive_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_emissive_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_emissive_texture_uv_scale = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_effective_masks = R"doc(Return the feature masks computed by the most recent material update.)doc";
 
 static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_flags = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_alpha_cutoff = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_core = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_alpha_factor = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_feature_mask = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_alpha_mode = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_feature_mask_filter = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_diffuse_factor = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_nonzero_texcoord_mask = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_diffuse_texture = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_texture_mask = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_diffuse_texture_handle = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_diffuse_texture_path = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_diffuse_texture_sampler = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_diffuse_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_double_sided = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_emissive_factor = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_emissive_texture = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_emissive_texture_handle = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_emissive_texture_path = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_emissive_texture_sampler = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_emissive_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_glossiness_factor = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_normal_texture = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_normal_texture_handle = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_normal_texture_path = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_normal_texture_sampler = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_normal_texture_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_normal_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_specular_factor = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_specular_glossiness_texture = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_specular_glossiness_texture_handle = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_specular_glossiness_texture_path = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_specular_glossiness_texture_sampler = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_specular_glossiness_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_texture_transforms = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_textures = R"doc()doc";
 
 static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_transform_mask = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_transforms_dirty = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_mark_texture_resource_dirty = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_m_use_vertex_color = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_normal_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_normal_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_normal_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_normal_texture_uv_scale = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_mark_texture_transform_dirty = R"doc()doc";
 
 static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_on_load_resources = R"doc()doc";
 
 static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_opacity_desc = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_reflect = R"doc(Reflect this class.)doc";
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_reflect =
+R"doc(Reflect this class. The registration order is part of the existing
+property API.
+
+)doc";
+
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_reflect_texture_binding = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_reflect_texture_transform = R"doc()doc";
 
 static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_reflected_class_name = R"doc()doc";
 
 static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_required_capabilities = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_set_diffuse_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_set_diffuse_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_set_diffuse_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_set_diffuse_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_set_emissive_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_set_emissive_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_set_emissive_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_set_emissive_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_set_normal_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_set_normal_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_set_normal_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_set_normal_texture_uv_scale = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_set_specular_glossiness_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_set_specular_glossiness_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_set_specular_glossiness_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_set_specular_glossiness_texture_uv_scale = R"doc()doc";
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_set_compile_masks = R"doc()doc";
 
 static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_set_texture_texcoord = R"doc()doc";
 
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_specular_glossiness_texture_offset = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_specular_glossiness_texture_rotation = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_specular_glossiness_texture_texcoord = R"doc()doc";
-
-static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_specular_glossiness_texture_uv_scale = R"doc()doc";
-
 static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_static_class_descriptor = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_texture_binding = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_texture_binding_2 = R"doc()doc";
 
 static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_update = R"doc()doc";
 
@@ -3157,6 +2941,47 @@ static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_write_to_cursor = R"doc(
 static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_write_to_cursor_2 = R"doc()doc";
 
 static const char *mkd_doc_falcor_GLTFSpecGlossMaterial_write_to_cursor_impl = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFSpecializationMode =
+R"doc(Selects how many native glTF shader types a scene uses within each
+material workflow.)doc";
+
+static const char *mkd_doc_falcor_GLTFSpecializationMode_all = R"doc(Compile one type with every allowed capability for each workflow.)doc";
+
+static const char *mkd_doc_falcor_GLTFSpecializationMode_balanced =
+R"doc(Build a small number of material specializations to cover all
+requirements.)doc";
+
+static const char *mkd_doc_falcor_GLTFSpecializationMode_info = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFSpecializationMode_required = R"doc(Compile a type for each material's effective masks.)doc";
+
+static const char *mkd_doc_falcor_GLTFSpecializationMode_single =
+R"doc(Compile one type for the live union of each workflow's effective
+masks.)doc";
+
+static const char *mkd_doc_falcor_GLTFTextureBinding =
+R"doc(Authored and resolved state for one glTF material texture slot. This
+is CPU storage; the GPU texture-info layout is defined separately in
+Slang.)doc";
+
+static const char *mkd_doc_falcor_GLTFTextureBinding_effective_texcoord = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFTextureBinding_handle = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFTextureBinding_load =
+R"doc(Resolve the authored object or path using the existing material
+precedence.
+
+)doc";
+
+static const char *mkd_doc_falcor_GLTFTextureBinding_path = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFTextureBinding_sampler = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFTextureBinding_texture = R"doc()doc";
+
+static const char *mkd_doc_falcor_GLTFTextureBinding_transform = R"doc()doc";
 
 static const char *mkd_doc_falcor_GLTFTextureTransform = R"doc()doc";
 
@@ -3737,6 +3562,8 @@ static const char *mkd_doc_falcor_ImporterCamera_Projection_perspective = R"doc(
 static const char *mkd_doc_falcor_ImporterCamera_depth_range = R"doc(Depth range (near, far).)doc";
 
 static const char *mkd_doc_falcor_ImporterCamera_enable_depth_of_field = R"doc(Whether thin-lens depth of field is enabled.)doc";
+
+static const char *mkd_doc_falcor_ImporterCamera_exposure = R"doc(Exposure compensation in stops: +1 doubles rendered RGB; -1 halves it.)doc";
 
 static const char *mkd_doc_falcor_ImporterCamera_focal_length = R"doc(Focal length (millimeters).)doc";
 
@@ -5098,6 +4925,78 @@ slang struct.
 
 static const char *mkd_doc_falcor_Light_write_to_cursor_4 = R"doc()doc";
 
+static const char *mkd_doc_falcor_ManagedBufferPool =
+R"doc(Typed CPU-backed ranges, allocated first-fit across GPU buffer slots.
+Slots are constructed on first allocation, added as needed, and retain
+their capacity after free.)doc";
+
+static const char *mkd_doc_falcor_ManagedBufferPool_Allocation = R"doc()doc";
+
+static const char *mkd_doc_falcor_ManagedBufferPool_Allocation_is_valid = R"doc()doc";
+
+static const char *mkd_doc_falcor_ManagedBufferPool_Allocation_range = R"doc()doc";
+
+static const char *mkd_doc_falcor_ManagedBufferPool_Allocation_slot_index =
+R"doc(Pool-local tuple slot; buffer_index() resolves the shader-visible
+index.)doc";
+
+static const char *mkd_doc_falcor_ManagedBufferPool_ManagedBufferPool = R"doc()doc";
+
+static const char *mkd_doc_falcor_ManagedBufferPool_Slot = R"doc()doc";
+
+static const char *mkd_doc_falcor_ManagedBufferPool_Slot_Slot = R"doc()doc";
+
+static const char *mkd_doc_falcor_ManagedBufferPool_Slot_allocator = R"doc()doc";
+
+static const char *mkd_doc_falcor_ManagedBufferPool_Slot_buffer_index = R"doc()doc";
+
+static const char *mkd_doc_falcor_ManagedBufferPool_Slot_data = R"doc()doc";
+
+static const char *mkd_doc_falcor_ManagedBufferPool_allocate =
+R"doc(Reserve the same element range in buffer_count same-type buffers.
+Allocations with different buffer counts use separate slots within
+this pool. Tuple members occupy consecutive handle-table entries. Zero
+count returns an invalid token.
+
+)doc";
+
+static const char *mkd_doc_falcor_ManagedBufferPool_buffer = R"doc(Resolve after update_buffers; growth can replace the GPU buffer.)doc";
+
+static const char *mkd_doc_falcor_ManagedBufferPool_buffer_index =
+R"doc(Shader-visible buffer index; tuple member n is
+buffer_index(allocation) + n.
+
+)doc";
+
+static const char *mkd_doc_falcor_ManagedBufferPool_data =
+R"doc(Borrowed CPU view of one tuple member; growth of this slot invalidates
+its views.
+
+)doc";
+
+static const char *mkd_doc_falcor_ManagedBufferPool_free = R"doc()doc";
+
+static const char *mkd_doc_falcor_ManagedBufferPool_m_desc = R"doc()doc";
+
+static const char *mkd_doc_falcor_ManagedBufferPool_m_handles = R"doc()doc";
+
+static const char *mkd_doc_falcor_ManagedBufferPool_m_slots = R"doc()doc";
+
+static const char *mkd_doc_falcor_ManagedBufferPool_mutable_data =
+R"doc(Marks the entire allocation dirty. Finish writes before allocating or
+uploading.
+
+)doc";
+
+static const char *mkd_doc_falcor_ManagedBufferPool_slot_count = R"doc()doc";
+
+static const char *mkd_doc_falcor_ManagedBufferPool_update_buffers =
+R"doc(Update GPU buffers and handles, optionally uploading dirty CPU data
+for every slot and tuple member. Skipped dirty ranges are cleared.
+Buffer growth does not preserve existing GPU contents.
+
+)doc";
+
 static const char *mkd_doc_falcor_ManagedVector =
 R"doc(A vector that maintains synchronized host and device copies with dirty
 tracking. ManagedVector provides a convenient way to manage device
@@ -5106,6 +5005,10 @@ side vector and a device-side buffer, tracking which elements have
 been modified to minimize data transfer.)doc";
 
 static const char *mkd_doc_falcor_ManagedVectorDesc = R"doc(ManagedVector descriptor.)doc";
+
+static const char *mkd_doc_falcor_ManagedVectorDesc_default_state =
+R"doc(State restored by RHI at command-buffer boundaries; undefined derives
+it from usage.)doc";
 
 static const char *mkd_doc_falcor_ManagedVectorDesc_label = R"doc(Device buffer label.)doc";
 
@@ -5129,6 +5032,12 @@ R"doc(Device buffer. This is only available if not empty and after calling
 
 )doc";
 
+static const char *mkd_doc_falcor_ManagedVector_capacity =
+R"doc(Host capacity in elements, independent of the device buffer
+allocation.
+
+)doc";
+
 static const char *mkd_doc_falcor_ManagedVector_data =
 R"doc(Host data. Writes through the mutable pointer require explicit dirty
 marking.
@@ -5138,7 +5047,8 @@ marking.
 static const char *mkd_doc_falcor_ManagedVector_data_2 = R"doc()doc";
 
 static const char *mkd_doc_falcor_ManagedVector_ensure_size =
-R"doc(Ensure the buffer has a minimum size. Size must not exceed capacity.
+R"doc(Ensure the buffer has a minimum size within the configured maximum
+byte size.
 
 Args:
     size: New minimum size.
@@ -5167,10 +5077,17 @@ static const char *mkd_doc_falcor_ManagedVector_operator_assign = R"doc()doc";
 
 static const char *mkd_doc_falcor_ManagedVector_operator_assign_2 = R"doc()doc";
 
+static const char *mkd_doc_falcor_ManagedVector_reserve =
+R"doc(Reserve host capacity without changing size, dirty state, or device
+storage. Reallocation invalidates host pointers and references. The
+requested capacity must fit within max_buffer_size bytes.
+
+)doc";
+
 static const char *mkd_doc_falcor_ManagedVector_reset_dirty_range = R"doc(Explicitly reset the dirty range.)doc";
 
 static const char *mkd_doc_falcor_ManagedVector_resize =
-R"doc(Resize buffer to a new size. Size must not exceed capacity.
+R"doc(Resize buffer to a new size within the configured maximum byte size.
 
 Args:
     size: New size.
@@ -5243,6 +5160,8 @@ static const char *mkd_doc_falcor_MaterialSystem_m_data_buffer_handle = R"doc()d
 static const char *mkd_doc_falcor_MaterialSystem_m_data_storage = R"doc()doc";
 
 static const char *mkd_doc_falcor_MaterialSystem_m_free_material_ids = R"doc()doc";
+
+static const char *mkd_doc_falcor_MaterialSystem_m_gltf_context = R"doc()doc";
 
 static const char *mkd_doc_falcor_MaterialSystem_m_material_data = R"doc()doc";
 
@@ -5463,8 +5382,9 @@ static const char *mkd_doc_falcor_Material_mark_dirty_properties = R"doc()doc";
 static const char *mkd_doc_falcor_Material_mark_dirty_resources = R"doc()doc";
 
 static const char *mkd_doc_falcor_Material_material_capabilities =
-R"doc(Combines geometry-property requirements with the material's opacity
-requirements.
+R"doc(Combines geometry-property, opacity, and solid-transmission
+requirements. Unknown material types conservatively require solid
+transmission.
 
 )doc";
 
@@ -5494,8 +5414,8 @@ static const char *mkd_doc_falcor_Material_required_capabilities =
 R"doc(Returns the capabilities required by this material after its last
 update. Includes all generated material outputs and may conservatively
 include unused capabilities. The default implementation reports
-opacity requirements. Materials that access geometry properties must
-declare that requirement.
+opacity and conservatively requires solid transmission. Materials that
+access geometry properties must declare that requirement.
 
 )doc";
 
@@ -6958,6 +6878,27 @@ failure. The GIL remains held for the duration of the callback.
 
 )doc";
 
+static const char *mkd_doc_falcor_RWBufferHandle =
+R"doc(Non-owning shader reference for read-write buffer access. The caller
+must declare unordered-access state on the command encoder and retain
+the referenced resource.)doc";
+
+static const char *mkd_doc_falcor_RWBufferHandle_RWBufferHandle = R"doc(Construct an invalid handle.)doc";
+
+static const char *mkd_doc_falcor_RWBufferHandle_RWBufferHandle_2 = R"doc()doc";
+
+static const char *mkd_doc_falcor_RWBufferHandle_data = R"doc(Data for upload into a GPU RWBufferHandle.)doc";
+
+static const char *mkd_doc_falcor_RWBufferHandle_m_handle_data = R"doc()doc";
+
+static const char *mkd_doc_falcor_RWBufferHandle_slangpy_imports = R"doc()doc";
+
+static const char *mkd_doc_falcor_RWBufferHandle_write_to_cursor = R"doc()doc";
+
+static const char *mkd_doc_falcor_RWBufferHandle_write_to_cursor_2 = R"doc()doc";
+
+static const char *mkd_doc_falcor_RWBufferHandle_write_to_cursor_3 = R"doc()doc";
+
 static const char *mkd_doc_falcor_ReconstructionFilter =
 R"doc(Renderer-owned normalized, nonnegative reconstruction filter, sampled
 by its GPU implementation. Describes a center-relative distribution
@@ -7307,7 +7248,9 @@ static const char *mkd_doc_falcor_RenderLSSGeometries_has_additional_attributes 
 
 static const char *mkd_doc_falcor_RenderLSSGeometries_intersection_mode = R"doc()doc";
 
-static const char *mkd_doc_falcor_RenderLSSGeometries_m_aabb_buffer = R"doc()doc";
+static const char *mkd_doc_falcor_RenderLSSGeometries_m_aabb_buffers = R"doc()doc";
+
+static const char *mkd_doc_falcor_RenderLSSGeometries_m_aabb_work = R"doc()doc";
 
 static const char *mkd_doc_falcor_RenderLSSGeometries_m_additional_attributes = R"doc()doc";
 
@@ -7315,15 +7258,11 @@ static const char *mkd_doc_falcor_RenderLSSGeometries_m_compute_aabbs_kernel = R
 
 static const char *mkd_doc_falcor_RenderLSSGeometries_m_descs = R"doc()doc";
 
-static const char *mkd_doc_falcor_RenderLSSGeometries_m_index_allocator = R"doc()doc";
-
 static const char *mkd_doc_falcor_RenderLSSGeometries_m_indices = R"doc()doc";
 
 static const char *mkd_doc_falcor_RenderLSSGeometries_m_intersection_mode = R"doc()doc";
 
 static const char *mkd_doc_falcor_RenderLSSGeometries_m_pool = R"doc()doc";
-
-static const char *mkd_doc_falcor_RenderLSSGeometries_m_vertex_allocator = R"doc()doc";
 
 static const char *mkd_doc_falcor_RenderLSSGeometries_m_vertices = R"doc()doc";
 
@@ -7587,6 +7526,8 @@ static const char *mkd_doc_falcor_RenderScene_m_compute_inverse_kernel = R"doc()
 
 static const char *mkd_doc_falcor_RenderScene_m_device = R"doc()doc";
 
+static const char *mkd_doc_falcor_RenderScene_m_geometry_buffers = R"doc()doc";
+
 static const char *mkd_doc_falcor_RenderScene_m_geometry_group_pool = R"doc()doc";
 
 static const char *mkd_doc_falcor_RenderScene_m_geometry_instance_descs = R"doc()doc";
@@ -7693,13 +7634,9 @@ static const char *mkd_doc_falcor_RenderTriangleGeometries_m_additional_attribut
 
 static const char *mkd_doc_falcor_RenderTriangleGeometries_m_descs = R"doc()doc";
 
-static const char *mkd_doc_falcor_RenderTriangleGeometries_m_index_allocator = R"doc()doc";
-
 static const char *mkd_doc_falcor_RenderTriangleGeometries_m_indices = R"doc()doc";
 
 static const char *mkd_doc_falcor_RenderTriangleGeometries_m_pool = R"doc()doc";
-
-static const char *mkd_doc_falcor_RenderTriangleGeometries_m_vertex_allocator = R"doc()doc";
 
 static const char *mkd_doc_falcor_RenderTriangleGeometries_m_vertices = R"doc()doc";
 
@@ -7851,6 +7788,10 @@ static const char *mkd_doc_falcor_SceneCapabilityFlags_opacity_evaluation =
 R"doc(Evaluate material opacity when accepting or rejecting ray
 intersections.)doc";
 
+static const char *mkd_doc_falcor_SceneCapabilityFlags_solid_transmission =
+R"doc(Track interiors when a material can transmit through a non-thin
+surface.)doc";
+
 static const char *mkd_doc_falcor_SceneCapabilityPolicy = R"doc(Selects the capabilities supported by a rendering configuration.)doc";
 
 static const char *mkd_doc_falcor_SceneCapabilityPolicy_all =
@@ -7868,6 +7809,12 @@ R"doc(Use caller-specified capabilities, rejecting selections that omit
 scene or consumer requirements.)doc";
 
 static const char *mkd_doc_falcor_SceneConfig = R"doc(Immutable configuration of a live scene.)doc";
+
+static const char *mkd_doc_falcor_SceneConfig_gltf_allowed_features = R"doc(Hard feature cap for native glTF materials.)doc";
+
+static const char *mkd_doc_falcor_SceneConfig_gltf_specialization_mode =
+R"doc(Select how native glTF materials are specialized. Default of balanced
+builds a small number of specializations to cover all requirements.)doc";
 
 static const char *mkd_doc_falcor_SceneConfig_max_mip_count =
 R"doc(Texture size limit as a full mip count (13 allows 4096 for power-of-
@@ -9104,7 +9051,7 @@ static const char *mkd_doc_falcor_Scene_m_required_capabilities =
 R"doc(Capabilities required by synchronized scene materials, excluding
 consumer demand.)doc";
 
-static const char *mkd_doc_falcor_Scene_m_requirements = R"doc(Default immutable snapshot with all capabilities enabled.)doc";
+static const char *mkd_doc_falcor_Scene_m_requirements = R"doc(Internal immutable snapshot with all capabilities enabled.)doc";
 
 static const char *mkd_doc_falcor_Scene_m_requirements_generation =
 R"doc(Globally unique revision assigned at construction and advanced when
@@ -9118,14 +9065,15 @@ static const char *mkd_doc_falcor_Scene_m_scene_shader_object = R"doc(Shader obj
 
 static const char *mkd_doc_falcor_Scene_m_selected_requirements =
 R"doc(Snapshots cached by effective capability selection, populated lazily
-by resolve_requirements(). Cleared when the default snapshot changes.)doc";
+by resolve_requirements(). Cleared when the all-capabilities snapshot
+changes.)doc";
 
 static const char *mkd_doc_falcor_Scene_m_settings_module = R"doc(Slang settings module that specializes scene conventions.)doc";
 
 static const char *mkd_doc_falcor_Scene_m_specialized_settings_modules =
 R"doc(Caches settings modules by capability selection for reuse across
 consumers. Mutable so resolve_requirements() can populate it lazily
-without changing the default requirements.)doc";
+without changing the all-capabilities snapshot.)doc";
 
 static const char *mkd_doc_falcor_Scene_m_texture_manager = R"doc(Texture manager for loading and caching textures.)doc";
 
@@ -9216,8 +9164,10 @@ are conservative. Returns an empty set before the first update.
 )doc";
 
 static const char *mkd_doc_falcor_Scene_requirements =
-R"doc(Shared immutable snapshot with all capabilities enabled. Retained
-snapshots survive scene updates.
+R"doc(Shared immutable snapshot with scene-required capabilities enabled.
+Repeated calls reuse the snapshot cached by effective capability mask;
+no materials are rescanned here. Retained snapshots survive scene
+updates until shader or ray-tracing inputs change.
 
 )doc";
 
@@ -9239,8 +9189,8 @@ static const char *mkd_doc_falcor_Scene_resolve_requirements =
 R"doc(Resolve shader and ray-tracing requirements after the last completed
 update, without modifying the scene. Requests add consumer shader
 operations and material AOV dependencies. Call after update().
-specified_capabilities is used only with
-SceneCapabilityPolicy::specified. Throws for unknown AOVs, unsupported
+SceneCapabilityPolicy::specified requires an explicit
+specified_capabilities value. Throws for unknown AOVs, unsupported
 requirements, or specified selections omitting required capabilities.
 Equivalent effective selections share a snapshot, independently of
 requested output bindings.
@@ -11502,6 +11452,8 @@ static const char *mkd_doc_falcor_detail_apply_import_options = R"doc(Apply gene
 
 static const char *mkd_doc_falcor_detail_as_vector = R"doc(Retrieve the stored vector, throwing on element type mismatch.)doc";
 
+static const char *mkd_doc_falcor_detail_buffer_handle_data = R"doc()doc";
+
 static const char *mkd_doc_falcor_detail_compare_typeid = R"doc()doc";
 
 static const char *mkd_doc_falcor_detail_convert_area_lights_to_geometry =
@@ -11719,6 +11671,10 @@ static const char *mkd_doc_falcor_find_enum_info_adl_25 = R"doc()doc";
 
 static const char *mkd_doc_falcor_find_enum_info_adl_26 = R"doc()doc";
 
+static const char *mkd_doc_falcor_find_enum_info_adl_27 = R"doc()doc";
+
+static const char *mkd_doc_falcor_find_enum_info_adl_28 = R"doc()doc";
+
 static const char *mkd_doc_falcor_first = R"doc()doc";
 
 static const char *mkd_doc_falcor_flip_bit = R"doc()doc";
@@ -11754,6 +11710,8 @@ static const char *mkd_doc_falcor_flip_bit_15 = R"doc()doc";
 static const char *mkd_doc_falcor_flip_bit_16 = R"doc()doc";
 
 static const char *mkd_doc_falcor_flip_bit_17 = R"doc()doc";
+
+static const char *mkd_doc_falcor_flip_bit_18 = R"doc()doc";
 
 static const char *mkd_doc_falcor_fnv_hash_array32 = R"doc()doc";
 
@@ -11812,7 +11770,16 @@ static const char *mkd_doc_falcor_gltf_conversion_unsupported = R"doc()doc";
 
 static const char *mkd_doc_falcor_gltf_conversion_warn = R"doc()doc";
 
+static const char *mkd_doc_falcor_gltf_texture_binding_transform_mask =
+R"doc(Visit bindings in the workflow's fixed slot order without copying
+their transforms. binding_at(index) must return a reference to a
+GLTFTextureBinding.
+
+)doc";
+
 static const char *mkd_doc_falcor_gltf_texture_transform_mask = R"doc()doc";
+
+static const char *mkd_doc_falcor_gltf_texture_transform_mask_2 = R"doc()doc";
 
 static const char *mkd_doc_falcor_gltf_to_gltf =
 R"doc(Convert native glTF inputs without creating a scene material. Returns
@@ -12045,6 +12012,8 @@ static const char *mkd_doc_falcor_is_set_15 = R"doc()doc";
 static const char *mkd_doc_falcor_is_set_16 = R"doc()doc";
 
 static const char *mkd_doc_falcor_is_set_17 = R"doc()doc";
+
+static const char *mkd_doc_falcor_is_set_18 = R"doc()doc";
 
 static const char *mkd_doc_falcor_is_similarity_transform =
 R"doc(Return whether the linear part of an affine transform preserves
@@ -13257,7 +13226,11 @@ static const char *mkd_doc_falcor_mtlx_structured_EmissionUserData_document = R"
 
 static const char *mkd_doc_falcor_mtlx_structured_EmissionUserData_emission_scratch = R"doc()doc";
 
-static const char *mkd_doc_falcor_mtlx_structured_EmissionUserData_force_inline_graph_boundaries = R"doc(Whether graph boundaries must be inlined before CUDA lowering.)doc";
+static const char *mkd_doc_falcor_mtlx_structured_EmissionUserData_force_inline_graph_boundaries =
+R"doc(Whether scalarized complex-mix graph boundaries must disappear before
+CUDA lowering to avoid materializing graph state in local memory.
+
+)doc";
 
 static const char *mkd_doc_falcor_mtlx_structured_EmissionUserData_m_document = R"doc()doc";
 
@@ -15121,6 +15094,8 @@ static const char *mkd_doc_falcor_operator_band_16 = R"doc()doc";
 
 static const char *mkd_doc_falcor_operator_band_17 = R"doc()doc";
 
+static const char *mkd_doc_falcor_operator_band_18 = R"doc()doc";
+
 static const char *mkd_doc_falcor_operator_bnot = R"doc()doc";
 
 static const char *mkd_doc_falcor_operator_bnot_2 = R"doc()doc";
@@ -15154,6 +15129,8 @@ static const char *mkd_doc_falcor_operator_bnot_15 = R"doc()doc";
 static const char *mkd_doc_falcor_operator_bnot_16 = R"doc()doc";
 
 static const char *mkd_doc_falcor_operator_bnot_17 = R"doc()doc";
+
+static const char *mkd_doc_falcor_operator_bnot_18 = R"doc()doc";
 
 static const char *mkd_doc_falcor_operator_bor = R"doc()doc";
 
@@ -15189,6 +15166,8 @@ static const char *mkd_doc_falcor_operator_bor_16 = R"doc()doc";
 
 static const char *mkd_doc_falcor_operator_bor_17 = R"doc()doc";
 
+static const char *mkd_doc_falcor_operator_bor_18 = R"doc()doc";
+
 static const char *mkd_doc_falcor_operator_iand = R"doc()doc";
 
 static const char *mkd_doc_falcor_operator_iand_2 = R"doc()doc";
@@ -15223,6 +15202,8 @@ static const char *mkd_doc_falcor_operator_iand_16 = R"doc()doc";
 
 static const char *mkd_doc_falcor_operator_iand_17 = R"doc()doc";
 
+static const char *mkd_doc_falcor_operator_iand_18 = R"doc()doc";
+
 static const char *mkd_doc_falcor_operator_ior = R"doc()doc";
 
 static const char *mkd_doc_falcor_operator_ior_2 = R"doc()doc";
@@ -15256,6 +15237,8 @@ static const char *mkd_doc_falcor_operator_ior_15 = R"doc()doc";
 static const char *mkd_doc_falcor_operator_ior_16 = R"doc()doc";
 
 static const char *mkd_doc_falcor_operator_ior_17 = R"doc()doc";
+
+static const char *mkd_doc_falcor_operator_ior_18 = R"doc()doc";
 
 static const char *mkd_doc_falcor_optix_AlphaMode = R"doc()doc";
 
@@ -15677,6 +15660,39 @@ lock was acquired, false on timeout.
 )doc";
 
 static const char *mkd_doc_falcor_platform_FileLock_unlock = R"doc(Release the lock. Safe to call even if not locked.)doc";
+
+static const char *mkd_doc_falcor_platform_ScopedGPURealtimePriority =
+R"doc(Temporarily request process-wide GPU REALTIME scheduling priority on
+Windows. Applies to CUDA, Vulkan and D3D12 under WDDM; it does not
+guarantee uninterrupted execution. Construction requests the priority
+immediately and throws if reading or setting it fails. Other platforms
+silently leave scheduling unchanged. Keep the guard's lifetime short:
+realtime priority can make the desktop unresponsive.
+
+This guard is single-use. Nested guards must be closed in reverse
+order; do not overlap guards across threads or change the process GPU
+priority while a guard is alive. Restoration failures are logged
+without throwing. In Python, use with
+falcor2.platform.set_gpu_realtime_priority() for deterministic
+restoration.)doc";
+
+static const char *mkd_doc_falcor_platform_ScopedGPURealtimePriority_ScopedGPURealtimePriority = R"doc()doc";
+
+static const char *mkd_doc_falcor_platform_ScopedGPURealtimePriority_ScopedGPURealtimePriority_2 = R"doc()doc";
+
+static const char *mkd_doc_falcor_platform_ScopedGPURealtimePriority_ScopedGPURealtimePriority_3 = R"doc()doc";
+
+static const char *mkd_doc_falcor_platform_ScopedGPURealtimePriority_close =
+R"doc(Restore the previous priority, logging failures without throwing.
+Repeated calls after success do nothing.
+
+)doc";
+
+static const char *mkd_doc_falcor_platform_ScopedGPURealtimePriority_m_previous_priority = R"doc()doc";
+
+static const char *mkd_doc_falcor_platform_ScopedGPURealtimePriority_operator_assign = R"doc()doc";
+
+static const char *mkd_doc_falcor_platform_ScopedGPURealtimePriority_operator_assign_2 = R"doc()doc";
 
 static const char *mkd_doc_falcor_platform_app_data_directory =
 R"doc(The application data directory.
@@ -17404,6 +17420,12 @@ loaders.
 
 static const char *mkd_doc_falcor_to_handle = R"doc()doc";
 
+static const char *mkd_doc_falcor_to_rw_handle =
+R"doc(Resolve a writable GPU address or UAV descriptor from the current
+buffer.
+
+)doc";
+
 static const char *mkd_doc_falcor_try_get =
 R"doc(Try to get a property value by index without implicit conversions.
 
@@ -17679,6 +17701,23 @@ static const char *mkd_doc_falcor_ui_EditorCommand_label = R"doc()doc";
 
 static const char *mkd_doc_falcor_ui_EditorCommand_shortcut = R"doc()doc";
 
+static const char *mkd_doc_falcor_ui_EditorMenuItem =
+R"doc(A command leaf or submenu. The root and submenus have empty command
+IDs.)doc";
+
+static const char *mkd_doc_falcor_ui_EditorMenuItem_add_command =
+R"doc(Insert a command under a slash-separated category, preserving first-
+appearance order. An empty category inserts at the root; empty path
+segments are rejected.
+
+)doc";
+
+static const char *mkd_doc_falcor_ui_EditorMenuItem_children = R"doc()doc";
+
+static const char *mkd_doc_falcor_ui_EditorMenuItem_command = R"doc()doc";
+
+static const char *mkd_doc_falcor_ui_EditorMenuItem_label = R"doc()doc";
+
 static const char *mkd_doc_falcor_ui_Icon = R"doc(Icons available from the shared atlas.)doc";
 
 static const char *mkd_doc_falcor_ui_IconImage = R"doc(Texture and layout information needed to draw one icon.)doc";
@@ -17783,14 +17822,6 @@ static const char *mkd_doc_falcor_ui_SceneEditor = R"doc()doc";
 
 static const char *mkd_doc_falcor_ui_SceneEditor_2 = R"doc()doc";
 
-static const char *mkd_doc_falcor_ui_SceneEditor_CreatePopup = R"doc()doc";
-
-static const char *mkd_doc_falcor_ui_SceneEditor_CreatePopup_geometry = R"doc()doc";
-
-static const char *mkd_doc_falcor_ui_SceneEditor_CreatePopup_material = R"doc()doc";
-
-static const char *mkd_doc_falcor_ui_SceneEditor_CreatePopup_none = R"doc()doc";
-
 static const char *mkd_doc_falcor_ui_SceneEditor_HelpEntry = R"doc(A single key/description pair shown in the help popup.)doc";
 
 static const char *mkd_doc_falcor_ui_SceneEditor_HelpEntry_description = R"doc()doc";
@@ -17852,8 +17883,6 @@ sections.
 
 )doc";
 
-static const char *mkd_doc_falcor_ui_SceneEditor_add_scene_object_popup = R"doc()doc";
-
 static const char *mkd_doc_falcor_ui_SceneEditor_begin_frame =
 R"doc(Optional explicit ImGuizmo initialization for the current ImGui frame.
 viewport_ui() will initialize ImGuizmo automatically if this was not
@@ -17882,6 +17911,17 @@ static const char *mkd_doc_falcor_ui_SceneEditor_class_name = R"doc()doc";
 static const char *mkd_doc_falcor_ui_SceneEditor_command_menu_item = R"doc()doc";
 
 static const char *mkd_doc_falcor_ui_SceneEditor_component_ui = R"doc()doc";
+
+static const char *mkd_doc_falcor_ui_SceneEditor_create_menu_ui = R"doc()doc";
+
+static const char *mkd_doc_falcor_ui_SceneEditor_create_object =
+R"doc(Create and select a scene-owned object, named from its template's
+label. Keys such as "entity", "camera", and
+"material.StandardMaterial" are case-sensitive; unknown keys throw.
+Camera templates preserve the active camera; scene updates activate
+the first camera if needed.
+
+)doc";
 
 static const char *mkd_doc_falcor_ui_SceneEditor_editor_ui = R"doc(Draw the scene editor UI.)doc";
 
@@ -17940,6 +17980,8 @@ static const char *mkd_doc_falcor_ui_SceneEditor_m_camera_controller = R"doc()do
 
 static const char *mkd_doc_falcor_ui_SceneEditor_m_commands = R"doc()doc";
 
+static const char *mkd_doc_falcor_ui_SceneEditor_m_create_menu = R"doc()doc";
+
 static const char *mkd_doc_falcor_ui_SceneEditor_m_gizmo_frame_initialized = R"doc()doc";
 
 static const char *mkd_doc_falcor_ui_SceneEditor_m_graph_ui_callback = R"doc()doc";
@@ -17955,8 +17997,6 @@ static const char *mkd_doc_falcor_ui_SceneEditor_m_layout_initialized = R"doc()d
 static const char *mkd_doc_falcor_ui_SceneEditor_m_looping = R"doc()doc";
 
 static const char *mkd_doc_falcor_ui_SceneEditor_m_outliner_search = R"doc()doc";
-
-static const char *mkd_doc_falcor_ui_SceneEditor_m_pending_create_popup = R"doc()doc";
 
 static const char *mkd_doc_falcor_ui_SceneEditor_m_playing = R"doc(Animation transport state.)doc";
 
@@ -18030,6 +18070,8 @@ static const char *mkd_doc_falcor_ui_SceneEditor_scene = R"doc(The scene being e
 
 static const char *mkd_doc_falcor_ui_SceneEditor_scene_collection_combo = R"doc()doc";
 
+static const char *mkd_doc_falcor_ui_SceneEditor_scene_object_name_ui = R"doc()doc";
+
 static const char *mkd_doc_falcor_ui_SceneEditor_scene_object_node = R"doc()doc";
 
 static const char *mkd_doc_falcor_ui_SceneEditor_scene_object_ui = R"doc()doc";
@@ -18102,8 +18144,6 @@ When playing, advances the scene time and optionally loops.
 )doc";
 
 static const char *mkd_doc_falcor_ui_SceneEditor_validate_selection = R"doc()doc";
-
-static const char *mkd_doc_falcor_ui_SceneEditor_viewport_display_menu_ui = R"doc()doc";
 
 static const char *mkd_doc_falcor_ui_SceneEditor_viewport_gizmo = R"doc()doc";
 
@@ -18209,6 +18249,20 @@ static const char *mkd_doc_falcor_ui_SceneInteractionController_set_pointer_owne
 static const char *mkd_doc_falcor_ui_SceneInteractionController_set_scene = R"doc()doc";
 
 static const char *mkd_doc_falcor_ui_SceneInteractionController_update_selection_overlay = R"doc(Update selection overlay if the editor's selection changed.)doc";
+
+static const char *mkd_doc_falcor_ui_SceneObjectTemplate = R"doc()doc";
+
+static const char *mkd_doc_falcor_ui_SceneObjectTemplate_category = R"doc(Slash-separated menu category; empty places the command at the root.)doc";
+
+static const char *mkd_doc_falcor_ui_SceneObjectTemplate_command_id = R"doc()doc";
+
+static const char *mkd_doc_falcor_ui_SceneObjectTemplate_create =
+R"doc(Create a scene-owned object; naming and editor selection are handled
+by the caller.)doc";
+
+static const char *mkd_doc_falcor_ui_SceneObjectTemplate_key = R"doc()doc";
+
+static const char *mkd_doc_falcor_ui_SceneObjectTemplate_label = R"doc()doc";
 
 static const char *mkd_doc_falcor_ui_ScenePicker = R"doc()doc";
 
@@ -18617,6 +18671,12 @@ changed.
 
 static const char *mkd_doc_falcor_ui_property_editor = R"doc(Editor for a single property. Returns true if value changed.)doc";
 
+static const char *mkd_doc_falcor_ui_scene_object_templates =
+R"doc(Return the built-in templates in menu order. The view and its entries
+have static lifetime.
+
+)doc";
+
 static const char *mkd_doc_falcor_ui_toggle_button = R"doc()doc";
 
 static const char *mkd_doc_falcor_ui_transform_editor =
@@ -18792,9 +18852,10 @@ Returns:
 )doc";
 
 static const char *mkd_doc_falcor_update_imported_light =
-R"doc(Shared source-light conversion for importers. Reuses a compatible
-component; otherwise removes previous and creates its replacement. Set
-the entity transform first: point power depends on world-space scale.
+R"doc(Shared source-light conversion for scene import and live Hydra edits.
+Reuses a compatible component; otherwise removes previous and creates
+its replacement. Set the entity transform first: point power depends
+on world-space scale.
 
 )doc";
 
@@ -18822,6 +18883,19 @@ R"doc(Nonempty USD evaluation schedule; motion-disabled imports use a single
 Default time.)doc";
 
 static const char *mkd_doc_falcor_usd_importer_UsdImporterContext = R"doc()doc";
+
+static const char *mkd_doc_falcor_usd_importer_UsdImporterContext_TransformNodes =
+R"doc(Usually only authored is valid and holds the complete local transform.
+For potentially animated transforms with an effective pivot operation,
+pivot and pivot_inverse are also valid: they surround authored with
+T(pivot) and T(-pivot), while authored holds the
+translation/rotation/scale.)doc";
+
+static const char *mkd_doc_falcor_usd_importer_UsdImporterContext_TransformNodes_authored = R"doc()doc";
+
+static const char *mkd_doc_falcor_usd_importer_UsdImporterContext_TransformNodes_pivot = R"doc()doc";
+
+static const char *mkd_doc_falcor_usd_importer_UsdImporterContext_TransformNodes_pivot_inverse = R"doc()doc";
 
 static const char *mkd_doc_falcor_usd_importer_UsdImporterContext_UsdImporterContext = R"doc()doc";
 
@@ -18870,6 +18944,10 @@ future).
 )doc";
 
 static const char *mkd_doc_falcor_usd_importer_UsdImporterContext_add_texture_to_scene = R"doc(Add a texture to the scene and return its index)doc";
+
+static const char *mkd_doc_falcor_usd_importer_UsdImporterContext_add_transform = R"doc()doc";
+
+static const char *mkd_doc_falcor_usd_importer_UsdImporterContext_add_transform_nodes = R"doc()doc";
 
 static const char *mkd_doc_falcor_usd_importer_UsdImporterContext_current_node_idx = R"doc(Get the current node index, -1 if none is present.)doc";
 
@@ -18935,9 +19013,10 @@ static const char *mkd_doc_falcor_usd_importer_UsdImporterContext_m_node_idx_sta
 
 static const char *mkd_doc_falcor_usd_importer_UsdImporterContext_m_parallel_adds = R"doc()doc";
 
-static const char *mkd_doc_falcor_usd_importer_UsdImporterContext_m_prim_path_to_node_idx =
-R"doc(Maps Usd prim paths to their node index in the ImporterScene (for
-animation).)doc";
+static const char *mkd_doc_falcor_usd_importer_UsdImporterContext_m_prim_path_to_nodes =
+R"doc(A USD prim can have both an ordinary scene node and a separately
+imported prototype node. Animation targets the authored TRS node and
+optional pivot helpers.)doc";
 
 static const char *mkd_doc_falcor_usd_importer_UsdImporterContext_m_prototype_source_paths =
 R"doc(Representative paths resolved once, before asynchronous extraction
@@ -19248,7 +19327,15 @@ shaders.
 
 )doc";
 
+static const char *mkd_doc_falcor_write_gltf_texture_binding_transforms = R"doc(Write active transform rows in the same fixed slot order as the mask.)doc";
+
+static const char *mkd_doc_falcor_write_gltf_texture_binding_transforms_2 = R"doc()doc";
+
 static const char *mkd_doc_falcor_write_gltf_texture_transforms = R"doc()doc";
+
+static const char *mkd_doc_falcor_write_gltf_texture_transforms_2 = R"doc()doc";
+
+static const char *mkd_doc_falcor_write_gltf_texture_transforms_3 = R"doc()doc";
 
 static const char *mkd_doc_formatter = R"doc()doc";
 

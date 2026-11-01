@@ -1,0 +1,45 @@
+--- a/tests/python/conftest.py
++++ b/tests/python/conftest.py
+@@ -17,6 +17,11 @@
+ import falcor2 as f2
+ import falcor2.testing.helpers as helpers
+ from falcor2.testing.image_test_plugin import ImageTestPlugin
++from falcor2.testing.benchmark import (
++    add_benchmark_options,
++    benchmark_image_test,
++    BenchmarkPlugin,
++)
+ from falcor2.testing.shader_test_plugin import SlangTestFile, clear_dispatcher_cache
+ from falcor2.testing.telemetry_plugin import (
+     DEFAULT_TELEMETRY_OUTPUT_PATH,
+@@ -40,6 +45,7 @@
+ 
+ def pytest_addoption(parser: pytest.Parser):
+     """Add command line options for testing."""
++    add_benchmark_options(parser)
+     parser.addoption(
+         "--image-tests-generate",
+         action="store_true",
+@@ -119,10 +125,14 @@
+ 
+ def pytest_configure(config: pytest.Config):
+     """Configure the image test plugin."""
++    if config.getoption("--benchmark-only"):
++        config.option.benchmark = True
++    config.pluginmanager.register(BenchmarkPlugin(config), "falcor2_benchmark")
+     helpers.configure_test_device_options(
+         module_cache_enabled=bool(config.getoption("--module-cache")),
+         shader_cache_enabled=bool(config.getoption("--shader-cache")),
+-        compilation_reports_enabled=bool(config.getoption("--telemetry")),
++        compilation_reports_enabled=bool(config.getoption("--telemetry"))
++        or bool(config.getoption("--benchmark")),
+         cache_dir=config.getoption("--module-and-shader-cache-dir"),
+     )
+     config.pluginmanager.register(ImageTestPlugin(config), "image_test_plugin")
+@@ -304,3 +314,6 @@
+ def _load_helmet_scene_entry(device: spy.Device) -> _HelmetSceneEntry:
+     scene = _load_helmet_scene(device)
+     return _HelmetSceneEntry(scene=scene, generation=scene.update_generation)
++
++
++# These benchmark assets do not exist in this historical data revision.

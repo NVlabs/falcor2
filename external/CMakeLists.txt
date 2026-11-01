@@ -5,7 +5,6 @@ set(SGL_BUILD_STANDALONE OFF) # Use the image libraries already supplied by Falc
 
 add_subdirectory(slangpy EXCLUDE_FROM_ALL)
 
-
 # -----------------------------------------------------------------------------
 # MDL SDK
 # -----------------------------------------------------------------------------

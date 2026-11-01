@@ -57,6 +57,7 @@ void Light::set_intensity(float intensity)
 
 void Light::set_exposure(float exposure)
 {
+    exposure = std::clamp(exposure, MIN_EXPOSURE, MAX_EXPOSURE);
     if (exposure != m_exposure) {
         m_exposure = exposure;
         mark_dirty(DirtyFlags::render_state);
@@ -219,12 +220,14 @@ void EnvMapLight::on_load_resources()
     if (!m_env_map_loaded) {
         if (m_env_map_texture) {
             m_env_map_texture_handle = m_scene->texture_manager()->register_texture({.texture = m_env_map_texture});
-        } else {
+        } else if (!m_env_map_path.empty()) {
             m_env_map_texture_handle = m_scene->texture_manager()->load_texture({
                 .path = m_env_map_path,
                 .flags = TextureLoadFlags::environment,
                 .load_deferred = true,
             });
+        } else {
+            m_env_map_texture_handle = {};
         }
         m_env_map_loaded = true;
         m_importance_map_dirty = true;
@@ -243,6 +246,12 @@ void EnvMapLight::set_pole_axis(EnvMapPoleAxis pole_axis)
 void EnvMapLight::update(SceneUpdateContext& ctx)
 {
     if (m_importance_map_dirty) {
+        // An unassigned map stays editable but contributes no illumination.
+        if (!m_env_map_texture_handle) {
+            m_importance_map_texture = nullptr;
+            m_importance_map_dirty = false;
+            return;
+        }
         if (!m_build_importance_map_kernel) {
             m_build_importance_map_kernel = m_scene->device()->create_compute_kernel({
                 .program = m_scene->device()
@@ -293,7 +302,8 @@ void EnvMapLight::write_to_cursor_impl(CursorT cursor) const
     cursor["world_from_object"] = world_from_object;
     cursor["scale"] = evaluate_emission();
     cursor["env_map_texture_handle"] = m_env_map_texture_handle;
-    cursor["importance_map_texture"] = m_importance_map_texture->descriptor_handle_ro();
+    cursor["importance_map_texture"]
+        = m_importance_map_texture ? m_importance_map_texture->descriptor_handle_ro() : sgl::DescriptorHandle{};
 }
 
 template void EnvMapLight::write_to_cursor_impl(sgl::BufferElementCursor cursor) const;

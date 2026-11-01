@@ -21,3 +21,15 @@ uint test_handle_flag_conversion(TextureHandle<float4, uint(TextureHandleFlags::
     TextureHandle<float4, uint(TextureHandleFlags::udim)> converted_handle = { handle };
     return converted_handle.data;
 }
+
+float2 test_divergent_2d(uint packed_handle)
+{
+    TextureHandle handle = { packed_handle };
+    return float2(handle.sample(ExplicitLodSampler(), float2(0.375, 0.5)).x, handle.load(int2(0)).x);
+}
+
+float2 test_divergent_3d(uint packed_handle)
+{
+    TextureHandle handle = { packed_handle };
+    return float2(handle.sample(ExplicitLodSampler(), float3(0.375, 0.5, 0.5)).x, handle.load(int3(0)).x);
+}

@@ -178,11 +178,8 @@ public struct OpenPBRMaterialInstance : IMaterialInstance
     }
 
 
-    public BSDFEval eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both, S : ISampleGenerator>(
-        const SurfaceInteraction si,
-        const float3 wo_ws,
-        inout S sg
-    )
+    public BSDFEval
+    eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both>(const SurfaceInteraction si, const float3 wo_ws)
     {
         if (Hints == BSDFEvalHints::none)
             return BSDFEval();
@@ -198,14 +195,14 @@ public struct OpenPBRMaterialInstance : IMaterialInstance
         return result;
     }
 
-    public bool sample<S : ISampleGenerator>(const SurfaceInteraction si, inout S sg, out MaterialSample sample)
+    public bool sample(const SurfaceInteraction si, const MaterialSampleInput input, out MaterialSample sample)
     {
         sample = {};
 
         const OpenPBR_PreparedBsdf bsdf = prepare_bsdf(si);
         OpenPBR_DiffuseSpecular weight = {};
         OpenPBR_BsdfLobeType sampled_type = OpenPBR_BsdfLobeTypeNone;
-        openpbr_sample(bsdf, next_float3(sg), sample.wo_ws, weight, sample.pdf, sampled_type);
+        openpbr_sample(bsdf, float3(input.u_lobe, input.u_dir), sample.wo_ws, weight, sample.pdf, sampled_type);
         if (sample.pdf <= 0.0)
             return false;
 

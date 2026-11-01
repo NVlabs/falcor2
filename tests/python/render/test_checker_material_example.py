@@ -53,18 +53,13 @@ def test_checker_material_example(device_type: spy.DeviceType) -> None:
     assert any(module.name == required_module.name for module in modules)
 
     module, helper = load_scene_sampling_module(device, scene)
-    eval_simple = (
-        module["material_eval_simple<TinyUniformSampleGenerator>"]
-        .as_func()
-        .write(helper.bind_scene)
-    )
+    eval_simple = module["material_eval_simple"].as_func().write(helper.bind_scene)
 
-    seed = spy.uint3(7, 0, 7)
     wi = spy.float3(0, 1, 0)
     wo = spy.float3(0, 1, 0)
 
     def eval_albedo(uvs: spy.float2) -> spy.float3:
-        result = cast(spy.float3, eval_simple(seed, material, uvs, wi, wo))
+        result = cast(spy.float3, eval_simple(material, uvs, wi, wo))
         return result * np.pi
 
     assert eval_albedo(spy.float2(0.50, 0.50)) == pytest.approx(spy.float3(0.92, 0.62, 0.24))

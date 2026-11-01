@@ -129,6 +129,14 @@ void FileLock::unlock()
     m_locked = false;
 }
 
+// -------------------------------------------------------------------------------------------------
+// GPU scheduling
+// -------------------------------------------------------------------------------------------------
+
+ScopedGPURealtimePriority::ScopedGPURealtimePriority() = default;
+
+void ScopedGPURealtimePriority::close() noexcept { }
+
 } // namespace falcor::platform
 
 #endif // SGL_LINUX

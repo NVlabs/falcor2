@@ -118,7 +118,12 @@ SceneCapabilities StandardMaterial::required_capabilities() const
     bool uses_geometry_properties = m_use_vertex_color || m_base_color_texture_texcoord != 0
         || m_metallic_roughness_texture_texcoord != 0 || m_normal_texture_texcoord != 0
         || m_emissive_texture_texcoord != 0 || m_transmission_texture_texcoord != 0;
-    return material_capabilities(uses_geometry_properties);
+    // The specular lobe remains selectable when its tint is black; stay conservative.
+    const bool has_diffuse_transmission = m_diffuse_transmission_factor > 0.h
+        && (m_transmission_factor.x > 0.h || m_transmission_factor.y > 0.h || m_transmission_factor.z > 0.h);
+    const bool requires_solid_transmission
+        = !m_thin_walled && (m_specular_transmission_factor > 0.h || has_diffuse_transmission);
+    return material_capabilities(uses_geometry_properties, requires_solid_transmission);
 }
 
 template<typename CursorT>

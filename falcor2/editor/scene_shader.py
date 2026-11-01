@@ -25,16 +25,16 @@ class SceneShaderHelper:
         scene: fc.Scene,
         module: str | spy.Module,
         *,
-        policy: fc.SceneCapabilityPolicy = fc.SceneCapabilityPolicy.all,
-        specified_capabilities: fc.SceneCapabilities = fc.SceneCapabilities.all(),
+        policy: fc.SceneCapabilityPolicy = fc.SceneCapabilityPolicy.required,
+        specified_capabilities: fc.SceneCapabilities | None = None,
         material_aovs: Sequence[str] = (),
         required_capabilities: fc.SceneCapabilities = fc.SceneCapabilities(),
     ) -> tuple[spy.Module, fc.SceneRequirements]:
         """Return the linked module and the exact requirements snapshot used to compose it.
 
-        Call after scene.update(). Selection defaults to all capabilities. AOV names and
+        Call after scene.update(). Selection defaults to required capabilities. AOV names and
         required_capabilities describe consumer demand independently of output storage.
-        specified_capabilities is used only with SceneCapabilityPolicy.specified.
+        SceneCapabilityPolicy.specified requires specified_capabilities.
         Use the returned snapshot for type conformances and ray-tracing setup. Unchanged
         scene generations and demand reuse resolution; failed preparation preserves the
         previous module, requirements, and bound scene.

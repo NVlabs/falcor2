@@ -334,6 +334,170 @@ TEST_CASE_GPU("frame selected uses entity position when geometry bounds are unav
     }
 }
 
+TEST_CASE_GPU("editor object templates create named empty entities and materials")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    auto editor = make_ref<ui::SceneEditor>();
+    editor->set_scene(scene);
+
+    const uint64_t initial_version = editor->selection_version();
+    Entity* entity = editor->create_object("entity")->as<Entity>();
+    REQUIRE(entity);
+    CHECK_EQ(entity->name(), "Empty Entity");
+    CHECK(entity->components().empty());
+    CHECK_EQ(entity->parent(), nullptr);
+    CHECK_EQ(entity->transform().translation(), float3(0.f));
+    CHECK_EQ(editor->selected_object(), entity);
+    CHECK_EQ(editor->selection_version(), initial_version + 1);
+
+    struct MaterialCase {
+        std::string_view type;
+        std::string_view name;
+    };
+    constexpr std::array materials{
+        MaterialCase{"EmissionOnlyMaterial", "Emission Only Material"},
+        MaterialCase{"OpenPBRMaterial", "OpenPBR Material"},
+        MaterialCase{"StandardMaterial", "Standard Material"},
+        MaterialCase{"StandardSpecGlossMaterial", "Standard Specular-Glossiness Material"},
+        MaterialCase{"UnlitMaterial", "Unlit Material"},
+    };
+    for (const auto& entry : materials) {
+        CAPTURE(entry.type);
+        const uint64_t version = editor->selection_version();
+        Material* material = editor->create_object(std::string("material.").append(entry.type))->as<Material>();
+        REQUIRE(material);
+        CHECK_EQ(editor->selected_object(), material);
+        CHECK_EQ(editor->selection_version(), version + 1);
+        CHECK_EQ(std::string_view(material->class_name()), entry.type);
+        CHECK_EQ(material->name(), entry.name);
+        CHECK_EQ(material->scene(), scene.get());
+    }
+    CHECK_EQ(editor->selection_version(), initial_version + 1 + materials.size());
+
+    SceneObject* selected = editor->selected_object();
+    CHECK_THROWS(editor->create_object("material.MDLMaterial"));
+    CHECK_THROWS(editor->create_object("material.MaterialXMaterial"));
+    CHECK_EQ(editor->selected_object(), selected);
+    CHECK_EQ(editor->selection_version(), initial_version + 1 + materials.size());
+    CHECK_EQ(scene->materials().size(), materials.size());
+    CHECK_EQ(scene->entities().size(), 1);
+    CHECK_EQ(scene->components().size(), 0);
+}
+
+TEST_CASE_GPU("editor entity templates create and select complete objects")
+{
+    struct TemplateCase {
+        std::string_view key;
+        std::string_view name;
+        std::string_view component_type;
+    };
+    constexpr std::array cases{
+        TemplateCase{"camera", "Camera", "Camera"},
+        TemplateCase{"point_light", "Point Light", "PointLight"},
+        TemplateCase{"spot_light", "Spot Light", "PointLight"},
+        TemplateCase{"distant_light", "Distant Light", "DistantLight"},
+        TemplateCase{"rect_light", "Rect Light", "RectLight"},
+        TemplateCase{"disk_light", "Disk Light", "DiskLight"},
+        TemplateCase{"sphere_light", "Sphere Light", "SphereLight"},
+        TemplateCase{"cylinder_light", "Cylinder Light", "CylinderLight"},
+        TemplateCase{"constant_light", "Constant Light", "ConstantLight"},
+        TemplateCase{"environment_light", "Environment Map", "EnvMapLight"},
+    };
+
+    auto scene = Scene::create(ref(ctx.device));
+    Entity* view_entity = scene->create_entity();
+    Camera* view_camera = view_entity->create_component<Camera>();
+    scene->set_active_camera(view_camera);
+    auto editor = make_ref<ui::SceneEditor>();
+    editor->set_scene(scene);
+
+    for (const auto& entry : cases) {
+        CAPTURE(entry.name);
+        const uint64_t version = editor->selection_version();
+        Entity* entity = editor->create_object(entry.key)->as<Entity>();
+        REQUIRE(entity);
+        CHECK_EQ(editor->selected_object(), entity);
+        CHECK_EQ(editor->selection_version(), version + 1);
+        CHECK_EQ(entity->name(), entry.name);
+        CHECK_EQ(entity->scene(), scene.get());
+        CHECK_EQ(entity->parent(), nullptr);
+        CHECK_EQ(entity->transform().translation(), float3(0.f));
+        REQUIRE_EQ(entity->components().size(), 1);
+        Component* component = entity->components().front();
+        CHECK_EQ(component->entity(), entity);
+        CHECK_EQ(std::string_view(component->class_name()), entry.component_type);
+        CHECK_EQ(scene->active_camera(), view_camera);
+        if (auto* point = component->as<PointLight>()) {
+            CHECK_EQ(point->enable_shaping(), entry.key == "spot_light");
+            if (entry.key == "spot_light") {
+                CHECK_EQ(point->shaping_cone_angle(), 30.f);
+                CHECK_EQ(point->shaping_cone_softness(), 0.2f);
+            }
+        }
+    }
+    CHECK_EQ(scene->entities().size(), cases.size() + 1);
+    scene->update();
+    CHECK_EQ(scene->active_camera(), view_camera);
+}
+
+TEST_CASE_GPU("editor camera template participates in automatic camera activation")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    auto editor = make_ref<ui::SceneEditor>();
+    editor->set_scene(scene);
+    Entity* entity = editor->create_object("camera")->as<Entity>();
+    REQUIRE(entity);
+    Camera* camera = entity->components().front()->as<Camera>();
+    REQUIRE(camera);
+    scene->update();
+    CHECK_EQ(scene->active_camera(), camera);
+}
+
+TEST_CASE_GPU("editor environment template updates without an assigned texture")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    auto editor = make_ref<ui::SceneEditor>();
+    editor->set_scene(scene);
+    const uint64_t version = editor->selection_version();
+    Entity* entity = editor->create_object("environment_light")->as<Entity>();
+    REQUIRE(entity);
+    CHECK_EQ(entity->name(), "Environment Map");
+    CHECK_EQ(editor->selected_object(), entity);
+    CHECK_EQ(editor->selection_version(), version + 1);
+    REQUIRE_EQ(entity->components().size(), 1);
+    auto* light = entity->components().front()->as<EnvMapLight>();
+    REQUIRE(light);
+    CHECK_EQ(light->entity(), entity);
+    CHECK(light->env_map_path().empty());
+    CHECK(light->active());
+    scene->update();
+    scene->update();
+    CHECK_EQ(editor->selected_object(), entity);
+}
+
+TEST_CASE_GPU("editor rejects invalid creation requests without changing selection")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    auto editor = make_ref<ui::SceneEditor>();
+    CHECK_THROWS(editor->create_object("entity"));
+    CHECK_THROWS(editor->create_object("camera"));
+    CHECK_THROWS(editor->create_object("environment_light"));
+    CHECK_THROWS(editor->create_object("material.StandardMaterial"));
+    CHECK_EQ(editor->selection_version(), 0);
+    editor->set_scene(scene);
+    SceneObject* selected = editor->create_object("entity");
+    const uint64_t version = editor->selection_version();
+    CHECK_THROWS(editor->create_object("unknown"));
+    CHECK_THROWS(editor->create_object(""));
+    CHECK_THROWS(editor->create_object("Camera"));
+    CHECK_THROWS(editor->create_object("material.Unknown"));
+    CHECK_EQ(scene->entities().size(), 1);
+    CHECK_EQ(scene->components().size(), 0);
+    CHECK_EQ(scene->materials().size(), 0);
+    CHECK_EQ(editor->selected_object(), selected);
+    CHECK_EQ(editor->selection_version(), version);
+}
+
 TEST_CASE_GPU("frame selected command updates the active camera")
 {
     auto scene = Scene::create(ref(ctx.device));

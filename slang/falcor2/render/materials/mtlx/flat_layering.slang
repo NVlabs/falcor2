@@ -204,13 +204,12 @@ public BsdfCompatibilityAlbedo bsdf_compatibility_albedo(
     return result;
 }
 
-public BSDFEval eval_bsdf_with_pdf<TBsdf : IBSDF, S : ISampleGenerator>(
+public BSDFEval eval_bsdf_with_pdf<TBsdf : IBSDF>(
     TBsdf bsdf,
     const float3 bsdf_weight,
     Frame bsdf_frame,
     const float3 wi,
     const float3 wo,
-    inout S sg,
     const BSDFContext bc
 )
 {
@@ -219,19 +218,19 @@ public BSDFEval eval_bsdf_with_pdf<TBsdf : IBSDF, S : ISampleGenerator>(
     }
     float3 local_wi = bsdf_frame.to_local(wi);
     float3 local_wo = bsdf_frame.to_local(wo);
-    BSDFEval result = bsdf.eval_with_pdf(local_wi, local_wo, sg, bc);
+    BSDFEval result = bsdf.eval_with_pdf(local_wi, local_wo, bc);
     result.value *= bsdf_weight;
     return result;
 }
 
-public bool sample_bsdf<TBsdf : IBSDF, S : ISampleGenerator>(
+public bool sample_bsdf<TBsdf : IBSDF>(
     TBsdf bsdf,
     const float3 bsdf_weight,
     Frame bsdf_frame,
     const float3 wi,
-    out BSDFSample sample,
-    inout S sg,
-    const BSDFContext bc
+    const BSDFSampleInput input,
+    const BSDFContext bc,
+    out BSDFSample sample
 )
 {
     sample = {};
@@ -241,7 +240,7 @@ public bool sample_bsdf<TBsdf : IBSDF, S : ISampleGenerator>(
     }
     float3 local_wi = bsdf_frame.to_local(wi);
     BSDFSample local_sample = {};
-    bool valid = bsdf.sample(local_wi, local_sample, sg, bc);
+    bool valid = bsdf.sample(local_wi, input, bc, local_sample);
     if (!valid)
         return false;
     sample = local_sample;

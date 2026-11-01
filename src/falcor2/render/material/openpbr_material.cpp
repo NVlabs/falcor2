@@ -409,7 +409,9 @@ SceneCapabilities OpenPBRMaterial::required_capabilities() const
         = m_use_vertex_color || m_opacity_texture_texcoord != 0 || m_normal_texture_texcoord != 0;
     for (const Attribute& attribute : m_attributes)
         uses_geometry_properties |= attribute.texture_texcoord != 0;
-    return material_capabilities(uses_geometry_properties);
+    const bool requires_solid_transmission
+        = !m_geometry_thin_walled && attribute_by_name("transmission_weight").get_float() > 0.f;
+    return material_capabilities(uses_geometry_properties, requires_solid_transmission);
 }
 
 template<typename CursorT>

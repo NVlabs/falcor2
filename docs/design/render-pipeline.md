@@ -244,6 +244,8 @@ needs.
   `src/falcor2_ext/render/reconstruction_filter.cpp` - native reflection, validation, generations, and Python bindings.
 - `slang/falcor2/render/reconstruction_filter.slang` - shared interface, sample result, concrete filter structs, and sampling maps.
 - `falcor2/extensions/reconstructionfiltermarshall.py` - SlangPy interface-argument resolution and native cursor marshalling.
+- `src/internal/scene_test/scene_test.cpp` and `src/internal/scene_test/scene_test.slang` - native filter specialization
+  through the generated constants module and binding inside `g_params`.
 - `falcor2/utils/jitter.py` and `examples/pathtracer/dlss.py` - shared frame jitter and the SR demo's sampling policy.
 - `falcor2/rendernodes/accumulator_node.py`, `falcor2/rendernodes/reweighting_accumulator_node.py`, and
   `falcor2/rendernodes/tonemapper_node.py` - temporal color histories, weighted resolve, exposure, and display

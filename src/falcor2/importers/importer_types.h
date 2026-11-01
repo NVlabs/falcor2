@@ -817,6 +817,8 @@ struct FALCOR_API ImporterCamera {
     float focal_length = 50.f;
     /// F-stop value.
     float fstop = 8.f;
+    /// Exposure compensation in stops: +1 doubles rendered RGB; -1 halves it.
+    float exposure = 0.f;
     /// Sensor size (millimeters) in fov_direction.
     float sensor_size_mm = 24.f;
     /// Whether thin-lens depth of field is enabled.

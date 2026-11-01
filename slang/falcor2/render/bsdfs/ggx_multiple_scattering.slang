@@ -43,13 +43,10 @@ public struct GGXMultipleScatteringBRDF : IBSDF, IDifferentiable
     }
 
     [Differentiable]
-    public override float3 eval<S : ISampleGenerator>(float3 wi, float3 wo, inout S sg, BSDFContext bc)
-    {
-        return eval_with_pdf(wi, wo, sg, bc).value;
-    }
+    public override float3 eval(float3 wi, float3 wo, BSDFContext bc) { return eval_with_pdf(wi, wo, bc).value; }
 
     [Differentiable]
-    public BSDFEval eval_with_pdf<S : ISampleGenerator>(float3 wi, float3 wo, inout S sg, BSDFContext bc)
+    public BSDFEval eval_with_pdf(float3 wi, float3 wo, BSDFContext bc)
     {
         if (min(wi.z, wo.z) < BSDF_MIN_COS_THETA || average_energy >= 1.0)
             return BSDFEval();
@@ -60,16 +57,17 @@ public struct GGXMultipleScatteringBRDF : IBSDF, IDifferentiable
         return BSDFEval(value, pdf);
     }
 
-    public bool sample<S : ISampleGenerator>(float3 wi, out BSDFSample sample, inout S sg, BSDFContext bc)
+    public bool sample(float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
-        sample.wo = square_to_cosine_hemisphere_concentric(next_float2(sg));
+        sample.wo = square_to_cosine_hemisphere_concentric(input.u_dir);
         sample.pdf = square_to_cosine_hemisphere_concentric_pdf(sample.wo);
         sample.flags = BSDFFlags::diffuse_reflection;
         if (min(wi.z, sample.wo.z) < BSDF_MIN_COS_THETA)
             return false;
         sample.weight = float3(1.0);
-        BSDFEval evaluated = eval_with_pdf(wi, sample.wo, sg, bc);
+
+        BSDFEval evaluated = eval_with_pdf(wi, sample.wo, bc);
         if (evaluated.pdf <= 0.0)
             return false;
         sample.weight = evaluated.value / evaluated.pdf;

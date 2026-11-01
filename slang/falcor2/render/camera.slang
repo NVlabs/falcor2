@@ -17,6 +17,7 @@ public struct Camera
     public float3 image_w;
     public float aperture_radius;
     public float focus_distance;
+    public float exposure_scale;
 
     private float3 get_unnormalized_ray_direction(float2 uv)
     {
@@ -53,10 +54,11 @@ public struct Camera
         return uv * float2(dims);
     }
 
-    public float2 get_motion_vector(Camera previous_camera, float3 pos_ws)
+    /// Pixel displacement from the current point to its previous-frame world position.
+    public float2 get_motion_vector(Camera previous_camera, float3 pos_ws, float3 prev_pos_ws)
     {
         float2 current_pixel = this.project_world_to_pixel(pos_ws);
-        float2 previous_pixel = previous_camera.project_world_to_pixel(pos_ws);
+        float2 previous_pixel = previous_camera.project_world_to_pixel(prev_pos_ws);
         return previous_pixel - current_pixel;
     }
 };

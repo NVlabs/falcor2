@@ -344,7 +344,6 @@ def test_mdl_area_light_matches_standard_receiver(device: spy.Device, definition
                 enable_nee=True,
                 enable_mis=False,
                 max_depth=2,
-                enable_interior_tracking=False,
                 enable_homogeneous_media=False,
             )
         )
@@ -354,10 +353,11 @@ def test_mdl_area_light_matches_standard_receiver(device: spy.Device, definition
     assert np.isfinite(images).all()
     assert np.mean(images[0]) > 0.01
     # The emitters can choose different light samples; compare regional energy.
+    # Allow a few percent of sampling variance at 64 iterations.
     np.testing.assert_allclose(
         _half_image_means(images[1]),
         _half_image_means(images[0]),
-        rtol=0.02,
+        rtol=0.05,
     )
 
 

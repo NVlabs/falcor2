@@ -13,8 +13,7 @@ public float3 density(float alpha, float3 h)
 public float4 reflection(float alpha, float3 wo)
 {
     SpecularMicrofacetBRDF bsdf = SpecularMicrofacetBRDF(float3(1.0), alpha, BSDFFlags::all);
-    UniformSampleGenerator sg = UniformSampleGenerator(0);
-    BSDFEval result = bsdf.eval_with_pdf(float3(0.0, 0.0, 1.0), wo, sg, BSDFContext());
+    BSDFEval result = bsdf.eval_with_pdf(float3(0.0, 0.0, 1.0), wo, BSDFContext());
     return float4(result.value, result.pdf);
 }
 

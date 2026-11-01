@@ -58,12 +58,11 @@ materialx_lobe_normal_repair_probe(uint3 seeds, uint32_t material_id, float2 uv,
         }
     }
 
-    var eval_sg = TinyUniformSampleGenerator(seeds.xy, seeds.z);
-    result.eval = adjusted_instance.eval(si, wo, eval_sg);
+    result.eval = adjusted_instance.eval(si, wo);
     result.pdf = adjusted_instance.eval_pdf(si, wo);
 
     var sample_sg = TinyUniformSampleGenerator(seeds.xy, seeds.z);
-    if (!adjusted_instance.sample(si, sample_sg, result.sample))
+    if (!adjusted_instance.sample(si, make_material_sample_input(sample_sg), result.sample))
         result.sample.pdf = 0.0;
 
     return result;

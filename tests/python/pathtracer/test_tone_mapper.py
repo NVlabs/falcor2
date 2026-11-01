@@ -171,6 +171,25 @@ def test_tonemap_shader_helpers_match_golden_values(
     assert np.allclose(output, np.array([[expected]], dtype=np.float32), atol=1e-6)
 
 
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
+def test_agx_maps_linear_gray_and_saturated_highlights(
+    device_type: spy.DeviceType, device: spy.Device
+) -> None:
+    """AgX keeps neutral gray and compresses a bright saturated color to display range."""
+    from falcor2.rendernodes import TonemapperNode, TonemappingOperator
+
+    color = np.array(
+        [[[0.18, 0.18, 0.18], [8.0, 0.25, 0.01], [0.0, 0.0, 0.0]]],
+        dtype=np.float32,
+    )
+    node = TonemapperNode.create(device, operator=TonemappingOperator.agx)
+    output = node(_tensor_from_numpy(device, color)).to_numpy()
+
+    assert np.allclose(output[0, 0], [0.214848, 0.214848, 0.214848], atol=1e-4)
+    assert np.allclose(output[0, 1], [1.0, 0.584768, 0.443862], atol=1e-4)
+    assert np.all(output[0, 2] < 1e-5)
+
+
 def _float_buffer_value(buffer: spy.Buffer) -> float:
     return float(buffer.to_numpy().view(np.float32)[0])
 
@@ -489,6 +508,35 @@ def test_tonemapper_operator_applies_to_auto_exposure_paths(
 
     assert np.allclose(immediate_output, expected, atol=1e-5)
     assert np.allclose(fused_output, expected, atol=1e-5)
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
+def test_tonemapper_lut3d_interpolates_log_coordinates_and_preserves_alpha(
+    device_type: spy.DeviceType, device: spy.Device
+) -> None:
+    """A caller's RGB cube is sampled in BGR array order at texel centers."""
+    from falcor2.rendernodes import TonemapperNode, TonemappingOperator
+
+    node = TonemapperNode.create(device, operator=TonemappingOperator.lut3d)
+    coordinates = np.linspace(0.0, 1.0, 4, dtype=np.float32)
+    blue, green, red = np.meshgrid(coordinates, coordinates, coordinates, indexing="ij")
+    node.lut = np.stack((red, green, blue), axis=-1)
+    node.exposure_compensation = 1.0
+    input_data = np.array(
+        [
+            [
+                [0.18 * np.exp2(-10.0), 0.18, 0.18 * np.exp2(5.5), 0.375],
+                [0.0, 0.18 * np.exp2(-2.7), 0.18 * np.exp2(2.2), 0.75],
+            ]
+        ],
+        dtype=np.float32,
+    )
+
+    output = node(_tensor_from_numpy(device, input_data)).to_numpy()
+
+    expected = np.array([[[0.06060606, 0.66666667, 1.0], [0.0, 0.5030303, 0.8]]], dtype=np.float32)
+    assert np.allclose(output[..., :3], expected, atol=7e-4)
+    assert np.array_equal(output[..., 3], input_data[..., 3])
 
 
 @pytest.mark.nightly_if(device_type=(spy.DeviceType.d3d12,))

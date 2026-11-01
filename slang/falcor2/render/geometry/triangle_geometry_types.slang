@@ -24,43 +24,43 @@ public struct PackedTriangleVertex
     // Versioning for future compatibility.
     public FALCOR_SHARED_CONSTANT uint VERSION = 2;
 
-    public float position[3];
-    public uint normal_and_tangent[3];
-    public float uv[2];
+    public float3 position;
+    public uint3 normal_and_tangent;
+    public float2 uv;
 };
 
 namespace detail {
-static float3 unpack_vertex_normal(FALCOR_SHARED_CONST_ARRAY_PARAM(uint, normal_and_tangent, 3))
+static float3 unpack_vertex_normal(const uint3 normal_and_tangent)
 {
     return f16tof32(
         uint3(normal_and_tangent[0] & 0xffff, (normal_and_tangent[0] >> 16) & 0xffff, normal_and_tangent[1] & 0xffff)
     );
 }
 
-static float unpack_vertex_handedness(FALCOR_SHARED_CONST_ARRAY_PARAM(uint, normal_and_tangent, 3))
+static float unpack_vertex_handedness(const uint3 normal_and_tangent)
 {
     return f16tof32((normal_and_tangent[1] >> 16) & 0xffff);
 }
 
-static float3 unpack_vertex_tangent(FALCOR_SHARED_CONST_ARRAY_PARAM(uint, normal_and_tangent, 3))
+static float3 unpack_vertex_tangent(const uint3 normal_and_tangent)
 {
     return unpack_normal_oct_snorm2x16(normal_and_tangent[2]);
 }
 
-static void pack_vertex_normal(FALCOR_SHARED_INOUT_ARRAY_PARAM(uint, normal_and_tangent, 3), float3 normal)
+static void pack_vertex_normal(FALCOR_SHARED_INOUT_PARAM(uint3, normal_and_tangent), float3 normal)
 {
     uint3 packed_normal = f32tof16(normal);
     normal_and_tangent[0] = (packed_normal.x & 0xffff) | ((packed_normal.y & 0xffff) << 16);
     normal_and_tangent[1] = (normal_and_tangent[1] & 0xffff0000) | (packed_normal.z & 0xffff);
 }
 
-static void pack_vertex_handedness(FALCOR_SHARED_INOUT_ARRAY_PARAM(uint, normal_and_tangent, 3), float handedness)
+static void pack_vertex_handedness(FALCOR_SHARED_INOUT_PARAM(uint3, normal_and_tangent), float handedness)
 {
     uint packed_handedness = f32tof16(handedness);
     normal_and_tangent[1] = (normal_and_tangent[1] & 0x0000ffff) | ((packed_handedness & 0xffff) << 16);
 }
 
-static void pack_vertex_tangent(FALCOR_SHARED_INOUT_ARRAY_PARAM(uint, normal_and_tangent, 3), float3 tangent)
+static void pack_vertex_tangent(FALCOR_SHARED_INOUT_PARAM(uint3, normal_and_tangent), float3 tangent)
 {
     normal_and_tangent[2] = pack_normal_oct_snorm2x16(tangent);
 }
@@ -95,10 +95,12 @@ static TriangleVertex unpack_triangle_vertex(const PackedTriangleVertex pv)
 
 public struct TriangleGeometryDesc
 {
+    public uint16_t vertex_buffer; ///< Vertex buffer slot.
+    public uint16_t index_buffer;  ///< Index buffer slot.
+
     public uint vertex_offset; ///< Offset into vertex buffer.
-    public uint vertex_count;  ///< Vertex count.
-    public uint index_offset;  ///< Offset into index buffer, or zero if non-indexed.
-    public uint index_count;   ///< Index count, or zero if non-indexed.
+    public uint index_offset;  ///< Offset into index buffer.
+    public uint index_count;   ///< Index count; non-indexed geometry is not supported.
 };
 
 // Note: until we're certain of types to support for custom streams,
@@ -123,10 +125,13 @@ public static const uint ADDITIONAL_ATTRIBUTE_DESC_ROW_SIZE = MAX_ADDITIONAL_GEO
 public struct TriangleGeometryInstanceDesc
 {
     public GeometryInstanceDescHeader header;
+    public uint16_t vertex_buffer; ///< Vertex buffer slot.
+    public uint16_t index_buffer;  ///< Index buffer slot.
+
     public uint vertex_offset; ///< Offset into vertex buffer.
-    public uint vertex_count;  ///< Vertex count.
     public uint index_offset;  ///< Offset into index buffer, or zero if non-indexed.
-    public uint index_count;   ///< Index count, or zero if non-indexed.
+    // Preserve the common GeometryInstanceDesc payload size for reinterpretation.
+    public uint reserved;
 };
 
 #include "falcor2/shared_types_compat_undef.slangh"

@@ -40,11 +40,40 @@ public bool finalize_analytic_area_light_sample(
     const float cos_on_light = cosine_numerator / sample.distance;
     const float geometry_term = cos_on_light * surface_area / distance_squared;
     sample.pdf = 1.0 / geometry_term;
-    sample.weight = radiance * shaping_factor * geometry_term;
+    sample.radiance = radiance * shaping_factor;
+    sample.weight = sample.radiance * geometry_term;
     // Disk and rectangle samples lie on the authored surface and have an exact
     // complementary surface-hit PDF, so they participate in MIS.
     sample.flags = LightSampleFlags::has_surface_point;
     sample.emitter_type = EmitterType::analytic;
+    return true;
+}
+
+/// Reconstructs a finite endpoint even when it is back-facing or outside the current proposal's support.
+public bool eval_analytic_light_sample<Light : ILight>(
+    Light light,
+    const LightSampleContext ctx,
+    const LightSampleRef sample_ref,
+    const float3 emitter_pos_ws,
+    const float3 emitter_normal_ws,
+    out LightSample sample
+)
+{
+    sample = {};
+    const float3 to_light = emitter_pos_ws - ctx.pos_ws;
+    const float distance_squared = dot(to_light, to_light);
+    if (distance_squared <= 0.0)
+        return false;
+    sample.pos_ws = emitter_pos_ws;
+    sample.normal_ws = emitter_normal_ws;
+    sample.distance = sqrt(distance_squared);
+    sample.dir_ws = to_light / sample.distance;
+    sample.flags = LightSampleFlags::has_surface_point;
+    sample.emitter_type = EmitterType::analytic;
+    sample.emitter_id = sample_ref.emitter_id;
+    sample.radiance = light.eval_surface_radiance(ctx.pos_ws, emitter_pos_ws, emitter_normal_ws);
+    sample.pdf = light.eval_surface_sampling_pdf(ctx, emitter_pos_ws, emitter_normal_ws);
+    sample.weight = sample.pdf > 0.0 ? sample.radiance / sample.pdf : float3(0.0);
     return true;
 }
 

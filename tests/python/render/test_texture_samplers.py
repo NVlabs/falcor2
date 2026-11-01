@@ -65,6 +65,30 @@ _SLOTS = {
 
 
 def _sampler_probe(device: spy.Device, scene: f2.Scene, material_type: str) -> Callable[..., Any]:
+    if material_type in ("GLTFMaterial", "GLTFSpecGlossMaterial"):
+        # Their four flat handle/selector pairs start at byte 16 in MaterialData.
+        # Reading the uploaded slot also works when the scene selects an exact
+        # generic material type instead of the flexible one.
+        source = """
+__exported import falcor2.render;
+public float4 sample_binding(uint material_id, uint slot, float2 uv, float lod) {
+    const MaterialData material = g_scene.material_system.get_material_data(MaterialID(material_id));
+    TextureHandle handle = {};
+    // The test enumerates color, normal, workflow, emissive;
+    // the GPU pairs are color, workflow, normal, emissive.
+    const uint gpu_slot = slot == 1u ? 2u : (slot == 2u ? 1u : slot);
+    handle.data = material.payload.data[2u * gpu_slot];
+    return handle.sample(ExplicitLodSampler(lod), uv, float4(-1.0));
+}
+"""
+        helper = SceneShaderHelper(device)
+        source_module = spy.Module(
+            device.load_module_from_source(f"sampler_probe_{material_type}_sparse", source)
+        )
+        module, _ = helper.prepare(scene, source_module)
+        function = module.sample_binding.as_func().write(helper.bind_scene)
+        return lambda material, slot, uv, lod: function(int(material.material_id), slot, uv, lod)
+
     cases = []
     attributes = None
     if material_type == "OpenPBRMaterial":
@@ -147,6 +171,7 @@ def test_gltf_texture_color_space_roles(
                     }
                 },
                 "emissiveTexture": texture,
+                "emissiveFactor": [1.0, 1.0, 1.0],
                 "normalTexture": texture,
             },
             {
@@ -156,6 +181,7 @@ def test_gltf_texture_color_space_roles(
                     "metallicRoughnessTexture": texture,
                 },
                 "emissiveTexture": texture,
+                "emissiveFactor": [1.0, 1.0, 1.0],
             },
             {
                 "name": "unlit",
@@ -270,6 +296,9 @@ def test_material_sampler_live_bindings(
         material[f"{slot}_texture" + ("_path" if source == "path" else "")] = (
             path if source == "path" else texture
         )
+    if material_type in ("GLTFMaterial", "GLTFSpecGlossMaterial"):
+        # The sparse GPU payload omits emissive textures while emission is off.
+        material.emissive_factor = spy.float3(1.0)
     scene.update()
     probe = _sampler_probe(device, scene, material_type)
     generation = scene.requirements_generation

@@ -100,7 +100,8 @@ public struct AnisotropicGGXPolicy<let TSingularCutoffInverse : int, let TClampB
     }
 
     /// Samples the distribution of normals visible from direction w.
-    public float3 sample<S : ISampleGenerator>(const float3 w, inout S sg)
+    /// @param u Uniform sample in [0, 1)^2.
+    public float3 sample(const float3 w, const float2 u)
     {
         float3 wh = normalize(float3(alpha.x * w.x, alpha.y * w.y, w.z));
         if (wh.z < 0.0)
@@ -109,8 +110,8 @@ public struct AnisotropicGGXPolicy<let TSingularCutoffInverse : int, let TClampB
         float3 T1 = dot(wh.xy, wh.xy) > 0.0 ? normalize(float3(-wh.y, wh.x, 0.0)) : float3(1.0, 0.0, 0.0);
         float3 T2 = cross(wh, T1);
 
-        float r = sqrt(next_float(sg));
-        float phi = 2.0 * float.PI * next_float(sg);
+        float r = sqrt(u.x);
+        float phi = 2.0 * float.PI * u.y;
         float t1 = r * cos(phi);
         float t2 = r * sin(phi);
         float s = 0.5 * (1.0 + wh.z);

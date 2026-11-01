@@ -17,8 +17,7 @@ public struct PBRTDielectricBSDF : IBSDF
     }
 
 
-    public BSDFEval
-    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
         const float rel_eta = bc.ior_t / bc.ior_i;
         const float rel_eta_inverse = 1.0 / rel_eta;
@@ -49,7 +48,7 @@ public struct PBRTDielectricBSDF : IBSDF
         return BSDFEval(value, pdf);
     }
 
-    public bool sample<S : ISampleGenerator>(float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
+    public bool sample(float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
 
@@ -72,7 +71,7 @@ public struct PBRTDielectricBSDF : IBSDF
                 return false;
 
             if (p_reflection > 0.0
-                && (p_transmission == 0.0 || next_float(sg) < p_reflection / (p_reflection + p_transmission))) {
+                && (p_transmission == 0.0 || input.u_lobe < p_reflection / (p_reflection + p_transmission))) {
                 sample.wo = float3(-wi.x, -wi.y, wi.z);
                 sample.weight = float3(allow_both ? 1.0 : F);
                 sample.flags = BSDFFlags::delta_reflection;
@@ -86,7 +85,7 @@ public struct PBRTDielectricBSDF : IBSDF
                 sample.pdf = 0.0;
             }
         } else {
-            float3 h = D.sample(wi, sg);
+            float3 h = D.sample(wi, input.u_dir);
             float wi_dot_h = dot(h, wi);
             float F = eval_fresnel_dielectric(rel_eta_inverse, abs(wi_dot_h));
             float p_reflection = allow_reflection ? F : 0.0;
@@ -95,7 +94,7 @@ public struct PBRTDielectricBSDF : IBSDF
                 return false;
 
             if (p_reflection > 0.0
-                && (p_transmission == 0.0 || next_float(sg) < p_reflection / (p_reflection + p_transmission))) {
+                && (p_transmission == 0.0 || input.u_lobe < p_reflection / (p_reflection + p_transmission))) {
                 sample.wo = reflect(-wi, h);
                 if (sample.wo.z < BSDF_MIN_COS_THETA)
                     return false;

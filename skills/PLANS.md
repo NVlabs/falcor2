@@ -11,9 +11,8 @@ field in the destination's `.falcor2/skills.json`. All repository policies, plan
 paths, and commands in this document refer to that checkout, never implicitly to
 the consuming application. For the canonical template, use its enclosing checkout.
 If the recorded checkout is unavailable, rerun `f2 setup --source PATH --profile
-developer`. Read its `AGENTS.md` and `.plans/GUIDELINES.md` when present, and read
-the relevant workstream index before changing an existing plan. Execute only the
-plan identified as active by an existing index.
+developer`. Read its `AGENTS.md`, `.plans/GUIDELINES.md`, and workstream index before
+creating, reorganizing, or executing plans; execute only the indexed active plan.
 
 For code work, consult SCOPE.1 and the relevant rules in that checkout's
 `docs/contributing/coding-style.md` before planning or implementation.
@@ -63,9 +62,8 @@ none are specified. Keep Progress, artifacts, and validation evidence consistent
 with the actual worktree; record failures, skipped gates, residual risks, and
 follow-up work instead of implying completion. A partial commit does not complete
 a slice whose required artifacts remain outside it. Follow `.plans/GUIDELINES.md`
-when present for discovered work and closeout: archive completed predecessors
-and update existing indexes and links before creating or executing follow-up
-plans. Report the work
+for discovered work and closeout: archive completed predecessors and update the
+index and links before creating or executing follow-up plans. Report the work
 completed, validation results, deferrals, closeout, and remaining blockers.
 
 ## Requirements

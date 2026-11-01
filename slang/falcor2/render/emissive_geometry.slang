@@ -66,18 +66,21 @@ public SurfaceInteraction make_emissive_triangle_surface_interaction(
 /// Note that the triangle is only emitting on the front-facing side.
 /// @param shading_pos_ws Shading point in world-space.
 /// @param triangle_id Emissive triangle id.
-/// @param u Uniform random number (2D).
+/// @param u Uniform sample in [0, 1)^2.
 /// @param[out] sample Sampled light, including emitted radiance divided by its PDF.
+/// @param[out] sample_ref Triangle identity and sampled barycentric coordinates; retain only on success.
 /// @return True if a sample was generated, false otherwise.
 // [Differentiable]
 public bool sample_emissive_triangle(
     no_diff const float3 shading_pos_ws,
     no_diff const EmissiveTriangleID triangle_id,
     no_diff const float2 u,
-    out LightSample sample
+    out LightSample sample,
+    out LightSampleRef sample_ref
 )
 {
     sample = {};
+    sample_ref = {};
 
     sample.emitter_type = EmitterType::emissive_triangle;
     sample.emitter_id = uint(triangle_id);
@@ -109,9 +112,56 @@ public bool sample_emissive_triangle(
     // Evaluate emitted radiance.
     let material = g_scene.get_material(triangle.material_id);
     const SurfaceInteraction si = make_emissive_triangle_surface_interaction(triangle_id, barycentrics, -sample.dir_ws);
-    sample.weight = material.eval_emissive_radiance(si, ExplicitLodSampler()) / sample.pdf;
+    sample.radiance = material.eval_emissive_radiance(si, ExplicitLodSampler());
+    sample.weight = sample.radiance / sample.pdf;
     sample.flags = LightSampleFlags::has_surface_point;
 
+    sample_ref.emitter_type = EmitterType::emissive_triangle;
+    sample_ref.emitter_id = uint(triangle_id);
+    sample_ref.parameters = barycentrics.yz;
+
+    return true;
+}
+
+/// Compatibility overload that discards the retained triangle endpoint.
+public bool sample_emissive_triangle(
+    no_diff const float3 shading_pos_ws,
+    no_diff const EmissiveTriangleID triangle_id,
+    no_diff const float2 u,
+    out LightSample sample
+)
+{
+    LightSampleRef sample_ref;
+    return sample_emissive_triangle(shading_pos_ws, triangle_id, u, sample, sample_ref);
+}
+
+/// Reconstructs a retained triangle endpoint and re-evaluates its material emission toward the receiver.
+public bool
+eval_emissive_triangle_sample(const LightSampleContext ctx, const LightSampleRef sample_ref, out LightSample sample)
+{
+    sample = {};
+    const float2 p = sample_ref.parameters;
+    const EmissiveTriangleID triangle_id = EmissiveTriangleID(sample_ref.emitter_id);
+    const EmissiveTriangle triangle = g_scene.emissive_geometry.get_triangle(triangle_id);
+    const float3 barycentrics = float3(1.0 - p.x - p.y, p);
+    sample.pos_ws = triangle.get_pos_ws(barycentrics);
+    sample.normal_ws = triangle.normal_ws;
+    const float3 to_light = sample.pos_ws - ctx.pos_ws;
+    const float distance_squared = dot(to_light, to_light);
+    if (distance_squared <= 0.0)
+        return false;
+    sample.distance = sqrt(distance_squared);
+    sample.dir_ws = to_light / sample.distance;
+    sample.emitter_type = EmitterType::emissive_triangle;
+    sample.emitter_id = sample_ref.emitter_id;
+    sample.flags = LightSampleFlags::has_surface_point;
+    sample.pdf = eval_emissive_triangle_pdf(ctx, triangle_id, sample.pos_ws, sample.normal_ws);
+    if (dot(sample.normal_ws, -sample.dir_ws) > 0.0) {
+        const SurfaceInteraction si
+            = make_emissive_triangle_surface_interaction(triangle_id, barycentrics, -sample.dir_ws);
+        sample.radiance = g_scene.get_material(triangle.material_id).eval_emissive_radiance(si, ExplicitLodSampler());
+    }
+    sample.weight = sample.pdf > 0.0 ? sample.radiance / sample.pdf : float3(0.0);
     return true;
 }
 

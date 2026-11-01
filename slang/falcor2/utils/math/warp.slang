@@ -577,7 +577,7 @@ public T square_to_uniform_cone_concentric_pdf<T>(vector<T, 3> v, T cos_cutoff, 
 // ----------------------------------------------------------------------------
 
 /// Uniform sampling of a triangle.
-/// @param u Uniform random numbers in [0,1)^2.
+/// @param u Uniform sample in [0, 1)^2.
 /// @return Barycentric coordinates (1-u-v,u,v) of the sampled point.
 [Differentiable]
 public vector<T, 3> sample_triangle<T>(vector<T, 2> u)

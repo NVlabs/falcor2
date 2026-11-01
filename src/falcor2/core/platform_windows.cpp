@@ -3,6 +3,7 @@
 
 #include "platform.h"
 #include "error.h"
+#include "logger.h"
 
 #if SGL_WINDOWS
 
@@ -11,6 +12,7 @@
 #endif
 #include <Windows.h>
 #include <ShlObj.h>
+#include <d3dkmthk.h>
 
 namespace falcor::platform {
 
@@ -157,6 +159,35 @@ void FileLock::unlock()
     OVERLAPPED overlapped = {};
     UnlockFileEx(h, 0, MAXDWORD, MAXDWORD, &overlapped);
     m_locked = false;
+}
+
+// -------------------------------------------------------------------------------------------------
+// GPU scheduling
+// -------------------------------------------------------------------------------------------------
+
+ScopedGPURealtimePriority::ScopedGPURealtimePriority()
+{
+    D3DKMT_SCHEDULINGPRIORITYCLASS previous;
+    auto status = D3DKMTGetProcessSchedulingPriorityClass(GetCurrentProcess(), &previous);
+    FALCOR_CHECK(status == 0, "Cannot read GPU scheduling priority: NTSTATUS {:#010x}", uint32_t(status));
+    status = D3DKMTSetProcessSchedulingPriorityClass(GetCurrentProcess(), D3DKMT_SCHEDULINGPRIORITYCLASS_REALTIME);
+    FALCOR_CHECK(status == 0, "Cannot set GPU REALTIME scheduling priority: NTSTATUS {:#010x}", uint32_t(status));
+    m_previous_priority = int(previous);
+}
+
+void ScopedGPURealtimePriority::close() noexcept
+{
+    if (m_previous_priority < 0)
+        return;
+    auto status = D3DKMTSetProcessSchedulingPriorityClass(
+        GetCurrentProcess(),
+        D3DKMT_SCHEDULINGPRIORITYCLASS(m_previous_priority)
+    );
+    if (status != 0) {
+        sgl::log_error("Cannot restore GPU scheduling priority: NTSTATUS {:#010x}", uint32_t(status));
+        return;
+    }
+    m_previous_priority = -1;
 }
 
 } // namespace falcor::platform

@@ -10,37 +10,140 @@ __exported import falcor2.render.materials.mtlx.mtlx;
 namespace bsdf_tests {
 
 // Reconstruct at each incident direction: lobe-selection probabilities depend on wi.
+// Keep this flat for SlangPy's existing dictionary fixtures. The production
+// GLTFBSDFData uses conditional feature groups instead.
+public struct TestGLTFBSDFData
+{
+    public float3 base_color = {};
+    public float metallic = {};
+    public float roughness = {};
+    public float anisotropy_strength = {};
+    public float2 anisotropy_direction = float2(1.0, 0.0);
+    public float diffuse_transmission = {};
+    public float3 diffuse_transmission_color = float3(1.0);
+    public float3 sheen_color = {};
+    public float sheen_roughness = {};
+    public float iridescence = {};
+    public float iridescence_ior = 1.3;
+    public float iridescence_thickness = 400.0;
+    public float3 dielectric_f0 = float3(0.04);
+    public float dielectric_f90 = 1.0;
+    public float transmission = {};
+    public float ior = 1.5;
+    public float eta = 1.0;
+    public bool thin_walled = true;
+};
+
 public struct TestGLTFBSDF : IBSDF
 {
-    public GLTFBSDFData data;
-    public BSDFEval eval_with_pdf<S : ISampleGenerator>(float3 wi, float3 wo, inout S sg, BSDFContext bc)
+    public TestGLTFBSDFData data;
+
+    private uint runtime_features()
     {
-        return GLTFBSDF(wi, data).eval_with_pdf(wi, wo, sg, bc);
+        uint mask = 0u;
+        if (data.anisotropy_strength > 0.0)
+            mask |= gltfmat::FeatureBits::ANISOTROPY;
+        if (data.diffuse_transmission > 0.0)
+            mask |= gltfmat::FeatureBits::DIFFUSE_TRANSMISSION;
+        if (any(data.sheen_color > float3(0.0)))
+            mask |= gltfmat::FeatureBits::SHEEN;
+        if (data.iridescence > 0.0)
+            mask |= gltfmat::FeatureBits::IRIDESCENCE;
+        if (data.transmission > 0.0)
+            mask |= gltfmat::FeatureBits::TRANSMISSION;
+        return mask;
     }
-    public bool sample<S : ISampleGenerator>(float3 wi, out BSDFSample result, inout S sg, BSDFContext bc)
+
+    private GLTFBSDFData<Features> prepare_data<let Features : uint>()
     {
-        return GLTFBSDF(wi, data).sample(wi, result, sg, bc);
+        GLTFBSDFData<Features> prepared = {};
+        prepared.base_color = data.base_color;
+        prepared.metallic = data.metallic;
+        prepared.roughness = data.roughness;
+        prepared.dielectric_f0 = data.dielectric_f0;
+        prepared.dielectric_f90 = data.dielectric_f90;
+        prepared.ior = data.ior;
+        prepared.eta = data.eta;
+        prepared.thin_walled = data.thin_walled;
+        if (let available = prepared.anisotropy.get())
+            prepared.anisotropy.set(GLTFAnisotropyInputs(data.anisotropy_strength, data.anisotropy_direction));
+        if (let available = prepared.diffuse_transmission.get())
+            prepared.diffuse_transmission.set(
+                GLTFDiffuseTransmissionInputs(data.diffuse_transmission, data.diffuse_transmission_color)
+            );
+        if (let available = prepared.sheen.get())
+            prepared.sheen.set(GLTFSheenInputs(data.sheen_color, data.sheen_roughness));
+        if (let available = prepared.iridescence.get())
+            prepared.iridescence.set(
+                GLTFIridescenceInputs(data.iridescence, data.iridescence_ior, data.iridescence_thickness)
+            );
+        if (let available = prepared.transmission.get())
+            prepared.transmission.set(GLTFTransmissionInputs(data.transmission));
+        return prepared;
     }
-    public AlbedoContributions eval_albedo(float3 wi) { return GLTFBSDF(wi, data).eval_albedo(wi); }
-    public RoughnessInformation eval_roughness(float3 wi) { return GLTFBSDF(wi, data).eval_roughness(wi); }
+
+    private GLTFBSDF<Features> make_bsdf<let Features : uint>(float3 wi)
+    {
+        return GLTFBSDF<Features>(wi, prepare_data<Features>(), runtime_features());
+    }
+
+    public float4 compare_exact_flexible<let Features : uint>(float3 wi, float3 wo)
+    {
+        GLTFBSDF<Features> exact = make_bsdf<Features>(wi);
+        GLTFBSDF<gltfmat::FeatureBits::ALL_MR> flexible = make_bsdf<gltfmat::FeatureBits::ALL_MR>(wi);
+        BSDFEval a = exact.eval_with_pdf(wi, wo, BSDFContext());
+        BSDFEval b = flexible.eval_with_pdf(wi, wo, BSDFContext());
+        AlbedoContributions aa = exact.eval_albedo(wi);
+        AlbedoContributions bb = flexible.eval_albedo(wi);
+        return float4(
+            length(a.value - b.value),
+            abs(a.pdf - b.pdf),
+            length(aa.reflection - bb.reflection) + length(aa.transmission - bb.transmission),
+            length(aa.absorption_r - bb.absorption_r) + length(aa.absorption_t - bb.absorption_t)
+        );
+    }
+
+    public BSDFEval eval_with_pdf(float3 wi, float3 wo, BSDFContext bc)
+    {
+        return make_bsdf<gltfmat::FeatureBits::ALL_MR>(wi).eval_with_pdf(wi, wo, bc);
+    }
+    public bool sample(float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample result)
+    {
+        return make_bsdf<gltfmat::FeatureBits::ALL_MR>(wi).sample(wi, input, bc, result);
+    }
+    public AlbedoContributions eval_albedo(float3 wi)
+    {
+        return make_bsdf<gltfmat::FeatureBits::ALL_MR>(wi).eval_albedo(wi);
+    }
+    public RoughnessInformation eval_roughness(float3 wi)
+    {
+        return make_bsdf<gltfmat::FeatureBits::ALL_MR>(wi).eval_roughness(wi);
+    }
     public property float3 ior_as_reflectance
     {
         get {
-            return GLTFBSDF(float3(0.0, 0.0, 1.0), data).ior_as_reflectance;
+            return make_bsdf<gltfmat::FeatureBits::ALL_MR>(float3(0.0, 0.0, 1.0)).ior_as_reflectance;
         }
     }
 };
 
+public float4 test_gltf_exact_flexible<let Features : uint>(TestGLTFBSDFData data, float3 wi, float3 wo)
+{
+    TestGLTFBSDF test = {};
+    test.data = data;
+    return test.compare_exact_flexible<Features>(wi, wo);
+}
+
 public struct TestGLTFSpecGlossBSDF : IBSDF
 {
     public GLTFSpecGlossBSDFData data;
-    public BSDFEval eval_with_pdf<S : ISampleGenerator>(float3 wi, float3 wo, inout S sg, BSDFContext bc)
+    public BSDFEval eval_with_pdf(float3 wi, float3 wo, BSDFContext bc)
     {
-        return GLTFSpecGlossBSDF(wi, data).eval_with_pdf(wi, wo, sg, bc);
+        return GLTFSpecGlossBSDF(wi, data).eval_with_pdf(wi, wo, bc);
     }
-    public bool sample<S : ISampleGenerator>(float3 wi, out BSDFSample result, inout S sg, BSDFContext bc)
+    public bool sample(float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample result)
     {
-        return GLTFSpecGlossBSDF(wi, data).sample(wi, result, sg, bc);
+        return GLTFSpecGlossBSDF(wi, data).sample(wi, input, bc, result);
     }
     public AlbedoContributions eval_albedo(float3 wi) { return GLTFSpecGlossBSDF(wi, data).eval_albedo(wi); }
     public RoughnessInformation eval_roughness(float3 wi) { return GLTFSpecGlossBSDF(wi, data).eval_roughness(wi); }
@@ -144,7 +247,7 @@ public float4 test_mtlx_beer_delta_transmission(mtlx::MxBeerBSDF bsdf, float3 wi
     BSDFSample sample = {};
     BSDFContext bc = {};
 
-    bool valid = bsdf.sample(wi, sample, sg, bc);
+    bool valid = bsdf.sample(wi, make_bsdf_sample_input(sg), bc, sample);
     bool delta_transmission = sample.has_flag(BSDFFlags::delta_transmission);
     AlbedoContributions albedo = bsdf.eval_albedo(wi);
     float wo_error = length(sample.wo - float3(-wi.x, -wi.y, -wi.z));
@@ -157,15 +260,51 @@ public float4 test_mtlx_beer_delta_transmission(mtlx::MxBeerBSDF bsdf, float3 wi
     );
 }
 
-public float4 test_controlled_bsdf_sample<B : IBSDF>(B bsdf, float3 wi, float3 random)
+public float4 test_controlled_bsdf_sample<B : IBSDF>(B bsdf, float3 wi, BSDFSampleInput input)
 {
-    FixedSampleGenerator sg = FixedSampleGenerator(random);
     BSDFSample sample = {};
     BSDFContext bc = {};
 
-    bool valid = bsdf.sample(wi, sample, sg, bc);
+    bool valid = bsdf.sample(wi, input, bc, sample);
     float eval_pdf = valid ? bsdf.eval_pdf(wi, sample.wo, bc) : 0.0;
     return float4(valid ? 1.0 : 0.0, sample.wo.z, sample.pdf, eval_pdf);
+}
+
+// Check the sampling mask independently of the physical scatter mode and compensation.
+public float4 test_mtlx_lobe_sampling_hint<B : IBSDF>(B bsdf, float3 wi, float3 random, uint hint, uint check)
+{
+    const BSDFSampleInput input = { random.z, random.xy, 0u };
+    BSDFContext bc = BSDFContext(1.0, 1.5, BSDFFlags(hint));
+    BSDFContext unrestricted = BSDFContext(1.0, 1.5);
+    BSDFSample sample = {};
+    bool valid = bsdf.sample(wi, input, bc, sample);
+    if (check == 0)
+        return float4(valid ? 1.0 : 0.0, sample.wo.z, sample.pdf, bsdf.eval_pdf(wi, sample.wo, bc));
+    if (check == 1) {
+        float3 value = bsdf.eval(wi, sample.wo, unrestricted);
+        float3 hinted_value = bsdf.eval(wi, sample.wo, bc);
+        float scale = max(max(value.x, value.y), max(value.z, 1e-6));
+        return float4((sample.weight * sample.pdf - value) / scale, length(hinted_value - value) / scale);
+    }
+    if (check == 2) {
+        float3 reflected = reflect(-wi, float3(0.0, 0.0, 1.0));
+        float3 transmitted = refract(-wi, float3(0.0, 0.0, 1.0), 1.0 / 1.5);
+        return float4(
+            bsdf.eval_pdf(wi, reflected, bc),
+            bsdf.eval_pdf(wi, transmitted, bc),
+            bsdf.eval_pdf(wi, reflected, unrestricted),
+            bsdf.eval_pdf(wi, transmitted, unrestricted)
+        );
+    }
+    if (check == 4 || check == 5) {
+        float3 wo = check == 4 ? reflect(-wi, float3(0.0, 0.0, 1.0)) : refract(-wi, float3(0.0, 0.0, 1.0), 1.0 / 1.5);
+        BSDFEval baseline = bsdf.eval_with_pdf(wi, wo, unrestricted);
+        BSDFEval hinted = bsdf.eval_with_pdf(wi, wo, bc);
+        float scale = max(length(baseline.value), 1e-6);
+        return float4((hinted.value - baseline.value) / scale, hinted.pdf - bsdf.eval_pdf(wi, wo, bc));
+    }
+    // Failed samples must not expose stale weights, flags, or density.
+    return float4(length(sample.weight), sample.pdf, float(uint(sample.flags)), length(sample.wo));
 }
 
 public float4 test_standard_bsdf_diffuse_transmission_support(StandardBSDFData data)
@@ -176,9 +315,10 @@ public float4 test_standard_bsdf_diffuse_transmission_support(StandardBSDFData d
     FixedSampleGenerator sg = FixedSampleGenerator(float3(0.5));
     BSDFContext bc = {};
 
-    float3 value = bsdf.eval(wi, wo, sg, bc);
+    float3 value = bsdf.eval(wi, wo, bc);
     BSDFSample sample = {};
-    bool valid = bsdf.sample(wi, sample, sg, bc) && sample.has_flag(BSDFFlags::diffuse_transmission);
+    bool valid
+        = bsdf.sample(wi, make_bsdf_sample_input(sg), bc, sample) && sample.has_flag(BSDFFlags::diffuse_transmission);
     bool has_lobe = bsdf.get_lobe_types() & BSDFFlags::diffuse_transmission;
     AlbedoContributions albedo = bsdf.eval_albedo(wi);
 
@@ -191,7 +331,7 @@ public float4 test_specular_microfacet_smooth_transmission(SpecularMicrofacetBSD
     BSDFSample sample = {};
     BSDFContext bc = {};
 
-    bool valid = bsdf.sample(float3(0.0, 0.0, 1.0), sample, sg, bc);
+    bool valid = bsdf.sample(float3(0.0, 0.0, 1.0), make_bsdf_sample_input(sg), bc, sample);
     bool delta_transmission = sample.has_flag(BSDFFlags::delta_transmission);
     return float4(valid && delta_transmission ? 1.0 : 0.0, sample.pdf, sample.weight.x, sample.weight.z);
 }
@@ -225,10 +365,11 @@ public float4 test_pbrt_dielectric_event_support(PBRTDielectricBSDF bsdf)
 
     const float3 wi_tir = normalize(float3(sqrt(0.75), 0.0, 0.5));
     BSDFContext transmission_only = BSDFContext(1.5, 1.0, BSDFFlags::transmission);
-    bool accepted_tir = bsdf.sample(wi_tir, sample, sg, transmission_only);
+    bool accepted_tir = bsdf.sample(wi_tir, make_bsdf_sample_input(sg), transmission_only, sample);
 
     BSDFContext reflection_only = BSDFContext(1.0, 1.0, BSDFFlags::reflection);
-    bool accepted_zero_reflection = bsdf.sample(float3(0.0, 0.0, 1.0), sample, sg, reflection_only);
+    bool accepted_zero_reflection
+        = bsdf.sample(float3(0.0, 0.0, 1.0), make_bsdf_sample_input(sg), reflection_only, sample);
 
     AlbedoContributions albedo = bsdf.eval_albedo(wi_tir);
     return float4(
@@ -246,16 +387,16 @@ public float4 test_pbrt_dielectric_transmission_scaling(PBRTDielectricBSDF smoot
 
     FixedSampleGenerator smooth_sg = FixedSampleGenerator(float3(0.5));
     BSDFSample smooth_sample = {};
-    bool smooth_valid
-        = smooth_bsdf.sample(wi, smooth_sample, smooth_sg, bc) && smooth_sample.has_flag(BSDFFlags::delta_transmission);
+    bool smooth_valid = smooth_bsdf.sample(wi, make_bsdf_sample_input(smooth_sg), bc, smooth_sample)
+        && smooth_sample.has_flag(BSDFFlags::delta_transmission);
 
     FixedSampleGenerator rough_sg = FixedSampleGenerator(float3(0.5));
     BSDFSample rough_sample = {};
-    bool rough_valid
-        = rough_bsdf.sample(wi, rough_sample, rough_sg, bc) && rough_sample.has_flag(BSDFFlags::glossy_transmission);
+    bool rough_valid = rough_bsdf.sample(wi, make_bsdf_sample_input(rough_sg), bc, rough_sample)
+        && rough_sample.has_flag(BSDFFlags::glossy_transmission);
     float geometry_weight = rough_bsdf.D.G2(rough_sample.wo, wi) / rough_bsdf.D.G1(wi);
     float sample_scale = rough_sample.weight.x / geometry_weight;
-    float eval_scale = rough_bsdf.eval(wi, rough_sample.wo, rough_sg, bc).x / rough_sample.pdf / geometry_weight;
+    float eval_scale = rough_bsdf.eval(wi, rough_sample.wo, bc).x / rough_sample.pdf / geometry_weight;
 
     return float4(smooth_valid && rough_valid ? 1.0 : 0.0, smooth_sample.weight.x, sample_scale, eval_scale);
 }
@@ -266,11 +407,9 @@ float4 test_mtlx_retroreflection_eval_pdf<B : IBSDF>(B regular, B retroreflectiv
     const float3 wo = normalize(float3(-0.1, 0.4, 0.9));
     const float3 reference_wi = mtlx::mx_retroreflect(wi);
     BSDFContext bc = {};
-    UniformSampleGenerator regular_sg = UniformSampleGenerator(1);
-    UniformSampleGenerator retroreflective_sg = UniformSampleGenerator(1);
 
-    const float3 regular_eval = regular.eval(reference_wi, wo, regular_sg, bc);
-    const float3 retroreflective_eval = retroreflective.eval(wi, wo, retroreflective_sg, bc);
+    const float3 regular_eval = regular.eval(reference_wi, wo, bc);
+    const float3 retroreflective_eval = retroreflective.eval(wi, wo, bc);
     const float regular_pdf = regular.eval_pdf(reference_wi, wo, bc);
     const float retroreflective_pdf = retroreflective.eval_pdf(wi, wo, bc);
 
@@ -296,8 +435,9 @@ float4 test_mtlx_retroreflection_sample<B : IBSDF>(B regular, B retroreflective)
         UniformSampleGenerator retroreflective_sg = UniformSampleGenerator(seed);
         BSDFSample regular_sample = {};
         BSDFSample retroreflective_sample = {};
-        const bool regular_valid = regular.sample(wi, regular_sample, regular_sg, bc);
-        const bool retroreflective_valid = retroreflective.sample(wi, retroreflective_sample, retroreflective_sg, bc);
+        const bool regular_valid = regular.sample(wi, make_bsdf_sample_input(regular_sg), bc, regular_sample);
+        const bool retroreflective_valid
+            = retroreflective.sample(wi, make_bsdf_sample_input(retroreflective_sg), bc, retroreflective_sample);
         if (regular_valid != retroreflective_valid) {
             direction_error = 1.0;
             continue;
@@ -313,11 +453,8 @@ float4 test_mtlx_retroreflection_sample<B : IBSDF>(B regular, B retroreflective)
         weight_and_eval_error
             = max(weight_and_eval_error, mtlx::mx_hmax(abs(regular_sample.weight - retroreflective_sample.weight)));
 
-        UniformSampleGenerator regular_eval_sg = UniformSampleGenerator(seed);
-        UniformSampleGenerator retroreflective_eval_sg = UniformSampleGenerator(seed);
-        const float3 regular_eval = regular.eval(wi, regular_sample.wo, regular_eval_sg, bc);
-        const float3 retroreflective_eval
-            = retroreflective.eval(wi, retroreflective_sample.wo, retroreflective_eval_sg, bc);
+        const float3 regular_eval = regular.eval(wi, regular_sample.wo, bc);
+        const float3 retroreflective_eval = retroreflective.eval(wi, retroreflective_sample.wo, bc);
         weight_and_eval_error = max(weight_and_eval_error, mtlx::mx_hmax(abs(regular_eval - retroreflective_eval)));
         pdf_error = max(
             pdf_error,
@@ -446,7 +583,7 @@ public struct BSDFTarget<B : IBSDF> : chi2::ITarget
     public bool sample<SG : ISampleGenerator>(inout SG sg, out float3 p)
     {
         BSDFSample sample;
-        bool valid = bsdf.sample(wi, sample, sg, bc);
+        bool valid = bsdf.sample(wi, make_bsdf_sample_input(sg), bc, sample);
         p = sample.wo;
         return valid;
     }
@@ -494,7 +631,7 @@ public void test_eval_sample_consistency<B : IBSDF>(
 
         BSDFSample sample = {};
 
-        if (!bsdf.sample(wi, sample, sg, bc)) {
+        if (!bsdf.sample(wi, make_bsdf_sample_input(sg), bc, sample)) {
             counters.add(1, 1); // failed
             continue;
         }
@@ -526,7 +663,7 @@ public void test_eval_sample_consistency<B : IBSDF>(
 
         // Verify weight consistency: eval(wi, wo) / eval_pdf(wi, wo) ~= weight.
         if (eval_pdf_value > 1e-8) {
-            float3 eval_value = bsdf.eval(wi, sample.wo, sg, bc);
+            float3 eval_value = bsdf.eval(wi, sample.wo, bc);
             float3 computed_weight = eval_value / eval_pdf_value;
 
             // Per-channel relative error.
@@ -582,7 +719,7 @@ public void test_reciprocity<B : IBSDF>(
 
         BSDFSample sample = {};
 
-        if (!bsdf.sample(wi, sample, sg, bc))
+        if (!bsdf.sample(wi, make_bsdf_sample_input(sg), bc, sample))
             continue;
 
         // Only test non-delta reflection (both directions in upper hemisphere).
@@ -593,15 +730,20 @@ public void test_reciprocity<B : IBSDF>(
 
         counters.add(0, 1); // valid
 
+        // Reflection arithmetic can leave wo slightly non-unit. Normalize before
+        // swapping incident/outgoing directions; near the TIR boundary, that
+        // length error can otherwise dominate the Fresnel reciprocity check.
+        const float3 wo = normalize(sample.wo);
+
         // eval(wi, wo) = f(wi, wo) * |wo.z|
         // eval(wo, wi) = f(wo, wi) * |wi.z|
         // Reciprocity: f(wi, wo) = f(wo, wi)
         // => eval(wi, wo) * |wi.z| = eval(wo, wi) * |wo.z|
-        float3 eval_fwd = bsdf.eval(wi, sample.wo, sg, bc);
-        float3 eval_rev = bsdf.eval(sample.wo, wi, sg, bc);
+        float3 eval_fwd = bsdf.eval(wi, wo, bc);
+        float3 eval_rev = bsdf.eval(wo, wi, bc);
 
         float3 lhs = eval_fwd * abs(wi.z);
-        float3 rhs = eval_rev * abs(sample.wo.z);
+        float3 rhs = eval_rev * abs(wo.z);
 
         for (int c = 0; c < 3; c++) {
             float denom = max(max(abs(lhs[c]), abs(rhs[c])), 1e-8);

@@ -84,8 +84,8 @@ runtime IDs or an AOV writer. This does not extend the renderer's transport type
 
 The combined MaterialX graph shares authored nodes between the surface and numeric outputs and keeps the primary
 surface in output slot zero. Instance setup consumes the surface result without retaining numeric outputs on the
-instance. The material's AOV writer evaluates the same Graph separately, using the same surface preparation and
-inline or buffered parameters as setup, and writes directly from its output members.
+instance or complex-mix data object. The material's AOV writer evaluates the same Graph separately, using the same
+surface preparation and inline or buffered parameters as setup, and writes directly from its output members.
 One writer invocation constructs one Graph for all enabled outputs, not one Graph per output.
 
 MDL discovers supported top-level numeric fields in a user-defined `material_category` struct, excluding built-in

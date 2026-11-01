@@ -93,6 +93,7 @@ def _scene() -> SimpleNamespace:
         fov_y=45.0,
         focal_length=35.0,
         fstop=2.8,
+        exposure=1.0,
         sensor_height=24.0,
         enable_depth_of_field=True,
         focus_distance=4.0,
@@ -157,6 +158,7 @@ def test_scene_to_dict_serializes_hierarchy_and_references() -> None:
             "optics": {
                 "focal_length": 35.0,
                 "fstop": 2.8,
+                "exposure": 1.0,
                 "sensor_height": 24.0,
                 "fov_y": 45.0,
                 "enable_depth_of_field": True,
@@ -409,6 +411,7 @@ def test_scene_to_dict_sorts_cameras_by_node_path_and_marks_inactive() -> None:
         fov_y=60.0,
         focal_length=24.0,
         fstop=4.0,
+        exposure=0.0,
         sensor_height=24.0,
         enable_depth_of_field=False,
         focus_distance=2.0,

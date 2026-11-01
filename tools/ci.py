@@ -519,6 +519,12 @@ def build(args: Any):
     bt.build(args.preset, args.config)
 
 
+def build_hydra_wheel(args: Any) -> None:
+    from tools.package_hydra import build_hydra_wheel as package
+
+    package(args.version_suffix, args.manifest)
+
+
 def build_wheels(args: Any) -> None:
     wheel_root = PIP_WHEEL_ROOT.resolve()
     if wheel_root.exists():
@@ -1034,6 +1040,12 @@ def create_parser() -> argparse.ArgumentParser:
         help="PEP 440 suffix appended to each project's checked-in version",
     )
 
+    parser_hydra = commands.add_parser(
+        "build-hydra-wheel", help="build and qualify this platform's Hydra plugin wheel"
+    )
+    parser_hydra.add_argument("--version-suffix", required=True)
+    parser_hydra.add_argument("--manifest", type=Path, required=True)
+
     parser_test_cpp = commands.add_parser("unit-test-cpp", help="run unit tests (c++)")
     commands.add_parser("unit-test", help="run native and Python unit tests")
 
@@ -1154,6 +1166,7 @@ def main(argv: Optional[Sequence[str]] = None):
         "configure": configure,
         "build": build,
         "build-wheels": build_wheels,
+        "build-hydra-wheel": build_hydra_wheel,
         "unit-test-cpp": unit_test_cpp,
         "unit-test": unit_test,
         "update-slangpy": update_slangpy,

@@ -74,23 +74,10 @@ public struct MxBranchChoice
 
 public MxBranchChoice mx_choose_branch(inout float selector, float p_first)
 {
-    // Follow MDL's decide_sampling_and_update_random_number(): reuse the selected
-    // probability's reciprocal for remapping and weighting, leave deterministic
-    // choices unchanged, and apply saturate_below_one() to the second branch.
-    // https://github.com/NVIDIA/MDL-SDK/blob/1b9592c1b086b691b44d1a30eee4827d1ff55b8c/src/mdl/jit/libbsdf/libbsdf_internal.h#L1345
     p_first = clamp(p_first, 0.0, 1.0);
-    if (p_first <= 0.0)
-        return MxBranchChoice(false, 1.0, 1.0);
-    if (p_first >= 1.0)
-        return MxBranchChoice(true, 1.0, 1.0);
-    bool first = selector < p_first;
+    bool first = choose_sample_branch(selector, p_first);
     float choice_pdf = first ? p_first : 1.0 - p_first;
-    float inv_pdf = 1.0 / choice_pdf;
-    if (first)
-        selector *= inv_pdf;
-    else
-        selector = clamp((selector - p_first) * inv_pdf, 0.0, 0x1.fffffep-1);
-    return MxBranchChoice(first, choice_pdf, inv_pdf);
+    return MxBranchChoice(first, choice_pdf, 1.0 / choice_pdf);
 }
 
 /// Reconstruct a partition at boundaries that provide only scattering albedo.
@@ -116,24 +103,18 @@ public struct MxNullBSDF : ILayerableBSDF
 
     // TODO: Remove the eval()/eval_pdf() overrides below when
     // https://github.com/shader-slang/slang/issues/12814 is fixed.
-    public override
-        float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        return eval_with_pdf(wi, wo, sg, bc).value;
+        return eval_with_pdf(wi, wo, bc).value;
     }
 
     public override float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        EvalPdfFallbackSampleGenerator sg = EvalPdfFallbackSampleGenerator(0u);
-        return eval_with_pdf(wi, wo, sg, bc).pdf;
+        return eval_with_pdf(wi, wo, bc).pdf;
     }
 
-    public BSDFEval
-    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
-    {
-        return BSDFEval();
-    }
-    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc) { return BSDFEval(); }
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
         return false;
@@ -164,24 +145,18 @@ public struct MxSimpleBTDF : ILayerableBSDF
 
     // TODO: Remove the eval()/eval_pdf() overrides below when
     // https://github.com/shader-slang/slang/issues/12814 is fixed.
-    public override
-        float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        return eval_with_pdf(wi, wo, sg, bc).value;
+        return eval_with_pdf(wi, wo, bc).value;
     }
 
     public override float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        EvalPdfFallbackSampleGenerator sg = EvalPdfFallbackSampleGenerator(0u);
-        return eval_with_pdf(wi, wo, sg, bc).pdf;
+        return eval_with_pdf(wi, wo, bc).pdf;
     }
 
-    public BSDFEval
-    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
-    {
-        return BSDFEval();
-    }
-    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc) { return BSDFEval(); }
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
         sample.wo = -wi;
@@ -223,26 +198,23 @@ public struct MxLayerableBSDF<Inner : IBSDF> : ILayerableBSDF
     public float3 layer_opacity(const float3 wi) { return saturate(float3(1.0) - inner.eval_albedo(wi).transmission); }
     // TODO: Remove the eval()/eval_pdf() overrides below when
     // https://github.com/shader-slang/slang/issues/12814 is fixed.
-    public override
-        float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        return eval_with_pdf(wi, wo, sg, bc).value;
+        return eval_with_pdf(wi, wo, bc).value;
     }
 
     public override float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        EvalPdfFallbackSampleGenerator sg = EvalPdfFallbackSampleGenerator(0u);
-        return eval_with_pdf(wi, wo, sg, bc).pdf;
+        return eval_with_pdf(wi, wo, bc).pdf;
     }
 
-    public BSDFEval
-    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        return inner.eval_with_pdf(wi, wo, sg, bc);
+        return inner.eval_with_pdf(wi, wo, bc);
     }
-    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
-        return inner.sample(wi, sample, sg, bc);
+        return inner.sample(wi, input, bc, sample);
     }
     public AlbedoContributions eval_albedo(const float3 wi) { return inner.eval_albedo(wi); }
     public RoughnessInformation eval_roughness(const float3 wi) { return inner.eval_roughness(wi); }
@@ -293,52 +265,37 @@ public struct MxWeightedBSDF<Inner : ILayerableBSDF> : ILayerableBSDF
     }
     // TODO: Remove the eval()/eval_pdf() overrides below when
     // https://github.com/shader-slang/slang/issues/12814 is fixed.
-    public override
-        float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        return eval_with_pdf(wi, wo, sg, bc).value;
+        return eval_with_pdf(wi, wo, bc).value;
     }
 
     public override float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        EvalPdfFallbackSampleGenerator sg = EvalPdfFallbackSampleGenerator(0u);
-        return eval_with_pdf(wi, wo, sg, bc).pdf;
+        return eval_with_pdf(wi, wo, bc).pdf;
     }
 
-    public BSDFEval
-    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
         if (scalar_weight() <= 0.0)
             return BSDFEval();
-        BSDFEval result = inner.eval_with_pdf(wi, wo, sg, bc);
+        BSDFEval result = inner.eval_with_pdf(wi, wo, bc);
         result.value *= weight;
         return result;
     }
-    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
 
         if (scalar_weight() <= 0.0)
             return false;
-        bool valid = inner.sample(wi, sample, sg, bc);
+        bool valid = inner.sample(wi, input, bc, sample);
         if (!valid)
             return false;
         sample.weight *= weight;
         return true;
     }
-    public override bool sample_with_selector<
-        S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc, float selector)
-    {
-        sample = {};
 
-        if (scalar_weight() <= 0.0)
-            return false;
-        bool valid = inner.sample_with_selector(wi, sample, sg, bc, selector);
-        if (!valid)
-            return false;
-        sample.weight *= weight;
-        return true;
-    }
     public AlbedoContributions eval_albedo(const float3 wi)
     {
         if (scalar_weight() <= 0.0)
@@ -419,30 +376,27 @@ public struct MxFramedWeightedBSDF<Inner : ILayerableBSDF, let BSDF_INDEX : int 
     }
     // TODO: Remove the eval()/eval_pdf() overrides below when
     // https://github.com/shader-slang/slang/issues/12814 is fixed.
-    public override
-        float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        return eval_with_pdf(wi, wo, sg, bc).value;
+        return eval_with_pdf(wi, wo, bc).value;
     }
 
     public override float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        EvalPdfFallbackSampleGenerator sg = EvalPdfFallbackSampleGenerator(0u);
-        return eval_with_pdf(wi, wo, sg, bc).pdf;
+        return eval_with_pdf(wi, wo, bc).pdf;
     }
 
-    public BSDFEval
-    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
         if (scalar_weight() <= 0.0)
             return BSDFEval();
         float3 local_wi = frame.to_local(wi);
         float3 local_wo = frame.to_local(wo);
-        BSDFEval result = inner.eval_with_pdf(local_wi, local_wo, sg, bc);
+        BSDFEval result = inner.eval_with_pdf(local_wi, local_wo, bc);
         result.value *= weight;
         return result;
     }
-    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
 
@@ -450,7 +404,7 @@ public struct MxFramedWeightedBSDF<Inner : ILayerableBSDF, let BSDF_INDEX : int 
             return false;
         const float3 local_wi = frame.to_local(wi);
         BSDFSample local_sample;
-        bool valid = inner.sample(local_wi, local_sample, sg, bc);
+        bool valid = inner.sample(local_wi, input, bc, local_sample);
         if (!valid)
             return false;
         sample = local_sample;
@@ -458,23 +412,7 @@ public struct MxFramedWeightedBSDF<Inner : ILayerableBSDF, let BSDF_INDEX : int 
         sample.weight *= weight;
         return true;
     }
-    public override bool sample_with_selector<
-        S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc, float selector)
-    {
-        sample = {};
 
-        if (scalar_weight() <= 0.0)
-            return false;
-        const float3 local_wi = frame.to_local(wi);
-        BSDFSample local_sample;
-        bool valid = inner.sample_with_selector(local_wi, local_sample, sg, bc, selector);
-        if (!valid)
-            return false;
-        sample = local_sample;
-        sample.wo = frame.to_global(local_sample.wo);
-        sample.weight *= weight;
-        return true;
-    }
     public AlbedoContributions eval_albedo(const float3 wi)
     {
         if (scalar_weight() <= 0.0)
@@ -530,45 +468,36 @@ public struct MxLayerBSDF<Top : ILayerableBSDF, Base : ILayerableBSDF> : ILayera
     }
     // TODO: Remove the eval()/eval_pdf() overrides below when
     // https://github.com/shader-slang/slang/issues/12814 is fixed.
-    public override
-        float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        return eval_with_pdf(wi, wo, sg, bc).value;
+        return eval_with_pdf(wi, wo, bc).value;
     }
 
     public override float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        EvalPdfFallbackSampleGenerator sg = EvalPdfFallbackSampleGenerator(0u);
-        return eval_with_pdf(wi, wo, sg, bc).pdf;
+        return eval_with_pdf(wi, wo, bc).pdf;
     }
 
-    public BSDFEval
-    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        BSDFEval top_result = top.eval_with_pdf(wi, wo, sg, bc);
-        BSDFEval base_result = base.eval_with_pdf(wi, wo, sg, bc);
+        BSDFEval top_result = top.eval_with_pdf(wi, wo, bc);
+        BSDFEval base_result = base.eval_with_pdf(wi, wo, bc);
         float p_top = top_sample_probability(wi);
         return BSDFEval(
             top_result.value + base_scale(wi) * base_result.value,
             p_top * top_result.pdf + (1.0 - p_top) * base_result.pdf
         );
     }
-    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
-        float selector = next_float(sg);
-        return sample_with_selector(wi, sample, sg, bc, selector);
-    }
-    public override bool sample_with_selector<
-        S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc, float selector)
-    {
+        BSDFSampleInput child_input = input;
         sample = {};
 
         float p_top = top_sample_probability(wi);
-        MxBranchChoice choice = mx_choose_branch(selector, p_top);
+        MxBranchChoice choice = mx_choose_branch(child_input.u_lobe, p_top);
         if (choice.pdf <= 0.0)
             return false;
-        bool valid = choice.first ? top.sample_with_selector(wi, sample, sg, bc, selector)
-                                  : base.sample_with_selector(wi, sample, sg, bc, selector);
+        bool valid = choice.first ? top.sample(wi, child_input, bc, sample) : base.sample(wi, child_input, bc, sample);
         if (!valid)
             return false;
         if (sample.has_flag(BSDFFlags::delta)) {
@@ -577,7 +506,8 @@ public struct MxLayerBSDF<Top : ILayerableBSDF, Base : ILayerableBSDF> : ILayera
                 = choice.first ? sample.weight * choice.inv_pdf : base_scale(wi) * sample.weight * choice.inv_pdf;
             return true;
         }
-        const BSDFEval eval_result = eval_with_pdf(wi, sample.wo, sg, bc);
+
+        const BSDFEval eval_result = eval_with_pdf(wi, sample.wo, bc);
         sample.pdf = eval_result.pdf;
         if (sample.pdf <= 0.0)
             return false;
@@ -646,47 +576,38 @@ public struct MxMixBSDF<FG : ILayerableBSDF, BG : ILayerableBSDF> : ILayerableBS
     }
     // TODO: Remove the eval()/eval_pdf() overrides below when
     // https://github.com/shader-slang/slang/issues/12814 is fixed.
-    public override
-        float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        return eval_with_pdf(wi, wo, sg, bc).value;
+        return eval_with_pdf(wi, wo, bc).value;
     }
 
     public override float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        EvalPdfFallbackSampleGenerator sg = EvalPdfFallbackSampleGenerator(0u);
-        return eval_with_pdf(wi, wo, sg, bc).pdf;
+        return eval_with_pdf(wi, wo, bc).pdf;
     }
 
-    public BSDFEval
-    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        BSDFEval bg_result = bg.eval_with_pdf(wi, wo, sg, bc);
-        BSDFEval fg_result = fg.eval_with_pdf(wi, wo, sg, bc);
+        BSDFEval bg_result = bg.eval_with_pdf(wi, wo, bc);
+        BSDFEval fg_result = fg.eval_with_pdf(wi, wo, bc);
         const float p_fg = fg_sample_probability(wi);
         return BSDFEval(
             (float3(1.0) - mix_value) * bg_result.value + mix_value * fg_result.value,
             p_fg * fg_result.pdf + (1.0 - p_fg) * bg_result.pdf
         );
     }
-    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
-        float selector = next_float(sg);
-        return sample_with_selector(wi, sample, sg, bc, selector);
-    }
-    public override bool sample_with_selector<
-        S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc, float selector)
-    {
+        BSDFSampleInput child_input = input;
         sample = {};
 
         // OSL closure mix(a, b, amount) flattens into a*(1-amount) first,
         // followed by b*amount. Keep that CDF order so the OSL-style replay
         // remaps rx by subtracting the background interval before foreground.
-        MxBranchChoice choice = mx_choose_branch(selector, bg_sample_probability(wi));
+        MxBranchChoice choice = mx_choose_branch(child_input.u_lobe, bg_sample_probability(wi));
         if (choice.pdf <= 0.0)
             return false;
-        bool valid = choice.first ? bg.sample_with_selector(wi, sample, sg, bc, selector)
-                                  : fg.sample_with_selector(wi, sample, sg, bc, selector);
+        bool valid = choice.first ? bg.sample(wi, child_input, bc, sample) : fg.sample(wi, child_input, bc, sample);
         if (!valid)
             return false;
         if (sample.has_flag(BSDFFlags::delta)) {
@@ -694,7 +615,8 @@ public struct MxMixBSDF<FG : ILayerableBSDF, BG : ILayerableBSDF> : ILayerableBS
             sample.weight = (choice.first ? float3(1.0) - mix_value : mix_value) * sample.weight * choice.inv_pdf;
             return true;
         }
-        const BSDFEval eval_result = eval_with_pdf(wi, sample.wo, sg, bc);
+
+        const BSDFEval eval_result = eval_with_pdf(wi, sample.wo, bc);
         sample.pdf = eval_result.pdf;
         if (sample.pdf <= 0.0)
             return false;
@@ -765,42 +687,33 @@ public struct MxAddBSDF<In1 : ILayerableBSDF, In2 : ILayerableBSDF> : ILayerable
     public float3 layer_opacity(const float3 wi) { return saturate(in1.layer_opacity(wi) + in2.layer_opacity(wi)); }
     // TODO: Remove the eval()/eval_pdf() overrides below when
     // https://github.com/shader-slang/slang/issues/12814 is fixed.
-    public override
-        float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        return eval_with_pdf(wi, wo, sg, bc).value;
+        return eval_with_pdf(wi, wo, bc).value;
     }
 
     public override float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        EvalPdfFallbackSampleGenerator sg = EvalPdfFallbackSampleGenerator(0u);
-        return eval_with_pdf(wi, wo, sg, bc).pdf;
+        return eval_with_pdf(wi, wo, bc).pdf;
     }
 
-    public BSDFEval
-    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        BSDFEval result1 = in1.eval_with_pdf(wi, wo, sg, bc);
-        BSDFEval result2 = in2.eval_with_pdf(wi, wo, sg, bc);
+        BSDFEval result1 = in1.eval_with_pdf(wi, wo, bc);
+        BSDFEval result2 = in2.eval_with_pdf(wi, wo, bc);
         float p = p_in1(wi);
         return BSDFEval(result1.value + result2.value, p * result1.pdf + (1.0 - p) * result2.pdf);
     }
-    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
-        float selector = next_float(sg);
-        return sample_with_selector(wi, sample, sg, bc, selector);
-    }
-    public override bool sample_with_selector<
-        S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc, float selector)
-    {
+        BSDFSampleInput child_input = input;
         sample = {};
 
         float p = p_in1(wi);
-        MxBranchChoice choice = mx_choose_branch(selector, p);
+        MxBranchChoice choice = mx_choose_branch(child_input.u_lobe, p);
         if (choice.pdf <= 0.0)
             return false;
-        bool valid = choice.first ? in1.sample_with_selector(wi, sample, sg, bc, selector)
-                                  : in2.sample_with_selector(wi, sample, sg, bc, selector);
+        bool valid = choice.first ? in1.sample(wi, child_input, bc, sample) : in2.sample(wi, child_input, bc, sample);
         if (!valid)
             return false;
         if (sample.has_flag(BSDFFlags::delta)) {
@@ -808,7 +721,8 @@ public struct MxAddBSDF<In1 : ILayerableBSDF, In2 : ILayerableBSDF> : ILayerable
             sample.weight *= choice.inv_pdf;
             return true;
         }
-        const BSDFEval eval_result = eval_with_pdf(wi, sample.wo, sg, bc);
+
+        const BSDFEval eval_result = eval_with_pdf(wi, sample.wo, bc);
         sample.pdf = eval_result.pdf;
         if (sample.pdf <= 0.0)
             return false;

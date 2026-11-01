@@ -5,6 +5,7 @@
 # windows env setup to run a CMake build.
 
 import argparse
+import ntpath
 import os
 import shutil
 import stat
@@ -88,28 +89,76 @@ def _find_vs2022_vcvarsall(env: dict[str, str]) -> Path:
     return vcvarsall
 
 
-def _get_msvc_env(plat_spec: str, env: dict[str, str]) -> dict[str, str]:
-    vcvarsall = _find_vs2022_vcvarsall(env)
-    command = f'cmd /u /c "{vcvarsall}" {plat_spec} && set'
-
+def _run_vcvarsall(vcvarsall: Path, arguments: str, env: dict[str, str]) -> dict[str, str]:
+    command = f'cmd /u /c "{vcvarsall}" {arguments} && set'
     try:
         output = subprocess.check_output(command, env=env, stderr=subprocess.STDOUT).decode(
             "utf-16le", errors="replace"
         )
     except (OSError, subprocess.CalledProcessError) as exc:
-        raise RuntimeError(
-            f"Failed to initialize the Visual Studio 2022 environment using '{vcvarsall}'."
-        ) from exc
+        raise RuntimeError(f"Failed to run '{vcvarsall}' with '{arguments}'.") from exc
 
-    build_env = {
+    return {
         key.lower(): value
         for key, _, value in (line.partition("=") for line in output.splitlines())
         if key and value
     }
-    if "path" not in build_env or "vctoolsinstalldir" not in build_env:
+
+
+def _validate_msvc_env(build_env: dict[str, str], vcvarsall: Path) -> None:
+    if (
+        "path" not in build_env
+        or "vctoolsinstalldir" not in build_env
+        or "vsinstalldir" not in build_env
+        or build_env.get("visualstudioversion") != "17.0"
+    ):
         raise RuntimeError(
             f"Visual Studio 2022 environment script '{vcvarsall}' returned an incomplete environment."
         )
+
+    installation_path = vcvarsall.parents[3]
+    expected_path = ntpath.normcase(ntpath.normpath(str(installation_path)))
+    vs_path = ntpath.normcase(ntpath.normpath(build_env["vsinstalldir"]))
+    vc_tools_path = ntpath.normcase(ntpath.normpath(build_env["vctoolsinstalldir"]))
+    compiler_path = shutil.which("cl.exe", path=build_env["path"])
+    linker_path = shutil.which("link.exe", path=build_env["path"])
+    expected_prefix = expected_path + "\\"
+    if (
+        vs_path != expected_path
+        or not vc_tools_path.startswith(expected_prefix)
+        or not compiler_path
+        or not ntpath.normcase(ntpath.normpath(compiler_path)).startswith(expected_prefix)
+        or not linker_path
+        or not ntpath.normcase(ntpath.normpath(linker_path)).startswith(expected_prefix)
+    ):
+        raise RuntimeError(
+            "Visual Studio 2022 initialization produced a mixed toolchain. "
+            "Start from a clean shell or the selected Visual Studio 2022 x64 Native Tools prompt."
+        )
+
+
+def _get_msvc_env(plat_spec: str, env: dict[str, str]) -> dict[str, str]:
+    vcvarsall = _find_vs2022_vcvarsall(env)
+    initial_env = {key.lower(): value for key, value in env.items()}
+    active_vs_path = initial_env.get("vsinstalldir")
+    if not active_vs_path and initial_env.get("vcinstalldir"):
+        active_vs_path = str(Path(initial_env["vcinstalldir"]).parent)
+    if active_vs_path:
+        # Switching installations in one Developer shell leaves the old compiler on PATH.
+        active_vcvarsall = Path(active_vs_path) / "VC" / "Auxiliary" / "Build" / "vcvarsall.bat"
+        if not active_vcvarsall.is_file():
+            raise RuntimeError(
+                f"Cannot reset the active Visual Studio environment: '{active_vcvarsall}' is missing."
+            )
+        env = _run_vcvarsall(active_vcvarsall, "/clean_env", env)
+    elif initial_env.get("vscmd_ver"):
+        raise RuntimeError("Cannot identify the active Visual Studio environment for cleanup.")
+
+    build_env = _run_vcvarsall(vcvarsall, plat_spec, env)
+    _validate_msvc_env(build_env, vcvarsall)
+
+    build_env.pop("vcpkg_visual_studio_path", None)
+    build_env["VCPKG_VISUAL_STUDIO_PATH"] = str(vcvarsall.parents[3])
 
     return build_env
 
@@ -175,7 +224,7 @@ def configure(
         raise
 
 
-def build(preset: str, config: str = "Release"):
+def build(preset: str, config: str = "Release", target: str | None = None):
     env = get_build_env()
     build_dir = get_build_dir(preset)
 
@@ -185,16 +234,33 @@ def build(preset: str, config: str = "Release"):
         "--config",
         config,
     ]
+    if target:
+        cmake_args += ["--target", target]
 
     subprocess.run(["cmake", *cmake_args], env=env, cwd=SOURCE_DIR, check=True)
 
 
-if __name__ == "__main__":
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Configure and build Falcor2.")
     parser.add_argument("--preset", default=get_default_preset())
     parser.add_argument("--config", default="Release")
     parser.add_argument("--fresh", action="store_true", help="Discard the existing CMake cache.")
-    args = parser.parse_args()
+    actions = parser.add_mutually_exclusive_group()
+    actions.add_argument("--configure-only", action="store_true")
+    actions.add_argument("--build-only", action="store_true")
+    parser.add_argument("--target", help="Build only the named CMake target.")
+    args = parser.parse_args(argv)
 
-    configure(args.preset, fresh=args.fresh)
-    build(args.preset, args.config)
+    if args.build_only and args.fresh:
+        parser.error("--fresh requires a configure step")
+    if args.configure_only and args.target:
+        parser.error("--target requires a build step")
+
+    if not args.build_only:
+        configure(args.preset, fresh=args.fresh)
+    if not args.configure_only:
+        build(args.preset, args.config, args.target)
+
+
+if __name__ == "__main__":
+    main()

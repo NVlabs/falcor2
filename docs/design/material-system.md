@@ -103,6 +103,44 @@ argument, attribute, texture-table, or generated-data buffers when the state doe
 Python subclasses of the bound `Material` base supply the same hooks and cursor writer, using the same ABI rather
 than a renderer-side special case.
 
+#### Native glTF specialization
+
+`GLTFMaterial` (metallic roughness) and `GLTFSpecGlossMaterial` are separate native workflows. Their GPU types have
+compile-time masks for features, textures, texture transforms, and nonzero texture-coordinate sets. Runtime masks
+still select what an individual material uses. Before collecting material type conformances, the scene's
+`GLTFContext` chooses the compile masks independently for each workflow:
+
+- `GLTFSpecializationMode.required` uses each material's effective masks. It favors low-feature
+  shading, but distinct material masks can require more compiled types.
+- `GLTFSpecializationMode.single` uses the componentwise union of live materials in each workflow. Editing or
+  removing materials can change that union; changes within the existing union keep the shader type stable.
+- `GLTFSpecializationMode.balanced` (the default) builds a small number of material specializations to cover all
+  requirements.
+- `GLTFSpecializationMode.all` uses every allowed feature and its texture, transform, and texcoord capabilities.
+  Adding another material of an existing workflow does not change its type.
+
+`SceneConfig.gltf_allowed_features` is a hard cap on native glTF feature use. It intersects each material's
+`feature_mask_filter` before runtime masks and extra records are derived. Disabled features retain their authored
+properties and normal resource-loading behavior, but contribute no runtime feature, texture capability, or extra
+record. The cap does not affect glTF materials converted to Standard, MDL, MaterialX, or OpenPBR. Unknown feature
+bits are rejected. For example:
+
+```python
+import falcor2 as f2
+
+config = f2.SceneConfig(
+    gltf_specialization_mode=f2.GLTFSpecializationMode.balanced,
+    gltf_allowed_features=(
+        f2.GLTFFeatureFlags.all
+        & ~f2.GLTFFeatureFlags.anisotropy
+        & ~f2.GLTFFeatureFlags.multiscatter
+    ),
+)
+```
+
+The mode and cap belong to the immutable scene configuration. Scene creation routes accept that configuration;
+`append()` keeps the destination scene's settings. ImportOptions still chooses the glTF material backend.
+
 #### MDL geometry inputs
 
 MDL uses the same Scene-owned named IDs and per-hit accessor as MaterialX. The SDK's `referenced_scene_data`

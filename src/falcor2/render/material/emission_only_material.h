@@ -20,6 +20,7 @@ public:
 
     virtual void on_load_resources() override;
     virtual shared::MaterialFlags flags() const override { return shared::MaterialFlags::none; }
+    virtual SceneCapabilities required_capabilities() const override { return material_capabilities(false, false); }
 
     bool enable_color_temperature() const { return m_enable_color_temperature; }
     void set_enable_color_temperature(bool enable_color_temperature);
