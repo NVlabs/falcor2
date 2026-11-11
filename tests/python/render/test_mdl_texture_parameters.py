@@ -79,6 +79,13 @@ def test_mdl_texture_parameters(
     check_color((0.0625, 0.0625, 0.5625))
     material["second"] = ""
     check_color((0.125, 0.125, 0.125))
+    embedded_blue = f2.Blob((tmp_path / "blue.png").read_bytes(), "mdl-blue.png")
+    material["first:texture_bytes"] = embedded_blue
+    check_color((0.0625, 0.0625, 0.5625))
+    assert material["first:texture"] is None
+    assert material["first:texture_bytes"].name == "mdl-blue.png"
+    assert any(handle.path is None for handle in material.build_texture_list())
+    material["first:texture_bytes"] = None
     material["first"] = str(tmp_path / "blue.png")
     material["second"] = str(tmp_path / "red.png")
     check_color((0.5, 0.0, 0.5))

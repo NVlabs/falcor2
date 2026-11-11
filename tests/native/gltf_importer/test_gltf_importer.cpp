@@ -677,8 +677,8 @@ TEST_CASE("GltfImporter - Default Pose Skinning")
     CHECK_EQ(raw_scene->nodes[1].skin_index, 0);
     CHECK_EQ(raw_scene->skins[0].skeleton_root, 2);
     CHECK_EQ(raw_scene->skins[0].joints, std::vector<int>({3, 4}));
-    REQUIRE_EQ(raw_scene->skins[0].joint_from_bind_mesh.size(), 2);
-    check_float3_approx(raw_scene->skins[0].joint_from_bind_mesh[0].get_col(3).xyz(), float3(-1.f, 0.f, 0.f));
+    REQUIRE_EQ(raw_scene->skins[0].joint_from_bind.size(), 2);
+    check_float3_approx(raw_scene->skins[0].joint_from_bind[0].get_col(3).xyz(), float3(-1.f, 0.f, 0.f));
     CHECK(raw_scene->meshes.front().find_attribute(ImporterSemantic::joints) != nullptr);
     CHECK(raw_scene->meshes.front().find_attribute(ImporterSemantic::weights) != nullptr);
     const auto raw_positions = raw_scene->meshes.front().position_stream();
@@ -1338,88 +1338,6 @@ TEST_CASE("Scene rescaling functionality")
         }
 
         INFO("Scene AABB functionality test completed successfully");
-    }
-}
-
-TEST_CASE("ImporterScene default camera autoposition")
-{
-    auto test_file = testing::project_directory() / "data" / "assets" / "kronos" / "Box" / "glTF-Binary" / "Box.glb";
-
-    if (!std::filesystem::exists(test_file)) {
-        INFO("Test file does not exist, skipping camera autoposition test: {}", test_file.string());
-        return;
-    }
-
-    SUBCASE("add_default_camera_robust_fit")
-    {
-        GltfImporter importer;
-        auto scene = importer.load_scene(test_file);
-        REQUIRE(scene);
-
-        const size_t old_camera_count = scene->cameras.size();
-        const size_t old_node_count = scene->nodes.size();
-        const size_t old_root_count = scene->root_nodes.size();
-
-        const int camera_index = scene->add_default_camera_robust_fit();
-
-        REQUIRE_EQ(scene->cameras.size(), old_camera_count + 1);
-        REQUIRE_EQ(scene->nodes.size(), old_node_count + 1);
-        REQUIRE_EQ(scene->root_nodes.size(), old_root_count + 1);
-        REQUIRE_GE(camera_index, 0);
-        REQUIRE_LT(camera_index, static_cast<int>(scene->cameras.size()));
-
-        const auto& camera = scene->cameras[camera_index];
-        CHECK_EQ(camera.projection, ImporterCamera::Projection::perspective);
-        CHECK_EQ(camera.fov_direction, ImporterCamera::FOVDirection::vertical);
-        CHECK_GT(camera.focal_length, 0.f);
-        CHECK_GT(camera.focus_distance, 0.f);
-
-        const int node_index = static_cast<int>(scene->nodes.size()) - 1;
-        const auto& node = scene->nodes[node_index];
-        CHECK_EQ(node.camera_index, camera_index);
-        CHECK_EQ(node.parent, -1);
-
-        // Translation should be finite.
-        const float3 cam_pos = node.transform.get_col(3).xyz();
-        CHECK(std::isfinite(cam_pos.x));
-        CHECK(std::isfinite(cam_pos.y));
-        CHECK(std::isfinite(cam_pos.z));
-    }
-
-    SUBCASE("add_default_camera_best_view")
-    {
-        GltfImporter importer;
-        auto scene = importer.load_scene(test_file);
-        REQUIRE(scene);
-
-        const size_t old_camera_count = scene->cameras.size();
-        const size_t old_node_count = scene->nodes.size();
-        const size_t old_root_count = scene->root_nodes.size();
-
-        const int camera_index = scene->add_default_camera_best_view();
-
-        REQUIRE_EQ(scene->cameras.size(), old_camera_count + 1);
-        REQUIRE_EQ(scene->nodes.size(), old_node_count + 1);
-        REQUIRE_EQ(scene->root_nodes.size(), old_root_count + 1);
-        REQUIRE_GE(camera_index, 0);
-        REQUIRE_LT(camera_index, static_cast<int>(scene->cameras.size()));
-
-        const auto& camera = scene->cameras[camera_index];
-        CHECK_EQ(camera.projection, ImporterCamera::Projection::perspective);
-        CHECK_EQ(camera.fov_direction, ImporterCamera::FOVDirection::vertical);
-        CHECK_GT(camera.focal_length, 0.f);
-        CHECK_GT(camera.focus_distance, 0.f);
-
-        const int node_index = static_cast<int>(scene->nodes.size()) - 1;
-        const auto& node = scene->nodes[node_index];
-        CHECK_EQ(node.camera_index, camera_index);
-        CHECK_EQ(node.parent, -1);
-
-        // Translation should be finite.
-        const float3 cam_pos = node.transform.get_col(3).xyz();
-        CHECK(std::isfinite(cam_pos.x));
-        CHECK(std::isfinite(cam_pos.y));
-        CHECK(std::isfinite(cam_pos.z));
     }
 }
 

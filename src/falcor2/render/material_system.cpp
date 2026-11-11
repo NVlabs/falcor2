@@ -23,7 +23,13 @@ MaterialSystem::MaterialSystem(Scene* scene)
     : SceneSystem{scene}
     , m_materials(scene->material_collection())
     , m_gltf_context(
-          std::make_unique<GLTFContext>(scene->config().gltf_specialization_mode, scene->config().gltf_allowed_features)
+          std::make_unique<GLTFContext>(
+              scene->config().gltf_specialization_mode,
+              scene->config().gltf_allowed_features,
+              scene->config().gltf_core_features,
+              scene->config().gltf_core_texture_transforms,
+              scene->config().gltf_core_alternate_uvs
+          )
       )
     , m_material_data({
           .label = "MaterialSystem::material_data",
@@ -66,7 +72,6 @@ SceneUpdateFlags MaterialSystem::update(SceneUpdateContext& ctx)
 
     // Upload before writing material records, which use the current buffer and offsets.
     m_data_storage.update_buffer(ctx.command_encoder());
-    m_data_buffer_handle = to_handle(m_data_storage.buffer());
 
     // Aggregate capabilities after materials have synchronized their generated code and opacity state.
     m_required_capabilities = {};
@@ -192,11 +197,15 @@ void MaterialSystem::bind_to_scene(const sgl::ShaderCursor& cursor) const
     material_system["material_data"] = m_material_data.buffer();
 }
 
-BufferOffsetPair MaterialSystem::data_ref(BufferSuballocator::Allocation allocation) const
+BufferPtr MaterialSystem::data_ref(BufferSuballocator::Allocation allocation) const
 {
     if (!allocation.is_valid())
         return {};
-    return {m_data_buffer_handle, m_data_storage.byte_offset(allocation)};
+    return to_buffer_ptr(
+        m_data_storage.buffer(),
+        m_data_storage.byte_offset(allocation),
+        BufferSuballocator::ALIGNMENT
+    );
 }
 
 shared::MaterialID MaterialSystem::allocate_material_id()

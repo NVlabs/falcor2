@@ -4,7 +4,6 @@
 import sys
 import shutil
 from dataclasses import dataclass
-from enum import IntFlag
 from pathlib import Path
 from typing import Any, cast
 
@@ -17,8 +16,10 @@ import pytest
 # Allow this test to run standalone.
 if __name__ == "__main__":
     from python_material_sample import PythonMaterialSample
+    from scattering_tests import BSDFFlags
 else:
     from .python_material_sample import PythonMaterialSample
+    from .scattering_tests import BSDFFlags
 
 
 DATA_SCENES_DIR = Path(__file__).resolve().parents[3] / "data" / "scenes"
@@ -186,29 +187,6 @@ def test_materialx_canonical_names_are_independent_of_editable_inputs() -> None:
     assert white_high_value[0] > blue_high_value[0]
     assert white_high_value[1] > blue_high_value[1]
     assert not np.allclose(blue_high_value, white_high_value)
-
-
-class BSDFFlags(IntFlag):
-    """Python enum matching Slang's BSDFFlags definition."""
-
-    none = 0x00
-    diffuse_reflection = 0x01
-    glossy_reflection = 0x02
-    delta_reflection = 0x04
-    diffuse_transmission = 0x10
-    glossy_transmission = 0x20
-    delta_transmission = 0x40
-    glossy_curve = 0x80
-    diffuse = 0x11
-    glossy = 0x22
-    delta = 0x44
-    curve = 0x80
-    reflection = 0x07
-    transmission = 0x70
-    non_delta = 0xB3
-    non_delta_reflection = 0x03
-    non_delta_transmission = 0x30
-    all = 0xF7
 
 
 @dataclass
@@ -675,7 +653,7 @@ def test_materialx_editable_data_buffer_uses_packed_reflected_stride(
 
         assert material.slang_type_name
         shader = shader_path.read_text(encoding="utf-8")
-        assert "BufferOffsetPair data_buffer" in shader
+        assert "BufferPtr data_buffer" in shader
         assert "data_buffer.load<" in shader
 
         module_name = next(
@@ -1293,6 +1271,53 @@ def test_scene_material_texture_lists(
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.parametrize(
+    "material_type, texture_property",
+    [
+        ("StandardMaterial", "base_color_texture"),
+        ("StandardSpecGlossMaterial", "diffuse_texture"),
+        ("OpenPBRMaterial", "base_color_texture"),
+        ("OpenPBRMaterial", "opacity_texture"),
+        ("OpenPBRMaterial", "normal_texture"),
+    ],
+)
+def test_material_encoded_texture_property(
+    device_type: spy.DeviceType, material_type: str, texture_property: str
+) -> None:
+    device = helpers.get_device(device_type)
+    scene = f2.Scene.create(device)
+    image = DATA_DIR / "assets/textures/test_texture_manager/regular_blue.png"
+    source = f2.Blob(image.read_bytes(), image.name)
+    material = scene.create_material(
+        material_type, f2.Properties({f"{texture_property}_bytes": source})
+    )
+    before = scene.texture_manager.stats.total_texture_count
+
+    assert material[texture_property] is None
+    scene.update()
+
+    assert material[f"{texture_property}_bytes"].name == image.name
+    assert material[texture_property] is None
+    assert scene.texture_manager.stats.total_texture_count == before + 1
+    if material_type == "StandardMaterial":
+        module, helper = load_scene_sampling_module(device, scene)
+        collect = module["material_collect_properties_simple"].as_func().write(helper.bind_scene)
+        result = cast(
+            spy.Tensor,
+            collect(
+                material,
+                np.array([[0.5, 0.5]], dtype=np.float32),
+                np.array([[0.0, 1.0, 0.0]], dtype=np.float32),
+            ),
+        )
+        cursor = result.cursor()
+        cursor.load()
+        np.testing.assert_allclose(
+            _float3_array(cursor[0].read()["material_color"]), [0.0, 0.0, 1.0], atol=2e-3
+        )
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_scene_material_cursor_writers(device_type: spy.DeviceType) -> None:
     device = helpers.get_device(device_type)
     scene = f2.Scene.create(device)
@@ -1404,6 +1429,11 @@ def test_scene_material_cursor_writers(device_type: spy.DeviceType) -> None:
     openpbr_cursor[0] = openpbr
     openpbr_result = openpbr_cursor[0].read()
     assert int(openpbr_result["geometry_texture_metadata"]) == 346
+    if device_type == spy.DeviceType.d3d12:
+        # OpenPBR's optimized D3D attribute loads require a dedicated buffer at byte offset zero.
+        attributes_bits = int(openpbr_result["attributes_buffer"]["data"])
+        assert attributes_bits != f2.BufferPtr().data
+        assert attributes_bits >> 32 == 0
 
     required_module = python_material.required_module()
     assert required_module is not None
@@ -1567,21 +1597,11 @@ def test_scene_material_sampler(
 
     scene.update()
 
-    samples_per_material = 100
-
-    seed = np.random.randint(0, 2**32, size=(samples_per_material, 3), dtype=np.uint32)
-    uvs = np.random.rand(samples_per_material, 2).astype(np.float32)
-    wi = np.random.randn(samples_per_material, 3).astype(np.float32)
-    wi /= np.linalg.norm(wi, axis=1, keepdims=True)
-    wo = np.random.randn(samples_per_material, 3).astype(np.float32)
-    wo /= np.linalg.norm(wo, axis=1, keepdims=True)
-
-    # Values for which we know sample/eval outputs
-    seed[0] = (7, 0, 7)
-    uvs[0] = (0.5, 0.5)
-    wi[0] = (0, 1, 0)
-    wo[0] = (0, 1, 0)
-
+    # Golden API/binding witnesses; randomized sampling contracts live in test_material_sampling.py.
+    seed = np.array([(7, 0, 7)], dtype=np.uint32)
+    uvs = np.array([(0.5, 0.5)], dtype=np.float32)
+    wi = np.array([(0, 1, 0)], dtype=np.float32)
+    wo = np.array([(0, 1, 0)], dtype=np.float32)
     module, helper = load_scene_sampling_module(device, scene)
 
     material = scene.materials[0]
@@ -1656,7 +1676,6 @@ def test_scene_material_sampler_batch(
     device = helpers.get_device(device_type)
     scene = f2.Scene.create(device)
 
-    samples_per_material = 100
     active_scene_materials = _scene_materials_for_device(
         device_type,
         nightly=bool(request.config.getoption("--nightly") or request.config.getoption("--all")),
@@ -1670,30 +1689,16 @@ def test_scene_material_sampler_batch(
     material_ids = [int(material.material_id) for material in scene.materials]
     assert len(material_ids) == len(active_scene_materials)
 
-    material_ids_np = np.array([material_ids[0]] * samples_per_material, dtype=np.int32)
-    seed = np.random.randint(0, 2**32, size=(samples_per_material, 3), dtype=np.uint32)
-    uvs = np.random.rand(samples_per_material, 2).astype(np.float32)
-    wi = np.random.randn(samples_per_material, 3).astype(np.float32)
-    wi /= np.linalg.norm(wi, axis=1, keepdims=True)
-    wo = np.random.randn(samples_per_material, 3).astype(np.float32)
-    wo /= np.linalg.norm(wo, axis=1, keepdims=True)
-
-    # Values for which we know sample/eval outputs for each material
-    seed[0] = (7, 0, 7)
-    uvs[0] = (0.5, 0.5)
-    wi[0] = (0, 1, 0)
-    wo[0] = (0, 1, 0)
-
+    material_ids_np = np.asarray(material_ids, dtype=np.int32)
+    # Golden API/binding witnesses; randomized sampling contracts live in test_material_sampling.py.
+    seed = np.array([(7, 0, 7)], dtype=np.uint32)
+    uvs = np.array([(0.5, 0.5)], dtype=np.float32)
+    wi = np.array([(0, 1, 0)], dtype=np.float32)
+    wo = np.array([(0, 1, 0)], dtype=np.float32)
     seed = np.concatenate([seed] * len(material_ids), axis=0)
     uvs = np.concatenate([uvs] * len(material_ids), axis=0)
     wi = np.concatenate([wi] * len(material_ids), axis=0)
     wo = np.concatenate([wo] * len(material_ids), axis=0)
-
-    for material_id in material_ids[1:]:
-        material_ids_np = np.concatenate(
-            [material_ids_np, np.array([material_id] * samples_per_material, dtype=np.int32)],
-            axis=0,
-        )
 
     module, helper = load_scene_sampling_module(device, scene)
     type_conformances = cast(list[spy.TypeConformance], scene.requirements.type_conformances)
@@ -1711,7 +1716,7 @@ def test_scene_material_sampler_batch(
     sample_cursor = sample_results.cursor()
     sample_cursor.load()
     for i, test_material in enumerate(active_scene_materials):
-        result: dict[str, Any] = sample_cursor[i * samples_per_material].read()  # type: ignore
+        result: dict[str, Any] = sample_cursor[i].read()  # type: ignore
         assert_valid_sample_result(result)
         assert_expected_subset("sample", result, test_material)
 
@@ -1728,7 +1733,7 @@ def test_scene_material_sampler_batch(
     eval_cursor = eval_results.cursor()
     eval_cursor.load()
     for i, test_material in enumerate(active_scene_materials):
-        result: dict[str, Any] = eval_cursor[i * samples_per_material].read()  # type: ignore
+        result: dict[str, Any] = eval_cursor[i].read()  # type: ignore
         assert_expected_subset("eval", result["value"], test_material)
         assert_expected_subset("eval_pdf", result["pdf"], test_material)
 
@@ -1745,7 +1750,7 @@ def test_scene_material_sampler_batch(
     opacity_cursor = opacity_results.cursor()
     opacity_cursor.load()
     for i, test_material in enumerate(active_scene_materials):
-        result: float = opacity_cursor[i * samples_per_material].read()
+        result: float = opacity_cursor[i].read()
         assert np.isfinite(result)
         assert_expected_subset("opacity", result, test_material)
 
@@ -1762,7 +1767,7 @@ def test_scene_material_sampler_batch(
     properties_cursor = properties_results.cursor()
     properties_cursor.load()
     for i, test_material in enumerate(active_scene_materials):
-        result: dict[str, Any] = properties_cursor[i * samples_per_material].read()  # type: ignore
+        result: dict[str, Any] = properties_cursor[i].read()  # type: ignore
         assert_expected_subset("collect_properties", result, test_material)
 
     # Test get_lobe_types
@@ -1778,7 +1783,7 @@ def test_scene_material_sampler_batch(
     lobe_types_cursor = lobe_types_results.cursor()
     lobe_types_cursor.load()
     for i, test_material in enumerate(active_scene_materials):
-        result: int = lobe_types_cursor[i * samples_per_material].read()  # type: ignore
+        result: int = lobe_types_cursor[i].read()  # type: ignore
         assert_expected_subset("get_lobe_types", result, test_material)
 
     # Test collect_extra_bsdf_properties
@@ -1796,7 +1801,7 @@ def test_scene_material_sampler_batch(
     result_cursor = result_data.cursor()
     result_cursor.load()
     for i, test_material in enumerate(active_scene_materials):
-        result: dict[str, Any] = result_cursor[i * samples_per_material].read()  # type: ignore
+        result: dict[str, Any] = result_cursor[i].read()  # type: ignore
         assert_expected_subset("collect_extra_bsdf_properties", result, test_material)
 
 

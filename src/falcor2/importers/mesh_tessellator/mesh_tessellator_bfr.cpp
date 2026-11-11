@@ -296,7 +296,7 @@ void evaluate_authored_stream(
 
     const bool uses_face_value = stream.input->interpolation == MeshInterpolation::constant
         || stream.input->interpolation == MeshInterpolation::uniform;
-    std::span<const float> face_value;
+    std::span<const std::byte> face_value;
     const Surface* surface = nullptr;
     const Surface::PointDescriptor descriptor{int(stream.component_count())};
     if (needs_evaluation) {
@@ -336,7 +336,12 @@ void evaluate_authored_stream(
             output.set_value(stream_index, vertex_index, face_value);
         } else {
             const float2& coordinate = coordinates[coordinate_index];
-            surface->Evaluate(&coordinate.x, patch_points.data(), descriptor, output.value(stream_index, vertex_index));
+            surface->Evaluate(
+                &coordinate.x,
+                patch_points.data(),
+                descriptor,
+                reinterpret_cast<float*>(output.value(stream_index, vertex_index))
+            );
         }
     }
 }
@@ -372,6 +377,7 @@ ImporterMesh tessellate_subdivision_surface(const TessellatorInputMesh& input, i
 {
     const size_t vertex_count = input.positions[0].value_count();
     for (const MeshAttributeStream& positions : input.positions) {
+        FALCOR_CHECK(positions.scalar_type() == sgl::DataType::float32, "Subdivision positions must be float32");
         check_stream_layout(positions, input.face_vertex_counts.size(), vertex_count, input.face_vertex_indices.size());
         FALCOR_CHECK(positions.component_count() == 3, "Subdivision positions must have three components");
         FALCOR_CHECK(positions.indices.empty(), "Subdivision positions cannot be indexed separately");
@@ -383,6 +389,11 @@ ImporterMesh tessellate_subdivision_surface(const TessellatorInputMesh& input, i
         // Subdivision normals are generated from position derivatives, matching the original tessellator.
         if (stream->attribute.semantic == ImporterSemantic::normal && stream->attribute.index == 0)
             continue;
+        FALCOR_CHECK(
+            stream->interpolation == MeshInterpolation::constant || stream->interpolation == MeshInterpolation::uniform
+                || stream->scalar_type() == sgl::DataType::float32,
+            "Refined subdivision requires float32 for vertex, varying and face-varying attribute streams"
+        );
         check_stream_layout(*stream, input.face_vertex_counts.size(), vertex_count, input.face_vertex_indices.size());
     }
 

@@ -258,20 +258,20 @@ struct AttributeInfo {
         return reinterpret_cast<const uint32_t*>(data_ptr + index * stride);
     }
 
-    ImporterJointIndices get_joint_data(size_t vertex_index) const
+    int4 get_joint_data(size_t vertex_index) const
     {
         SGL_CHECK(
             is_valid() && accessor->type == TINYGLTF_TYPE_VEC4,
             "Joint accessor must contain four-component vectors"
         );
 
-        ImporterJointIndices result;
+        int4 result(0);
         if (const uint8_t* uint8_data = get_uint8_data(vertex_index)) {
-            for (size_t i = 0; i < 4; ++i)
-                result.values[i] = uint8_data[i];
+            for (int i = 0; i < 4; ++i)
+                result[i] = uint8_data[i];
         } else if (const uint16_t* uint16_data = get_uint16_data(vertex_index)) {
-            for (size_t i = 0; i < 4; ++i)
-                result.values[i] = uint16_data[i];
+            for (int i = 0; i < 4; ++i)
+                result[i] = uint16_data[i];
         } else {
             SGL_THROW("Joint accessor must use unsigned byte or unsigned short components");
         }
@@ -775,7 +775,7 @@ void GltfImporter::extract_meshes(const ImportOptions& import_options)
 
             sgl::short_vector<ImporterVertexStream<float2>> tex_coord_streams;
             sgl::short_vector<AttributeInfo> tex_coord_attrs;
-            sgl::short_vector<ImporterVertexStream<ImporterJointIndices>> joint_streams;
+            sgl::short_vector<ImporterVertexStream<int4>> joint_streams;
             sgl::short_vector<ImporterVertexStream<float4>> weight_streams;
             sgl::short_vector<AttributeInfo> joint_attrs;
             sgl::short_vector<AttributeInfo> weight_attrs;
@@ -868,7 +868,7 @@ void GltfImporter::extract_meshes(const ImportOptions& import_options)
                         i,
                         i
                     );
-                    joint_streams[i] = importer_mesh.get_stream<ImporterJointIndices>(*joint_attribute);
+                    joint_streams[i] = importer_mesh.get_stream<int4>(*joint_attribute);
                     weight_streams[i] = importer_mesh.get_stream<float4>(*weight_attribute);
                 }
 
@@ -1348,7 +1348,7 @@ void GltfImporter::extract_skins()
         skin.name = gltf_skin.name.empty() ? "skin_" + std::to_string(skin_index) : gltf_skin.name;
         skin.skeleton_root = gltf_skin.skeleton;
         skin.joints = gltf_skin.joints;
-        skin.joint_from_bind_mesh.assign(skin.joints.size(), float4x4::identity());
+        skin.joint_from_bind.assign(skin.joints.size(), float4x4::identity());
 
         if (gltf_skin.inverseBindMatrices >= 0) {
             SGL_CHECK_LT(static_cast<size_t>(gltf_skin.inverseBindMatrices), model.accessors.size());
@@ -1360,7 +1360,7 @@ void GltfImporter::extract_skins()
             );
             const AttributeInfo inverse_bind_matrices(model, accessor);
             for (size_t joint_index = 0; joint_index < skin.joints.size(); ++joint_index)
-                skin.joint_from_bind_mesh[joint_index] = load_matrix(inverse_bind_matrices, joint_index);
+                skin.joint_from_bind[joint_index] = load_matrix(inverse_bind_matrices, joint_index);
         }
 
         m_scene->skins.push_back(std::move(skin));

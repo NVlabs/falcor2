@@ -23,6 +23,7 @@
 
 #include <sgl/math/vector.h>
 #include <sgl/device/cursor_utils.h>
+#include <sgl/device/kernel.h>
 
 #include <algorithm>
 #include <array>
@@ -212,6 +213,90 @@ TEST_CASE_GPU("geometry capability requirements follow imported material usage")
             == needs_geometry
         );
     }
+}
+
+TEST_CASE_GPU("BLAS rebuild and refit")
+{
+    bool is_dynamic = false;
+    SUBCASE("rebuild") { }
+    SUBCASE("refit")
+    {
+        is_dynamic = true;
+    }
+    auto scene = Scene::create(ref(ctx.device));
+    auto& render = *scene->_render_scene();
+    const auto mesh = render.create_triangle_geometry({.vertex_count = 6, .index_count = 3, .is_dynamic = is_dynamic});
+    RenderHandle geometries[] = {mesh};
+    const auto group = render.create_geometry_group({.geometries = geometries});
+    const auto transform = render.create_transform({.world_from_object = float4x4::identity()});
+    render.create_geometry_instance({.geometry_group = group, .transform = transform});
+    shared::PackedTriangleVertex vertices[6] = {};
+    vertices[1].position = {1, 0, 0};
+    vertices[2].position = {0, 1, 0};
+    vertices[3].position = {3, 0, 0};
+    vertices[4].position = {4, 0, 0};
+    vertices[5].position = {3, 1, 0};
+    const uint32_t indices[] = {0, 1, 2};
+    render.update_triangle_geometry(mesh, {.vertices = vertices, .indices = indices});
+    render.update({}, false);
+    const auto blas = render.get_geometry_group(group).blas;
+    REQUIRE(blas);
+
+    auto module = ctx.device->load_module_from_source("blas_update_probe", R"(
+import falcor2.render;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void main(RWStructuredBuffer<float> result, uint output_index)
+{
+    float3 origin = output_index == 3 ? float3(3.2, 0.2, -1.0) : float3(0.2, 0.2, -1.0);
+    RayDesc ray = {origin, 0.0, float3(0.0, 0.0, 1.0), 10.0};
+    RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
+    query.TraceRayInline(g_scene.tlas, 0, 0xff, ray);
+    while (query.Proceed()) {}
+    result[output_index] = query.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? query.CommittedRayT() : -1.0;
+}
+)");
+    auto modules = scene->requirements()->modules;
+    modules.push_back(module);
+    auto kernel = ctx.device->create_compute_kernel(
+        {.program = ctx.device->link_program(modules, {module->entry_point("main")})}
+    );
+    auto result = ctx.device->create_buffer({.size = 4 * sizeof(float), .usage = sgl::BufferUsage::unordered_access});
+    auto trace = [&](uint32_t output_index)
+    {
+        kernel->dispatch(
+            uint3(1),
+            [&](sgl::ShaderCursor cursor)
+            {
+                render.bind_to_scene(cursor["g_scene"]);
+                cursor = cursor.find_entry_point(0);
+                cursor["result"] = result;
+                cursor["output_index"] = output_index;
+            }
+        );
+    };
+    trace(0);
+    for (auto& vertex : vertices)
+        vertex.position.z = 1.f;
+    render.update_triangle_geometry(mesh, {.vertices = vertices, .indices = indices}, RenderGeometryDirtyFlags::refit);
+    render.update({}, false);
+    CHECK(render.get_geometry_group(group).blas == blas);
+    trace(1);
+
+    // A rebuild request must win over refit even when vertex/index counts stay the same.
+    const uint32_t replaced[] = {3, 4, 5};
+    render.update_triangle_geometry(mesh, {.vertices = vertices, .indices = replaced});
+    render.update_triangle_geometry(mesh, {.vertices = vertices, .indices = replaced}, RenderGeometryDirtyFlags::refit);
+    render.update({}, false);
+    CHECK(render.get_geometry_group(group).blas == blas);
+    trace(2);
+    trace(3);
+    ctx.device->wait();
+    const auto hits = result->get_elements<float>();
+    CHECK(hits[0] == doctest::Approx(1.f));
+    CHECK(hits[1] == doctest::Approx(2.f));
+    CHECK(hits[2] == -1.f);
+    CHECK(hits[3] == doctest::Approx(2.f));
 }
 
 TEST_CASE_GPU("triangle additional attribute enablement tracks nonempty geometries")
@@ -693,8 +778,8 @@ TEST_CASE_GPU("importer scene textured dome light preserves radiometry")
 
     auto scene = Scene::from_importer_scene(ref(ctx.device), *importer_scene);
 
-    REQUIRE_EQ(scene->components().size(), 1);
-    const auto* env_map_light = dynamic_cast<const EnvMapLight*>(scene->components()[0]);
+    REQUIRE_EQ(scene->components().size(), 2);
+    const auto* env_map_light = dynamic_cast<const EnvMapLight*>(scene->components()[1]);
     REQUIRE(env_map_light != nullptr);
     CHECK_EQ(env_map_light->env_map_path(), std::filesystem::path(dome_light.env_map_path));
     CHECK_EQ(env_map_light->color(), dome_light.color);
@@ -722,8 +807,8 @@ TEST_CASE_GPU("importer scene textureless dome light becomes constant environmen
 
     auto scene = Scene::from_importer_scene(ref(ctx.device), *importer_scene);
 
-    REQUIRE_EQ(scene->components().size(), 1);
-    const auto* constant_light = dynamic_cast<const ConstantLight*>(scene->components()[0]);
+    REQUIRE_EQ(scene->components().size(), 2);
+    const auto* constant_light = dynamic_cast<const ConstantLight*>(scene->components()[1]);
     REQUIRE(constant_light != nullptr);
     CHECK_EQ(constant_light->color(), dome_light.color);
     CHECK_EQ(constant_light->intensity(), doctest::Approx(dome_light.intensity));
@@ -750,8 +835,8 @@ TEST_CASE_GPU("importer scene converts distant angular diameter to cone half ang
 
     auto scene = Scene::from_importer_scene(ref(ctx.device), *importer_scene);
 
-    REQUIRE_EQ(scene->components().size(), 1);
-    const auto* distant_light = dynamic_cast<const DistantLight*>(scene->components()[0]);
+    REQUIRE_EQ(scene->components().size(), 2);
+    const auto* distant_light = dynamic_cast<const DistantLight*>(scene->components()[1]);
     REQUIRE(distant_light != nullptr);
     CHECK_EQ(distant_light->color(), importer_light.color);
     CHECK_EQ(distant_light->intensity(), doctest::Approx(importer_light.intensity));
@@ -782,8 +867,8 @@ TEST_CASE_GPU("importer scene creates shaped point light")
 
     auto scene = Scene::from_importer_scene(ref(ctx.device), *importer_scene);
 
-    REQUIRE_EQ(scene->components().size(), 1);
-    const auto* point_light = dynamic_cast<const PointLight*>(scene->components()[0]);
+    REQUIRE_EQ(scene->components().size(), 2);
+    const auto* point_light = dynamic_cast<const PointLight*>(scene->components()[1]);
     REQUIRE(point_light != nullptr);
     REQUIRE(point_light->class_descriptor().base());
     CHECK_EQ(point_light->class_descriptor().base()->name(), "Light");
@@ -818,8 +903,8 @@ TEST_CASE_GPU("importer scene preserves point light radiometry")
 
     auto scene = Scene::from_importer_scene(ref(ctx.device), *importer_scene);
 
-    REQUIRE_EQ(scene->components().size(), 1);
-    const auto* point_light = dynamic_cast<const PointLight*>(scene->components()[0]);
+    REQUIRE_EQ(scene->components().size(), 2);
+    const auto* point_light = dynamic_cast<const PointLight*>(scene->components()[1]);
     REQUIRE(point_light != nullptr);
     CHECK_EQ(point_light->color(), importer_light.color);
     CHECK_EQ(point_light->intensity(), doctest::Approx(importer_light.intensity));
@@ -863,8 +948,8 @@ TEST_CASE_GPU("importer scene preserves treated sphere power when converting to 
 
     auto scene = Scene::from_importer_scene(ref(ctx.device), *importer_scene);
 
-    REQUIRE_EQ(scene->components().size(), 1);
-    const auto* point_light = dynamic_cast<const PointLight*>(scene->components()[0]);
+    REQUIRE_EQ(scene->components().size(), 2);
+    const auto* point_light = dynamic_cast<const PointLight*>(scene->components()[1]);
     REQUIRE(point_light != nullptr);
     CHECK_EQ(point_light->intensity(), doctest::Approx(expected_point_intensity));
     CHECK_FALSE(point_light->normalize());
@@ -937,7 +1022,7 @@ TEST_CASE_GPU("importer scene creates shaped analytic area lights")
 
     auto scene = Scene::from_importer_scene(ref(ctx.device), *importer_scene);
 
-    REQUIRE_EQ(scene->components().size(), 4);
+    REQUIRE_EQ(scene->components().size(), 5);
     const SphereLight* sphere_light = scene->components().find<SphereLight>();
     const DiskLight* disk_light = scene->components().find<DiskLight>();
     const RectLight* rect_light = scene->components().find<RectLight>();
@@ -1057,8 +1142,8 @@ TEST_CASE_GPU("importer scene uses default material for missing assignments")
     const Any default_vertex_color = scene->materials()[0]->get_property("use_vertex_color");
     CHECK_EQ(*any_cast<bool>(&default_vertex_color), use_vertex_color);
 
-    REQUIRE_EQ(scene->components().size(), 1);
-    auto* instance = dynamic_cast<GeometryInstance*>(scene->components()[0]);
+    REQUIRE_EQ(scene->components().size(), 2);
+    auto* instance = dynamic_cast<GeometryInstance*>(scene->components()[1]);
     REQUIRE(instance != nullptr);
     REQUIRE_EQ(instance->materials().size(), 2);
     CHECK_EQ(instance->materials()[0], scene->materials()[0]);
@@ -1340,6 +1425,270 @@ TEST_CASE_GPU("scene from importer and append run loaded callbacks once")
     CHECK_EQ(callback_count, 2);
 }
 
+TEST_CASE_GPU("collection queries exclude built-in objects unless requested")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    auto& components = scene->components();
+    Camera* builtin = scene->free_camera();
+    CHECK_EQ(components.find<Camera>(), nullptr);
+    CHECK(components.find_all<Camera>().empty());
+    CHECK_EQ(components.find("free_camera"), nullptr);
+    CHECK_EQ(components.find<Camera>(true), builtin);
+    CHECK_EQ(components.find("free_camera", true), builtin);
+
+    Camera* first = scene->create_entity()->create_component<Camera>();
+    Camera* named = scene->create_entity()->create_component<Camera>();
+    first->set_name("first");
+    named->set_name("free_camera");
+    CHECK_EQ(components.find<Camera>(), first);
+    CHECK_EQ(components.find<Camera>(false), first);
+    CHECK_EQ(components.find("free_camera"), named);
+    CHECK_EQ(components.find<Camera>("free_camera"), named);
+    CHECK_EQ(components.find<Camera>("free_camera", true), builtin);
+    CHECK_EQ(components.find<Camera>("missing"), nullptr);
+    CHECK(components.find_all("free_camera") == std::vector<Component*>{named});
+    CHECK(components.find_all("free_camera", true) == std::vector<Component*>{builtin, named});
+    CHECK(components.find_all<Camera>() == std::vector<Camera*>{first, named});
+    CHECK(components.find_all<Camera>(true) == std::vector<Camera*>{builtin, first, named});
+    CHECK(components.find_all<Camera>("free_camera") == std::vector<Camera*>{named});
+    CHECK(components.find_all<Camera>("free_camera", true) == std::vector<Camera*>{builtin, named});
+    CHECK(components.find_all<Camera>("missing").empty());
+
+    const char* name_ptr = "free_camera";
+    const std::string name_string = name_ptr;
+    const std::string_view name_view = name_ptr;
+    CHECK_EQ(components.find<Camera>(name_ptr), named);
+    CHECK_EQ(components.find<Camera>(name_ptr, true), builtin);
+    CHECK_EQ(components.find<Camera>(name_string), named);
+    CHECK_EQ(components.find<Camera>(name_view), named);
+    CHECK(components.find_all<Camera>(name_ptr) == std::vector<Camera*>{named});
+    CHECK(components.find_all<Camera>(name_ptr, true) == std::vector<Camera*>{builtin, named});
+    CHECK(components.find_all<Camera>(name_string) == std::vector<Camera*>{named});
+    CHECK(components.find_all<Camera>(name_view) == std::vector<Camera*>{named});
+    CHECK(components.find_all<Camera>(false) == std::vector<Camera*>{first, named});
+}
+
+TEST_CASE_GPU("filtered ranges preserve raw collection and dirty traversal")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    auto& entities = scene->entities();
+    CHECK(entities.iter().begin() == entities.iter().end());
+    CHECK(scene->materials().iter().begin() == scene->materials().iter().end());
+    Entity* authored = scene->create_entity();
+    Entity* builtin = scene->free_camera()->entity();
+    std::vector<Entity*> filtered;
+    for (Entity* entity : entities.iter())
+        filtered.push_back(entity);
+    CHECK(filtered == std::vector<Entity*>{authored});
+    std::vector<Entity*> raw;
+    for (Entity* entity : entities)
+        raw.push_back(entity);
+    CHECK(raw == std::vector<Entity*>{builtin, authored});
+    CHECK_EQ(entities.size(), raw.size());
+    for (Entity* entity : raw)
+        CHECK_EQ(entities[entity->collection_index()], entity);
+    filtered.clear();
+    for (Entity* entity : entities.iter(true))
+        filtered.push_back(entity);
+    CHECK(filtered == raw);
+
+    // An iterator obtained from a temporary range still borrows the persistent view.
+    auto iterator = entities.iter().begin();
+    CHECK_EQ(*iterator, authored);
+    ++iterator;
+    CHECK(iterator == entities.iter().end());
+    const auto& const_entities = entities;
+    std::vector<const Entity*> const_filtered;
+    for (auto* entity : const_entities.iter()) {
+        static_assert(std::is_same_v<decltype(entity), const Entity*>);
+        const_filtered.push_back(entity);
+    }
+    CHECK(const_filtered == std::vector<const Entity*>{authored});
+
+    std::vector<Entity*> dirty;
+    scene->entity_collection().for_each(
+        [&](Entity* entity, Entity::DirtyFlags)
+        {
+            dirty.push_back(entity);
+        },
+        Entity::DirtyFlags::added
+    );
+    CHECK(dirty == raw);
+}
+
+TEST_CASE_GPU("free camera structural protection is atomic")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    Camera* camera = scene->free_camera();
+    REQUIRE(camera);
+    Entity* entity = camera->entity();
+    CHECK(camera->is_builtin());
+    CHECK(entity->is_builtin());
+    CHECK_EQ(scene->entities().size(), 1);
+    CHECK_EQ(scene->components().size(), 1);
+    CHECK_EQ(entity->transform().translation(), float3(0.f, 0.f, 5.f));
+    Entity* child = scene->create_entity();
+    child->set_parent(entity);
+    CHECK_THROWS_WITH(entity->remove(), doctest::Contains("Cannot remove a built-in object."));
+    CHECK(child->is_valid());
+    CHECK(camera->is_valid());
+    CHECK_THROWS_WITH(camera->remove(), doctest::Contains("Cannot remove a built-in object."));
+    CHECK_THROWS_WITH(entity->set_parent(child), doctest::Contains("Cannot parent a built-in object."));
+    CHECK_THROWS_WITH(entity->set_name("renamed"), doctest::Contains("Cannot rename a built-in object."));
+    CHECK_THROWS_WITH(camera->set_name("renamed"), doctest::Contains("Cannot rename a built-in object."));
+    CHECK_THROWS_WITH(
+        entity->create_component<Camera>(),
+        doctest::Contains("Cannot add components to a built-in object.")
+    );
+    CHECK_THROWS_WITH(
+        entity->create_component("TransformAnimation"),
+        doctest::Contains("Cannot add components to a built-in object.")
+    );
+    CHECK_THROWS_WITH(
+        entity->create_component(typeid(Camera)),
+        doctest::Contains("Cannot add components to a built-in object.")
+    );
+    scene->update();
+    CHECK_EQ(entity->parent(), nullptr);
+    CHECK_EQ(entity->name(), "free_camera");
+    CHECK_EQ(entity->components().size(), 1);
+    CHECK_EQ(scene->components().size(), 1);
+    CHECK_EQ(scene->entities().size(), 2);
+    auto* ordinary = scene->create_entity();
+    ordinary->set_name("free_camera");
+    CHECK_FALSE(ordinary->is_builtin());
+    CHECK_NOTHROW(ordinary->remove());
+}
+
+TEST_CASE_GPU("camera selection survives updates imports and deletion")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    Camera* free_camera = scene->free_camera();
+    CHECK_EQ(scene->active_camera(), free_camera);
+    Transform saved_view;
+    saved_view.set_translation(float3(10.f, 20.f, 30.f));
+    free_camera->entity()->set_transform(saved_view);
+    scene->update();
+    CHECK_EQ(scene->active_camera(), free_camera);
+    CHECK_EQ(free_camera->entity()->transform().translation(), saved_view.translation());
+
+    bool explicit_free_camera = false;
+    SUBCASE("automatic initial selection") { }
+    SUBCASE("null selects the free camera")
+    {
+        scene->set_active_camera(nullptr);
+        explicit_free_camera = true;
+    }
+    SUBCASE("explicit free camera")
+    {
+        scene->set_active_camera(free_camera);
+        explicit_free_camera = true;
+    }
+
+    Entity* parent = scene->create_entity();
+    Entity* entity = scene->create_entity();
+    entity->set_parent(parent);
+    Camera* first = entity->create_component<Camera>();
+    Camera* expected = explicit_free_camera ? free_camera : first;
+    CHECK_EQ(scene->active_camera(), free_camera);
+    scene->update();
+    CHECK_EQ(scene->active_camera(), expected);
+
+    Camera* second = scene->create_entity()->create_component<Camera>();
+    scene->update();
+    CHECK_EQ(scene->active_camera(), expected);
+
+    auto importer_scene = make_ref<ImporterScene>();
+    importer_scene->cameras.push_back(ImporterCamera{});
+    ImporterNode camera_node;
+    camera_node.camera_index = 0;
+    importer_scene->nodes.push_back(camera_node);
+    importer_scene->root_nodes.push_back(0);
+    scene->append(*importer_scene);
+    CHECK_EQ(scene->active_camera(), expected);
+    scene->update();
+    CHECK_EQ(scene->active_camera(), expected);
+
+    parent->remove();
+    CHECK_EQ(scene->active_camera(), free_camera);
+    scene->append(*importer_scene);
+    CHECK_EQ(scene->active_camera(), free_camera);
+    scene->update();
+    CHECK_EQ(scene->active_camera(), free_camera);
+
+    scene->create_entity()->create_component<Camera>();
+    scene->update();
+    CHECK_EQ(scene->active_camera(), free_camera);
+    CHECK_EQ(free_camera->entity()->transform().translation(), saved_view.translation());
+
+    scene->set_active_camera(second);
+    scene->append(*importer_scene);
+    CHECK_EQ(scene->active_camera(), second);
+    scene->update();
+    CHECK_EQ(scene->active_camera(), second);
+}
+
+TEST_CASE_GPU("copying a camera preserves the free view after source deletion")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    Camera* camera = scene->create_entity()->create_component<Camera>();
+    Transform transform;
+    transform.set_translation(float3(4.f, 5.f, 6.f));
+    camera->entity()->set_transform(transform);
+    camera->set_focal_length(35.f);
+    scene->update();
+    Camera* free_camera = scene->activate_free_camera_from(camera);
+    CHECK_EQ(free_camera, scene->free_camera());
+    CHECK_EQ(scene->active_camera(), free_camera);
+    scene->set_active_camera(camera);
+    auto* other = scene->create_entity()->create_component<Camera>();
+    camera->remove();
+    CHECK_EQ(scene->active_camera(), free_camera);
+    scene->update();
+    CHECK_EQ(scene->active_camera(), free_camera);
+    CHECK_EQ(free_camera->entity()->transform().translation(), transform.translation());
+    CHECK_EQ(free_camera->focal_length(), 35.f);
+    CHECK(other->is_valid());
+}
+
+TEST_CASE_GPU("framing the free camera does not change selection or authored views")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    Camera* camera = scene->create_entity()->create_component<Camera>();
+    Transform transform;
+    transform.set_translation(float3(1.f, 2.f, 3.f));
+    camera->entity()->set_transform(transform);
+    camera->set_focal_length(35.f);
+    camera->set_width(123);
+    camera->set_height(456);
+    scene->update();
+
+    Camera* free_camera = scene->free_camera();
+    free_camera->entity()->set_transform(transform);
+    free_camera->set_focal_length(70.f);
+    free_camera->set_depth_range(float2(2.f, 3.f));
+    free_camera->set_focus_distance(42.f);
+    free_camera->set_width(320);
+    free_camera->set_height(240);
+    scene->frame_free_camera();
+    CHECK_EQ(scene->active_camera(), camera);
+    CHECK_EQ(camera->entity()->transform().translation(), transform.translation());
+    CHECK_EQ(camera->focal_length(), 35.f);
+    CHECK_EQ(camera->width(), 123);
+    CHECK_EQ(camera->height(), 456);
+    CHECK_EQ(free_camera->entity()->transform().translation(), float3(0.f, 0.f, 5.f));
+    CHECK_EQ(free_camera->focal_length(), 70.f);
+    CHECK_EQ(free_camera->focus_distance(), 5.f);
+    CHECK_EQ(free_camera->depth_range(), float2(0.01f, 1000.f));
+    CHECK_EQ(free_camera->width(), 320);
+    CHECK_EQ(free_camera->height(), 240);
+    scene->frame_free_camera(2.f, float2(0.1f, 200.f));
+    CHECK_EQ(free_camera->width(), 320);
+    CHECK_EQ(free_camera->height(), 240);
+    CHECK_EQ(free_camera->depth_range(), float2(0.1f, 200.f));
+    CHECK_THROWS(scene->frame_free_camera(0.f));
+}
+
 TEST_CASE_GPU("importer scene camera becomes active and preserves projection properties")
 {
     auto importer_scene = make_ref<ImporterScene>();
@@ -1451,7 +1800,7 @@ TEST_CASE_GPU("add remove compact entities")
     e1->set_name("e1");
     e2->set_name("e2");
 
-    CHECK_EQ(scene->entities().size(), 3);
+    CHECK_EQ(scene->entities().size(), 4);
 
     // Remove first and last.
     e0->remove();
@@ -1459,9 +1808,9 @@ TEST_CASE_GPU("add remove compact entities")
 
     scene->update();
 
-    CHECK_EQ(scene->entities().size(), 1);
-    CHECK_EQ(scene->entities()[0]->name(), "e1");
-    CHECK_EQ(scene->entities()[0]->collection_index(), 0);
+    CHECK_EQ(scene->entities().size(), 2);
+    CHECK_EQ(scene->entities()[1]->name(), "e1");
+    CHECK_EQ(scene->entities()[1]->collection_index(), 1);
     REQUIRE_EQ(e2->scene(), nullptr);
     CHECK_EQ(e2->collection_index(), INVALID_SCENE_OBJECT_COLLECTION_INDEX);
     e2->remove();
@@ -1514,6 +1863,7 @@ TEST_CASE_GPU("dirty flags on add")
 TEST_CASE_GPU("dirty flags on entity transform")
 {
     auto scene = Scene::create(ref(ctx.device));
+    scene->update(); // Synchronize the built-in camera before testing entity-only changes.
 
     auto* entity = scene->create_entity();
     // 'added' flag is set on creation.
@@ -1748,7 +2098,7 @@ TEST_CASE_GPU("component attached to entity")
     auto* entity = scene->create_entity();
     auto* camera = entity->create_component<Camera>();
 
-    CHECK_EQ(scene->components().size(), 1);
+    CHECK_EQ(scene->components().size(), 2);
     CHECK_EQ(entity->components().size(), 1);
     CHECK_EQ(entity->components()[0], camera);
     CHECK_EQ(camera->entity(), entity);
@@ -1762,14 +2112,14 @@ TEST_CASE_GPU("removing entity removes components")
     entity->create_component<Camera>();
     entity->create_component<ConstantLight>();
 
-    CHECK_EQ(scene->components().size(), 2);
-    CHECK_EQ(scene->entities().size(), 1);
+    CHECK_EQ(scene->components().size(), 3);
+    CHECK_EQ(scene->entities().size(), 2);
 
     entity->remove();
     scene->update();
 
-    CHECK_EQ(scene->entities().size(), 0);
-    CHECK_EQ(scene->components().size(), 0);
+    CHECK_EQ(scene->entities().size(), 1);
+    CHECK_EQ(scene->components().size(), 1);
 }
 
 TEST_CASE_GPU("removing entity removes children and their components")
@@ -1784,15 +2134,15 @@ TEST_CASE_GPU("removing entity removes children and their components")
     // Initial update to allocate render resources for all entities.
     scene->update();
 
-    CHECK_EQ(scene->entities().size(), 2);
-    CHECK_EQ(scene->components().size(), 1);
+    CHECK_EQ(scene->entities().size(), 3);
+    CHECK_EQ(scene->components().size(), 2);
 
     // Removing parent should also remove child and its components.
     parent->remove();
     scene->update();
 
-    CHECK_EQ(scene->entities().size(), 0);
-    CHECK_EQ(scene->components().size(), 0);
+    CHECK_EQ(scene->entities().size(), 1);
+    CHECK_EQ(scene->components().size(), 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -1919,7 +2269,7 @@ TEST_CASE_GPU("removed dirty geometry instances do not recreate render state")
     scene->update();
 
     CHECK_EQ(instance->geometry_instance_id(), shared::GeometryInstanceID::invalid);
-    CHECK_EQ(scene->components().size(), 0u);
+    CHECK_EQ(scene->components().size(), 1u);
 }
 
 TEST_CASE_GPU("geometry local aabb")

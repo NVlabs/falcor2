@@ -157,7 +157,7 @@ private:
 
 /// Bind a ReflectedClass type by creating an nb::class_ from its metadata and calling reflect().
 template<typename T>
-void bind(nb::module_& m)
+NB_NOINLINE void bind(nb::module_& m)
 {
     if constexpr (std::is_same_v<typename T::ReflectedBase, void>) {
         auto cls = nb::class_<T>(m, T::reflected_class_name());
@@ -173,7 +173,7 @@ void bind(nb::module_& m)
 /// Bind a ReflectedClass type into an existing nb::class_ binding by calling reflect().
 /// Use this when you need custom nanobind configuration before or after binding properties.
 template<typename T, typename... Extra>
-void bind(nb::class_<T, Extra...>& cls)
+NB_NOINLINE void bind(nb::class_<T, Extra...>& cls)
 {
     detail::NanobindClassReflector<T, Extra...> reflector(cls);
     T::reflect(reflector);

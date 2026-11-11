@@ -95,6 +95,13 @@ public:
                 reflection::UIFlags::advanced,
                 reflection::on_change(&StandardMaterial::mark_dirty_resources)
             )
+            .def_rw(
+                "base_color_texture_bytes",
+                &StandardMaterial::m_base_color_texture_bytes,
+                "Encoded base color texture bytes.",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&StandardMaterial::mark_dirty_resources)
+            )
             .def_prop_rw(
                 "base_color_texture_texcoord",
                 &StandardMaterial::base_color_texture_texcoord,
@@ -131,6 +138,13 @@ public:
                 "metallic_roughness_texture_path",
                 &StandardMaterial::m_metallic_roughness_texture_path,
                 "Metallic-roughness texture path",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&StandardMaterial::mark_dirty_resources)
+            )
+            .def_rw(
+                "metallic_roughness_texture_bytes",
+                &StandardMaterial::m_metallic_roughness_texture_bytes,
+                "Encoded metallic roughness texture bytes.",
                 reflection::UIFlags::advanced,
                 reflection::on_change(&StandardMaterial::mark_dirty_resources)
             )
@@ -180,6 +194,13 @@ public:
                 reflection::UIFlags::advanced,
                 reflection::on_change(&StandardMaterial::mark_dirty_resources)
             )
+            .def_rw(
+                "normal_texture_bytes",
+                &StandardMaterial::m_normal_texture_bytes,
+                "Encoded normal texture bytes.",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&StandardMaterial::mark_dirty_resources)
+            )
             .def_prop_rw(
                 "normal_texture_texcoord",
                 &StandardMaterial::normal_texture_texcoord,
@@ -214,6 +235,13 @@ public:
                 "emissive_texture_path",
                 &StandardMaterial::m_emissive_texture_path,
                 "Emissive texture path",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&StandardMaterial::mark_dirty_emission_resources)
+            )
+            .def_rw(
+                "emissive_texture_bytes",
+                &StandardMaterial::m_emissive_texture_bytes,
+                "Encoded emissive texture bytes.",
                 reflection::UIFlags::advanced,
                 reflection::on_change(&StandardMaterial::mark_dirty_emission_resources)
             )
@@ -253,6 +281,13 @@ public:
                 "transmission_texture_path",
                 &StandardMaterial::m_transmission_texture_path,
                 "Transmission texture path",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&StandardMaterial::mark_dirty_resources)
+            )
+            .def_rw(
+                "transmission_texture_bytes",
+                &StandardMaterial::m_transmission_texture_bytes,
+                "Encoded transmission texture bytes.",
                 reflection::UIFlags::advanced,
                 reflection::on_change(&StandardMaterial::mark_dirty_resources)
             )
@@ -405,23 +440,28 @@ private:
     ref<sgl::Texture> m_base_color_texture;
     ref<sgl::Sampler> m_base_color_texture_sampler;
     std::filesystem::path m_base_color_texture_path;
+    ref<Blob> m_base_color_texture_bytes;
     float16_t3 m_base_color_factor{1.f, 1.f, 1.f};
     ref<sgl::Texture> m_metallic_roughness_texture;
     ref<sgl::Sampler> m_metallic_roughness_texture_sampler;
     std::filesystem::path m_metallic_roughness_texture_path;
+    ref<Blob> m_metallic_roughness_texture_bytes;
     float16_t m_metallic_factor{0.f};
     float16_t m_roughness_factor{1.f};
     ref<sgl::Texture> m_normal_texture;
     ref<sgl::Sampler> m_normal_texture_sampler;
     std::filesystem::path m_normal_texture_path;
+    ref<Blob> m_normal_texture_bytes;
     float16_t m_normal_texture_scale{1.f};
     ref<sgl::Texture> m_emissive_texture;
     ref<sgl::Sampler> m_emissive_texture_sampler;
     std::filesystem::path m_emissive_texture_path;
+    ref<Blob> m_emissive_texture_bytes;
     float3 m_emissive_factor{0.f, 0.f, 0.f};
     ref<sgl::Texture> m_transmission_texture;
     ref<sgl::Sampler> m_transmission_texture_sampler;
     std::filesystem::path m_transmission_texture_path;
+    ref<Blob> m_transmission_texture_bytes;
     float16_t m_ior{1.5f};
     float16_t3 m_transmission_factor{1.f, 1.f, 1.f};
     float16_t m_diffuse_transmission_factor{0.f};

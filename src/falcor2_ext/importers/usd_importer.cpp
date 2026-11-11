@@ -19,6 +19,7 @@ FALCOR_PY_EXPORT(importers_usd_importer)
             nb::overload_cast<const std::filesystem::path&, const ImportOptions&>(&UsdImporter::load_scene),
             "path"_a,
             "import_options"_a = ImportOptions(),
+            nb::call_guard<nb::gil_scoped_release>(),
             D(UsdImporter, load_scene, 2)
         )
         .def(
@@ -28,6 +29,8 @@ FALCOR_PY_EXPORT(importers_usd_importer)
                 const pxr::UsdStage* stage = usd_stage_bridge::try_extract(usd_stage.ptr());
                 if (!stage)
                     throw nb::type_error("stage must be a falcor2.pxr.Usd.Stage");
+                // Extract while holding the GIL; usd_stage keeps the Python owner alive until it is reacquired.
+                nb::gil_scoped_release release;
                 return self.import_stage(*stage, import_options);
             },
             "stage"_a,

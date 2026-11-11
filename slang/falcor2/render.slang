@@ -56,6 +56,7 @@ __include "render/bsdfs/gltf_specgloss_bsdf.slang";
 
 __include "render/geometry/area_light_geometry_types.slang";
 __include "render/geometry/lss_geometry_types.slang";
+__include "render/geometry/geometry_animation_types.slang";
 __include "render/geometry/lss_geometry.slang";
 __include "render/geometry/triangle_geometry_types.slang";
 __include "render/geometry/triangle_geometry.slang";

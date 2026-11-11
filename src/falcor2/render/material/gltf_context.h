@@ -13,7 +13,13 @@ namespace falcor {
 /// Selects and tracks the active shader specializations for native glTF materials.
 class GLTFContext {
 public:
-    GLTFContext(GLTFSpecializationMode mode, GLTFFeatureFlags allowed_features);
+    GLTFContext(
+        GLTFSpecializationMode mode,
+        GLTFFeatureFlags allowed_features,
+        GLTFFeatureFlags core_features,
+        bool core_texture_transforms,
+        bool core_alternate_uvs
+    );
 
     /// Recompute the live masks and assign compile masks before type conformances are collected.
     void update(MaterialCollection& materials);
@@ -31,6 +37,9 @@ private:
 
     GLTFSpecializationMode m_mode;
     uint32_t m_allowed_features;
+    uint32_t m_core_features;
+    bool m_core_texture_transforms;
+    bool m_core_alternate_uvs;
     WorkflowState m_metallic_roughness;
     WorkflowState m_specular_glossiness;
 };

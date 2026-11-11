@@ -160,6 +160,22 @@ def to_render_layout(value: Any) -> Any:
     return tensor
 
 
+def to_tensor_binding(value: Any) -> dict[str, Any]:
+    """Describe a Torch CHW tensor as scalar HWC storage for a Slang tensor."""
+    tensor = require_torch_tensor(value)
+    if not tensor.is_cuda:
+        raise ValueError("Torch tensor bindings require CUDA storage.")
+    render_tensor = to_render_layout(tensor)
+    if render_tensor.ndim != 3:
+        raise ValueError("Torch tensor bindings require CHW image shape.")
+    return {
+        "_data": render_tensor.data_ptr(),
+        "_shape": list(render_tensor.shape),
+        "_strides": list(render_tensor.stride()),
+        "_offset": 0,
+    }
+
+
 def allocate(dims: tuple[int, ...], format_value: spy.Format) -> Any:
     """Allocate a torch render tensor in public ``CHW`` layout."""
     torch = _get_torch()

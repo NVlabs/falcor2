@@ -186,12 +186,14 @@ def test_curve_motion_indexed_width_primvar(refinement: int) -> None:
         f2.UsdImporter().import_stage(stage, _options(refinement))
 
 
-def test_curve_static_missing_default_width_uses_default_radius() -> None:
+def test_curve_static_uses_earliest_width_sample() -> None:
     stage = Usd.Stage.CreateInMemory()
     curve = UsdGeom.BasisCurves.Define(stage, "/Curve")
     curve.CreateTypeAttr("linear")
     curve.CreateCurveVertexCountsAttr([2])
     curve.CreatePointsAttr([(0, 0, 0), (1, 0, 0)])
     curve.CreateWidthsAttr().Set([2], 1)
+    curve.GetWidthsAttr().Set([4], 2)
+    curve.SetWidthsInterpolation("constant")
     imported = f2.UsdImporter().import_stage(stage).curves[0]
-    np.testing.assert_allclose(imported.radii, 0.01)
+    np.testing.assert_allclose(imported.radii, 1)

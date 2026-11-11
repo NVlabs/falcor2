@@ -68,6 +68,54 @@ public void write_mixed(uint2 coord, uint id, float4 value)
     TestWrite::color(coord, value);
     TestWrite::generic_data(coord, id, value);
 }
+
+public void write_depth(uint2 coord, float value)
+{
+    TestWrite::depth(coord, value);
+}
+"""
+
+STANDALONE_TENSOR_MODULE = """
+import slangpy;
+
+public interface IStandaloneWrite
+{
+    public static void depth(uint2 coord, float value);
+    public static bool depth_enabled();
+}
+
+public extern struct StandaloneWrite : IStandaloneWrite;
+
+public void write_depth(uint2 coord, float value)
+{
+    StandaloneWrite::depth(coord, value);
+}
+"""
+
+TEST_STRUCT_MODULE = """
+import slangpy;
+
+public struct TestRecord
+{
+    public uint id = 0;
+    public float weight = 0.0;
+};
+
+public interface IRecordWrite
+{
+    public static void record(uint2 coord, TestRecord value);
+    public static bool record_enabled();
+}
+
+extern struct RecordWrite : IRecordWrite;
+
+public void write_record(uint2 coord, uint id, float weight)
+{
+    TestRecord record = {};
+    record.id = id;
+    record.weight = weight;
+    RecordWrite::record(coord, record);
+}
 """
 
 FIXED_GENERIC_MODULE = """
@@ -156,6 +204,12 @@ def _increment_module(device: spy.Device) -> spy.Module:
     )
 
 
+def _struct_module(device: spy.Device) -> spy.Module:
+    return spy.Module(
+        device.load_module_from_source("output_prelude_struct_test", TEST_STRUCT_MODULE)
+    )
+
+
 def _texture(device: spy.Device, format: spy.Format) -> spy.Texture:
     return device.create_texture(
         type=spy.TextureType.texture_2d,
@@ -235,13 +289,13 @@ def test_output_prelude_generates_texture_and_tensor_outputs(
     output_prelude = OutputPrelude.create(module, "ITestWrite")
     prelude = output_prelude.generate(targets)
 
-    assert "public RWTexture2D<vector<float,4>> color;" in prelude
+    assert "public RWTexture2D<vector<float,4>> __g_falcor_OutputBlockITestWrite_color;" in prelude
     assert "import slangpy;" not in prelude
-    assert "public WTensor<float, 2> depth;" in prelude
-    assert "public struct __falcor_OutputBlockITestWrite" in prelude
-    assert "__g_falcor_OutputBlockITestWrite.color[coord] = value;" in prelude
+    assert "public WTensor<float, 2> __g_falcor_OutputBlockITestWrite_depth;" in prelude
+    assert "ParameterBlock<" not in prelude
+    assert "__g_falcor_OutputBlockITestWrite_color[coord] = value;" in prelude
     assert (
-        "__g_falcor_OutputBlockITestWrite.depth.store(int(coord.y), int(coord.x), value);"
+        "__g_falcor_OutputBlockITestWrite_depth.store(int(coord.y), int(coord.x), value);"
         in prelude
     )
     assert "export struct TestWrite : ITestWrite = __falcor_OutputImplITestWrite;" in prelude
@@ -460,8 +514,7 @@ def test_output_prelude_generates_noops_for_missing_targets(device_type: spy.Dev
 
     prelude = OutputPrelude.create(module, "ITestWrite").generate({})
 
-    assert "ParameterBlock<__falcor_OutputBlockITestWrite>" not in prelude
-    assert "public RWTexture2D<vector<float,4>> color;" not in prelude
+    assert "__g_falcor_OutputBlockITestWrite_color;" not in prelude
     assert (
         "public static override void color(vector<uint,2> coord, vector<float,4> value)" in prelude
     )
@@ -526,41 +579,200 @@ def test_output_prelude_accepts_explicit_concrete_type_name(
 
 
 @pytest.mark.parametrize("device_type", ALL_DEVICE_TYPES)
-def test_output_prelude_bind_uses_generated_block_name(device_type: spy.DeviceType):
+def test_output_prelude_bind_uses_generated_global_name(device_type: spy.DeviceType):
     device = helpers.get_device(device_type)
     target = _texture(device, spy.Format.rgba32_float)
-    block: dict[str, object] = {}
-    requested_keys: list[str] = []
+    bound: dict[str, object] = {}
 
     class Cursor:
-        def __getitem__(self, key: str) -> dict[str, object]:
-            requested_keys.append(key)
-            return block
+        def __setitem__(self, key: str, value: object) -> None:
+            bound[key] = value
 
     OutputPrelude.create(_module(device), "ITestWrite").bind(Cursor(), {"color": target})
 
-    assert requested_keys == ["__g_falcor_OutputBlockITestWrite"]
-    assert block == {"color": target}
+    assert bound == {"__g_falcor_OutputBlockITestWrite_color": target}
 
 
 @pytest.mark.parametrize("device_type", ALL_DEVICE_TYPES)
-def test_output_prelude_bind_omits_empty_parameter_block(device_type: spy.DeviceType):
+def test_output_prelude_bind_omits_missing_targets(device_type: spy.DeviceType):
     device = helpers.get_device(device_type)
 
     class Cursor:
-        def __getitem__(self, key: str) -> object:
-            raise AssertionError(f"Unexpected parameter block lookup for {key}.")
+        def __setitem__(self, key: str, value: object) -> None:
+            raise AssertionError(f"Unexpected output binding for {key}.")
 
     OutputPrelude.create(_module(device), "ITestWrite").bind(Cursor(), {})
 
 
 @pytest.mark.parametrize("device_type", ALL_DEVICE_TYPES)
-def test_output_prelude_with_wtensor_compiles(device_type: spy.DeviceType):
+def test_output_prelude_writes_standalone_tensor(device_type: spy.DeviceType):
+    device = helpers.get_device(device_type)
+    module = spy.Module(
+        device.load_module_from_source("output_prelude_standalone_tensor", STANDALONE_TENSOR_MODULE)
+    )
+    target = spy.Tensor.empty(device, shape=(2, 3), dtype="float")
+    targets = {"depth": target}
+    output_prelude = OutputPrelude.create(module, "IStandaloneWrite")
+    prelude = output_prelude.generate(targets)
+
+    module.write_depth.prelude(prelude).write(lambda cursor: output_prelude.bind(cursor, targets))(
+        spy.uint2(1, 0), 4.75
+    )
+    assert target.to_numpy()[0, 1] == pytest.approx(4.75)
+
+
+@pytest.mark.parametrize("device_type", ALL_DEVICE_TYPES)
+def test_output_prelude_writes_fixed_tensors_and_overrides_operation(
+    device_type: spy.DeviceType,
+):
     device = helpers.get_device(device_type)
     module = _module(device)
     target = spy.Tensor.empty(device, shape=(2, 3), dtype="float")
     targets = {"depth": target}
-    output_prelude = OutputPrelude.create(module, "ITestWrite")
-    prelude = output_prelude.generate(targets)
+    writer = OutputPrelude.create(module, "ITestWrite")
+    prelude = writer.generate(targets)
+    assert "public WTensor<float, 2> __g_falcor_OutputBlockITestWrite_depth;" in prelude
+    write_depth = module.write_depth.prelude(prelude).write(
+        lambda cursor: writer.bind(cursor, targets)
+    )
+    write_depth(spy.uint2(1, 0), 1.25)
+    assert target.to_numpy()[0, 1] == pytest.approx(1.25)
 
-    module.dummy.prelude(prelude).write(lambda cursor: output_prelude.bind(cursor, targets))()
+    accumulator = OutputPrelude.create(
+        module, "ITestWrite", operation_overrides={"depth": OutputOperation.increment}
+    )
+    assert accumulator.signature(targets) != writer.signature(targets)
+    assert writer.specs["depth"].operation == OutputOperation.write
+    assert accumulator.specs["depth"].operation == OutputOperation.increment
+    prelude = accumulator.generate(targets)
+    assert "public RWTensor<float, 2> __g_falcor_OutputBlockITestWrite_depth;" in prelude
+    write_depth = module.write_depth.prelude(prelude).write(
+        lambda cursor: accumulator.bind(cursor, targets)
+    )
+    Container.clear(target, spy.float4(0.0))
+    write_depth(spy.uint2(1, 0), 1.25)
+    write_depth(spy.uint2(1, 0), 2.5)
+    assert target.to_numpy()[0, 1] == pytest.approx(3.75)
+
+    with pytest.raises(ValueError, match="without an OutputSpec"):
+        OutputPrelude.create(
+            module, "ITestWrite", operation_overrides={"generic_data": OutputOperation.increment}
+        )
+
+
+@pytest.mark.parametrize("device_type", ALL_DEVICE_TYPES)
+def test_output_prelude_casts_to_half_tensor_storage(device_type: spy.DeviceType):
+    device = helpers.get_device(device_type)
+    module = _module(device)
+    target = spy.Tensor.empty(device, shape=(2, 3), dtype="half")
+    targets = {"depth": target}
+    writer = OutputPrelude.create(module, "ITestWrite")
+    prelude = writer.generate(targets)
+    assert "WTensor<half, 2> __g_falcor_OutputBlockITestWrite_depth" in prelude
+    write_depth = module.write_depth.prelude(prelude).write(
+        lambda cursor: writer.bind(cursor, targets)
+    )
+    write_depth(spy.uint2(1, 0), 1.25)
+    assert target.to_numpy()[0, 1] == pytest.approx(1.25)
+
+
+@pytest.mark.parametrize("device_type", ALL_DEVICE_TYPES)
+def test_output_prelude_increments_indexed_tensor(device_type: spy.DeviceType):
+    device = helpers.get_device(device_type)
+    module = _module(device)
+    target = spy.Tensor.empty(device, shape=(2, 3), dtype="float4")
+    outputs = (IndexedOutput(7, "material_aov", 4, target, OutputOperation.increment),)
+    writer = OutputPrelude.create(module, "ITestWrite")
+    prelude = writer.generate({}, outputs)
+    assert "RWTensor<vector<float,4>, 2>" in prelude
+    write_mixed = module.write_mixed.prelude(prelude).write(
+        lambda cursor: writer.bind(cursor, {}, outputs)
+    )
+    Container.clear(target, spy.float4(0.0))
+    write_mixed(spy.uint2(1, 0), 7, spy.float4(1.0, 2.0, 3.0, 4.0))
+    write_mixed(spy.uint2(1, 0), 7, spy.float4(5.0, 6.0, 7.0, 8.0))
+    np.testing.assert_allclose(target.to_numpy()[0, 1], [6.0, 8.0, 10.0, 12.0])
+    write_outputs = (IndexedOutput(7, "material_aov", 4, target),)
+    assert writer.signature({}, outputs) != writer.signature({}, write_outputs)
+
+
+@pytest.mark.parametrize("device_type", ALL_DEVICE_TYPES)
+def test_output_prelude_writes_structured_tensor(device_type: spy.DeviceType):
+    device = helpers.get_device(device_type)
+    module = _struct_module(device)
+    target = spy.Tensor.empty(device, shape=(2, 3), dtype=module.TestRecord)
+    targets = {"record": target}
+    writer = OutputPrelude.create(module, "IRecordWrite")
+    prelude = writer.generate(targets)
+    assert "WTensor<TestRecord, 2> __g_falcor_OutputBlockIRecordWrite_record" in prelude
+    write_record = module.write_record.prelude(prelude).write(
+        lambda cursor: writer.bind(cursor, targets)
+    )
+    write_record(spy.uint2(1, 0), 9, 2.5)
+    result = target.to_numpy()[0, 1]
+    assert result.view(np.uint32)[0] == 9
+    assert result.view(np.float32)[1] == pytest.approx(2.5)
+
+
+@pytest.mark.parametrize("sliced", [False, True])
+def test_output_prelude_writes_torch_tensors_with_chw_strides(sliced: bool):
+    torch = pytest.importorskip("torch")
+    if spy.DeviceType.cuda not in helpers.DEFAULT_DEVICE_TYPES:
+        pytest.skip("CUDA device is unavailable")
+
+    device = helpers.get_torch_device(spy.DeviceType.cuda, use_cache=False)
+    module = _module(device)
+    scalar = torch.zeros((1, 2, 6 if sliced else 3), device="cuda")
+    color = torch.zeros((4, 2, 6 if sliced else 3), device="cuda")
+    if sliced:
+        scalar = scalar[:, :, ::2]
+        color = color[:, :, ::2]
+
+    scalar_targets = {"depth": scalar}
+    scalar_writer = OutputPrelude.create(module, "ITestWrite")
+    scalar_prelude = scalar_writer.generate(scalar_targets)
+    assert "WTensor<float, 3> __g_falcor_OutputBlockITestWrite_depth" in scalar_prelude
+    module.write_depth.prelude(scalar_prelude).write(
+        lambda cursor: scalar_writer.bind(cursor, scalar_targets)
+    )(spy.uint2(1, 0), 1.25)
+    assert scalar[0, 0, 1].item() == pytest.approx(1.25)
+
+    color_targets = {"color": color}
+    color_writer = OutputPrelude.create(module, "ITestWrite")
+    color_prelude = color_writer.generate(color_targets)
+    assert "WTensor<float, 3> __g_falcor_OutputBlockITestWrite_color" in color_prelude
+    module.write_mixed.prelude(color_prelude).write(
+        lambda cursor: color_writer.bind(cursor, color_targets)
+    )(spy.uint2(2, 1), 0, spy.float4(0.1, 0.2, 0.3, 0.4))
+    torch.testing.assert_close(color[:, 1, 2], torch.tensor([0.1, 0.2, 0.3, 0.4], device="cuda"))
+
+    color.zero_()
+    outputs = (IndexedOutput(7, "aov", 4, color, OutputOperation.increment),)
+    aov_writer = OutputPrelude.create(module, "ITestWrite")
+    aov_prelude = aov_writer.generate({}, outputs)
+    assert "RWTensor<float, 3> __g_falcor_OutputBlockITestWrite_indexed_output_7" in aov_prelude
+    add = module.write_mixed.prelude(aov_prelude).write(
+        lambda cursor: aov_writer.bind(cursor, {}, outputs)
+    )
+    add(spy.uint2(2, 1), 7, spy.float4(1, 2, 3, 4))
+    add(spy.uint2(2, 1), 7, spy.float4(5, 6, 7, 8))
+    torch.testing.assert_close(color[:, 1, 2], torch.tensor([6.0, 8.0, 10.0, 12.0], device="cuda"))
+
+
+def test_output_prelude_writes_half_torch_scalar():
+    torch = pytest.importorskip("torch")
+    if spy.DeviceType.cuda not in helpers.DEFAULT_DEVICE_TYPES:
+        pytest.skip("CUDA device is unavailable")
+
+    device = helpers.get_torch_device(spy.DeviceType.cuda, use_cache=False)
+    module = _module(device)
+    target = Container.empty(device, ContainerSpec.torch(spy.Format.r16_float, dims=(2, 3)))
+    targets = {"depth": target}
+    writer = OutputPrelude.create(module, "ITestWrite")
+    prelude = writer.generate(targets)
+    assert "WTensor<half, 3> __g_falcor_OutputBlockITestWrite_depth" in prelude
+    module.write_depth.prelude(prelude).write(lambda cursor: writer.bind(cursor, targets))(
+        spy.uint2(1, 0), 1.25
+    )
+    assert target[0, 0, 1].item() == pytest.approx(1.25)
+    assert target.is_contiguous()

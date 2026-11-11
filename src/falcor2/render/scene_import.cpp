@@ -5,6 +5,10 @@
 #include "falcor2/core/python_interpreter.h"
 #include "falcor2/core/platform.h"
 #include "falcor2/render/scene.h"
+#include "falcor2/render/geometry/dynamic_mesh_geometry.h"
+#include "falcor2/render/geometry/dynamic_curve_geometry.h"
+#include "falcor2/render/geometry/vertex_cache_deformer.h"
+#include "falcor2/core/blob.h"
 #include "falcor2/importers/mesh_import.h"
 #include "falcor2/importers/light_import.h"
 #include "falcor2/render/material/standard_material.h"
@@ -71,16 +75,9 @@ static ref<sgl::Texture> create_texture_from_embedded_data(
     return {};
 }
 
-/// Helper function to create a texture from importer embedded texture data.
-/// Returns a ref<sgl::Texture> on success, or an empty ref if no embedded data.
-static ref<sgl::Texture>
-create_texture_from_embedded_data(Scene* scene, const ImporterTexture& importer_texture, TextureLoadFlags flags)
-{
-    return create_texture_from_embedded_data(scene, importer_texture.texture_data, flags, importer_texture.source_name);
-}
-
 struct ImportedTextureSource {
     ref<sgl::Texture> texture;
+    ref<Blob> bytes;
     std::filesystem::path path;
     ref<sgl::Sampler> sampler;
 };
@@ -102,13 +99,23 @@ public:
             m_assets.try_emplace(asset.path, std::span<const uint8_t>(asset.data));
     }
 
-    ImportedTextureSource resolve(const ImporterTexture& importer_texture, TextureLoadFlags flags)
+    ImportedTextureSource resolve(const ImporterTexture& importer_texture)
     {
         auto sampler = resolve_sampler(importer_texture);
-        if (auto texture = resolve(importer_texture.texture_path, flags))
-            return {.texture = std::move(texture), .sampler = sampler};
-        if (auto texture = create_texture_from_embedded_data(m_scene, importer_texture, flags))
-            return {.texture = std::move(texture), .sampler = sampler};
+        if (!importer_texture.texture_data.empty())
+            return {
+                .bytes = resolve_bytes(
+                    importer_texture.texture_path,
+                    std::span<const uint8_t>(importer_texture.texture_data),
+                    importer_texture.source_name
+                ),
+                .sampler = sampler,
+            };
+        if (auto it = m_assets.find(importer_texture.texture_path); it != m_assets.end())
+            return {
+                .bytes = resolve_bytes(importer_texture.texture_path, it->second, importer_texture.source_name),
+                .sampler = sampler,
+            };
         return {.path = importer_texture.texture_path, .sampler = sampler};
     }
 
@@ -159,6 +166,18 @@ public:
     }
 
 private:
+    ref<Blob>
+    resolve_bytes(const std::filesystem::path& path, std::span<const uint8_t> bytes, std::string_view source_name)
+    {
+        const std::string name = source_name.empty() ? path.string() : std::string(source_name);
+        if (path.empty())
+            return make_ref<Blob>(bytes, name);
+        auto& source = m_encoded_textures[path];
+        if (!source)
+            source = make_ref<Blob>(bytes, name);
+        return source;
+    }
+
     ref<sgl::Sampler> resolve_sampler(const ImporterTexture& texture)
     {
         const auto key = std::make_tuple(
@@ -218,6 +237,7 @@ private:
 
     Scene* m_scene;
     std::unordered_map<std::filesystem::path, std::span<const uint8_t>> m_assets;
+    std::unordered_map<std::filesystem::path, ref<Blob>> m_encoded_textures;
     std::map<std::tuple<std::filesystem::path, TextureLoadFlags>, ref<sgl::Texture>> m_textures;
     std::map<
         std::tuple<TextureFilterMode, TextureFilterMode, TextureFilterMode, TextureWrapMode, TextureWrapMode, bool>,
@@ -234,9 +254,11 @@ static void set_texture_property(
 {
     if (source.texture)
         properties.set(property_name, source.texture);
+    else if (source.bytes)
+        properties.set(property_name + "_bytes", source.bytes);
     else if (!source.path.empty())
         properties.set(property_name_path, source.path);
-    if (source.sampler && (source.texture || !source.path.empty()))
+    if (source.sampler && (source.texture || source.bytes || !source.path.empty()))
         properties.set(property_name + "_sampler", source.sampler);
 }
 
@@ -303,13 +325,13 @@ static Material* load_importer_material(
 
     std::optional<Properties> converted;
     const GLTFTextureSetter set_texture
-        = [&](Properties& properties, std::string_view name, const ImporterTexture& texture, TextureLoadFlags flags)
+        = [&](Properties& properties, std::string_view name, const ImporterTexture& texture, TextureLoadFlags)
     {
         set_texture_property(
             properties,
             std::string(name),
             fmt::format("{}_path", name),
-            texture_resolver.resolve(texture, flags)
+            texture_resolver.resolve(texture)
         );
     };
     const auto target = params.get<std::string>("_gltf_target", "");
@@ -342,16 +364,13 @@ static Material* load_importer_material(
             scene->config().uv_origin,
             [&](Properties& properties, std::string_view name, const ImporterTexture& texture, bool srgb)
             {
-                const auto flags = srgb ? TextureLoadFlags::color : TextureLoadFlags::data_rgb;
-                auto resolved = texture_resolver.resolve(texture, flags);
-                if (!resolved.texture) {
-                    sgl::TextureLoader loader{ref<sgl::Device>(scene->device())};
-                    resolved.texture = loader.load_texture(
-                        resolved.path,
-                        texture_loader_options(flags, sgl::TextureUsage::shader_resource, scene->config().max_mip_count)
-                    );
-                }
-                properties.set(fmt::format("{}:texture", name), resolved.texture);
+                auto resolved = texture_resolver.resolve(texture);
+                if (resolved.bytes)
+                    properties.set(fmt::format("{}:texture_bytes", name), resolved.bytes);
+                else if (resolved.texture)
+                    properties.set(fmt::format("{}:texture", name), resolved.texture);
+                else
+                    properties.set(name, resolved.path.string());
                 properties.set(fmt::format("{}:sampler", name), resolved.sampler);
                 properties.set(fmt::format("{}:srgb", name), srgb);
             }
@@ -362,13 +381,13 @@ static Material* load_importer_material(
             importer_material,
             importer_textures,
             use_vertex_color,
-            [&](Properties& properties, std::string_view name, const ImporterTexture& texture, TextureLoadFlags flags)
+            [&](Properties& properties, std::string_view name, const ImporterTexture& texture, TextureLoadFlags)
             {
                 set_texture_property(
                     properties,
                     std::string(name),
                     fmt::format("{}_path", name),
-                    texture_resolver.resolve(texture, flags)
+                    texture_resolver.resolve(texture)
                 );
             }
         );
@@ -388,14 +407,19 @@ static Material* load_importer_material(
     return material;
 }
 
-static StaticMeshGeometry* load_importer_mesh(Scene* scene, const ImporterMesh& importer_mesh)
+static Geometry* load_importer_mesh(Scene* scene, const ImporterMesh& importer_mesh)
 {
+    if (importer_mesh.motion_times.size() > 1) {
+        auto* geometry = scene->create_geometry<DynamicMeshGeometry>();
+        update_imported_mesh(geometry, importer_mesh, scene->config().uv_origin);
+        return geometry;
+    }
     auto* geometry = scene->create_geometry<StaticMeshGeometry>();
     update_imported_mesh(geometry, importer_mesh, scene->config().uv_origin);
     return geometry;
 }
 
-static StaticCurveGeometry* load_importer_curve(Scene* scene, const ImporterCurve& importer_curve)
+static Geometry* load_importer_curve(Scene* scene, const ImporterCurve& importer_curve)
 {
     StaticCurveGeometryDataDesc desc = {};
     desc.name = importer_curve.name;
@@ -434,8 +458,43 @@ static StaticCurveGeometry* load_importer_curve(Scene* scene, const ImporterCurv
         desc.vertex_attributes = std::span(&texcoord_attribute, 1);
     }
 
-    StaticCurveGeometry* geometry = scene->create_geometry<StaticCurveGeometry>();
-    geometry->set_curve_data(desc);
+    Geometry* geometry;
+    if (importer_curve.motion_times.size() > 1) {
+        auto* dynamic = scene->create_geometry<DynamicCurveGeometry>();
+        std::vector<StaticCurveGeometryDataDesc> samples(importer_curve.sample_count(), desc);
+        for (uint32_t sample = 0; sample < samples.size(); ++sample) {
+            const auto sample_positions = importer_curve.position_stream(sample);
+            const auto sample_radii = importer_curve.radius_stream(sample);
+            samples[sample].position_stream
+                = {reinterpret_cast<const float3*>(sample_positions.data), sample_positions.stride};
+            samples[sample].radius_stream = {reinterpret_cast<const float*>(sample_radii.data), sample_radii.stride};
+        }
+        std::vector<shared::PackedLSSVertex> vertices;
+        std::vector<uint32_t> indices;
+        std::vector<GeometryVertexAttribute> vertex_attributes;
+        auto deformer = create_vertex_cache(
+            scene->device(),
+            samples,
+            importer_curve.motion_times,
+            importer_curve.motion_interpolation_mode,
+            vertices,
+            indices,
+            vertex_attributes,
+            importer_curve.motion_sample_indices
+        );
+        dynamic->set_name(desc.name);
+        dynamic->set_curve_data(
+            std::move(vertices),
+            std::move(indices),
+            std::move(vertex_attributes),
+            std::move(deformer)
+        );
+        geometry = dynamic;
+    } else {
+        auto* stat = scene->create_geometry<StaticCurveGeometry>();
+        stat->set_curve_data(desc);
+        geometry = stat;
+    }
     geometry->_set_source_asset_ref(importer_curve.source_asset_ref);
     return geometry;
 }
@@ -512,11 +571,11 @@ static void append_importer_scene(Scene* scene, const ImporterScene& importer_sc
         return default_material;
     };
 
-    // Create a StaticMeshGeometry for each importer mesh.
-    std::vector<StaticMeshGeometry*> mesh_geometries;
-    std::map<StaticMeshGeometry*, std::vector<Material*>> mesh_geometry_to_materials;
+    // Create geometry for each importer mesh.
+    std::vector<Geometry*> mesh_geometries;
+    std::map<Geometry*, std::vector<Material*>> mesh_geometry_to_materials;
     for (const ImporterMesh& importer_mesh : importer_scene.meshes) {
-        StaticMeshGeometry* mesh_geometry = load_importer_mesh(scene, importer_mesh);
+        Geometry* mesh_geometry = load_importer_mesh(scene, importer_mesh);
         mesh_geometries.push_back(mesh_geometry);
         std::vector<Material*> materials;
         for (const ImporterMesh::Subgeometry& subgeo : importer_mesh.subgeometries) {
@@ -525,11 +584,11 @@ static void append_importer_scene(Scene* scene, const ImporterScene& importer_sc
         mesh_geometry_to_materials[mesh_geometry] = std::move(materials);
     }
 
-    // Create a StaticCurveGeometry for each importer curve.
-    std::vector<StaticCurveGeometry*> curve_geometries;
-    std::map<StaticCurveGeometry*, Material*> curve_geometry_to_material;
+    // Create geometry for each importer curve.
+    std::vector<Geometry*> curve_geometries;
+    std::map<Geometry*, Material*> curve_geometry_to_material;
     for (const ImporterCurve& importer_curve : importer_scene.curves) {
-        StaticCurveGeometry* curve_geometry = load_importer_curve(scene, importer_curve);
+        Geometry* curve_geometry = load_importer_curve(scene, importer_curve);
         curve_geometries.push_back(curve_geometry);
         curve_geometry_to_material[curve_geometry] = resolve_material(importer_curve.material_index);
     }
@@ -589,7 +648,7 @@ static void append_importer_scene(Scene* scene, const ImporterScene& importer_sc
                 importer_node.source_asset_ref ? importer_node.source_asset_ref
                                                : importer_scene.meshes[importer_node.mesh_index].source_asset_ref
             );
-            StaticMeshGeometry* mesh_geometry = mesh_geometries[importer_node.mesh_index];
+            Geometry* mesh_geometry = mesh_geometries[importer_node.mesh_index];
             instance->set_geometry(mesh_geometry);
             auto it = mesh_geometry_to_materials.find(mesh_geometry);
             FALCOR_ASSERT(it != mesh_geometry_to_materials.end());
@@ -602,7 +661,7 @@ static void append_importer_scene(Scene* scene, const ImporterScene& importer_sc
                 importer_node.source_asset_ref ? importer_node.source_asset_ref
                                                : importer_scene.curves[importer_node.curve_index].source_asset_ref
             );
-            StaticCurveGeometry* curve_geometry = curve_geometries[importer_node.curve_index];
+            Geometry* curve_geometry = curve_geometries[importer_node.curve_index];
             instance->set_geometry(curve_geometry);
             auto it = curve_geometry_to_material.find(curve_geometry);
             if (it != curve_geometry_to_material.end()) {
@@ -633,9 +692,6 @@ static void append_importer_scene(Scene* scene, const ImporterScene& importer_sc
             camera->set_enable_depth_of_field(importer_camera.enable_depth_of_field);
             camera->set_focus_distance(importer_camera.focus_distance);
             camera->set_depth_range(importer_camera.depth_range);
-            if (scene->active_camera() == nullptr) {
-                scene->set_active_camera(camera);
-            }
         }
 
         // Recursively process children
@@ -735,7 +791,7 @@ ref<Scene> Scene::from_importer_scene(
 )
 {
     auto scene = ref<Scene>{new Scene(std::move(device), resolve_scene_config(config, importer_scene))};
-    append_importer_scene(scene.get(), importer_scene);
+    scene->append(importer_scene);
     return scene;
 }
 
@@ -769,13 +825,14 @@ void Scene::append(const std::filesystem::path& path, std::optional<ImportOption
 void Scene::append(const ImporterScene& importer_scene)
 {
     append_importer_scene(this, importer_scene);
+    select_initial_camera();
 }
 
 void Scene::append(const Importer& importer)
 {
     ref<ImporterScene> importer_scene = importer.build_importer_scene();
     FALCOR_ASSERT(importer_scene);
-    append_importer_scene(this, *importer_scene);
+    append(*importer_scene);
     importer.run_scene_loaded_callbacks(ref(this));
 }
 

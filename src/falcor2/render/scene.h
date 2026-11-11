@@ -252,14 +252,34 @@ public:
     ComponentCollection& component_collection() { return m_component_collection; }
 
     /// The active camera used for rendering.
-    /// This is automatically set if a Camera component is added and no active camera is set,
-    /// and automatically cleared if the active camera is removed.
+    /// The first authored camera is selected on update() or import completion unless a selection already exists.
     Camera* active_camera() const;
+    /// Select a camera without changing its view. Later camera creation or imports preserve the selection.
+    /// @param camera Live camera in this scene, or nullptr to select the free camera.
     void set_active_camera(Camera* camera);
 
-    /// Find all valid scene objects with the given source asset reference.
-    /// Scans the scene collections; intended for occasional inspection and editor queries.
-    std::vector<SceneObject*> find_objects_by_source_asset_ref(const SourceAssetRef& source_asset_ref) const;
+    /// Built-in permanent navigation camera with editable pose and camera settings.
+    Camera* free_camera() const { return m_free_camera; }
+
+    /// Fit the free camera to valid, finite geometry-instance bounds using its current lens.
+    /// Updates pose, focus distance, and clipping planes; preserves camera dimensions and active-camera selection.
+    /// Call after update() for current bounds; this method does not update the scene.
+    /// Without usable bounds, looks at the origin from (0, 0, 5) and uses the baseline clipping range.
+    /// @param aspect Width/height ratio used for fitting. Must be positive and finite; defaults to a square view.
+    /// @param default_depth_range Finite near/far baseline in scene units, with 0 < near < far.
+    void frame_free_camera(float aspect = 1.f, float2 default_depth_range = float2(0.01f, 1000.f));
+
+    /// Copy the source's evaluated world pose and camera settings to the free camera, then activate it.
+    /// Call after update() to capture the current animation pose.
+    /// @param source Non-null, live camera in this scene.
+    /// @return The free camera.
+    Camera* activate_free_camera_from(const Camera* source);
+
+    /// Find valid objects by scanning all scene collections.
+    /// @param source_asset_ref Source asset reference to match exactly.
+    /// @param include_builtins Include built-in objects in the results.
+    std::vector<SceneObject*>
+    find_objects_by_source_asset_ref(const SourceAssetRef& source_asset_ref, bool include_builtins = false) const;
 
     /// Create a material of a specific type and add it to the scene.
     /// The material is owned by the scene and will be marked with DirtyFlags::added.
@@ -446,6 +466,8 @@ public:
             m_entity_collection.add(object);
         if constexpr (std::is_base_of_v<Component, T>)
             m_component_collection.add(object);
+        if constexpr (std::is_base_of_v<Geometry, T> || std::is_base_of_v<Component, T>)
+            m_geometry_animation_cache_dirty = true;
         object->_set_default_name();
     }
 
@@ -536,8 +558,14 @@ private:
     /// Construct a scene with a fully resolved configuration.
     Scene(ref<sgl::Device> device, const SceneConfig& config);
 
+    /// Select the first authored camera if initial selection is pending.
+    void select_initial_camera();
+
     /// Garbage collect refcounted scene globals with no remaining external owners.
     void run_garbage_collect();
+
+    /// Refresh the geometry contribution to animation queries after data or instance edits.
+    void update_geometry_animation_cache() const;
 
     ref<sgl::Device> m_device;
 
@@ -568,8 +596,17 @@ private:
     /// View of components collection.
     ComponentCollectionView m_components;
 
-    /// The active camera for rendering. Held as ref to prevent premature deletion.
+    // Shared by animation_range() and has_animation(); playback and transforms do not invalidate it.
+    mutable AnimationTimeRange m_geometry_animation_range;
+    mutable bool m_has_geometry_animation{false};
+    mutable bool m_geometry_animation_cache_dirty{true};
+
+    /// Active rendering camera. Initialized to the free camera.
     ref<Camera> m_active_camera;
+    /// Built-in free camera entity and component.
+    ref<Camera> m_free_camera;
+    /// Indicates whether the initial camera selection is pending.
+    bool m_initial_camera_selection_pending{true};
 
     /// Texture manager for loading and caching textures.
     ref<TextureManager> m_texture_manager;
@@ -656,6 +693,7 @@ template<typename T>
     requires std::is_base_of_v<Component, T>
 T* Entity::create_component(std::optional<Properties> props)
 {
+    FALCOR_CHECK(!is_builtin(), "Cannot add components to a built-in object.");
     T* component = m_scene->_create_object<T>(props);
     component->m_entity = this;
     m_components.push_back(component);

@@ -20,8 +20,8 @@ void compute_lss_aabbs(uint3 tid: SV_DispatchThreadID, StructuredBuffer<LSSAABBW
         return;
     const uint vertex_offset = record.vertex_offset;
     const uint index_offset = record.index_offset;
-    let vertices = record.vertex_buffer.as_buffer<PackedLSSVertex>();
-    let indices = record.index_buffer.as_buffer<uint>();
+    let vertices = record.vertex_buffer.as<PackedLSSVertex>();
+    let indices = record.index_buffer.as<uint>();
 
     // Successive indexing mode: segment i connects vertex index[i] and index[i]+1.
     uint idx = indices[index_offset + segment_index];
@@ -35,5 +35,8 @@ void compute_lss_aabbs(uint3 tid: SV_DispatchThreadID, StructuredBuffer<LSSAABBW
     AABB aabb;
     aabb.min_corner = min_corner;
     aabb.max_corner = max_corner;
-    record.aabb_buffer.store_element<AABB>(index_offset + segment_index, aabb);
+    // The float2 view gives CUDA three 64-bit stores instead of six scalar AABB stores,
+    // without changing the 24-byte AABB layout. Explicit alignment alone does not achieve this.
+    // The host checks 8-byte base alignment; the 24-byte element stride preserves it.
+    record.aabb_buffer.as<float2[3]>()[index_offset + segment_index] = reinterpret<float2[3]>(aabb);
 }

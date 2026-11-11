@@ -39,7 +39,7 @@ public struct GLTFMaterial<let Features : uint, let Textures : uint, let Transfo
     public float4 emissive_factor;
     public uint feature_mask;
     public uint transform_mask;
-    public BufferOffsetPair extra_data;
+    public BufferPtr extra_data;
 
     private GLTFTextureInfo base_color_info()
     {

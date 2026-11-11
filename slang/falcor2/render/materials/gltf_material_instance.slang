@@ -113,8 +113,11 @@ public struct GLTFMaterialInstance<let Features : uint> : IMaterialInstance
             && surface_material::is_valid_hemisphere_reflection_or_transmission(si, state.frame_ws, wi, wo, wo_ws);
     }
 
-    public BSDFEval
-    eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both>(const SurfaceInteraction si, const float3 wo_ws)
+    public BSDFEval eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both>(
+        const SurfaceInteraction si,
+        const float3 wo_ws,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
         BSDFEval result = eval_base(si, wo_ws);
         if (let state = clearcoat.get()) {

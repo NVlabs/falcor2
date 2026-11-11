@@ -13,13 +13,14 @@ from falcor2.editor import SceneShaderHelper
 _STATE_SOURCE = """\
 import falcor2.render;
 
-public uint3 specgloss_state(uint material_id, uint feature_word, uint transform_word, uint extra_offset_word)
+public uint4 specgloss_state(uint material_id, uint feature_word, uint transform_word, uint extra_ptr_word)
 {
     const MaterialData material = g_scene.material_system.get_material_data(MaterialID(material_id));
-    return uint3(
+    return uint4(
         material.payload.data[feature_word],
         material.payload.data[transform_word],
-        material.payload.data[extra_offset_word]
+        material.payload.data[extra_ptr_word],
+        material.payload.data[extra_ptr_word + 1]
     );
 }
 """
@@ -60,15 +61,16 @@ def test_specgloss_exact_type_tracks_live_texture_uv_edits(device: spy.Device) -
         words = (
             payload_word("feature_mask"),
             payload_word("transform_mask"),
-            payload_word("extra_data", "offset"),
+            payload_word("extra_data"),
         )
         uploaded = module.specgloss_state.as_func().write(helper.bind_scene)(
             int(material.material_id), *words
         )
         assert int(uploaded.x) == 0  # No normal, emission, or vertex color.
         assert int(uploaded.y) == transforms
-        if transforms == 0:
-            assert int(uploaded.z) == 0  # No transform tail allocation.
+        pointer_bits = int(uploaded.z) | (int(uploaded.w) << 32)
+        # The allocation offset is part of the pointer; an absent tail is null.
+        assert (pointer_bits != f2.BufferPtr().data) == (transforms != 0)
 
     check(0, 0, 0)
     texture = device.create_texture(

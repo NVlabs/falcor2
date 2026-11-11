@@ -48,9 +48,8 @@ public:
 
     // SceneObject interface
 
-    virtual void clear_invalid_references() override;
-    virtual void on_add_to_scene() override;
-    virtual void on_remove_from_scene() override { clear_render_state(); }
+    void on_add_to_scene() override;
+    void on_remove_from_scene() override { clear_render_state(); }
 
     // Geometry interface
 

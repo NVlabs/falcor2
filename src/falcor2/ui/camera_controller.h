@@ -139,6 +139,9 @@ public:
     /// Cancel any active interaction and clear transient input state.
     void cancel_interaction();
 
+    /// Clear smoothing velocities without discarding pending input or the current gesture.
+    void reset_inertia();
+
     /// Advance the controller by `dt` seconds.
     /// Applies movement, rotation, orbit, etc. based on the current mode and accumulated input.
     /// @return True if the transform changed this frame.

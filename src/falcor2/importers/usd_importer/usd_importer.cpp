@@ -4,7 +4,6 @@
 #include "usd_importer.h"
 #include "usd_importer_context.h"
 #include "usd_importer_materialx.h"
-#include "usd_importer_skinning.h"
 #include "usd_importer_utils.h"
 #include "usd_importer_macros.h"
 
@@ -15,6 +14,8 @@ BEGIN_DISABLE_USD_WARNINGS
 #include <pxr/usd/ar/resolverContextBinder.h>
 
 #include <pxr/base/tf/diagnosticMgr.h>
+#include <pxr/base/tf/errorMark.h>
+#include <pxr/base/work/withScopedParallelism.h>
 
 #include <pxr/usd/sdf/layer.h>
 
@@ -60,10 +61,6 @@ public:
     void IssueError(const TfError& err) override
     {
         std::string message = formatMessage(&err);
-        {
-            std::lock_guard lock(m_errors_mutex);
-            m_errors.push_back(message);
-        }
         sgl::log_error("USD Error: {}", message);
     }
 
@@ -76,18 +73,6 @@ public:
     }
 
     void IssueStatus(const TfStatus& status) override { sgl::log_info("USD Info: {}", formatMessage(&status)); }
-
-    std::string format_errors() const
-    {
-        std::lock_guard lock(m_errors_mutex);
-        if (m_errors.empty())
-            return {};
-
-        std::string joined = "USD reported errors:";
-        for (const auto& error : m_errors)
-            joined += "\n - " + error;
-        return joined;
-    }
 
 private:
     static bool should_suppress_warning(const std::string& message)
@@ -109,22 +94,43 @@ private:
     }
 
     std::string formatMessage(const TfDiagnosticBase* elt) { return elt->GetCommentary(); }
-    // USD can invoke a delegate concurrently from multiple threads.
-    mutable std::mutex m_errors_mutex;
-    std::vector<std::string> m_errors;
 };
 
-class ScopeGuard {
+// USD delegates are process-wide: overlapping imports must share one logging delegate.
+class ScopedDiagnosticDelegate {
 public:
-    ScopeGuard(const std::function<void(void)>& func)
-        : m_func(func)
+    ScopedDiagnosticDelegate()
     {
+        auto& state = shared_state();
+        std::lock_guard lock(state.mutex);
+        if (state.users == 0)
+            TfDiagnosticMgr::GetInstance().AddDelegate(&state.delegate);
+        ++state.users;
     }
 
-    ~ScopeGuard() { m_func(); }
+    ~ScopedDiagnosticDelegate()
+    {
+        auto& state = shared_state();
+        std::lock_guard lock(state.mutex);
+        if (--state.users == 0)
+            TfDiagnosticMgr::GetInstance().RemoveDelegate(&state.delegate);
+    }
+
+    ScopedDiagnosticDelegate(const ScopedDiagnosticDelegate&) = delete;
+    ScopedDiagnosticDelegate& operator=(const ScopedDiagnosticDelegate&) = delete;
 
 private:
-    std::function<void(void)> m_func;
+    struct SharedState {
+        std::mutex mutex;
+        size_t users = 0;
+        DiagDelegate delegate;
+    };
+
+    static SharedState& shared_state()
+    {
+        static SharedState state;
+        return state;
+    }
 };
 
 UVOrigin get_uv_origin(const UsdStageRefPtr& stage)
@@ -195,18 +201,13 @@ ref<ImporterScene> load_scene_from_stage_impl(
     if (!usd_stage)
         throw std::runtime_error("USD stage must not be null.");
 
+    ArResolverContextBinder binder(usd_stage->GetPathResolverContext());
+
     // Expands references to .mtlx into simple UsdMaterial/UsdShader that just points to the original mtlx file. This is
     // used instead of usdMtlx, which expands all the Mtlx nodes into UsdShade to allow more complex overrides. We
     // cannot use that since it complicates the compilation (both USD and Falcor need MaterialX, each of a different
     // version) and we do not need nor use it.
     process_mtlx_references(usd_stage);
-
-    if (import_options.bake_poses) {
-        if (import_options.import_mesh_motion)
-            bake_skinning_animated(usd_stage);
-        else
-            bake_skinning(usd_stage, UsdTimeCode(0));
-    }
 
     auto importer_context = std::make_shared<UsdImporterContext>(usd_stage, import_options, ustring(source_asset_path));
 
@@ -228,6 +229,52 @@ ref<ImporterScene> load_scene_from_stage_impl(
     return scene;
 }
 
+ref<ImporterScene> load_scene_impl(const std::filesystem::path& path, const ImportOptions& import_options)
+{
+    if (!path.is_absolute())
+        throw std::runtime_error("USD path must be resolved to an absolute path.");
+
+    ScopedDiagnosticDelegate diagnostics;
+
+    auto resolver_context = ArGetResolver().CreateDefaultContextForAsset(path.string());
+    ArResolverContextBinder binder(resolver_context);
+
+    // OpenMasked creates a fresh stage instead of reusing a cached one, but can still populate caches:
+    // https://github.com/PixarAnimationStudios/OpenUSD/issues/4228
+    UsdStageRefPtr usd_stage;
+    {
+        TfErrorMark open_errors;
+        usd_stage = UsdStage::OpenMasked(path.string(), UsdStagePopulationMask::All());
+        if (!usd_stage) {
+            std::string message = "Failed to open USD path: " + path.string();
+            for (const auto& error : open_errors)
+                message += "\n - " + error.GetCommentary();
+            open_errors.Clear();
+            throw std::runtime_error(message);
+        }
+    }
+
+    // New stages target their potentially shared root layer by default. Keep import edits in the session layer.
+    usd_stage->SetEditTarget(UsdEditTarget(usd_stage->GetSessionLayer()));
+
+    const std::string source_asset_path = std::filesystem::absolute(path).lexically_normal().string();
+    ref<ImporterScene> scene = usd_importer::load_scene_from_stage_impl(usd_stage, import_options, source_asset_path);
+    detail::apply_import_options(*scene, import_options, 0.0);
+    return scene;
+}
+
+ref<ImporterScene> import_stage_impl(const UsdStage& stage, const ImportOptions& import_options)
+{
+    ScopedDiagnosticDelegate diagnostics;
+
+    pxr::UsdStageRefPtr import_stage = usd_importer::create_import_stage(stage);
+    const std::string source_asset_path = stage.GetRootLayer()->GetRealPath();
+    ref<ImporterScene> scene
+        = usd_importer::load_scene_from_stage_impl(import_stage, import_options, source_asset_path);
+    detail::apply_import_options(*scene, import_options, 0.0);
+    return scene;
+}
+
 } // namespace usd_importer
 
 ref<ImporterScene> UsdImporter::load_scene(const std::filesystem::path& path)
@@ -237,41 +284,14 @@ ref<ImporterScene> UsdImporter::load_scene(const std::filesystem::path& path)
 
 ref<ImporterScene> UsdImporter::load_scene(const std::filesystem::path& path, const ImportOptions& import_options)
 {
-    using namespace pxr;
-
-    if (!path.is_absolute())
-        throw std::runtime_error("USD path must be resolved to an absolute path.");
-
-    usd_importer::DiagDelegate diagnostic_delegate;
-    TfDiagnosticMgr::GetInstance().AddDelegate(&diagnostic_delegate);
-    usd_importer::ScopeGuard remove_diagnostic(
-        [&]()
+    // USD waits must not run another import's tasks under this caller's thread-local error marks.
+    return pxr::WorkWithScopedParallelism(
+        [&]
         {
-            TfDiagnosticMgr::GetInstance().RemoveDelegate(&diagnostic_delegate);
-        }
+            return usd_importer::load_scene_impl(path, import_options);
+        },
+        /* dropPythonGIL */ false
     );
-
-    auto resolver_context = ArGetResolver().CreateDefaultContextForAsset(path.string());
-    ArResolverContextBinder binder(resolver_context);
-
-    // OpenMasked creates a fresh stage instead of reusing a cached one, but can still populate caches:
-    // https://github.com/PixarAnimationStudios/OpenUSD/issues/4228
-    UsdStageRefPtr usd_stage = UsdStage::OpenMasked(path.string(), UsdStagePopulationMask::All());
-    if (!usd_stage) {
-        std::string message = "Failed to open USD path: " + path.string();
-        std::string diagnostics = diagnostic_delegate.format_errors();
-        if (!diagnostics.empty())
-            message += "\n" + diagnostics;
-        throw std::runtime_error(message);
-    }
-
-    // New stages target their potentially shared root layer by default. Keep import edits in the session layer.
-    usd_stage->SetEditTarget(UsdEditTarget(usd_stage->GetSessionLayer()));
-
-    const std::string source_asset_path = std::filesystem::absolute(path).lexically_normal().string();
-    ref<ImporterScene> scene = usd_importer::load_scene_from_stage_impl(usd_stage, import_options, source_asset_path);
-    detail::apply_import_options(*scene, import_options);
-    return scene;
 }
 
 ref<ImporterScene> UsdImporter::import_stage(const pxr::UsdStage& stage)
@@ -281,21 +301,13 @@ ref<ImporterScene> UsdImporter::import_stage(const pxr::UsdStage& stage)
 
 ref<ImporterScene> UsdImporter::import_stage(const pxr::UsdStage& stage, const ImportOptions& import_options)
 {
-    usd_importer::DiagDelegate diagnostic_delegate;
-    pxr::TfDiagnosticMgr::GetInstance().AddDelegate(&diagnostic_delegate);
-    usd_importer::ScopeGuard remove_diagnostic(
-        [&]()
+    return pxr::WorkWithScopedParallelism(
+        [&]
         {
-            pxr::TfDiagnosticMgr::GetInstance().RemoveDelegate(&diagnostic_delegate);
-        }
+            return usd_importer::import_stage_impl(stage, import_options);
+        },
+        /* dropPythonGIL */ false
     );
-
-    pxr::UsdStageRefPtr import_stage = usd_importer::create_import_stage(stage);
-    const std::string source_asset_path = stage.GetRootLayer()->GetRealPath();
-    ref<ImporterScene> scene
-        = usd_importer::load_scene_from_stage_impl(import_stage, import_options, source_asset_path);
-    detail::apply_import_options(*scene, import_options);
-    return scene;
 }
 
 } // namespace falcor

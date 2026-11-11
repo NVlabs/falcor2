@@ -11,7 +11,7 @@
 #include "falcor2/core/cursor_writer.h"
 #include "falcor2/core/properties.h"
 #include "falcor2/core/enum.h"
-#include "falcor2/utils/buffer_offset_pair.h"
+#include "falcor2/utils/buffer_ptr.h"
 #include "falcor2/utils/offset_allocator.h"
 
 
@@ -173,8 +173,9 @@ protected:
     /// Includes allocation padding and marks data dirty. Pool growth invalidates the borrowed span.
     std::span<uint8_t> mutable_data();
     std::span<const uint8_t> data() const;
-    /// Current buffer and offset after Scene::update; invalid for empty or removed data.
-    BufferOffsetPair data_ref() const;
+    /// Current allocation pointer after Scene::update; null for empty or removed data.
+    /// Reacquire after updates: storage growth can replace the underlying GPU buffer.
+    BufferPtr data_ref() const;
 
     /// Mark material changes for the next scene update. Include emission for edits that may change
     /// is_emissive(), compute_emission_sampling_grid(), or eval_emission(), even when currently dark.

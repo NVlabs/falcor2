@@ -519,12 +519,22 @@ public struct GLTFBSDF<let Features : uint> : IBSDF
         return wo.z >= BSDF_MIN_COS_THETA;
     }
 
-    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
+    public override float3 eval(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
-        return eval_with_pdf(wi, wo, bc).value;
+        return eval_with_pdf(wi, wo, bc, component).value;
     }
 
-    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
         BSDFEval result = {};
         if (p_diffuse > 0.0) {

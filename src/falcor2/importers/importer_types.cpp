@@ -7,6 +7,9 @@
 #include "falcor2/importers/mikkt.h"
 #include "falcor2/importers/vertex_remap.h"
 #include "falcor2/geometry/tangent_transfer.h"
+#include "falcor2/render/animation.h"
+#include "falcor2/render/transform.h"
+#include "falcor2/utils/camera_framing.h"
 
 #include "falcor2/core/types.h"
 #include "falcor2/utils/indexed_vector.h"
@@ -83,189 +86,37 @@ float3 branchlessONB(float3 normal)
     return float3(1.0f + sign * normal.x * normal.x * a, sign * b, -sign * normal.x);
 }
 
-constexpr float DEFAULT_SENSOR_HEIGHT_MM = 24.f;
-
-float compute_percentile(std::vector<float>& values, float percentile)
+// Visit each instance with its composed transform. A visitor returning true stops the traversal.
+template<typename Visitor>
+bool visit_importer_nodes(const ImporterScene& scene, Visitor&& visitor)
 {
-    if (values.empty()) {
-        return 0.f;
-    }
-
-    percentile = std::clamp(percentile, 0.f, 1.f);
-    std::sort(values.begin(), values.end());
-
-    if (values.size() == 1) {
-        return values.front();
-    }
-
-    const float f_index = percentile * static_cast<float>(values.size() - 1);
-    const size_t index0 = static_cast<size_t>(std::floor(f_index));
-    const size_t index1 = std::min(index0 + 1, values.size() - 1);
-    const float t = f_index - static_cast<float>(index0);
-    return values[index0] * (1.f - t) + values[index1] * t;
-}
-
-std::array<float3, 8> aabb_corners(const AABB& aabb)
-{
-    return {
-        float3(aabb.min.x, aabb.min.y, aabb.min.z),
-        float3(aabb.max.x, aabb.min.y, aabb.min.z),
-        float3(aabb.min.x, aabb.max.y, aabb.min.z),
-        float3(aabb.max.x, aabb.max.y, aabb.min.z),
-        float3(aabb.min.x, aabb.min.y, aabb.max.z),
-        float3(aabb.max.x, aabb.min.y, aabb.max.z),
-        float3(aabb.min.x, aabb.max.y, aabb.max.z),
-        float3(aabb.max.x, aabb.max.y, aabb.max.z),
-    };
-}
-
-std::vector<AABB> collect_mesh_instance_world_aabbs(const ImporterScene& scene)
-{
-    std::vector<AABB> result;
-
-    std::function<void(int, const float4x4&)> collect_recursive = [&](int node_idx, const float4x4& world_from_parent)
+    std::vector<bool> visiting(scene.nodes.size(), false);
+    std::function<bool(int, const float4x4&)> visit_node = [&](int index, const float4x4& world_from_parent)
     {
-        if (node_idx < 0 || node_idx >= static_cast<int>(scene.nodes.size())) {
-            return;
+        if (index < 0 || static_cast<size_t>(index) >= scene.nodes.size())
+            return false;
+        FALCOR_CHECK(!visiting[index], "Cycle in importer scene node hierarchy.");
+        visiting[index] = true;
+        const auto& node = scene.nodes[index];
+        const auto world_from_node = sgl::math::mul(world_from_parent, node.transform);
+        if (visitor(node, world_from_node))
+            return true;
+        for (int child : node.children) {
+            if (visit_node(child, world_from_node))
+                return true;
         }
-
-        const auto& node = scene.nodes[node_idx];
-        const float4x4 world_from_node = sgl::math::mul(world_from_parent, node.transform);
-
-        if (node.mesh_index >= 0 && node.mesh_index < static_cast<int>(scene.meshes.size())) {
-            const auto& mesh = scene.meshes[node.mesh_index];
-            if (mesh.local_aabb.is_valid()) {
-                result.push_back(mesh.local_aabb.transform(world_from_node));
-            }
+        if (node.prototype_index >= 0 && static_cast<size_t>(node.prototype_index) < scene.prototypes.size()) {
+            if (visit_node(scene.prototypes[node.prototype_index].root_node, world_from_node))
+                return true;
         }
-
-        for (int child_idx : node.children) {
-            collect_recursive(child_idx, world_from_node);
-        }
-
-        if (node.prototype_index >= 0 && node.prototype_index < static_cast<int>(scene.prototypes.size())) {
-            collect_recursive(scene.prototypes[node.prototype_index].root_node, world_from_node);
-        }
+        visiting[index] = false;
+        return false;
     };
-
-    const float4x4 identity = float4x4::identity();
-    for (int root_idx : scene.root_nodes) {
-        collect_recursive(root_idx, identity);
+    for (int root : scene.root_nodes) {
+        if (visit_node(root, float4x4::identity()))
+            return true;
     }
-
-    return result;
-}
-
-std::pair<AABB, float3> compute_robust_bounds_and_center(
-    const std::vector<AABB>& mesh_world_aabbs,
-    const AABB& fallback_scene_aabb,
-    float outlier_percentile
-)
-{
-    if (mesh_world_aabbs.empty()) {
-        return {fallback_scene_aabb, fallback_scene_aabb.center()};
-    }
-
-    outlier_percentile = std::clamp(outlier_percentile, 0.f, 0.49f);
-
-    std::vector<float> mins_x, mins_y, mins_z;
-    std::vector<float> maxs_x, maxs_y, maxs_z;
-    std::vector<float> centers_x, centers_y, centers_z;
-
-    mins_x.reserve(mesh_world_aabbs.size());
-    mins_y.reserve(mesh_world_aabbs.size());
-    mins_z.reserve(mesh_world_aabbs.size());
-    maxs_x.reserve(mesh_world_aabbs.size());
-    maxs_y.reserve(mesh_world_aabbs.size());
-    maxs_z.reserve(mesh_world_aabbs.size());
-    centers_x.reserve(mesh_world_aabbs.size());
-    centers_y.reserve(mesh_world_aabbs.size());
-    centers_z.reserve(mesh_world_aabbs.size());
-
-    for (const auto& aabb : mesh_world_aabbs) {
-        mins_x.push_back(aabb.min.x);
-        mins_y.push_back(aabb.min.y);
-        mins_z.push_back(aabb.min.z);
-        maxs_x.push_back(aabb.max.x);
-        maxs_y.push_back(aabb.max.y);
-        maxs_z.push_back(aabb.max.z);
-
-        const float3 c = aabb.center();
-        centers_x.push_back(c.x);
-        centers_y.push_back(c.y);
-        centers_z.push_back(c.z);
-    }
-
-    AABB robust_aabb;
-    robust_aabb.min = float3(
-        compute_percentile(mins_x, outlier_percentile),
-        compute_percentile(mins_y, outlier_percentile),
-        compute_percentile(mins_z, outlier_percentile)
-    );
-    robust_aabb.max = float3(
-        compute_percentile(maxs_x, 1.f - outlier_percentile),
-        compute_percentile(maxs_y, 1.f - outlier_percentile),
-        compute_percentile(maxs_z, 1.f - outlier_percentile)
-    );
-
-    if (!robust_aabb.is_valid()) {
-        robust_aabb = fallback_scene_aabb;
-    }
-
-    float3 robust_center = float3(
-        compute_percentile(centers_x, 0.5f),
-        compute_percentile(centers_y, 0.5f),
-        compute_percentile(centers_z, 0.5f)
-    );
-
-    return {robust_aabb, robust_center};
-}
-
-float3 choose_safe_up(float3 view_dir)
-{
-    float3 up = float3(0.f, 1.f, 0.f);
-    if (std::abs(sgl::math::dot(view_dir, up)) > 0.98f) {
-        up = float3(0.f, 0.f, 1.f);
-    }
-    return up;
-}
-
-int append_camera_and_node(
-    ImporterScene& scene,
-    std::string_view camera_name,
-    std::string_view node_name,
-    const float3& cam_pos,
-    const float3& target,
-    const float3& up,
-    float fov_degrees,
-    float focus_distance,
-    float near_plane,
-    float far_plane
-)
-{
-    ImporterCamera camera;
-    camera.name = std::string(camera_name);
-    camera.focal_length = ImporterCamera::focal_length_from_fov_degrees(fov_degrees, DEFAULT_SENSOR_HEIGHT_MM);
-    camera.fstop = 8.f;
-    camera.sensor_size_mm = DEFAULT_SENSOR_HEIGHT_MM;
-    camera.enable_depth_of_field = false;
-    camera.focus_distance = std::max(focus_distance, 0.f);
-    camera.depth_range = float2(std::max(near_plane, 0.001f), std::max(far_plane, near_plane + 0.1f));
-    camera.projection = ImporterCamera::Projection::perspective;
-    camera.fov_direction = ImporterCamera::FOVDirection::vertical;
-
-    const int camera_index = static_cast<int>(scene.cameras.size());
-    scene.cameras.push_back(std::move(camera));
-
-    ImporterNode camera_node;
-    camera_node.name = std::string(node_name);
-    camera_node.transform = sgl::math::inverse(sgl::math::matrix_from_look_at(cam_pos, target, up));
-    camera_node.camera_index = camera_index;
-    camera_node.parent = -1;
-
-    scene.nodes.push_back(std::move(camera_node));
-    scene.root_nodes.push_back(static_cast<int>(scene.nodes.size()) - 1);
-    return camera_index;
+    return false;
 }
 
 } // namespace
@@ -362,11 +213,68 @@ void ImporterCurve::calculate_local_aabb()
 namespace {
 
 struct SkinningStreams {
-    ImporterVertexStream<ImporterJointIndices> joints;
+    ImporterVertexStream<int4> joints;
     ImporterVertexStream<float4> weights;
 };
 
+std::vector<SkinningStreams> get_skinning_streams(ImporterMesh& mesh)
+{
+    // A mesh may have more than four influences per vertex, represented by matching JOINTS_n/WEIGHTS_n pairs.
+    // Collect views of every pair once so vertex processing is independent of the importer attribute layout.
+    std::vector<SkinningStreams> streams;
+    for (const ImporterMeshAttribute& attribute : mesh.attributes()) {
+        if (attribute.semantic != ImporterSemantic::joints && attribute.semantic != ImporterSemantic::weights)
+            continue;
+
+        ImporterMeshAttribute* joint_attribute = mesh.find_attribute(ImporterSemantic::joints, attribute.index);
+        ImporterMeshAttribute* weight_attribute = mesh.find_attribute(ImporterSemantic::weights, attribute.index);
+        SGL_CHECK(
+            joint_attribute && weight_attribute,
+            "Mesh '{}' must provide matching joint and weight attributes for set {}",
+            mesh.name,
+            attribute.index
+        );
+        if (attribute.semantic == ImporterSemantic::joints)
+            streams.push_back({mesh.get_stream<int4>(*joint_attribute), mesh.get_stream<float4>(*weight_attribute)});
+    }
+    return streams;
+}
+
 } // namespace
+
+void ImporterMesh::sanitize_skinning(size_t joint_count)
+{
+    FALCOR_CHECK(joint_count > 0, "Cannot sanitize skinning without a joint palette");
+    for (const auto& stream : get_skinning_streams(*this)) {
+        for (size_t vertex = 0; vertex < vertex_count(); ++vertex) {
+            for (int component = 0; component < 4; ++component) {
+                auto& joint = stream.joints[vertex][component];
+                auto& weight = stream.weights[vertex][component];
+                if (joint < 0 || static_cast<size_t>(joint) >= joint_count || !std::isfinite(weight))
+                    weight = 0.f;
+                if (weight == 0.f)
+                    joint = 0;
+            }
+        }
+    }
+}
+
+void ImporterMesh::normalize_skinning_weights()
+{
+    const auto streams = get_skinning_streams(*this);
+    for (size_t vertex = 0; vertex < vertex_count(); ++vertex) {
+        double sum = 0.0;
+        for (const auto& stream : streams)
+            for (int component = 0; component < 4; ++component)
+                sum += stream.weights[vertex][component];
+        FALCOR_CHECK(std::isfinite(sum), "Mesh '{}' has nonfinite skin weights", name);
+        if (sum == 0.0 || sum == 1.0)
+            continue;
+        for (const auto& stream : streams)
+            for (int component = 0; component < 4; ++component)
+                stream.weights[vertex][component] = static_cast<float>(stream.weights[vertex][component] / sum);
+    }
+}
 
 void ImporterMesh::bake_pose(std::span<const float4x4> mesh_from_bind_mesh_by_joint)
 {
@@ -375,23 +283,8 @@ void ImporterMesh::bake_pose(std::span<const float4x4> mesh_from_bind_mesh_by_jo
             attribute.semantic != ImporterSemantic::position || attribute.index == 0,
             "Cannot bake a skin pose into a mesh with motion samples"
         );
-    // A mesh may have more than four influences per vertex, represented by matching JOINTS_n/WEIGHTS_n pairs.
-    // Collect views of every pair once so the vertex loop below is independent of the importer attribute layout.
-    std::vector<SkinningStreams> streams;
-    for (const ImporterMeshAttribute& attribute : attributes()) {
-        if (attribute.semantic != ImporterSemantic::joints)
-            continue;
-
-        ImporterMeshAttribute* joint_attribute = find_attribute(ImporterSemantic::joints, attribute.index);
-        ImporterMeshAttribute* weight_attribute = find_attribute(ImporterSemantic::weights, attribute.index);
-        SGL_CHECK(
-            joint_attribute && weight_attribute,
-            "Mesh '{}' must provide matching joint and weight attributes for set {}",
-            name,
-            attribute.index
-        );
-        streams.push_back({get_stream<ImporterJointIndices>(*joint_attribute), get_stream<float4>(*weight_attribute)});
-    }
+    normalize_skinning_weights();
+    const auto streams = get_skinning_streams(*this);
 
     SGL_CHECK(!streams.empty(), "Skinned mesh '{}' has no joint influence streams", name);
 
@@ -400,54 +293,56 @@ void ImporterMesh::bake_pose(std::span<const float4x4> mesh_from_bind_mesh_by_jo
     auto tangents = tangent_stream();
     auto handedness = handedness_stream();
 
+    // Match the Khronos glTF Sample Renderer and OpenUSD: inverse-transpose each joint's linear transform before
+    // blending normals. Inverse-transposing the blended matrix gives a different result.
+    std::vector<float3x3> normal_matrices;
+    if (normals.valid()) {
+        normal_matrices.reserve(mesh_from_bind_mesh_by_joint.size());
+        for (const float4x4& joint_matrix : mesh_from_bind_mesh_by_joint)
+            normal_matrices.push_back(sgl::math::transpose(sgl::math::inverse(float3x3(joint_matrix))));
+    }
+
     for (size_t vertex_index = 0; vertex_index < vertex_count(); ++vertex_index) {
         // Linear-blend skinning forms one matrix per vertex by taking the weighted sum of its joint matrices.
         float4x4 mesh_from_bind_mesh = float4x4::zeros();
+        float3 transformed_normal = {};
         float weight_sum = 0.f;
         for (const SkinningStreams& skinning_stream : streams) {
-            const ImporterJointIndices& joints = skinning_stream.joints[vertex_index];
+            const int4& joints = skinning_stream.joints[vertex_index];
             const float4& weights = skinning_stream.weights[vertex_index];
             for (int component = 0; component < 4; ++component) {
                 const float weight = weights[component];
                 if (weight == 0.f)
                     continue;
                 SGL_CHECK(
-                    static_cast<size_t>(joints.values[component]) < mesh_from_bind_mesh_by_joint.size(),
+                    static_cast<size_t>(joints[component]) < mesh_from_bind_mesh_by_joint.size(),
                     "Vertex {} of mesh '{}' references joint {} but its skin has only {} joints",
                     vertex_index,
                     name,
-                    joints.values[component],
+                    joints[component],
                     mesh_from_bind_mesh_by_joint.size()
                 );
-                const float4x4& mesh_from_bind_mesh_for_joint = mesh_from_bind_mesh_by_joint[joints.values[component]];
+                const float4x4& mesh_from_bind_mesh_for_joint = mesh_from_bind_mesh_by_joint[joints[component]];
                 for (int row = 0; row < 4; ++row)
                     mesh_from_bind_mesh[row] += mesh_from_bind_mesh_for_joint[row] * weight;
+                if (normals.valid()) {
+                    transformed_normal
+                        += sgl::math::transform_vector(normal_matrices[joints[component]], normals[vertex_index])
+                        * weight;
+                }
                 weight_sum += weight;
             }
         }
 
-        // A zero-weight vertex has no skin influence and remains in its authored mesh-local position. Normalize
-        // non-unit weight sums because exporters may quantize weights without preserving an exact sum of one.
-        if (weight_sum <= std::numeric_limits<float>::epsilon())
+        // Preserve vertices without a normalized pose, including cancellation of signed weights.
+        if (weight_sum == 0.f)
             continue;
-        if (std::abs(weight_sum - 1.f) > std::numeric_limits<float>::epsilon()) {
-            for (int row = 0; row < 4; ++row)
-                mesh_from_bind_mesh[row] /= weight_sum;
-        }
 
         positions[vertex_index] = sgl::math::transform_point(mesh_from_bind_mesh, positions[vertex_index]);
 
-        // Normals are covectors, so nonuniform scale requires the inverse transpose of the blended linear transform.
-        // For a singular blend, the linear transform is the best available fallback and normalize_or() keeps the
-        // result finite.
         const float3x3 mesh_from_bind_mesh_linear(mesh_from_bind_mesh);
         const float determinant = sgl::math::determinant(mesh_from_bind_mesh_linear);
-        float3 transformed_normal = {};
         if (normals.valid()) {
-            const float3x3 mesh_from_bind_mesh_normal = std::abs(determinant) > std::numeric_limits<float>::epsilon()
-                ? sgl::math::transpose(sgl::math::inverse(mesh_from_bind_mesh_linear))
-                : mesh_from_bind_mesh_linear;
-            transformed_normal = sgl::math::transform_vector(mesh_from_bind_mesh_normal, normals[vertex_index]);
             transformed_normal = normalize_or(transformed_normal, normals[vertex_index]);
             normals[vertex_index] = transformed_normal;
         }
@@ -486,14 +381,70 @@ void ImporterMesh::bake_pose(std::span<const float4x4> mesh_from_bind_mesh_by_jo
     calculate_local_aabb();
 }
 
-void ImporterScene::bake_pose()
+namespace {
+
+std::vector<float4x4>
+evaluate_local_transforms(std::span<const ImporterNode> nodes, const ImporterAnimation& animation, float time_seconds)
+{
+    // Detached channels use the same interpolation as Scene without requiring a Scene or a GPU device.
+    std::vector<ref<AnimationChannel>> channels;
+    channels.reserve(animation.channels.size());
+    for (const ImporterAnimationChannel& source : animation.channels) {
+        auto channel = make_ref<AnimationChannel>();
+        channel->set_value_type(source.value_type);
+        channel->set_interpolation_mode(source.interpolation_mode);
+        channel->set_times(source.times);
+        channel->set_values(source.values);
+        channel->set_in_tangents(source.in_tangents);
+        channel->set_out_tangents(source.out_tangents);
+        channels.push_back(std::move(channel));
+    }
+    auto find_channel = [&](int index) -> const AnimationChannel*
+    {
+        return index >= 0 && static_cast<size_t>(index) < channels.size() && !channels[index]->times().empty()
+            ? channels[index].get()
+            : nullptr;
+    };
+
+    std::vector<float4x4> local_transforms;
+    local_transforms.reserve(nodes.size());
+    for (const ImporterNode& node : nodes) {
+        const auto* translation = find_channel(node.animation_translation);
+        const auto* rotation = find_channel(node.animation_rotation);
+        const auto* scale = find_channel(node.animation_scale);
+        if (!translation && !rotation && !scale) {
+            local_transforms.push_back(node.transform);
+            continue;
+        }
+        Transform transform(node.transform);
+        if (translation)
+            transform.set_translation(translation->evaluate_float3(time_seconds));
+        if (rotation)
+            transform.set_rotation(rotation->evaluate_quatf(time_seconds));
+        if (scale)
+            transform.set_scale(scale->evaluate_float3(time_seconds));
+        local_transforms.push_back(transform.matrix());
+    }
+    return local_transforms;
+}
+
+} // namespace
+
+void ImporterScene::bake_pose(std::optional<double> time_seconds)
 {
     if (skins.empty())
         return;
 
+    std::vector<float4x4> sampled_local_transforms;
+    if (time_seconds) {
+        FALCOR_CHECK(std::isfinite(*time_seconds), "Skin bake time must be finite");
+        sampled_local_transforms = evaluate_local_transforms(nodes, animation, static_cast<float>(*time_seconds));
+    }
+
     // Skin joints and mesh instances are both importer nodes. Resolve every node's world transform first; nodes are
     // not required to be stored in parent-before-child order, hence the recursive memoized walk.
     std::vector<float4x4> world_from_node(nodes.size());
+    std::vector<float4x4> sampled_world_from_node(nodes.size());
     std::vector<uint8_t> visit_state(nodes.size(), 0);
     std::function<const float4x4&(size_t)> resolve_world_from_node = [&](size_t node_index) -> const float4x4&
     {
@@ -507,6 +458,9 @@ void ImporterScene::bake_pose()
         world_from_node[node_index] = node.parent >= 0
             ? sgl::math::mul(resolve_world_from_node(static_cast<size_t>(node.parent)), node.transform)
             : node.transform;
+        const float4x4& sampled_local = time_seconds ? sampled_local_transforms[node_index] : node.transform;
+        sampled_world_from_node[node_index]
+            = node.parent >= 0 ? sgl::math::mul(sampled_world_from_node[node.parent], sampled_local) : sampled_local;
         visit_state[node_index] = 2;
         return world_from_node[node_index];
     };
@@ -533,19 +487,22 @@ void ImporterScene::bake_pose()
         SGL_CHECK_LT(source_mesh_index, meshes.size());
         const ImporterSkin& skin = skins[node.skin_index];
         SGL_CHECK(
-            skin.joints.size() == skin.joint_from_bind_mesh.size(),
+            skin.joints.size() == skin.joint_from_bind.size(),
             "Skin '{}' must provide one bind transform per joint",
             skin.name
         );
 
-        // A glTF joint matrix produces world-space positions:
+        // A joint matrix produces world-space positions (bind_from_mesh is identity for glTF):
         //
-        //     world_from_joint * joint_from_bind_mesh
+        //     world_from_joint * joint_from_bind * bind_from_mesh
         //
         // Falcor retains and later applies the mesh node transform, so bake each palette entry back into that node's
         // local mesh space. This preserves the authored hierarchy and avoids applying the mesh transform twice:
         //
-        //     mesh_from_bind_mesh = mesh_from_world * world_from_joint * joint_from_bind_mesh
+        //     mesh_from_bind_mesh = mesh_from_world * world_from_joint(time) * joint_from_bind * bind_from_mesh
+        //
+        // mesh_from_world uses the stored output placement, which this operation leaves unchanged. For example,
+        // a mesh stored at x=10 and a joint sampled at x=12 produce local x=2 for a bind point at the origin.
         const float4x4 mesh_from_world = sgl::math::inverse(world_from_node[node_index]);
         std::vector<float4x4> mesh_from_bind_mesh_by_joint;
         mesh_from_bind_mesh_by_joint.reserve(skin.joints.size());
@@ -559,8 +516,11 @@ void ImporterScene::bake_pose()
             );
             mesh_from_bind_mesh_by_joint.push_back(
                 sgl::math::mul(
-                    sgl::math::mul(mesh_from_world, world_from_node[joint_node_index]),
-                    skin.joint_from_bind_mesh[joint_index]
+                    sgl::math::mul(
+                        sgl::math::mul(mesh_from_world, sampled_world_from_node[joint_node_index]),
+                        skin.joint_from_bind[joint_index]
+                    ),
+                    skin.bind_from_mesh
                 )
             );
         }
@@ -688,214 +648,63 @@ AABB ImporterScene::get_scene_aabb() const
     return scene_aabb;
 }
 
-int ImporterScene::add_default_camera_robust_fit(
-    float fov_degrees,
-    float aspect,
-    float coverage,
-    float outlier_percentile
-)
+bool ImporterScene::has_camera() const
 {
-    aspect = std::max(aspect, 1e-3f);
-    coverage = std::clamp(coverage, 0.1f, 0.99f);
-
-    calculate_aabbs();
-
-    AABB scene_aabb = get_scene_aabb();
-    if (!scene_aabb.is_valid()) {
-        const float3 target = float3(0.f);
-        const float3 view_dir = float3(0.f, 0.f, -1.f);
-        const float distance = 5.f;
-        const float3 cam_pos = target - view_dir * distance;
-        return append_camera_and_node(
-            *this,
-            "auto_camera_robust_fit",
-            "AutoCamera_RobustFit",
-            cam_pos,
-            target,
-            choose_safe_up(view_dir),
-            fov_degrees,
-            distance,
-            0.01f,
-            1000.f
-        );
-    }
-
-    const std::vector<AABB> mesh_world_aabbs = collect_mesh_instance_world_aabbs(*this);
-    auto [robust_aabb, robust_center]
-        = compute_robust_bounds_and_center(mesh_world_aabbs, scene_aabb, outlier_percentile);
-
-    const float3 extent = robust_aabb.max - robust_aabb.min;
-    const float half_width = std::max(extent.x * 0.5f, 1e-3f);
-    const float half_height = std::max(extent.y * 0.5f, 1e-3f);
-
-    const float vfov_rad = sgl::math::radians(fov_degrees);
-    const float tan_half_vfov = sgl::math::tan(vfov_rad * 0.5f);
-    const float tan_half_hfov = tan_half_vfov * aspect;
-
-    const float dist_horiz = half_width / (tan_half_hfov * coverage);
-    const float dist_vert = half_height / (tan_half_vfov * coverage);
-    const float distance = std::max(dist_horiz, dist_vert);
-
-    const float3 view_dir = float3(0.f, 0.f, -1.f);
-    const float3 cam_pos = robust_center - view_dir * distance;
-
-    const float3 scene_extent = scene_aabb.size();
-    const float scene_radius = std::max(0.5f * sgl::math::length(scene_extent), 1.f);
-    const float near_plane = std::max(0.01f, distance - scene_radius);
-    const float far_plane = distance + scene_radius;
-
-    return append_camera_and_node(
+    return visit_importer_nodes(
         *this,
-        "auto_camera_robust_fit",
-        "AutoCamera_RobustFit",
-        cam_pos,
-        robust_center,
-        choose_safe_up(view_dir),
-        fov_degrees,
-        distance,
-        near_plane,
-        far_plane
+        [&](const ImporterNode& node, const float4x4&)
+        {
+            return node.camera_index >= 0 && static_cast<size_t>(node.camera_index) < cameras.size();
+        }
     );
 }
 
-int ImporterScene::add_default_camera_best_view(
-    float fov_degrees,
-    float aspect,
-    float coverage,
-    float outlier_percentile
-)
+int ImporterScene::add_framed_camera(float fov_degrees, float aspect, std::string_view name)
 {
-    aspect = std::max(aspect, 1e-3f);
-    coverage = std::clamp(coverage, 0.1f, 0.99f);
+    for (auto& mesh : meshes)
+        mesh.calculate_local_aabb();
+    for (auto& curve : curves)
+        curve.calculate_local_aabb();
 
-    calculate_aabbs();
-
-    AABB scene_aabb = get_scene_aabb();
-    if (!scene_aabb.is_valid()) {
-        const float3 target = float3(0.f);
-        const float3 view_dir = float3(0.f, 0.f, -1.f);
-        const float distance = 5.f;
-        const float3 cam_pos = target - view_dir * distance;
-        return append_camera_and_node(
-            *this,
-            "auto_camera_best_view",
-            "AutoCamera_BestView",
-            cam_pos,
-            target,
-            choose_safe_up(view_dir),
-            fov_degrees,
-            distance,
-            0.01f,
-            1000.f
-        );
-    }
-
-    const std::vector<AABB> mesh_world_aabbs = collect_mesh_instance_world_aabbs(*this);
-    auto [robust_aabb, robust_center]
-        = compute_robust_bounds_and_center(mesh_world_aabbs, scene_aabb, outlier_percentile);
-
-    std::vector<float3> sample_points;
-    sample_points.reserve(std::max<size_t>(8, mesh_world_aabbs.size() * 8));
-    if (!mesh_world_aabbs.empty()) {
-        for (const auto& aabb : mesh_world_aabbs) {
-            for (const auto& c : aabb_corners(aabb)) {
-                sample_points.push_back(c);
-            }
-        }
-    } else {
-        for (const auto& c : aabb_corners(robust_aabb)) {
-            sample_points.push_back(c);
-        }
-    }
-
-    const float vfov_rad = sgl::math::radians(fov_degrees);
-    const float tan_half_vfov = sgl::math::tan(vfov_rad * 0.5f);
-    const float tan_half_hfov = tan_half_vfov * aspect;
-
-    const std::array<float3, 14> candidate_dirs = {
-        sgl::math::normalize(float3(0.f, 0.f, -1.f)),
-        sgl::math::normalize(float3(0.f, 0.f, 1.f)),
-        sgl::math::normalize(float3(1.f, 0.f, 0.f)),
-        sgl::math::normalize(float3(-1.f, 0.f, 0.f)),
-        sgl::math::normalize(float3(0.707f, 0.f, -0.707f)),
-        sgl::math::normalize(float3(-0.707f, 0.f, -0.707f)),
-        sgl::math::normalize(float3(0.707f, 0.f, 0.707f)),
-        sgl::math::normalize(float3(-0.707f, 0.f, 0.707f)),
-        sgl::math::normalize(float3(0.5f, 0.5f, -0.707f)),
-        sgl::math::normalize(float3(-0.5f, 0.5f, -0.707f)),
-        sgl::math::normalize(float3(0.5f, -0.5f, -0.707f)),
-        sgl::math::normalize(float3(-0.5f, -0.5f, -0.707f)),
-        sgl::math::normalize(float3(0.f, 0.5f, -0.866f)),
-        sgl::math::normalize(float3(0.f, -0.5f, -0.866f)),
-    };
-
-    float best_score = -std::numeric_limits<float>::infinity();
-    float best_distance = 5.f;
-    float best_depth_min = 0.f;
-    float best_depth_max = 0.f;
-    float3 best_view_dir = float3(0.f, 0.f, -1.f);
-
-    for (const float3& view_dir : candidate_dirs) {
-        const float3 up = choose_safe_up(view_dir);
-        const float3 right = sgl::math::normalize(sgl::math::cross(up, view_dir));
-        const float3 camera_up = sgl::math::normalize(sgl::math::cross(view_dir, right));
-
-        float max_abs_x = 0.f;
-        float max_abs_y = 0.f;
-        float min_z = std::numeric_limits<float>::infinity();
-        float max_z = -std::numeric_limits<float>::infinity();
-
-        for (const float3& p : sample_points) {
-            const float3 q = p - robust_center;
-            const float x = sgl::math::dot(q, right);
-            const float y = sgl::math::dot(q, camera_up);
-            const float z = sgl::math::dot(q, view_dir);
-            max_abs_x = std::max(max_abs_x, std::abs(x));
-            max_abs_y = std::max(max_abs_y, std::abs(y));
-            min_z = std::min(min_z, z);
-            max_z = std::max(max_z, z);
-        }
-
-        const float dist_fit_x = max_abs_x / (tan_half_hfov * coverage);
-        const float dist_fit_y = max_abs_y / (tan_half_vfov * coverage);
-        const float dist_visibility = -min_z + 1e-3f;
-        const float distance = std::max(std::max(dist_fit_x, dist_fit_y), dist_visibility);
-
-        if (!(distance > 0.f) || !std::isfinite(distance)) {
-            continue;
-        }
-
-        const float fill_x = max_abs_x / std::max(tan_half_hfov * distance, 1e-6f);
-        const float fill_y = max_abs_y / std::max(tan_half_vfov * distance, 1e-6f);
-        const float fill = std::max(fill_x, fill_y);
-        const float depth_span = (max_z - min_z) / std::max(distance, 1e-4f);
-        const float score = fill - 0.15f * depth_span;
-
-        if (score > best_score) {
-            best_score = score;
-            best_distance = distance;
-            best_depth_min = min_z;
-            best_depth_max = max_z;
-            best_view_dir = view_dir;
-        }
-    }
-
-    const float3 cam_pos = robust_center - best_view_dir * best_distance;
-    const float near_plane = std::max(0.01f, best_distance + best_depth_min);
-    const float far_plane = std::max(near_plane + 0.1f, best_distance + best_depth_max);
-
-    return append_camera_and_node(
+    std::vector<AABB> bounds;
+    visit_importer_nodes(
         *this,
-        "auto_camera_best_view",
-        "AutoCamera_BestView",
-        cam_pos,
-        robust_center,
-        choose_safe_up(best_view_dir),
-        fov_degrees,
-        best_distance,
-        near_plane,
-        far_plane
+        [&](const ImporterNode& node, const float4x4& world_from_node)
+        {
+            if (node.mesh_index >= 0 && static_cast<size_t>(node.mesh_index) < meshes.size()) {
+                const auto& aabb = meshes[node.mesh_index].local_aabb;
+                if (aabb.is_valid())
+                    bounds.push_back(aabb.transform(world_from_node));
+            }
+            if (node.curve_index >= 0 && static_cast<size_t>(node.curve_index) < curves.size()) {
+                const auto& aabb = curves[node.curve_index].local_aabb;
+                if (aabb.is_valid())
+                    bounds.push_back(aabb.transform(world_from_node));
+            }
+            return false;
+        }
     );
+    const auto framing = detail::frame_camera(bounds, fov_degrees, aspect);
+
+    ImporterCamera camera;
+    camera.name = name;
+    camera.sensor_size_mm = 24.f;
+    camera.focal_length = ImporterCamera::focal_length_from_fov_degrees(fov_degrees, camera.sensor_size_mm);
+    camera.focus_distance = framing.focus_distance;
+    camera.depth_range = framing.depth_range;
+    camera.projection = ImporterCamera::Projection::perspective;
+    camera.fov_direction = ImporterCamera::FOVDirection::vertical;
+    camera.enable_depth_of_field = false;
+
+    const int camera_index = static_cast<int>(cameras.size());
+    ImporterNode node;
+    node.name = name;
+    node.transform = framing.world_from_camera;
+    node.camera_index = camera_index;
+    cameras.push_back(std::move(camera));
+    nodes.push_back(std::move(node));
+    root_nodes.push_back(static_cast<int>(nodes.size()) - 1);
+    return camera_index;
 }
 
 void ImporterScene::rescale_to_fit(float box_size)
@@ -1560,7 +1369,7 @@ void ImporterMesh::ensure_attributes(std::span<ImporterMeshDefaultAttribute> att
                 break;
             case ImporterSemantic::joints:
                 new_attrib.name = "JOINTS";
-                new_attrib.type = sgl::DataType::uint16;
+                new_attrib.type = sgl::DataType::int32;
                 new_attrib.num_components = 4;
                 break;
             case ImporterSemantic::weights:
@@ -1577,6 +1386,9 @@ void ImporterMesh::ensure_attributes(std::span<ImporterMeshDefaultAttribute> att
             if (descriptor.components != 0) {
                 new_attrib.num_components = descriptor.components;
             }
+
+            if (descriptor.type != sgl::DataType::void_)
+                new_attrib.type = descriptor.type;
 
             // Align offset to attribute type size
             size_t dtype_size = data_type_size(new_attrib.type);

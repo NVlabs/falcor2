@@ -276,7 +276,9 @@ ImporterMesh* mesh_create(std::vector<Indices> subgeometries, std::map<std::stri
 
 } // namespace falcor
 
-FALCOR_PY_EXPORT(importers_importer_types)
+namespace {
+
+NB_NOINLINE void bind_importer_attributes(nb::module_& m)
 {
     using namespace falcor;
 
@@ -322,6 +324,11 @@ FALCOR_PY_EXPORT(importers_importer_types)
             nb::rv_policy::reference_internal,
             "Triangle indices as 2D ndarray of uint."
         );
+}
+
+NB_NOINLINE void bind_importer_mesh(nb::module_& m)
+{
+    using namespace falcor;
 
     nb::class_<ImporterMesh>(m, "ImporterMesh", D(ImporterMesh))
         .def_static("make_properties", &ImporterMesh::make_properties, "options"_a, D(ImporterMesh, make_properties))
@@ -331,12 +338,19 @@ FALCOR_PY_EXPORT(importers_importer_types)
         .DEF_RW(ImporterMesh, source_asset_ref, nb::rv_policy::copy, nb::for_setter(nb::arg().none()))
         .DEF_RW(ImporterMesh, uv_origin)
         .DEF_RW(ImporterMesh, motion_times, nb::rv_policy::reference_internal)
+        .DEF_RW(ImporterMesh, motion_sample_indices, nb::rv_policy::reference_internal)
         .DEF_RW(ImporterMesh, motion_interpolation_mode)
         .DEF_RW(ImporterMesh, subgeometries, nb::rv_policy::reference_internal)
         .DEF_RO(ImporterMesh, local_aabb)
         .DEF_PROP_RO(ImporterMesh, vertex_count)
         .DEF_PROP_RO(ImporterMesh, attributes, nb::rv_policy::reference_internal)
         .def("calculate_local_aabb", &ImporterMesh::calculate_local_aabb, D(ImporterMesh, calculate_local_aabb))
+        .def("sanitize_skinning", &ImporterMesh::sanitize_skinning, "joint_count"_a, D(ImporterMesh, sanitize_skinning))
+        .def(
+            "normalize_skinning_weights",
+            &ImporterMesh::normalize_skinning_weights,
+            D(ImporterMesh, normalize_skinning_weights)
+        )
         .def(
             "bake_pose",
             [](ImporterMesh& self, const std::vector<float4x4>& mesh_from_bind_mesh_by_joint)
@@ -475,7 +489,11 @@ FALCOR_PY_EXPORT(importers_importer_types)
             "idx"_a = 0,
             "Vertex texture coordinates as ndarray (N, 2)."
         );
+}
 
+NB_NOINLINE void bind_importer_curve(nb::module_& m)
+{
+    using namespace falcor;
 
     nb::class_<ImporterCurve>(m, "ImporterCurve", D(ImporterCurve))
         .def_static("make_properties", &ImporterCurve::make_properties, "options"_a, D(ImporterCurve, make_properties))
@@ -484,6 +502,7 @@ FALCOR_PY_EXPORT(importers_importer_types)
         .DEF_RW(ImporterCurve, source_asset_ref, nb::rv_policy::copy, nb::for_setter(nb::arg().none()))
         .DEF_RW(ImporterCurve, material_index)
         .DEF_RW(ImporterCurve, motion_times, nb::rv_policy::reference_internal)
+        .DEF_RW(ImporterCurve, motion_sample_indices, nb::rv_policy::reference_internal)
         .DEF_RW(ImporterCurve, motion_interpolation_mode)
         .DEF_PROP_RO(ImporterCurve, vertex_count)
         .DEF_PROP_RO(ImporterCurve, sample_count)
@@ -511,6 +530,11 @@ FALCOR_PY_EXPORT(importers_importer_types)
         .DEF_RW(ImporterCurve, indexing_mode)
         .DEF_RO(ImporterCurve, local_aabb)
         .def("calculate_local_aabb", &ImporterCurve::calculate_local_aabb, D(ImporterCurve, calculate_local_aabb));
+}
+
+NB_NOINLINE void bind_importer_assets(nb::module_& m)
+{
+    using namespace falcor;
 
     nb::sgl_enum<falcor::TextureFilterMode>(m, "TextureFilterMode", D(TextureFilterMode));
     nb::sgl_enum<falcor::TextureWrapMode>(m, "TextureWrapMode", D(TextureWrapMode));
@@ -560,6 +584,11 @@ FALCOR_PY_EXPORT(importers_importer_types)
         .DEF_RW(ImporterMaterial, name)
         .DEF_RW(ImporterMaterial, source_asset_ref, nb::rv_policy::copy, nb::for_setter(nb::arg().none()))
         .DEF_RW(ImporterMaterial, params, nb::rv_policy::reference_internal);
+}
+
+NB_NOINLINE void bind_importer_camera(nb::module_& m)
+{
+    using namespace falcor;
 
     nb::class_<ImporterCamera> importer_camera(m, "ImporterCamera", D(ImporterCamera));
     importer_camera //
@@ -577,6 +606,11 @@ FALCOR_PY_EXPORT(importers_importer_types)
 
     nb::sgl_enum<ImporterCamera::Projection>(importer_camera, "Projection", D(ImporterCamera, Projection));
     nb::sgl_enum<ImporterCamera::FOVDirection>(importer_camera, "FOVDirection", D(ImporterCamera, FOVDirection));
+}
+
+NB_NOINLINE void bind_importer_light(nb::module_& m)
+{
+    using namespace falcor;
 
     nb::class_<ImporterLight> importer_light(m, "ImporterLight", D(ImporterLight));
     importer_light //
@@ -614,12 +648,16 @@ FALCOR_PY_EXPORT(importers_importer_types)
         .DEF_RW(ImporterLight, pole_axis);
 
     nb::sgl_enum<ImporterLight::Type>(importer_light, "Type", D(ImporterLight, Type));
+}
+
+NB_NOINLINE void bind_importer_animation(nb::module_& m)
+{
+    using namespace falcor;
 
     nb::class_<ImporterPrototype>(m, "ImporterPrototype", D(ImporterPrototype))
         .def(nb::init<>(), "Create a new ImporterPrototype")
         .DEF_RW(ImporterPrototype, name)
         .DEF_RW(ImporterPrototype, root_node);
-
 
     nb::class_<ImporterAnimationChannel>(m, "ImporterAnimationChannel", D(ImporterAnimationChannel))
         .def(nb::init<>(), "Create a new ImporterAnimationChannel")
@@ -644,7 +682,13 @@ FALCOR_PY_EXPORT(importers_importer_types)
         .DEF_RW(ImporterSkin, name)
         .DEF_RW(ImporterSkin, skeleton_root)
         .DEF_RW(ImporterSkin, joints, nb::rv_policy::reference_internal)
-        .DEF_RW(ImporterSkin, joint_from_bind_mesh, nb::rv_policy::reference_internal);
+        .DEF_RW(ImporterSkin, bind_from_mesh)
+        .DEF_RW(ImporterSkin, joint_from_bind, nb::rv_policy::reference_internal);
+}
+
+NB_NOINLINE void bind_importer_node(nb::module_& m)
+{
+    using namespace falcor;
 
     nb::class_<ImporterNode>(m, "ImporterNode", D(ImporterNode))
         .def(nb::init<>(), "Create a new ImporterNode")
@@ -682,6 +726,11 @@ FALCOR_PY_EXPORT(importers_importer_types)
                 );
             }
         );
+}
+
+NB_NOINLINE void bind_importer_scene(nb::module_& m)
+{
+    using namespace falcor;
 
     // TODO: These writable vector properties return references to elements whose addresses can change when the
     // vectors are replaced or resized. Stable element ownership is needed before retained Python references are safe.
@@ -702,7 +751,7 @@ FALCOR_PY_EXPORT(importers_importer_types)
         .DEF_RW(ImporterScene, root_nodes, nb::rv_policy::reference_internal)
         .DEF_RW(ImporterScene, animation, nb::rv_policy::reference_internal)
         .def("calculate_aabbs", &ImporterScene::calculate_aabbs, D(ImporterScene, calculate_aabbs))
-        .def("bake_pose", &ImporterScene::bake_pose, D(ImporterScene, bake_pose))
+        .def("bake_pose", &ImporterScene::bake_pose, "time_seconds"_a = nb::none(), D(ImporterScene, bake_pose))
         .def(
             "collapse_exact_opposite_triangles",
             &ImporterScene::collapse_exact_opposite_triangles,
@@ -710,27 +759,33 @@ FALCOR_PY_EXPORT(importers_importer_types)
         )
         .def("rescale_to_fit", &ImporterScene::rescale_to_fit, "box_size"_a = 1.f, D(ImporterScene, rescale_to_fit))
         .def("get_scene_aabb", &ImporterScene::get_scene_aabb, D(ImporterScene, get_scene_aabb))
+        .def("has_camera", &ImporterScene::has_camera, D(ImporterScene, has_camera))
         .def(
-            "add_default_camera_robust_fit",
-            &ImporterScene::add_default_camera_robust_fit,
+            "add_framed_camera",
+            &ImporterScene::add_framed_camera,
             "fov_degrees"_a = 50.f,
-            "aspect"_a = 16.f / 9.f,
-            "coverage"_a = 0.9f,
-            "outlier_percentile"_a = 0.05f,
-            "Option 4: Add a robust-fit default camera and return its camera index."
-        )
-        .def(
-            "add_default_camera_best_view",
-            &ImporterScene::add_default_camera_best_view,
-            "fov_degrees"_a = 50.f,
-            "aspect"_a = 16.f / 9.f,
-            "coverage"_a = 0.9f,
-            "outlier_percentile"_a = 0.05f,
-            "Option 5: Add a best-view default camera and return its camera index."
+            "aspect"_a = 1.f,
+            "name"_a = "FramedCamera",
+            D(ImporterScene, add_framed_camera)
         )
         .def(
             "flatten_node_hierarchy",
             &ImporterScene::flatten_node_hierarchy,
             D(ImporterScene, flatten_node_hierarchy)
         );
+}
+
+} // namespace
+
+FALCOR_PY_EXPORT(importers_importer_types)
+{
+    bind_importer_attributes(m);
+    bind_importer_mesh(m);
+    bind_importer_curve(m);
+    bind_importer_assets(m);
+    bind_importer_camera(m);
+    bind_importer_light(m);
+    bind_importer_animation(m);
+    bind_importer_node(m);
+    bind_importer_scene(m);
 }

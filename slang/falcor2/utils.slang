@@ -5,8 +5,7 @@ module utils;
 import slangpy;
 
 __include "utils/accumulator.slang";
-__include "utils/buffer_handle.slang";
-__include "utils/buffer_offset_pair.slang";
+__include "utils/buffer_ptr.slang";
 __include "utils/chi2.slang";
 __include "utils/enum.slang";
 __include "utils/fill.slang";

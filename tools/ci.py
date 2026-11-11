@@ -11,6 +11,7 @@ import platform
 import argparse
 import json
 import queue
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -474,6 +475,30 @@ def _write_benchmark_provenance(args: Any) -> None:
             ),
             "falcor_commit": falcor,
         }
+        if (
+            os.environ.get("CI_PERF_PROJECT") == "falcor2-slang"
+            and args.use_custom_slang
+            and not args.slang_version
+            and re.fullmatch(r"[0-9a-fA-F]{40}", args.slang_branch)
+        ):
+            # Refresh ancestry without replacing the measured revision in FETCH_HEAD.
+            git(
+                bts.CUSTOM_SLANG_SOURCE_DIR,
+                "fetch",
+                "--no-write-fetch-head",
+                "--no-tags",
+                "--no-recurse-submodules",
+                "origin",
+                "+refs/heads/master:refs/remotes/origin/master",
+            )
+            if git(
+                bts.CUSTOM_SLANG_SOURCE_DIR,
+                "for-each-ref",
+                "--format=%(refname:strip=3)",
+                f"--contains={compiler['id']}",
+                "refs/remotes/origin/master",
+            ):
+                compiler["branch"] = "master"
         if args.slang_version:
             compiler["release"] = {"label": f"v{args.slang_version}"}
     path.parent.mkdir(exist_ok=True)

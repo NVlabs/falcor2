@@ -47,7 +47,7 @@ static float3 unpack_vertex_tangent(const uint3 normal_and_tangent)
     return unpack_normal_oct_snorm2x16(normal_and_tangent[2]);
 }
 
-static void pack_vertex_normal(FALCOR_SHARED_INOUT_PARAM(uint3, normal_and_tangent), float3 normal)
+public static void pack_vertex_normal(FALCOR_SHARED_INOUT_PARAM(uint3, normal_and_tangent), float3 normal)
 {
     uint3 packed_normal = f32tof16(normal);
     normal_and_tangent[0] = (packed_normal.x & 0xffff) | ((packed_normal.y & 0xffff) << 16);
@@ -60,7 +60,7 @@ static void pack_vertex_handedness(FALCOR_SHARED_INOUT_PARAM(uint3, normal_and_t
     normal_and_tangent[1] = (normal_and_tangent[1] & 0x0000ffff) | ((packed_handedness & 0xffff) << 16);
 }
 
-static void pack_vertex_tangent(FALCOR_SHARED_INOUT_PARAM(uint3, normal_and_tangent), float3 tangent)
+public static void pack_vertex_tangent(FALCOR_SHARED_INOUT_PARAM(uint3, normal_and_tangent), float3 tangent)
 {
     normal_and_tangent[2] = pack_normal_oct_snorm2x16(tangent);
 }
@@ -81,7 +81,7 @@ static PackedTriangleVertex pack_triangle_vertex(const TriangleVertex v)
     pv.uv[1] = v.uv[0].y;
     return pv;
 }
-static TriangleVertex unpack_triangle_vertex(const PackedTriangleVertex pv)
+public static TriangleVertex unpack_triangle_vertex(const PackedTriangleVertex pv)
 {
     TriangleVertex v = {};
     v.position = float3(pv.position[0], pv.position[1], pv.position[2]);

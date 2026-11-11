@@ -43,10 +43,23 @@ public struct GGXMultipleScatteringBRDF : IBSDF, IDifferentiable
     }
 
     [Differentiable]
-    public override float3 eval(float3 wi, float3 wo, BSDFContext bc) { return eval_with_pdf(wi, wo, bc).value; }
+    public override float3 eval(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
+    {
+        return eval_with_pdf(wi, wo, bc, component).value;
+    }
 
     [Differentiable]
-    public BSDFEval eval_with_pdf(float3 wi, float3 wo, BSDFContext bc)
+    public BSDFEval eval_with_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
         if (min(wi.z, wo.z) < BSDF_MIN_COS_THETA || average_energy >= 1.0)
             return BSDFEval();
@@ -57,7 +70,7 @@ public struct GGXMultipleScatteringBRDF : IBSDF, IDifferentiable
         return BSDFEval(value, pdf);
     }
 
-    public bool sample(float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
         sample.wo = square_to_cosine_hemisphere_concentric(input.u_dir);
@@ -75,13 +88,13 @@ public struct GGXMultipleScatteringBRDF : IBSDF, IDifferentiable
         return true;
     }
 
-    public AlbedoContributions eval_albedo(float3 wi)
+    public AlbedoContributions eval_albedo(const float3 wi)
     {
         float3 reflected = coefficient * missing_incident_energy;
         return AlbedoContributions(reflected, 1.0 - reflected, float3(0.0), float3(0.0));
     }
 
-    public RoughnessInformation eval_roughness(float3 wi)
+    public RoughnessInformation eval_roughness(const float3 wi)
     {
         return RoughnessInformation(float2(roughness * roughness), float3(0.0));
     }

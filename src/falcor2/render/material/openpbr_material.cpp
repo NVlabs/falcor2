@@ -6,7 +6,7 @@
 
 #include "falcor2/core/properties.h"
 
-#include "falcor2/utils/buffer_handle.h"
+#include "falcor2/utils/buffer_ptr.h"
 
 #include "falcor2/render/scene.h"
 #include "falcor2/render/scene_globals.h"
@@ -271,53 +271,37 @@ void OpenPBRMaterial::on_load_resources()
     sync_attributes_from_properties();
 
     for (Attribute& attr : m_attributes) {
-        if (attr.texture) {
-            attr.texture_handle = m_scene->texture_manager()->register_texture(
-                {.texture = attr.texture, .sampler = attr.texture_sampler}
-            );
-        } else if (!attr.texture_path.empty()) {
-            auto flags = TextureLoadFlags::generate_mips;
-            if (attr.info->kind == AttributeKind::color)
-                flags |= TextureLoadFlags::srgb | TextureLoadFlags::expand_luminance;
-            else if (attr.texture_channel == 1 || attr.texture_channel == 2)
-                flags |= TextureLoadFlags::expand_luminance;
-            attr.texture_handle = m_scene->texture_manager()->load_texture({
-                .path = attr.texture_path,
-                .sampler = attr.texture_sampler,
-                .flags = flags,
-                .load_deferred = true,
-            });
-        } else {
-            attr.texture_handle = {};
-        }
-    }
-    if (m_opacity_texture) {
-        m_opacity_texture_handle = m_scene->texture_manager()->register_texture(
-            {.texture = m_opacity_texture, .sampler = m_opacity_texture_sampler}
+        auto flags = TextureLoadFlags::generate_mips;
+        if (attr.info->kind == AttributeKind::color)
+            flags |= TextureLoadFlags::srgb | TextureLoadFlags::expand_luminance;
+        else if (attr.texture_channel == 1 || attr.texture_channel == 2)
+            flags |= TextureLoadFlags::expand_luminance;
+        attr.texture_handle = load_material_texture(
+            m_scene->texture_manager(),
+            attr.texture,
+            attr.texture_sampler,
+            attr.texture_bytes,
+            attr.texture_path,
+            flags
         );
-    } else if (!m_opacity_texture_path.empty()) {
-        m_opacity_texture_handle = m_scene->texture_manager()->load_texture({
-            .path = m_opacity_texture_path,
-            .sampler = m_opacity_texture_sampler,
-            .flags = (m_opacity_texture_channel == 1 || m_opacity_texture_channel == 2) ? TextureLoadFlags::data_rgb
-                                                                                        : TextureLoadFlags::data,
-            .load_deferred = true,
-        });
-    } else {
-        m_opacity_texture_handle = {};
     }
-    if (m_normal_texture) {
-        m_normal_texture_handle = m_scene->texture_manager()->register_texture(
-            {.texture = m_normal_texture, .sampler = m_normal_texture_sampler}
-        );
-    } else if (!m_normal_texture_path.empty()) {
-        m_normal_texture_handle = m_scene->texture_manager()->load_texture({
-            .path = m_normal_texture_path,
-            .sampler = m_normal_texture_sampler,
-            .flags = TextureLoadFlags::normal,
-            .load_deferred = true,
-        });
-    }
+    m_opacity_texture_handle = load_material_texture(
+        m_scene->texture_manager(),
+        m_opacity_texture,
+        m_opacity_texture_sampler,
+        m_opacity_texture_bytes,
+        m_opacity_texture_path,
+        (m_opacity_texture_channel == 1 || m_opacity_texture_channel == 2) ? TextureLoadFlags::data_rgb
+                                                                           : TextureLoadFlags::data
+    );
+    m_normal_texture_handle = load_material_texture(
+        m_scene->texture_manager(),
+        m_normal_texture,
+        m_normal_texture_sampler,
+        m_normal_texture_bytes,
+        m_normal_texture_path,
+        TextureLoadFlags::normal
+    );
 }
 
 void OpenPBRMaterial::update(SceneUpdateContext& ctx)
@@ -427,7 +411,7 @@ void OpenPBRMaterial::write_to_cursor_impl(CursorT cursor) const
         m_use_vertex_color,
         is_normal_map_encoded(m_normal_texture_handle)
     );
-    cursor["attributes_buffer"] = to_handle(m_attributes_buffer);
+    cursor["attributes_buffer"] = to_buffer_ptr(m_attributes_buffer);
 
     // TODO: We should probably safe this in the common material header flags instead.
     bool has_emission = attribute_by_name("emission_luminance").get_float() != 0.f
@@ -544,6 +528,15 @@ void OpenPBRMaterial::initialize_properties()
             reflection::UIFlags::advanced
 
         );
+        m_material_properties.add_property<ref<Blob>>(
+            fmt::format("{}_texture_bytes", info.name),
+            attr.texture_bytes,
+            false,
+            on_resource_change,
+            reflection::ui_label(fmt::format("{} Texture Bytes", info.label)),
+            reflection::ui_group(info.group),
+            reflection::UIFlags::advanced
+        );
         m_material_properties.add_property<uint32_t>(
             fmt::format("{}_texture_texcoord", info.name),
             attr.texture_texcoord,
@@ -593,6 +586,15 @@ void OpenPBRMaterial::initialize_properties()
         false,
         reflection::on_change(&OpenPBRMaterial::mark_dirty_resources),
         reflection::ui_label("Opacity Texture Path"),
+        reflection::ui_group(GROUP_GEOMETRY),
+        reflection::UIFlags::advanced
+    );
+    m_material_properties.add_property<ref<Blob>>(
+        "opacity_texture_bytes",
+        m_opacity_texture_bytes,
+        false,
+        reflection::on_change(&OpenPBRMaterial::mark_dirty_resources),
+        reflection::ui_label("Opacity Texture Bytes"),
         reflection::ui_group(GROUP_GEOMETRY),
         reflection::UIFlags::advanced
     );
@@ -667,6 +669,15 @@ void OpenPBRMaterial::initialize_properties()
         reflection::ui_group(GROUP_GEOMETRY),
         reflection::UIFlags::advanced
     );
+    m_material_properties.add_property<ref<Blob>>(
+        "normal_texture_bytes",
+        m_normal_texture_bytes,
+        false,
+        reflection::on_change(&OpenPBRMaterial::mark_dirty_resources),
+        reflection::ui_label("Normal Texture Bytes"),
+        reflection::ui_group(GROUP_GEOMETRY),
+        reflection::UIFlags::advanced
+    );
     m_material_properties.add_property<float>(
         "normal_texture_scale",
         m_normal_texture_scale,
@@ -726,6 +737,7 @@ void OpenPBRMaterial::sync_attributes_from_properties()
         attr.texture = m_material_properties.get<ref<sgl::Texture>>(fmt::format("{}_texture", info.name));
         attr.texture_sampler
             = m_material_properties.get<ref<sgl::Sampler>>(fmt::format("{}_texture_sampler", info.name));
+        attr.texture_bytes = m_material_properties.get<ref<Blob>>(fmt::format("{}_texture_bytes", info.name));
         attr.texture_path = m_material_properties.get<std::filesystem::path>(fmt::format("{}_texture_path", info.name));
         if (info.type == AttributeType::float_) {
             attr.texture_channel = m_material_properties.get<uint32_t>(fmt::format("{}_texture_channel", info.name));
@@ -735,6 +747,7 @@ void OpenPBRMaterial::sync_attributes_from_properties()
 
     m_opacity_texture = m_material_properties.get<ref<sgl::Texture>>("opacity_texture");
     m_opacity_texture_sampler = m_material_properties.get<ref<sgl::Sampler>>("opacity_texture_sampler");
+    m_opacity_texture_bytes = m_material_properties.get<ref<Blob>>("opacity_texture_bytes");
     m_opacity_texture_path = m_material_properties.get<std::filesystem::path>("opacity_texture_path");
     m_opacity_texture_channel = m_material_properties.get<uint32_t>("opacity_texture_channel");
     m_opacity_texture_texcoord = m_material_properties.get<uint32_t>("opacity_texture_texcoord");
@@ -742,6 +755,7 @@ void OpenPBRMaterial::sync_attributes_from_properties()
     m_opacity_threshold = m_material_properties.get<float>("opacity_threshold");
     m_normal_texture = m_material_properties.get<ref<sgl::Texture>>("normal_texture");
     m_normal_texture_sampler = m_material_properties.get<ref<sgl::Sampler>>("normal_texture_sampler");
+    m_normal_texture_bytes = m_material_properties.get<ref<Blob>>("normal_texture_bytes");
     m_normal_texture_path = m_material_properties.get<std::filesystem::path>("normal_texture_path");
     m_normal_texture_scale = m_material_properties.get<float>("normal_texture_scale");
     m_normal_texture_texcoord = m_material_properties.get<uint32_t>("normal_texture_texcoord");

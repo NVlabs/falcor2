@@ -97,6 +97,13 @@ public:
                 reflection::UIFlags::advanced,
                 reflection::on_change(&StandardSpecGlossMaterial::mark_dirty_resources)
             )
+            .def_rw(
+                "diffuse_texture_bytes",
+                &StandardSpecGlossMaterial::m_diffuse_texture_bytes,
+                "Encoded diffuse texture bytes.",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&StandardSpecGlossMaterial::mark_dirty_resources)
+            )
             .def_prop_rw(
                 "diffuse_texture_texcoord",
                 &StandardSpecGlossMaterial::diffuse_texture_texcoord,
@@ -133,6 +140,13 @@ public:
                 "specular_glossiness_texture_path",
                 &StandardSpecGlossMaterial::m_specular_glossiness_texture_path,
                 "Specular-glossiness texture path",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&StandardSpecGlossMaterial::mark_dirty_resources)
+            )
+            .def_rw(
+                "specular_glossiness_texture_bytes",
+                &StandardSpecGlossMaterial::m_specular_glossiness_texture_bytes,
+                "Encoded specular glossiness texture bytes.",
                 reflection::UIFlags::advanced,
                 reflection::on_change(&StandardSpecGlossMaterial::mark_dirty_resources)
             )
@@ -183,6 +197,13 @@ public:
                 reflection::UIFlags::advanced,
                 reflection::on_change(&StandardSpecGlossMaterial::mark_dirty_resources)
             )
+            .def_rw(
+                "normal_texture_bytes",
+                &StandardSpecGlossMaterial::m_normal_texture_bytes,
+                "Encoded normal texture bytes.",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&StandardSpecGlossMaterial::mark_dirty_resources)
+            )
             .def_prop_rw(
                 "normal_texture_texcoord",
                 &StandardSpecGlossMaterial::normal_texture_texcoord,
@@ -217,6 +238,13 @@ public:
                 "emissive_texture_path",
                 &StandardSpecGlossMaterial::m_emissive_texture_path,
                 "Emissive texture path",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&StandardSpecGlossMaterial::mark_dirty_emission_resources)
+            )
+            .def_rw(
+                "emissive_texture_bytes",
+                &StandardSpecGlossMaterial::m_emissive_texture_bytes,
+                "Encoded emissive texture bytes.",
                 reflection::UIFlags::advanced,
                 reflection::on_change(&StandardSpecGlossMaterial::mark_dirty_emission_resources)
             )
@@ -256,6 +284,13 @@ public:
                 "transmission_texture_path",
                 &StandardSpecGlossMaterial::m_transmission_texture_path,
                 "Transmission texture path",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&StandardSpecGlossMaterial::mark_dirty_resources)
+            )
+            .def_rw(
+                "transmission_texture_bytes",
+                &StandardSpecGlossMaterial::m_transmission_texture_bytes,
+                "Encoded transmission texture bytes.",
                 reflection::UIFlags::advanced,
                 reflection::on_change(&StandardSpecGlossMaterial::mark_dirty_resources)
             )
@@ -391,23 +426,28 @@ private:
     ref<sgl::Texture> m_diffuse_texture;
     ref<sgl::Sampler> m_diffuse_texture_sampler;
     std::filesystem::path m_diffuse_texture_path;
+    ref<Blob> m_diffuse_texture_bytes;
     float16_t3 m_diffuse_factor{1.f, 1.f, 1.f};
     ref<sgl::Texture> m_specular_glossiness_texture;
     ref<sgl::Sampler> m_specular_glossiness_texture_sampler;
     std::filesystem::path m_specular_glossiness_texture_path;
+    ref<Blob> m_specular_glossiness_texture_bytes;
     float16_t3 m_specular_factor{1.f, 1.f, 1.f};
     float16_t m_glossiness_factor{1.f};
     ref<sgl::Texture> m_normal_texture;
     ref<sgl::Sampler> m_normal_texture_sampler;
     std::filesystem::path m_normal_texture_path;
+    ref<Blob> m_normal_texture_bytes;
     float16_t m_normal_texture_scale{1.f};
     ref<sgl::Texture> m_emissive_texture;
     ref<sgl::Sampler> m_emissive_texture_sampler;
     std::filesystem::path m_emissive_texture_path;
+    ref<Blob> m_emissive_texture_bytes;
     float3 m_emissive_factor{0.f, 0.f, 0.f};
     ref<sgl::Texture> m_transmission_texture;
     ref<sgl::Sampler> m_transmission_texture_sampler;
     std::filesystem::path m_transmission_texture_path;
+    ref<Blob> m_transmission_texture_bytes;
     float16_t m_ior{1.5f};
     float16_t3 m_transmission_factor{1.f, 1.f, 1.f};
     float16_t m_diffuse_transmission_factor{0.f};

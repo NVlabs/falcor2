@@ -21,7 +21,7 @@
 #include "falcor2/render/material/unlit_material.h"
 #include "falcor2/render/material_aov_registry.h"
 #include "falcor2/render/scene.h"
-#include "falcor2/utils/buffer_offset_pair.h"
+#include "falcor2/utils/buffer_ptr.h"
 
 #include <fmt/format.h>
 #include <sgl/device/device.h>
@@ -48,6 +48,11 @@ using namespace falcor;
 
 namespace {
 namespace F = shared::gltfmat::FeatureBits;
+
+uint64_t material_data_location(sgl::Device* device, BufferPtr pointer)
+{
+    return device->type() == sgl::DeviceType::d3d12 ? pointer.data() >> 32 : pointer.data();
+}
 
 class DataTestMaterial final : public Material {
     FALCOR_SCENE_OBJECT(DataTestMaterial, Material)
@@ -426,7 +431,7 @@ TEST_CASE_GPU("gltf_transform_data_lifecycle")
     check_material_size(second->slang_type_name());
     CHECK(first->data().empty());
     CHECK(second->data().empty());
-    CHECK_EQ(first->data_ref().buffer.data(), std::numeric_limits<uint64_t>::max());
+    CHECK_FALSE(first->data_ref().is_valid());
 
     // Authored UV transforms are retained even when there is no usable texture.
     first->set_property<float2>("base_color_texture_offset", float2(0.25f, 0.f));
@@ -455,9 +460,10 @@ TEST_CASE_GPU("gltf_transform_data_lifecycle")
     CHECK(sgl::math::all(first->get_property<float2>("base_color_texture_offset") == float2(0.25f, 0.f)));
     CHECK(sgl::math::all(second->get_property<float2>("diffuse_texture_offset") == float2(0.5f, 0.f)));
     REQUIRE_EQ(first->data().size(), 32u);
-    const auto first_offset = first->data_ref().offset;
-    CHECK_NE(first_offset, second->data_ref().offset);
-    CHECK_EQ(first->data_ref().buffer.data(), second->data_ref().buffer.data());
+    const auto initial_delta = first->data_ref().data() - second->data_ref().data();
+    CHECK(first->data_ref().is_valid());
+    CHECK(second->data_ref().is_valid());
+    CHECK_NE(first->data_ref().data(), second->data_ref().data());
     CHECK_EQ(first->effective_masks().textures, shared::gltfmat::TextureBits::BASE_COLOR);
     CHECK_EQ(first->effective_masks().transforms, shared::gltfmat::TextureBits::BASE_COLOR);
     REQUIRE_EQ(second->data().size(), 32u); // 24-byte transform, padded to the pool's 16-byte alignment.
@@ -483,16 +489,18 @@ TEST_CASE_GPU("gltf_transform_data_lifecycle")
         neighbors.push_back(neighbor);
     }
     scene->update();
-    CHECK_EQ(first->data_ref().offset, first_offset);
+    CHECK_EQ(first->data_ref().data() - second->data_ref().data(), initial_delta);
     CHECK(std::equal(first_bytes.begin(), first_bytes.end(), first->data().begin()));
-    CHECK_EQ(first->data_ref().buffer.data(), neighbors.back()->data_ref().buffer.data());
+    CHECK(first->data_ref().is_valid());
+    CHECK(neighbors.back()->data_ref().is_valid());
+    CHECK_NE(first->data_ref().data(), neighbors.back()->data_ref().data());
 
     // A factor-only edit must rewrite both workflows' transform payloads.
     auto module = ctx.device->load_module_from_source("gltf_transform_upload_probe", R"(
 import falcor2.utils;
 [shader("compute")]
 [numthreads(1, 1, 1)]
-void main(BufferOffsetPair first, BufferOffsetPair second, RWStructuredBuffer<float> result)
+void main(BufferPtr first, BufferPtr second, RWStructuredBuffer<float> result)
 {
     result[0] = first.load<float>(0);
     result[1] = second.load<float>(0);
@@ -543,10 +551,10 @@ void main(BufferOffsetPair first, BufferOffsetPair second, RWStructuredBuffer<fl
     scene->update();
     CHECK(first->data().empty());
     CHECK(second->data().empty());
-    CHECK_EQ(first->data_ref().buffer.data(), std::numeric_limits<uint64_t>::max());
+    CHECK_FALSE(first->data_ref().is_valid());
     first->set_property<float2>("base_color_texture_offset", float2(0.25f, 0.f));
     scene->update();
-    CHECK_EQ(first->data_ref().offset % 16u, 0u);
+    CHECK_EQ(material_data_location(ctx.device, first->data_ref()) % 16u, 0u);
     CHECK(std::equal(first_bytes.begin(), first_bytes.end(), first->data().begin()));
 
     // Transmission's extension record precedes all transform records, and its
@@ -580,10 +588,10 @@ void main(BufferOffsetPair first, BufferOffsetPair second, RWStructuredBuffer<fl
     first->set_property<float16_t>("transmission_factor", float16_t(0.f));
     scene->update();
     CHECK(first->data().empty());
-    CHECK_EQ(first->data_ref().buffer.data(), std::numeric_limits<uint64_t>::max());
+    CHECK_FALSE(first->data_ref().is_valid());
     first->remove();
     scene->update();
-    CHECK_EQ(first->data_ref().buffer.data(), std::numeric_limits<uint64_t>::max());
+    CHECK_FALSE(first->data_ref().is_valid());
     CHECK_EQ(first->material_id(), shared::MaterialID::invalid);
 }
 
@@ -661,7 +669,7 @@ TEST_CASE_GPU("gltf_volume_data_lifecycle")
     CHECK_FALSE(material->data().empty());
     material->remove();
     scene->update();
-    CHECK_EQ(material->data_ref().buffer.data(), std::numeric_limits<uint64_t>::max());
+    CHECK_FALSE(material->data_ref().is_valid());
 }
 
 TEST_CASE_GPU("gltf_clearcoat_data_lifecycle")
@@ -904,7 +912,7 @@ import falcor2.render;
 import falcor2.utils;
 [shader("compute")]
 [numthreads(1, 1, 1)]
-void main(uint feature_mask, uint transform_mask, BufferOffsetPair extra_data,
+void main(uint feature_mask, uint transform_mask, BufferPtr extra_data,
           RWStructuredBuffer<float4> result, uint index)
 {
     result[index] = float4(
@@ -995,7 +1003,9 @@ void main(uint feature_mask, uint transform_mask, BufferOffsetPair extra_data,
     neighbor->set_property("diffuse_texture", texture);
     neighbor->set_property<float2>("diffuse_texture_offset", float2(0.5f, 0.f));
     scene->update();
-    CHECK_EQ(material->data_ref().buffer.data(), neighbor->data_ref().buffer.data());
+    CHECK(material->data_ref().is_valid());
+    CHECK(neighbor->data_ref().is_valid());
+    CHECK_NE(material->data_ref().data(), neighbor->data_ref().data());
 
     // Removing lower feature bits moves later records, while both transform
     // records move with the shorter feature prefix. The same GPU kernel reads
@@ -1036,16 +1046,17 @@ TEST_CASE_GPU("material_data_lifecycle")
     first->set_value(13, 11);
     second->set_value(29, 22);
     scene->update();
-    CHECK_EQ(first->data_ref().offset % 16, 0);
-    CHECK_EQ(second->data_ref().offset % 16, 0);
-    CHECK_NE(first->data_ref().offset, second->data_ref().offset);
-    CHECK_EQ(first->data_ref().buffer.data(), second->data_ref().buffer.data());
+    CHECK_EQ(material_data_location(ctx.device, first->data_ref()) % 16, 0);
+    CHECK_EQ(material_data_location(ctx.device, second->data_ref()) % 16, 0);
+    CHECK(first->data_ref().is_valid());
+    CHECK(second->data_ref().is_valid());
+    CHECK_NE(first->data_ref().data(), second->data_ref().data());
 
     auto module = ctx.device->load_module_from_source("material_data_lifecycle", R"(
 import falcor2.utils;
 [shader("compute")]
 [numthreads(1, 1, 1)]
-void main(BufferOffsetPair first, BufferOffsetPair second, RWStructuredBuffer<uint> result, uint index)
+void main(BufferPtr first, BufferPtr second, RWStructuredBuffer<uint> result, uint index)
 {
     result[index] = first.load<uint>(0);
     result[index + 1] = second.load_aligned<uint, 4>(0);
@@ -1088,13 +1099,15 @@ void main(BufferOffsetPair first, BufferOffsetPair second, RWStructuredBuffer<ui
     );
     first->set_value(4096, 33);
     scene->update();
-    CHECK_EQ(first->data_ref().buffer.data(), second->data_ref().buffer.data());
+    CHECK(first->data_ref().is_valid());
+    CHECK(second->data_ref().is_valid());
+    CHECK_NE(first->data_ref().data(), second->data_ref().data());
     read(first, second, 2);
 
-    const auto freed_offset = first->data_ref().offset;
+    const auto freed_delta = first->data_ref().data() - second->data_ref().data();
     first->remove();
     scene->update();
-    CHECK_EQ(first->data_ref().buffer.data(), std::numeric_limits<uint64_t>::max());
+    CHECK_FALSE(first->data_ref().is_valid());
     auto* third = scene->create_material<DataTestMaterial>();
     third->ensure_data_size(4096);
     auto reused_bytes = third->data();
@@ -1110,7 +1123,7 @@ void main(BufferOffsetPair first, BufferOffsetPair second, RWStructuredBuffer<ui
     );
     third->set_value(4096, 44);
     scene->update();
-    CHECK_EQ(third->data_ref().offset, freed_offset);
+    CHECK_EQ(third->data_ref().data() - second->data_ref().data(), freed_delta);
     read(third, second, 4);
 
     third->ensure_data_size(0);
@@ -1118,7 +1131,7 @@ void main(BufferOffsetPair first, BufferOffsetPair second, RWStructuredBuffer<ui
     transient->set_value(16, 55);
     transient->remove();
     scene->update();
-    CHECK_EQ(third->data_ref().buffer.data(), std::numeric_limits<uint64_t>::max());
+    CHECK_FALSE(third->data_ref().is_valid());
     CHECK_EQ(transient->material_id(), shared::MaterialID::invalid);
     read(second, second, 6);
     // Read back only after submitted work has crossed growth, removal and reuse.
@@ -1136,7 +1149,7 @@ public struct DataPoolProbeMaterial : IMaterial
 {
     typedef InvalidMaterialInstance MaterialInstance;
     public MaterialHeader header;
-    public BufferOffsetPair extra_data;
+    public BufferPtr extra_data;
     public uint has_data;
 
     public MaterialInstance setup_material_instance<LodSampler : ILodSampler>(
@@ -1156,12 +1169,12 @@ public struct DataPoolProbeMaterial : IMaterial
         const MaterialInstanceHints hints = MaterialInstanceHints::none
     )
     {
-        if (has_data == 0u || !extra_data.buffer.is_valid())
+        if (has_data == 0u || !extra_data.is_valid())
             return float3(0.0);
         return float3(
             float(extra_data.load<uint>(0u)),
             1.0,
-            float(extra_data.offset)
+            0.0
         );
     }
 };
@@ -1182,7 +1195,7 @@ void main(uint material_id, RWStructuredBuffer<float4> result, uint index)
     auto* empty = scene->create_material<DataTestMaterial>();
     empty->set_probe_module(module);
     scene->update();
-    CHECK_EQ(empty->data_ref().buffer.data(), std::numeric_limits<uint64_t>::max());
+    CHECK_FALSE(empty->data_ref().is_valid());
 
     const auto requirements = scene->requirements();
     auto composed = ctx.device->compose_modules(
@@ -1220,31 +1233,30 @@ void main(uint material_id, RWStructuredBuffer<float4> result, uint index)
     first->set_value(13, 11);
     second->set_value(29, 22);
     scene->update();
-    const uint32_t first_offset = first->data_ref().offset;
-    const uint32_t second_offset = second->data_ref().offset;
-    CHECK_NE(first_offset, second_offset);
-    CHECK_EQ(first->data_ref().buffer.data(), second->data_ref().buffer.data());
+    CHECK(first->data_ref().is_valid());
+    CHECK(second->data_ref().is_valid());
+    CHECK_NE(first->data_ref().data(), second->data_ref().data());
     read(first, 1);
     read(second, 2);
 
-    // This exceeds the initial GPU buffer size, so each material record must receive the replacement handle.
-    const uint64_t initial_handle = first->data_ref().buffer.data();
+    // This exceeds the initial GPU buffer size, so each material record must receive the replacement pointer.
+    const uint64_t initial_pointer = first->data_ref().data();
     first->set_value(4096, 33);
     scene->update();
-    const uint32_t grown_offset = first->data_ref().offset;
-    CHECK_NE(first->data_ref().buffer.data(), initial_handle);
-    CHECK_NE(grown_offset, second_offset);
-    CHECK_EQ(first->data_ref().buffer.data(), second->data_ref().buffer.data());
+    CHECK_NE(first->data_ref().data(), initial_pointer);
+    CHECK(first->data_ref().is_valid());
+    CHECK(second->data_ref().is_valid());
+    CHECK_NE(first->data_ref().data(), second->data_ref().data());
     read(first, 3);
     read(second, 4);
 
     const auto values = result->get_elements<float4>();
     REQUIRE_EQ(values.size(), 5);
     CHECK_EQ(values[0], float4(0.f, 0.f, 0.f, 0.f));
-    CHECK_EQ(values[1], float4(11.f, 1.f, float(first_offset), 1.f));
-    CHECK_EQ(values[2], float4(22.f, 1.f, float(second_offset), 1.f));
-    CHECK_EQ(values[3], float4(33.f, 1.f, float(grown_offset), 1.f));
-    CHECK_EQ(values[4], float4(22.f, 1.f, float(second_offset), 1.f));
+    CHECK_EQ(values[1], float4(11.f, 1.f, 0.f, 1.f));
+    CHECK_EQ(values[2], float4(22.f, 1.f, 0.f, 1.f));
+    CHECK_EQ(values[3], float4(33.f, 1.f, 0.f, 1.f));
+    CHECK_EQ(values[4], float4(22.f, 1.f, 0.f, 1.f));
 }
 
 TEST_CASE("material header metadata codec")
@@ -1682,9 +1694,9 @@ std::string contextual_root_weight_shader()
 </materialx>)";
 }
 
-std::string weighted_layer_shader()
+std::string weighted_layer_shader(bool share_top = false)
 {
-    return R"(<materialx version="1.39" colorspace="lin_rec709">
+    return std::string(R"(<materialx version="1.39" colorspace="lin_rec709">
   <oren_nayar_diffuse_bsdf name="shared_top" type="BSDF" />
   <oren_nayar_diffuse_bsdf name="base" type="BSDF" />
   <weighted_layer name="covered" type="BSDF">
@@ -1694,7 +1706,8 @@ std::string weighted_layer_shader()
   </weighted_layer>
   <mix name="root" type="BSDF">
     <input name="fg" type="BSDF" nodename="covered" />
-    <input name="bg" type="BSDF" nodename="base" />
+    <input name="bg" type="BSDF" nodename=")")
+        + (share_top ? "shared_top" : "base") + R"(" />
     <input name="mix" type="float" value="0.5" />
   </mix>
   <surface name="surface" type="surfaceshader"><input name="bsdf" type="BSDF" nodename="root" /></surface>
@@ -3169,7 +3182,7 @@ TEST_CASE_GPU("scene materialx emission eligibility inline and spilled payloads"
 import falcor2.utils;
 [shader("compute")]
 [numthreads(1, 1, 1)]
-void main(BufferOffsetPair payload, float factor, RWStructuredBuffer<uint> result, uint index)
+void main(BufferPtr payload, float factor, RWStructuredBuffer<uint> result, uint index)
 {{
     {} material = ({})0;
     {}
@@ -3196,8 +3209,7 @@ void main(BufferOffsetPair payload, float factor, RWStructuredBuffer<uint> resul
                 {
                     cursor = cursor.find_entry_point(0);
                     if (spilled)
-                        cursor["payload"]
-                            = BufferOffsetPair{.buffer = to_handle(storage), .offset = index * uint32_t(sizeof(float))};
+                        cursor["payload"] = to_buffer_ptr(storage, index * sizeof(float));
                     else
                         cursor["factor"] = factors[index];
                     cursor["result"] = result;
@@ -4277,7 +4289,10 @@ TEST_CASE_GPU_NIGHTLY("scene materialx reconciles shared microfacet specializati
 
 TEST_CASE_NIGHTLY("scene materialx preserves producer identity through recursive closure reuse")
 {
-    for (mtlx::LayeringMode mode : {mtlx::LayeringMode::closure_tree}) {
+    const std::vector modes = {
+        mtlx::LayeringMode::closure_tree,
+    };
+    for (mtlx::LayeringMode mode : modes) {
         CAPTURE(mode);
         mtlx::CodeGenDesc desc;
         desc.document = recursive_closure_dag(4);

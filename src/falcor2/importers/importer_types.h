@@ -24,6 +24,7 @@
 #include <optional>
 #include <vector>
 #include <string>
+#include <string_view>
 #include <map>
 #include <variant>
 #include <span>
@@ -68,13 +69,6 @@ SGL_ENUM_INFO(
 );
 SGL_ENUM_REGISTER(ImporterSemantic);
 
-/// Four joint indices stored in an importer mesh influence stream.
-struct ImporterJointIndices {
-    uint16_t values[4] = {};
-};
-static_assert(sizeof(ImporterJointIndices) == 4 * sizeof(uint16_t));
-
-
 /// Describes an attribute of a mesh vertex
 struct FALCOR_API ImporterMeshAttribute {
 
@@ -110,6 +104,8 @@ struct FALCOR_API ImporterMeshDefaultAttribute {
     uint32_t components{0}; // Leave as 0 to use default for semantic
     /// Exact authored identity for an unknown-semantic attribute.
     std::string name;
+    /// Scalar type override; void_ selects the semantic default.
+    sgl::DataType type{sgl::DataType::void_};
 };
 
 /// Returns true when two attribute descriptions identify the same stream.
@@ -247,8 +243,10 @@ public:
     /// Reference to the object in the source asset from which this mesh was imported.
     std::optional<SourceAssetRef> source_asset_ref;
 
-    /// Seconds for each indexed motion sample, including sample zero. Empty for static meshes.
+    /// Timeline key times in seconds; empty for static geometry. Paired equal times encode a jump (left, right).
     std::vector<float> motion_times;
+    /// Stored sample index for each timeline key. Empty means one stored sample per key.
+    std::vector<uint32_t> motion_sample_indices;
     /// Interpolation between motion samples.
     AnimationInterpolationMode motion_interpolation_mode{AnimationInterpolationMode::linear};
 
@@ -433,9 +431,19 @@ public:
     size_t vertex_count() const { return m_vertex_count; }
 
     /// Bake a skeleton pose using one mesh-local transform per joint.
+    /// Normalizes finite weights across all sets; zero-sum vertices remain unchanged. Signed weights are allowed.
     /// Consumes joint and weight attributes after deformation.
     /// Fails if the mesh has additional position samples.
     void bake_pose(std::span<const float4x4> mesh_from_bind_mesh_by_joint);
+
+    /// Zero out-of-range joint influences and nonfinite weights; set unused indices to zero.
+    /// Requires a nonempty joint palette.
+    /// Preserves finite signed weights and surviving sums. Copy shared meshes before binding-specific preparation.
+    void sanitize_skinning(size_t joint_count);
+
+    /// Normalize finite weights across all influence sets. Leaves zero sums unchanged, including signed cancellation.
+    /// Does not sanitize or limit influences. bake_pose() calls this before deformation.
+    void normalize_skinning_weights();
 
     /// Vertex attributes.
     const std::vector<ImporterMeshAttribute>& attributes() const { return m_attributes; }
@@ -443,6 +451,8 @@ public:
     /// Vertex buffers.
     const std::vector<ImporterVertexBuffer>& buffers() const { return m_buffers; }
     std::vector<ImporterVertexBuffer>& buffers() { return m_buffers; }
+
+    size_t sample_count() const { return m_positions.size(); }
 
     /// Vertex positions.
     const ImporterMeshAttribute& position_attribute(uint32_t sample_index = 0) const
@@ -557,8 +567,10 @@ public:
     std::optional<SourceAssetRef> source_asset_ref;
     /// Index into ImporterScene::materials, or -1 if no material is assigned.
     int material_index = -1;
-    /// Seconds for each motion sample, including sample zero. Empty for static curves.
+    /// Timeline key times in seconds; empty for static geometry. Paired equal times encode a jump (left, right).
     std::vector<float> motion_times;
+    /// Stored sample index for each timeline key. Empty means one stored sample per key.
+    std::vector<uint32_t> motion_sample_indices;
     /// Interpolation between motion samples.
     AnimationInterpolationMode motion_interpolation_mode{AnimationInterpolationMode::linear};
 
@@ -719,6 +731,19 @@ struct FALCOR_API ImporterAnimation {
 };
 
 /// Skeleton binding data used to deform importer meshes into an authored pose.
+/// Matrices use column vectors: a_from_b maps b into a, with the rightmost factor acting first.
+/// For normalized weights, each joint contributes:
+///
+///     world_from_joint(time) * joint_from_bind[j] * bind_from_mesh * point(mesh_position).
+///
+/// USD supplies geomBindTransform and inverse(bindTransforms[j]); glTF supplies identity and inverseBindMatrices[j].
+/// Keep the mesh binding separate so different mesh attachments can use the same joint inverse binds.
+/// Joint nodes hold the rest/default pose and ordinary animation. Their world transforms already include
+/// USD's Skeleton placement and the import root's unit/up-axis conversion. Bind and rest poses may differ.
+///
+/// Example: mesh point x=1, bind_from_mesh=T(10), joint_from_bind=T(-10), and world_from_joint=T(12)
+/// give 1 -> 11 -> 1 -> 13. Moving the joint's parent by +5 gives 18. A mesh-node placement of +100
+/// must not add another 100: baking stores 18-100=-82 locally so rendering gives world x=18.
 struct FALCOR_API ImporterSkin {
     /// Skin name.
     std::string name;
@@ -726,8 +751,10 @@ struct FALCOR_API ImporterSkin {
     int skeleton_root = -1;
     /// Joint node indices. Their order defines the indices used by mesh joint attributes.
     std::vector<int> joints;
-    /// Per-joint transforms from the mesh bind space to joint space.
-    std::vector<float4x4> joint_from_bind_mesh;
+    /// Reference mesh to common bind space: identity for glTF, geomBindTransform for USD.
+    float4x4 bind_from_mesh = float4x4::identity();
+    /// Common bind space to each joint: inverseBindMatrices for glTF, inverse(bindTransforms) for USD.
+    std::vector<float4x4> joint_from_bind;
 };
 
 struct FALCOR_API ImporterNode {
@@ -997,9 +1024,12 @@ public:
     /// Calculate AABBs for all meshes and nodes in the scene.
     void calculate_aabbs();
 
-    /// Bake the current skeleton pose into static mesh vertices.
+    /// Bake a skeleton pose into static mesh vertices. Omitted time uses the stored node transforms;
+    /// time_seconds evaluates imported animation at that time in seconds, including animated joint ancestors.
+    /// Output node transforms and ordinary animation remain unchanged. The sampled world pose is converted into
+    /// each output mesh's stored local frame; subsequent scene animation can still move the baked geometry.
     /// Consumes all skin associations and binding data after deformation.
-    void bake_pose();
+    void bake_pose(std::optional<double> time_seconds = std::nullopt);
 
     /// Collapse exact opposite-winding triangles independently within each mesh, using local positions.
     /// Never compares triangles across meshes or instances. Shared meshes are processed once without changing
@@ -1015,25 +1045,20 @@ public:
     /// Get the overall AABB of the entire scene (union of all root node AABBs).
     AABB get_scene_aabb() const;
 
-    /// Adds a new camera and returns its index.
-    /// Uses outlier-resistant bounds/center from mesh AABBs, appends a camera node,
-    /// and returns the newly added camera index.
-    int add_default_camera_robust_fit(
-        float fov_degrees = 50.f,
-        float aspect = 16.f / 9.f,
-        float coverage = 0.9f,
-        float outlier_percentile = 0.05f
-    );
+    /// Whether a camera is attached to a node reachable from a root, including prototype instances.
+    /// Unused camera definitions and disconnected nodes do not count.
+    bool has_camera() const;
 
-    /// Adds a new camera and returns its index.
-    /// Evaluates multiple view directions over per-mesh AABBs, appends a camera node,
-    /// and returns the newly added camera index.
-    int add_default_camera_best_view(
-        float fov_degrees = 50.f,
-        float aspect = 16.f / 9.f,
-        float coverage = 0.9f,
-        float outlier_percentile = 0.05f
-    );
+    /// Append a perspective camera and root node fitted using the free-camera best-view algorithm.
+    /// Recomputes mesh and curve bounds and includes transformed prototype instances. Uses stored node
+    /// transforms and geometry sample zero; animation and live-scene callbacks are not evaluated.
+    /// Always adds a camera, even when others exist. Without finite geometry bounds, looks at the origin
+    /// from (0, 0, 5). Appending may invalidate references to camera and node vector elements.
+    /// @param fov_degrees Vertical field of view in degrees, strictly between 0 and 180.
+    /// @param aspect Width/height ratio used for fitting. Must be positive and finite.
+    /// @param name Name assigned to both the camera and its root node.
+    /// @return Index of the added camera in cameras.
+    int add_framed_camera(float fov_degrees = 50.f, float aspect = 1.f, std::string_view name = "FramedCamera");
 
     /// Flatten the node hierarchy by removing parent-child relationships
     /// and accumulating transforms into world space. Only nodes with meshes are preserved.

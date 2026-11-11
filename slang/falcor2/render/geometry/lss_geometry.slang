@@ -14,7 +14,7 @@ public struct LSSGeometryData
 
 namespace detail {
 float2x4 load_lss_segment<let HasTracingIntrinsics : bool = false>(
-    StructuredBuffer<BufferHandle> geometry,
+    StructuredBuffer<BufferPtr> geometry,
     uint buffer_index,
     uint first_vertex
 )
@@ -31,7 +31,7 @@ float2x4 load_lss_segment<let HasTracingIntrinsics : bool = false>(
         }
     }
 
-    let vertices = geometry[buffer_index].as_buffer<PackedLSSVertex>();
+    let vertices = geometry[buffer_index].as<PackedLSSVertex>();
     const LSSVertex v0 = detail::unpack_lss_vertex(vertices[first_vertex]);
     const LSSVertex v1 = detail::unpack_lss_vertex(vertices[first_vertex + 1]);
     return float2x4(float4(v0.position, v0.radius), float4(v1.position, v1.radius));
@@ -42,7 +42,7 @@ public extension Scene
 {
     public LSSVertex get_lss_vertex(uint buffer_index, uint vertex_index)
     {
-        return detail::unpack_lss_vertex(geometry[buffer_index].as_buffer<PackedLSSVertex>()[vertex_index]);
+        return detail::unpack_lss_vertex(geometry[buffer_index].as<PackedLSSVertex>()[vertex_index]);
     }
 
     /// Look up the two sphere endpoints for an LSS segment given instance/primitive IDs.
@@ -56,7 +56,7 @@ public extension Scene
         let vertex_offset = instance_desc.vertex_offset;
         let index_offset = instance_desc.index_offset + primitive_index;
 
-        let i0 = geometry[instance_desc.index_buffer].as_buffer<uint>()[index_offset];
+        let i0 = geometry[instance_desc.index_buffer].as<uint>()[index_offset];
         return detail::load_lss_segment(geometry, instance_desc.vertex_buffer, vertex_offset + i0);
     }
 
@@ -67,7 +67,7 @@ public extension Scene
         LSSGeometryInstanceDesc instance_desc
             = reinterpret<LSSGeometryInstanceDesc>(get_geometry_instance_desc(hit.geometry_instance_id));
         let index_offset = instance_desc.index_offset + hit.primitive_index;
-        let i0 = geometry[instance_desc.index_buffer].as_buffer<uint>()[index_offset];
+        let i0 = geometry[instance_desc.index_buffer].as<uint>()[index_offset];
         let segment
             = detail::load_lss_segment(geometry, instance_desc.vertex_buffer + 1, instance_desc.vertex_offset + i0);
         float3 position_os;
@@ -152,8 +152,7 @@ public struct LSSGeomPropAccessor : IGeomPropAccessor
         additional_attribute_mask
             = g_scene.lss_geometry.additional_attributes[additional_attribute_desc_offset].byte_offset;
         const uint index_offset = lss_geometry_instance.index_offset + hit.primitive_index;
-        const uint first_vertex_index
-            = g_scene.geometry[lss_geometry_instance.index_buffer].as_buffer<uint>()[index_offset];
+        const uint first_vertex_index = g_scene.geometry[lss_geometry_instance.index_buffer].as<uint>()[index_offset];
         local_vertex_indices = uint2(first_vertex_index, first_vertex_index + 1);
         endpoint_weights = float2(1.f - hit.curve_parameters.x, hit.curve_parameters.x);
     }
@@ -458,8 +457,8 @@ public extension Scene
         let vertex_offset = geometry_instance_data.vertex_offset;
         let index_offset = geometry_instance_data.index_offset + hit.primitive_index;
 
-        let vertices = geometry[geometry_instance_data.vertex_buffer].as_buffer<PackedLSSVertex>();
-        let i0 = geometry[geometry_instance_data.index_buffer].as_buffer<uint>()[index_offset];
+        let vertices = geometry[geometry_instance_data.vertex_buffer].as<PackedLSSVertex>();
+        let i0 = geometry[geometry_instance_data.index_buffer].as<uint>()[index_offset];
         let first_vertex = vertex_offset + i0;
         let endpoints = detail::load_lss_segment<HasTracingIntrinsics>(
             geometry,
@@ -782,7 +781,7 @@ public extension Scene
         const LSSGeometryInstanceDesc desc
             = reinterpret<LSSGeometryInstanceDesc>(get_geometry_instance_desc(geometry_instance_id));
         const uint index = desc.index_offset + primitive_index;
-        let indices = geometry[desc.index_buffer].as_buffer<uint>();
+        let indices = geometry[desc.index_buffer].as<uint>();
         const uint first_vertex = indices[index];
         // Match the successive indexing and chained end caps used by RenderScene:
         // VkRayTracingLssPrimitiveEndCapsModeNV enables both caps on a chain's first

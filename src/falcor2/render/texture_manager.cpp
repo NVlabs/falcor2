@@ -12,7 +12,9 @@
 #include <sgl/device/cursor_utils.h>
 #include <sgl/core/timer.h>
 #include <sgl/core/string.h>
+#include <sgl/core/memory_stream.h>
 
+#include <exception>
 #include <set>
 
 namespace falcor {
@@ -39,6 +41,20 @@ TextureManager::~TextureManager() { }
 
 TextureHandle TextureManager::load_texture(const LoadTextureDesc& desc)
 {
+    FALCOR_CHECK(
+        !desc.path.empty() != static_cast<bool>(desc.texture_bytes),
+        "Texture load requires exactly one of path or texture_bytes."
+    );
+
+    TextureOptions options{
+        .flags = desc.flags,
+        .usage = desc.usage,
+        .max_mip_count = desc.max_mip_count.value_or(m_max_mip_count),
+    };
+
+    if (desc.texture_bytes)
+        return load_regular_texture(get_or_create_texture(desc.texture_bytes, options), desc);
+
     // Use default resolver if none is specified.
     AssetResolver* resolver = desc.resolver ? desc.resolver : m_default_asset_resolver.get();
 
@@ -90,12 +106,6 @@ TextureHandle TextureManager::load_texture(const LoadTextureDesc& desc)
         path = resolved_path;
     }
 
-    TextureOptions options{
-        .flags = desc.flags,
-        .usage = desc.usage,
-        .max_mip_count = desc.max_mip_count.value_or(m_max_mip_count),
-    };
-
     if (is_udim) {
         // Get or create UDIM tile textures.
         std::vector<TextureID> udim_texture_ids;
@@ -139,23 +149,27 @@ TextureHandle TextureManager::load_texture(const LoadTextureDesc& desc)
         }
         return TextureHandle(this, handle_id);
     } else {
-        TextureID texture_id = get_or_create_texture(path, options);
-        if (!is_texture_loaded(texture_id)) {
-            if (desc.load_deferred)
-                m_pending_textures_to_load.push_back(texture_id);
-            else
-                load_texture(texture_id);
-        }
-        SamplerID sampler_id = get_or_create_sampler(desc.sampler);
-        HandleID handle_id = get_or_create_handle(texture_id, sampler_id);
-        if (!is_handle_finalized(handle_id)) {
-            if (desc.load_deferred)
-                m_pending_handles_to_finalize.push_back(handle_id);
-            else
-                finalize_handle(handle_id);
-        }
-        return TextureHandle(this, handle_id);
+        return load_regular_texture(get_or_create_texture(path, options), desc);
     }
+}
+
+TextureHandle TextureManager::load_regular_texture(TextureID texture_id, const LoadTextureDesc& desc)
+{
+    if (!is_texture_loaded(texture_id)) {
+        if (desc.load_deferred)
+            m_pending_textures_to_load.push_back(texture_id);
+        else
+            load_texture(texture_id);
+    }
+    SamplerID sampler_id = get_or_create_sampler(desc.sampler);
+    HandleID handle_id = get_or_create_handle(texture_id, sampler_id);
+    if (!is_handle_finalized(handle_id)) {
+        if (desc.load_deferred)
+            m_pending_handles_to_finalize.push_back(handle_id);
+        else
+            finalize_handle(handle_id);
+    }
+    return TextureHandle(this, handle_id);
 }
 
 TextureHandle TextureManager::register_texture(const RegisterTextureDesc& desc)
@@ -343,15 +357,32 @@ void TextureManager::load_texture(TextureID texture_id)
 
     sgl::Timer timer;
 
-    FALCOR_ASSERT(texture_entry.info);
-    texture_entry.texture = m_texture_loader->load_texture(
-        texture_entry.info->path,
-        texture_loader_options(
-            texture_entry.info->options.flags,
-            texture_entry.info->options.usage,
-            texture_entry.info->options.max_mip_count
-        )
-    );
+    if (texture_entry.info) {
+        texture_entry.texture = m_texture_loader->load_texture(
+            texture_entry.info->path,
+            texture_loader_options(
+                texture_entry.info->options.flags,
+                texture_entry.info->options.usage,
+                texture_entry.info->options.max_mip_count
+            )
+        );
+    } else {
+        FALCOR_ASSERT(texture_entry.byte_info);
+        const ByteTextureInfo& byte_info = *texture_entry.byte_info;
+        sgl::MemoryStream stream(byte_info.source->data().data(), byte_info.source->data().size());
+        try {
+            texture_entry.texture = m_texture_loader->load_texture(
+                &stream,
+                texture_loader_options(
+                    byte_info.options.flags,
+                    byte_info.options.usage,
+                    byte_info.options.max_mip_count
+                )
+            );
+        } catch (const std::exception& e) {
+            FALCOR_THROW("Failed to load encoded texture '{}': {}", byte_info.source->name(), e.what());
+        }
+    }
     texture_entry.is_loaded = true;
     m_texture_to_texture_id.emplace(texture_entry.texture.get(), texture_id);
     notify_textures_loaded(std::span(&texture_id, 1), timer.elapsed_s());
@@ -359,64 +390,97 @@ void TextureManager::load_texture(TextureID texture_id)
 
 void TextureManager::load_textures(std::span<const TextureID> texture_ids)
 {
-    std::vector<std::filesystem::path> paths;
-    std::vector<sgl::TextureLoader::Options> options;
-    std::vector<TextureEntry*> texture_entries;
-    std::vector<TextureID> unique_texture_ids;
+    std::vector<TextureID> file_ids;
+    std::vector<TextureID> byte_ids;
     std::set<TextureID> seen_texture_ids;
     for (TextureID texture_id : texture_ids) {
         TextureEntry& texture_entry = get_texture_entry(texture_id);
         if (texture_entry.is_loaded || !seen_texture_ids.insert(texture_id).second)
             continue;
-        FALCOR_ASSERT(texture_entry.info);
-        paths.push_back(texture_entry.info->path);
-        options.push_back(texture_loader_options(
-            texture_entry.info->options.flags,
-            texture_entry.info->options.usage,
-            texture_entry.info->options.max_mip_count
-        ));
-        texture_entries.push_back(&texture_entry);
-        unique_texture_ids.push_back(texture_id);
+        if (texture_entry.info)
+            file_ids.push_back(texture_id);
+        else {
+            FALCOR_ASSERT(texture_entry.byte_info);
+            byte_ids.push_back(texture_id);
+        }
     }
 
-    if (paths.empty())
-        return;
+    if (!file_ids.empty()) {
+        std::vector<std::filesystem::path> paths;
+        std::vector<sgl::TextureLoader::Options> options;
+        paths.reserve(file_ids.size());
+        options.reserve(file_ids.size());
+        for (TextureID texture_id : file_ids) {
+            const TextureInfo& info = *get_texture_entry(texture_id).info;
+            paths.push_back(info.path);
+            options.push_back(
+                texture_loader_options(info.options.flags, info.options.usage, info.options.max_mip_count)
+            );
+        }
 
-    sgl::Timer timer;
-
-    std::vector<ref<sgl::Texture>> textures = m_texture_loader->load_textures(paths, options);
-
-    FALCOR_ASSERT(textures.size() == texture_entries.size());
-    for (size_t i = 0; i < textures.size(); ++i) {
-        texture_entries[i]->texture = textures[i];
-        texture_entries[i]->is_loaded = true;
-        m_texture_to_texture_id.emplace(texture_entries[i]->texture.get(), unique_texture_ids[i]);
+        sgl::Timer timer;
+        std::vector<ref<sgl::Texture>> textures = m_texture_loader->load_textures(paths, options);
+        FALCOR_ASSERT(textures.size() == file_ids.size());
+        for (size_t i = 0; i < textures.size(); ++i) {
+            TextureEntry& entry = get_texture_entry(file_ids[i]);
+            entry.texture = textures[i];
+            entry.is_loaded = true;
+            m_texture_to_texture_id.emplace(entry.texture.get(), file_ids[i]);
+        }
+        notify_textures_loaded(file_ids, timer.elapsed_s());
     }
 
-    notify_textures_loaded(unique_texture_ids, timer.elapsed_s());
+    if (!byte_ids.empty()) {
+        std::vector<sgl::TextureLoader::EncodedImageView> images;
+        std::vector<sgl::TextureLoader::Options> options;
+        images.reserve(byte_ids.size());
+        options.reserve(byte_ids.size());
+        for (TextureID texture_id : byte_ids) {
+            const ByteTextureInfo& info = *get_texture_entry(texture_id).byte_info;
+            images.push_back({.data = info.source->data(), .name = info.source->name()});
+            options.push_back(
+                texture_loader_options(info.options.flags, info.options.usage, info.options.max_mip_count)
+            );
+        }
+
+        sgl::Timer timer;
+        std::vector<ref<sgl::Texture>> textures = m_texture_loader->load_textures(images, options);
+        FALCOR_ASSERT(textures.size() == byte_ids.size());
+        for (size_t i = 0; i < textures.size(); ++i) {
+            TextureEntry& entry = get_texture_entry(byte_ids[i]);
+            entry.texture = textures[i];
+            entry.is_loaded = true;
+            m_texture_to_texture_id.emplace(entry.texture.get(), byte_ids[i]);
+        }
+        notify_textures_loaded(byte_ids, timer.elapsed_s());
+    }
 }
 
 void TextureManager::notify_textures_loaded(std::span<const TextureID> texture_ids, double duration_s)
 {
-    size_t total_disk_size = 0;
+    size_t total_source_size = 0;
     size_t total_device_size = 0;
 
     for (TextureID texture_id : texture_ids) {
         const TextureEntry& texture_entry = get_texture_entry(texture_id);
-        total_disk_size += std::filesystem::file_size(texture_entry.info->path);
+        size_t source_size = texture_entry.info ? std::filesystem::file_size(texture_entry.info->path)
+                                                : texture_entry.byte_info->source->data().size();
+        std::string source_name
+            = texture_entry.info ? texture_entry.info->path.string() : texture_entry.byte_info->source->name();
+        total_source_size += source_size;
         total_device_size += texture_entry.texture->memory_usage().device;
         sgl::log_info(
-            "Loaded texture \"{}\" (disk size: {}, device size: {})",
-            texture_entry.info->path.string(),
-            sgl::string::format_byte_size(std::filesystem::file_size(texture_entry.info->path)),
+            "Loaded texture \"{}\" (source size: {}, device size: {})",
+            source_name,
+            sgl::string::format_byte_size(source_size),
             sgl::string::format_byte_size(texture_entry.texture->memory_usage().device)
         );
     }
 
     sgl::log_info(
-        "Loaded {} texture(s) (total disk size: {}, total device size: {}) in {}",
+        "Loaded {} texture(s) (total source size: {}, total device size: {}) in {}",
         texture_ids.size(),
-        sgl::string::format_byte_size(total_disk_size),
+        sgl::string::format_byte_size(total_source_size),
         sgl::string::format_byte_size(total_device_size),
         sgl::string::format_duration(duration_s)
     );
@@ -575,6 +639,20 @@ TextureManager::get_or_create_texture(const std::filesystem::path& path, const T
     return texture_id;
 }
 
+TextureManager::TextureID TextureManager::get_or_create_texture(ref<Blob> source, const TextureOptions& options)
+{
+    ByteTextureKey key{source.get(), options};
+    auto it = m_byte_texture_to_texture_id.find(key);
+    if (it != m_byte_texture_to_texture_id.end())
+        return it->second;
+
+    TextureID texture_id = allocate_texture();
+    TextureEntry& texture_entry = m_texture_entries[static_cast<uint32_t>(texture_id)];
+    texture_entry.byte_info = ByteTextureInfo{.source = std::move(source), .options = options};
+    m_byte_texture_to_texture_id.emplace(key, texture_id);
+    return texture_id;
+}
+
 TextureManager::TextureID TextureManager::get_or_create_udim_texture(
     const std::filesystem::path& path,
     const UDIMPaths& udim_paths,
@@ -647,6 +725,8 @@ void TextureManager::free_texture(TextureID texture_id)
         m_texture_to_texture_id.erase(entry.texture.get());
     if (entry.info)
         m_texture_info_to_texture_id.erase(*entry.info);
+    if (entry.byte_info)
+        m_byte_texture_to_texture_id.erase(ByteTextureKey{entry.byte_info->source.get(), entry.byte_info->options});
 
     entry = {};
     m_free_texture_indices.push_back(index);

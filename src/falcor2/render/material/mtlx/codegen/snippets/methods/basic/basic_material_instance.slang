@@ -10,7 +10,8 @@ public struct $MxMaterialInstanceName : IMaterialInstance
     public float3 emissive_radiance = {};
     public BSDFEval eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both>(
         const SurfaceInteraction si,
-        const float3 wo_ws
+        const float3 wo_ws,
+        const BSDFComponent component = BSDFComponent::full_response
     )
     {
         float3 wi_ls = shading_frame_ws.to_local(si.wi_ws);

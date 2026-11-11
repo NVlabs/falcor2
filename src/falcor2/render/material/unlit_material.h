@@ -73,6 +73,13 @@ public:
                 reflection::UIFlags::advanced,
                 reflection::on_change(&UnlitMaterial::mark_dirty_resources)
             )
+            .def_rw(
+                "base_color_texture_bytes",
+                &UnlitMaterial::m_base_color_texture_bytes,
+                "Encoded baked color and opacity texture bytes.",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&UnlitMaterial::mark_dirty_resources)
+            )
             .def_prop_rw(
                 "base_color_texture_texcoord",
                 &UnlitMaterial::base_color_texture_texcoord,
@@ -134,6 +141,7 @@ private:
     ref<sgl::Texture> m_base_color_texture;
     ref<sgl::Sampler> m_base_color_texture_sampler;
     std::filesystem::path m_base_color_texture_path;
+    ref<Blob> m_base_color_texture_bytes;
     uint32_t m_base_color_texture_texcoord{0};
     float3 m_base_color_factor{1.f};
     bool m_use_vertex_color{false};

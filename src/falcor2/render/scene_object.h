@@ -20,6 +20,7 @@
 #include <initializer_list>
 #include <functional>
 #include <memory>
+#include <type_traits>
 
 namespace falcor {
 
@@ -99,6 +100,10 @@ public:
     /// The name of the scene object.
     const std::string& name() const { return m_name; }
     void set_name(std::string_view name);
+
+    /// Whether this is a built-in object managed by the scene.
+    /// Built-in objects cannot be removed or renamed.
+    bool is_builtin() const;
 
     /// Reference to the object in the source asset from which this object was imported.
     /// Returns nullptr for objects without provenance.
@@ -457,6 +462,9 @@ private:
 };
 
 /// View of a SceneObjectCollection.
+/// Raw iteration, size, and indexed access include built-in objects and preserve collection indices.
+/// find(), find_all(), and iter() exclude built-in objects unless include_builtins is true.
+/// Do not change collection membership while iterating. Ranges and iterators borrow this view.
 template<typename TObject>
 class SceneObjectCollectionView {
 public:
@@ -482,10 +490,12 @@ public:
         using ViewType = std::conditional_t<IsConst, const SceneObjectCollectionView, SceneObjectCollectionView>;
         using ValueType = std::conditional_t<IsConst, const TObject*, TObject*>;
 
-        IteratorImpl(ViewType& view, size_t index)
+        IteratorImpl(ViewType& view, size_t index, bool include_builtins = true)
             : m_view(view)
             , m_index(index)
+            , m_include_builtins(include_builtins)
         {
+            skip_builtins();
         }
 
         ValueType operator*() const { return m_view[m_index]; }
@@ -493,6 +503,7 @@ public:
         IteratorImpl& operator++()
         {
             ++m_index;
+            skip_builtins();
             return *this;
         }
 
@@ -500,8 +511,16 @@ public:
         bool operator!=(const IteratorImpl& other) const { return m_index != other.m_index; }
 
     private:
+        void skip_builtins()
+        {
+            if (!m_include_builtins)
+                while (m_index < m_view.size() && m_view[m_index]->is_builtin())
+                    ++m_index;
+        }
+
         ViewType& m_view;
         size_t m_index;
+        bool m_include_builtins;
     };
 
     /// Iterator type for iterating over objects in the collection view.
@@ -519,85 +538,147 @@ public:
     /// Get a const iterator to the end of the collection view.
     ConstIterator end() const { return ConstIterator(*this, size()); }
 
+    template<bool IsConst>
+    class RangeImpl {
+    public:
+        using ViewType = typename IteratorImpl<IsConst>::ViewType;
+
+        RangeImpl(ViewType& view, bool include_builtins)
+            : m_view(view)
+            , m_include_builtins(include_builtins)
+        {
+        }
+
+        IteratorImpl<IsConst> begin() const { return {m_view, 0, m_include_builtins}; }
+        IteratorImpl<IsConst> end() const { return {m_view, m_view.size(), m_include_builtins}; }
+
+    private:
+        ViewType& m_view;
+        bool m_include_builtins;
+    };
+
+    /// Iterate without allocating a result list, excluding built-in objects by default.
+    /// Set include_builtins to true to include them. The view must outlive the range and its iterators.
+    RangeImpl<false> iter(bool include_builtins = false) { return {*this, include_builtins}; }
+    RangeImpl<true> iter(bool include_builtins = false) const { return {*this, include_builtins}; }
+
     /// Find the first object with the given name.
     /// @param name The name to search for.
+    /// @param include_builtins Include built-in objects; excluded by default.
     /// @return Pointer to the first matching object, or nullptr if not found.
-    TObject* find(std::string_view name) const
+    TObject* find(std::string_view name, bool include_builtins = false) const
     {
-        for (size_t i = 0; i < size(); ++i)
+        for (size_t i = 0; i < size(); ++i) {
+            if (!include_builtins && m_collection[i]->is_builtin())
+                continue;
             if (m_collection[i]->name() == name)
                 return m_collection[i];
+        }
         return nullptr;
     }
 
     /// Find the first object of the given type.
     /// @tparam T The type to search for (must be derived from TObject).
+    /// @param include_builtins Include built-in objects; excluded by default.
     /// @return Pointer to the first matching object, or nullptr if not found.
     template<typename T>
-    T* find() const
+    T* find(bool include_builtins = false) const
     {
         static_assert(std::is_base_of_v<TObject, T>, "T must be derived from TObject");
-        for (size_t i = 0; i < size(); ++i)
+        for (size_t i = 0; i < size(); ++i) {
+            if (!include_builtins && m_collection[i]->is_builtin())
+                continue;
             if (T* obj = dynamic_cast<T*>(m_collection[i]))
                 return obj;
+        }
         return nullptr;
     }
 
     /// Find the first object of the given type with the given name.
     /// @tparam T The type to search for (must be derived from TObject).
     /// @param name The name to search for.
+    /// @param include_builtins Include built-in objects; excluded by default.
     /// @return Pointer to the first matching object, or nullptr if not found.
     template<typename T>
-    T* find(std::string_view name) const
+    T* find(std::string_view name, bool include_builtins = false) const
     {
         static_assert(std::is_base_of_v<TObject, T>, "T must be derived from TObject");
-        for (size_t i = 0; i < size(); ++i)
+        for (size_t i = 0; i < size(); ++i) {
+            if (!include_builtins && m_collection[i]->is_builtin())
+                continue;
             if (m_collection[i]->name() == name)
                 if (T* obj = dynamic_cast<T*>(m_collection[i]))
                     return obj;
+        }
         return nullptr;
+    }
+
+    // Route C strings to name lookup instead of pointer-to-bool conversion.
+    template<typename T>
+    T* find(const char* name, bool include_builtins = false) const
+    {
+        return find<T>(std::string_view(name), include_builtins);
     }
 
     /// Find all objects with the given name.
     /// @param name The name to search for.
+    /// @param include_builtins Include built-in objects; excluded by default.
     /// @return Vector of pointers to all matching objects.
-    std::vector<TObject*> find_all(std::string_view name) const
+    std::vector<TObject*> find_all(std::string_view name, bool include_builtins = false) const
     {
         std::vector<TObject*> result;
-        for (size_t i = 0; i < size(); ++i)
+        for (size_t i = 0; i < size(); ++i) {
+            if (!include_builtins && m_collection[i]->is_builtin())
+                continue;
             if (m_collection[i]->name() == name)
                 result.push_back(m_collection[i]);
+        }
         return result;
     }
 
     /// Find all objects of the given type.
     /// @tparam T The type to search for (must be derived from TObject).
+    /// @param include_builtins Include built-in objects; excluded by default.
     /// @return Vector of pointers to all matching objects.
     template<typename T>
-    std::vector<T*> find_all() const
+    std::vector<T*> find_all(bool include_builtins = false) const
     {
         static_assert(std::is_base_of_v<TObject, T>, "T must be derived from TObject");
         std::vector<T*> result;
-        for (size_t i = 0; i < size(); ++i)
+        for (size_t i = 0; i < size(); ++i) {
+            if (!include_builtins && m_collection[i]->is_builtin())
+                continue;
             if (T* obj = dynamic_cast<T*>(m_collection[i]))
                 result.push_back(obj);
+        }
         return result;
     }
 
     /// Find all objects of the given type with the given name.
     /// @tparam T The type to search for (must be derived from TObject).
     /// @param name The name to search for.
+    /// @param include_builtins Include built-in objects; excluded by default.
     /// @return Vector of pointers to all matching objects.
     template<typename T>
-    std::vector<T*> find_all(std::string_view name) const
+    std::vector<T*> find_all(std::string_view name, bool include_builtins = false) const
     {
         static_assert(std::is_base_of_v<TObject, T>, "T must be derived from TObject");
         std::vector<T*> result;
-        for (size_t i = 0; i < size(); ++i)
+        for (size_t i = 0; i < size(); ++i) {
+            if (!include_builtins && m_collection[i]->is_builtin())
+                continue;
             if (m_collection[i]->name() == name)
                 if (T* obj = dynamic_cast<T*>(m_collection[i]))
                     result.push_back(obj);
+        }
         return result;
+    }
+
+    // Route C strings to name lookup instead of pointer-to-bool conversion.
+    template<typename T>
+    std::vector<T*> find_all(const char* name, bool include_builtins = false) const
+    {
+        return find_all<T>(std::string_view(name), include_builtins);
     }
 
 private:

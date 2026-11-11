@@ -34,7 +34,7 @@ public struct GLTFSpecGlossMaterial<
     public float16_t4 core_factors;
     public uint feature_mask;
     public uint transform_mask;
-    public BufferOffsetPair extra_data;
+    public BufferPtr extra_data;
 
     private GLTFTextureInfo diffuse_info()
     {

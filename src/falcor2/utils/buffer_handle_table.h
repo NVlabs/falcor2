@@ -4,7 +4,7 @@
 #pragma once
 
 #include "falcor2/utils/managed_vector.h"
-#include "falcor2/utils/buffer_handle.h"
+#include "falcor2/utils/buffer_ptr.h"
 
 namespace falcor {
 
@@ -31,7 +31,7 @@ public:
 
     void set(uint16_t index, const ref<sgl::Buffer>& buffer)
     {
-        const uint64_t handle = to_handle(buffer).data();
+        const uint64_t handle = to_buffer_ptr(buffer).data();
         if (m_handles.data()[index] != handle)
             m_handles[index] = handle;
     }

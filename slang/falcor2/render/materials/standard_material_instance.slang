@@ -20,8 +20,11 @@ public struct StandardMaterialInstance : IMaterialInstance
     }
 
 
-    public BSDFEval
-    eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both>(const SurfaceInteraction si, const float3 wo_ws)
+    public BSDFEval eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both>(
+        const SurfaceInteraction si,
+        const float3 wo_ws,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
         float3 wi_ls = shading_frame_ws.to_local(si.wi_ws);
         float3 wo_ls = shading_frame_ws.to_local(wo_ws);
@@ -35,7 +38,7 @@ public struct StandardMaterialInstance : IMaterialInstance
             return BSDFEval();
 
         StandardBSDF bsdf = StandardBSDF(wi_ls, bsdf_data);
-        return bsdf.eval_with_pdf(wi_ls, wo_ls, BSDFContext());
+        return bsdf.eval_with_pdf(wi_ls, wo_ls, BSDFContext(), component);
     }
 
     public bool sample(const SurfaceInteraction si, const MaterialSampleInput input, out MaterialSample sample)
@@ -49,6 +52,7 @@ public struct StandardMaterialInstance : IMaterialInstance
         sample.pdf = bsdf_sample.pdf;
         sample.weight = bsdf_sample.weight;
         sample.flags = bsdf_sample.flags;
+        sample.component = bsdf_sample.component;
         sample.wo_ws = shading_frame_ws.to_global(bsdf_sample.wo);
         return surface_material::is_valid_hemisphere_reflection_or_transmission(
             si,
@@ -59,6 +63,22 @@ public struct StandardMaterialInstance : IMaterialInstance
         );
     }
 
+
+    // Native layouts use the high bit, disjoint from generated material type IDs (positive int32).
+    // Slots are diffuse reflection/transmission followed by specular reflection/transmission.
+    public override uint get_component_layout_id() { return 0x80000001; }
+
+    public override bool is_component_rough(
+        const SurfaceInteraction si,
+        BSDFComponent component,
+        float marginal_pdf,
+        float roughness_threshold
+    )
+    {
+        if (component == BSDFComponent::full_response)
+            return roughness_threshold <= 0.0 || marginal_pdf <= 1.0 / (roughness_threshold * roughness_threshold);
+        return uint(component) < 2 || collect_properties(si).roughness > roughness_threshold;
+    }
 
     public MaterialProperties collect_properties(const SurfaceInteraction si)
     {

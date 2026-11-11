@@ -4,10 +4,11 @@ This overlay builds selected Adobe file-format plugins and shared utilities
 against Falcor2's existing private OpenUSD 26.08 monolith. It leaves the `usd` overlay and triplets
 unchanged and does not enable USD imaging or Hio.
 
-Source is pinned to `8d198392a1911786ea75e033f3cc47e9b69aaae2` of the
+Source is pinned to `4997b5f3b6f0e4797a91c9a971becbae9704c54f` of the
 [integration fork](https://github.com/skallweitNV/USD-Fileformat-plugins/tree/dev/falcor2-integration),
-based on Adobe 2026.07. Importer fixes, animation sampling and the OpenImageIO
-backend live in that fork. This overlay applies no source patches; its minimal
+based on Adobe 2026.07. Importer fixes, fixed-rate resampling, bounded adaptive animation refinement,
+independent error-based channel reduction, and the OpenImageIO backend live in
+that fork. This overlay applies no source patches. Its minimal
 feature-selected CMake wrapper supplies private library names and SDK linkage.
 
 ## Port features
@@ -26,7 +27,7 @@ FALCOR_ENABLE_USD_FBX -> usd-fbx -> usd-fileformat-plugins[fbx]
 
 Additional formats can get their own port features and Falcor2 options later.
 Only `fbx` is currently implemented. SDK packages are selected for Windows x64
-(VS2022), Linux x64 (GCC), and macOS x64/arm64 (Clang universal libraries).
+(VS2019 binaries, linked with VS2022), Linux x64 (GCC), and macOS x64/arm64 (Clang universal libraries).
 Linux ARM64 and Windows ARM64 are not enabled by this overlay.
 
 ## Build
@@ -37,6 +38,10 @@ vcpkg downloads the platform's Autodesk FBX SDK **2020.3.11**, verifies its SHA5
 extracts it under the port's build directory. The installer is never executed;
 no system-wide SDK installation or administrator privileges are needed. The
 download is cached by vcpkg for subsequent builds.
+
+Windows uses Autodesk's VS2019 binary package of the same SDK version, so it also
+links with VS2022 17.9. The VS2022 SDK package requires newer STL helper symbols.
+Falcor2 and the plugin are still compiled with the configured VS2022 toolchain.
 
 From an initialized x64 MSVC environment with the development Python active:
 
@@ -118,7 +123,8 @@ require this plugin or the SDK to load.
 
 ## Animation and image behavior
 
-The fork accepts `animationMode=adaptive` (default) or `animationMode=keyframes`:
+The fork accepts `animationMode=adaptive` (default), `animationMode=resample`, or
+`animationMode=keyframes`:
 
 ```python
 from falcor2.pxr import Sdf, Usd
@@ -131,14 +137,50 @@ stage.Export("scene.usdc")
 Adaptive mode evaluates node transforms at source frames and refines between
 frames to approximate cubic curves, pivot motion and Euler revolutions with USD
 samples. Keyframe mode evaluates original key times only; it is compact but can
-lose curved motion, pivot paths, held transitions and full revolutions. Both
+lose curved motion, pivot paths, held transitions and full revolutions. All modes
 retain source-frame time codes and playback duration. These modes affect node
 transforms, including camera transforms; skeletal curve sampling is unchanged.
 Unknown values, including `splines`, fail. Arguments apply when FBX is imported,
 not to already exported USD. Dynamic payloads also support `animationMode` metadata.
 
-Adaptive translation tolerance is 0.1 mm, subject to float precision. Rotations
-are normalized double quaternions, and scales retain float precision. Dense
+Resample mode bakes transforms at a fixed rate, then reduces translation, rotation
+and scale independently against those baked samples. `animationSampleRate=0`
+(default) uses the source scene's FPS, including custom rates; a positive finite
+value selects an explicit rate in Hz without changing playback FPS or duration.
+Track endpoints are preserved even when off-grid. Resampling uses the full
+reduction tolerance budget and performs no adaptive refinement. Held transitions
+are represented at frame resolution, so subframe motion can differ. This mode
+also accepts the tolerance arguments below and `animationSampleRate` as dynamic
+payload metadata. The scene-conversion scripts explicitly select resample mode.
+
+Adaptive mode accepts these finite file-format arguments (also available
+as string metadata on dynamic payloads):
+
+| Argument | Default | Meaning |
+| --- | --- | --- |
+| `animationPositionTolerance` | `0.0001` | Translation error in meters, accounting for parent scale and float precision |
+| `animationRotationTolerance` | `0.01` | Local rotation error in degrees; must be less than 180 |
+| `animationScaleTolerance` | `0.00001` | Relative local scale error, with a unit floor |
+| `animationMaxSampleRate` | `0` | Optional maximum frequency of additional adaptive subdivisions, in Hz; zero disables the rate cap |
+
+Tolerances must be positive; the rate must be non-negative. Refinement and channel
+reduction each use half the error budget. Translation,
+rotation and scale are reduced independently; nearly constant channels collapse
+to their evaluated value and retain clip endpoints. Source keys and one-sided
+samples around held transitions are not discarded by the frequency limit; the
+subsequent reduction only removes samples within its error budget. The importer
+warns when a frequency or recursion limit prevents meeting the refinement tolerance. These
+are sampled error controls, not a bound on accumulated world-space error through
+a hierarchy. Translation uses a conservative bound on parent transform stretch
+over evaluated times; this avoids oversampling rigs scaled down relative to the
+scene's units. Rotation and scale tolerances are local. Keyframe mode retains
+its existing behavior.
+
+Rotation checks cover both USD's orientation-matrix evaluation and unit-quaternion
+slerp used by direct-channel consumers. USD's close-angle interpolation can yield
+non-unit quaternions; these paths otherwise differ near zero rotation.
+
+Rotations are normalized double quaternions, and scales retain float precision. Dense
 animated joint hierarchies can be expensive to convert; arbitrary affine/sheared
 FBX inheritance has not been established by the focused checks.
 

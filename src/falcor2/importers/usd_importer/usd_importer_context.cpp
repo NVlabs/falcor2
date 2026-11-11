@@ -19,6 +19,7 @@ BEGIN_DISABLE_USD_WARNINGS
 #include <pxr/base/vt/types.h>
 #include <pxr/usd/sdf/assetPath.h>
 #include <pxr/usd/usd/attribute.h>
+#include <pxr/usd/usd/attributeQuery.h>
 #include <pxr/usd/usd/primRange.h>
 
 #include <pxr/usd/usdGeom/tokens.h>
@@ -48,6 +49,7 @@ BEGIN_DISABLE_USD_WARNINGS
 END_DISABLE_USD_WARNINGS
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cmath>
 #include <mutex>
@@ -235,6 +237,131 @@ struct DecomposedTransform {
     float3 pivot = float3(0.f);
 };
 
+template<typename T, bool IsQuaternion>
+bool read_trs_channel(
+    const pxr::UsdGeomXformOp& op,
+    double time_codes_per_second,
+    AnimationInterpolationMode interpolation,
+    ImporterAnimationChannel& channel,
+    bool& has_samples
+)
+{
+    // Keep composed USD value resolution (including layer offsets and clips),
+    // but read each channel only at its own times instead of resampling TRS.
+    const pxr::UsdAttributeQuery query(op.GetAttr());
+    std::vector<double> samples;
+    if (!query.GetTimeSamples(&samples))
+        return false;
+    has_samples |= samples.size() >= 2;
+    if (samples.empty())
+        samples.push_back(pxr::UsdTimeCode::EarliestTime().GetValue());
+
+    constexpr size_t COMPONENTS = IsQuaternion ? 4 : 3;
+    channel.value_type = IsQuaternion ? AnimationValueType::quatf : AnimationValueType::float3;
+    channel.interpolation_mode = interpolation;
+    channel.times.resize(samples.size());
+    channel.values.resize(samples.size() * COMPONENTS);
+    bool varying = false;
+    for (size_t i = 0; i < samples.size(); ++i) {
+        T value;
+        if (!query.Get(&value, pxr::UsdTimeCode(samples[i])))
+            return false;
+        channel.times[i] = static_cast<float>(samples[i] / time_codes_per_second);
+        if constexpr (IsQuaternion) {
+            // Non-unit quaternions can have different matrix/decomposition semantics.
+            // Retain that general path rather than silently repairing authored data.
+            const double length = static_cast<double>(value.GetLength());
+            if (!std::isfinite(length) || std::abs(length - 1.0) > 1e-5)
+                return false;
+            const auto normalized = value.GetNormalized();
+            for (size_t c = 0; c < 3; ++c)
+                channel.values[i * COMPONENTS + c] = static_cast<float>(normalized.GetImaginary()[c]);
+            channel.values[i * COMPONENTS + 3] = static_cast<float>(normalized.GetReal());
+        } else {
+            for (size_t c = 0; c < COMPONENTS; ++c) {
+                const float component = static_cast<float>(value[c]);
+                if (!std::isfinite(component))
+                    return false;
+                // Reflections and singular transforms use the existing decomposition
+                // so static channels and animated channels keep the same TRS convention.
+                if (op.GetOpType() == pxr::UsdGeomXformOp::TypeScale && component <= 0.f)
+                    return false;
+                channel.values[i * COMPONENTS + c] = component;
+            }
+        }
+        for (size_t c = 0; c < COMPONENTS; ++c)
+            varying |= channel.values[i * COMPONENTS + c] != channel.values[c];
+    }
+    if (!varying) {
+        channel.times.clear();
+        channel.values.clear();
+    }
+    return true;
+}
+
+struct TRSChannels {
+    std::array<ImporterAnimationChannel, 3> channels;
+    bool has_samples = false;
+};
+
+std::optional<TRSChannels> read_trs_channels(
+    const pxr::UsdGeomXformable& xformable,
+    double time_codes_per_second,
+    AnimationInterpolationMode interpolation
+)
+{
+    using Op = pxr::UsdGeomXformOp;
+    bool resets = false;
+    const auto ops = xformable.GetOrderedXformOps(&resets);
+    // Ordered subsets of translate/orient/scale retain independent channels; missing operations are identities.
+    // Pivots, Euler rotations, inverse ops and repeated or reordered components retain the general path.
+    TRSChannels result;
+    int previous_component = -1;
+    for (const auto& op : ops) {
+        const int component = op.GetOpType() == Op::TypeTranslate ? 0
+            : op.GetOpType() == Op::TypeOrient                    ? 1
+            : op.GetOpType() == Op::TypeScale                     ? 2
+                                                                  : -1;
+        if (op.IsInverseOp() || component < 0 || component <= previous_component)
+            return std::nullopt;
+        previous_component = component;
+        auto read = [&]<typename Vec, typename Quat>()
+        {
+            return component == 1 ? read_trs_channel<Quat, true>(
+                                        op,
+                                        time_codes_per_second,
+                                        interpolation,
+                                        result.channels[component],
+                                        result.has_samples
+                                    )
+                                  : read_trs_channel<Vec, false>(
+                                        op,
+                                        time_codes_per_second,
+                                        interpolation,
+                                        result.channels[component],
+                                        result.has_samples
+                                    );
+        };
+        bool success = false;
+        switch (op.GetPrecision()) {
+        case Op::PrecisionDouble:
+            success = read.template operator()<pxr::GfVec3d, pxr::GfQuatd>();
+            break;
+        case Op::PrecisionFloat:
+            success = read.template operator()<pxr::GfVec3f, pxr::GfQuatf>();
+            break;
+        case Op::PrecisionHalf:
+            // Half quaternion quantization commonly exceeds the unit-length tolerance.
+            // Preserve the general path for those values too.
+            success = read.template operator()<pxr::GfVec3h, pxr::GfQuath>();
+            break;
+        }
+        if (!success)
+            return std::nullopt;
+    }
+    return result;
+}
+
 /// Extract TRS and pivot from a UsdGeomXformable at a given time code.
 /// Prefers UsdGeomXformCommonAPI for direct TRS extraction without lossy matrix decomposition.
 /// Falls back to full matrix decomposition for prims with non-common xform ops.
@@ -311,6 +438,7 @@ UsdImporterContext::UsdImporterContext(
     bool parallel_adds
 )
     : m_usd_stage(stage)
+    , m_resolver_context(stage->GetPathResolverContext())
     , m_source_asset_path(source_asset_path)
     , m_prototype_source_paths(build_prototype_source_paths(stage))
     , m_import_options(import_options)
@@ -551,7 +679,9 @@ void UsdImporterContext::traverse_scene(const pxr::UsdPrim& root)
                 if (is_renderable_prim())
                     add_curve(prim, node_idx);
             } else if (prim.IsA<UsdSkelRoot>()) {
-                // TODO(tdavidovic): Add skinning once we support animation.
+                continue;
+            } else if (prim.IsA<UsdSkelSkeleton>() || prim.IsA<UsdSkelAnimation>()) {
+                // Skeleton placement uses ordinary transforms; joint nodes are added after traversal.
                 continue;
             } else if (prim.IsA<UsdLuxBoundableLightBase>() || prim.IsA<UsdLuxNonboundableLightBase>()) {
                 if (is_renderable_prim())
@@ -765,7 +895,13 @@ void UsdImporterContext::extract_mesh(pxr::UsdPrim prim, int node_idx)
         return resolve_material(binding_api, mesh_name);
     };
     pxr::UsdGeomMesh usd_mesh(prim);
-    ImporterMesh result = convert_usd_mesh(usd_mesh, resolve_material_func, m_import_options);
+    const auto binding = m_skin_bindings.find(prim.GetPath());
+    ImporterMesh result = convert_usd_mesh(
+        usd_mesh,
+        resolve_material_func,
+        m_import_options,
+        binding == m_skin_bindings.end() ? nullptr : &binding->second.mesh
+    );
     result.source_asset_ref = source_asset_ref_for_prim(prim);
 
     /// Some USDs contain invalid meshes as part of their hierarchy (e.g., Casa_GP), we discard those.
@@ -1054,6 +1190,27 @@ void UsdImporterContext::extract_animations()
         pxr::UsdGeomXformable xformable(prim);
         if (!xformable)
             continue;
+
+        if (auto direct = read_trs_channels(xformable, time_codes_per_second, interpolation)) {
+            if (direct->has_samples) {
+                m_scene->animation.name = "UsdAnimation";
+                has_animation = true;
+            }
+            constexpr std::array targets = {
+                &ImporterNode::animation_translation,
+                &ImporterNode::animation_rotation,
+                &ImporterNode::animation_scale,
+            };
+            for (size_t i = 0; i < direct->channels.size(); ++i) {
+                auto& channel = direct->channels[i];
+                if (channel.times.empty())
+                    continue;
+                for (const auto& nodes : node_chains)
+                    m_scene->nodes[nodes.authored].*targets[i] = static_cast<int>(m_scene->animation.channels.size());
+                m_scene->animation.channels.push_back(std::move(channel));
+            }
+            continue;
+        }
 
         // Query time samples for the xform ops.
         std::vector<double> time_samples;

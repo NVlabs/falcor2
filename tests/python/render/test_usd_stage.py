@@ -150,7 +150,8 @@ def test_usd_bake_frame_zero(tmp_path: Path, refinement: int) -> None:
         np.testing.assert_array_equal(
             meshes["/Character/Unskinned"].positions, raw_meshes["/Character/Unskinned"].positions
         )
-        assert len(baked.animation.channels) == 0
+        # A skin pose bake retains ordinary animation; it no longer freezes the entire USD stage.
+        assert len(baked.animation.channels) > 0
         # In skeleton space: animated joint 3 - bind joint 1 + geometry bind 2 = 4.
         # Mesh-local points subtract the mesh translation (2); the parent adds 10.
         np.testing.assert_allclose(
@@ -158,7 +159,7 @@ def test_usd_bake_frame_zero(tmp_path: Path, refinement: int) -> None:
             np.asarray(mesh.GetPointsAttr().Get()) + [2, 0, 0],
             atol=1e-6,
         )
-        np.testing.assert_allclose(np.asarray(baked.curves[0].positions)[:, 0], [4, 5])
+        np.testing.assert_array_equal(baked.curves[0].positions, raw.curves[0].positions)
         camera_node = next(node for node in baked.nodes if node.camera_index >= 0)
         np.testing.assert_allclose(camera_node.transform.to_numpy()[:3, 3], [4, 0, 5])
     assert stage.GetRootLayer().ExportToString() == source

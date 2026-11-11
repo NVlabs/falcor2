@@ -47,20 +47,28 @@ enum class VertexBoundaryInterpolation {
     edge_and_corner,
 };
 
-/// A borrowed authored float32 attribute stored as a tightly packed value table.
+/// A borrowed attribute stored as a tightly packed table of fixed-width scalar arrays.
+/// The component count is selected at runtime. An unspecified attribute type means float32.
+/// Triangulation preserves scalar values exactly. Refined subdivision copies constant and uniform values exactly;
+/// vertex, varying and face-varying streams require float32 for interpolation.
 /// Indices select values for interpolation elements: the mesh, coarse faces, mesh vertices, or face vertices,
 /// depending on interpolation. Every authored index must address an existing value. The caller owns both spans for
 /// the duration of tessellate().
 struct MeshAttributeStream {
     ImporterMeshDefaultAttribute attribute;
     MeshInterpolation interpolation = MeshInterpolation::vertex;
-    // Tightly packed scalar components for the authored value table.
-    std::span<const float> values;
+    // Tightly packed elements; use std::as_bytes() on the authored scalar array.
+    std::span<const std::byte> values;
     // Optional map from interpolation elements to entries in the value table.
     std::span<const int> indices;
 
+    sgl::DataType scalar_type() const
+    {
+        return attribute.type == sgl::DataType::void_ ? sgl::DataType::float32 : attribute.type;
+    }
     size_t component_count() const { return attribute.components; }
-    size_t value_count() const { return component_count() == 0 ? 0 : values.size() / component_count(); }
+    size_t element_size() const { return component_count() * data_type_size(scalar_type()); }
+    size_t value_count() const { return element_size() == 0 ? 0 : values.size() / element_size(); }
 };
 
 /// Borrowed bulk mesh data plus small owned metadata. All spans must remain valid until tessellate() returns.

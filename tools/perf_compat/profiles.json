@@ -25,7 +25,8 @@
   ],
   "common_patches": [
     "plugin-1.patch",
-    "__init__-1.patch"
+    "__init__-1.patch",
+    "reporting_utils-1.patch"
   ],
   "ranges": [
     {

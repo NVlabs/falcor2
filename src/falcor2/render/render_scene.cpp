@@ -5,11 +5,13 @@
 
 #include "falcor2/render/ray_tracing_policy.h"
 #include "falcor2/render/utils/check_struct.h"
+#include "falcor2/render/utils/geometry_dispatch.h"
 
 #include <sgl/core/maths.h>
 #include <sgl/device/kernel.h>
 
 #include <algorithm>
+#include <utility>
 
 #include <slang-rhi/acceleration-structure-utils.h>
 
@@ -227,6 +229,14 @@ RenderTriangleGeometries::RenderTriangleGeometries(BufferHandleTable& handles)
               .label = "TriangleGeometryData::vertices",
           }
       )
+    , m_dynamic_vertices(
+          handles,
+          {
+              .usage = sgl::BufferUsage::shader_resource | sgl::BufferUsage::unordered_access
+                  | sgl::BufferUsage::acceleration_structure_build_input,
+              .label = "TriangleGeometryData::dynamic_vertices",
+          }
+      )
     , m_indices(
           handles,
           {
@@ -250,11 +260,12 @@ RenderTriangleGeometryHandle RenderTriangleGeometries::create(const RenderTriang
     RenderTriangleGeometryHandle handle = m_pool.allocate();
     RenderTriangleGeometry& geometry = m_pool[handle];
 
+    geometry.is_dynamic = desc.is_dynamic;
     geometry.vertex_count = desc.vertex_count;
     geometry.index_count = desc.index_count;
 
     // Allocate vertex data.
-    geometry.vertex_allocation = m_vertices.allocate(desc.vertex_count);
+    geometry.vertex_allocation = vertex_pool(geometry).allocate(desc.vertex_count, geometry.is_dynamic ? 2 : 1);
     FALCOR_CHECK(geometry.vertex_allocation.is_valid(), "Failed to allocate vertex data");
     geometry.vertex_offset = geometry.vertex_allocation.range.offset;
 
@@ -266,7 +277,7 @@ RenderTriangleGeometryHandle RenderTriangleGeometries::create(const RenderTriang
     // Allocate descriptor.
     m_descs.ensure_size(handle.index() + 1);
     m_descs[handle.index()] = {
-        .vertex_buffer = m_vertices.buffer_index(geometry.vertex_allocation),
+        .vertex_buffer = vertex_pool(geometry).buffer_index(geometry.vertex_allocation),
         .index_buffer = m_indices.buffer_index(geometry.index_allocation),
 
         .vertex_offset = geometry.vertex_offset,
@@ -275,8 +286,10 @@ RenderTriangleGeometryHandle RenderTriangleGeometries::create(const RenderTriang
     };
     m_descs.mark_dirty(handle.index(), handle.index() + 1);
 
-    m_pool.mark_dirty(handle, true);
+    m_pool.mark_dirty(handle, RenderGeometryDirtyFlags::rebuild);
 
+    if (geometry.is_dynamic)
+        m_initialize_deformation = true;
     return handle;
 }
 
@@ -284,9 +297,12 @@ void RenderTriangleGeometries::destroy(RenderTriangleGeometryHandle handle)
 {
     RenderTriangleGeometry& geometry = m_pool[handle];
 
+    if (geometry.is_dynamic)
+        m_initialize_deformation = true;
+
     // Free vertex data.
     if (geometry.vertex_allocation.is_valid())
-        m_vertices.free(geometry.vertex_allocation);
+        vertex_pool(geometry).free(geometry.vertex_allocation);
 
     // Free index data.
     if (geometry.index_allocation.is_valid())
@@ -301,16 +317,24 @@ void RenderTriangleGeometries::destroy(RenderTriangleGeometryHandle handle)
     m_pool.free(handle);
 }
 
-void RenderTriangleGeometries::update(RenderTriangleGeometryHandle handle, const RenderTriangleGeometryData& data)
+void RenderTriangleGeometries::update(
+    RenderTriangleGeometryHandle handle,
+    const RenderTriangleGeometryData& data,
+    RenderGeometryDirtyFlags flags
+)
 {
     RenderTriangleGeometry& geometry = m_pool[handle];
+    FALCOR_ASSERT(flags != RenderGeometryDirtyFlags::none);
     // Copy vertex data.
     FALCOR_CHECK_EQ(data.vertices.size(), geometry.vertex_count);
     std::memcpy(
-        m_vertices.mutable_data(geometry.vertex_allocation).data(),
+        vertex_pool(geometry).mutable_data(geometry.vertex_allocation).data(),
         data.vertices.data(),
         data.vertices.size_bytes()
     );
+
+    if (geometry.is_dynamic)
+        m_initialize_deformation = true;
 
     // Copy index data.
     FALCOR_CHECK_EQ(data.indices.size(), geometry.index_count);
@@ -323,7 +347,7 @@ void RenderTriangleGeometries::update(RenderTriangleGeometryHandle handle, const
     m_additional_attributes
         .update(handle.index(), geometry.vertex_count, geometry.additional_attributes, data.additional_attributes);
 
-    m_pool.mark_dirty(handle, true);
+    m_pool.mark_dirty(handle, flags);
 }
 
 void RenderTriangleGeometries::write_geometry_instance_desc(
@@ -335,11 +359,11 @@ void RenderTriangleGeometries::write_geometry_instance_desc(
     shared::TriangleGeometryInstanceDesc& triangle_desc = reinterpret_cast<shared::TriangleGeometryInstanceDesc&>(desc);
     triangle_desc.header.type_and_flags = shared::detail::pack_geometry_instance_type_and_flags(
         shared::GeometryType::triangle,
-        shared::GeometryInstanceFlags::none
+        geometry.is_dynamic ? shared::GeometryInstanceFlags::vertex_motion : shared::GeometryInstanceFlags::none
     );
     triangle_desc.header.geometry_id = shared::GeometryID{handle.index()};
     triangle_desc.vertex_offset = geometry.vertex_offset;
-    triangle_desc.vertex_buffer = m_vertices.buffer_index(geometry.vertex_allocation);
+    triangle_desc.vertex_buffer = vertex_pool(geometry).buffer_index(geometry.vertex_allocation);
     triangle_desc.index_buffer = m_indices.buffer_index(geometry.index_allocation);
     triangle_desc.index_offset = geometry.index_offset;
 }
@@ -352,7 +376,7 @@ void RenderTriangleGeometries::write_acceleration_structure_build_input(
     const RenderTriangleGeometry& geometry = m_pool[handle];
     sgl::AccelerationStructureBuildInputTriangles triangles;
     triangles.vertex_buffers = {sgl::BufferOffsetPair(
-        m_vertices.buffer(geometry.vertex_allocation.slot_index),
+        vertex_pool(geometry).buffer(geometry.vertex_allocation.slot_index),
         geometry.vertex_offset * sizeof(shared::PackedTriangleVertex)
     )};
     triangles.vertex_format = sgl::Format::rgb32_float;
@@ -368,12 +392,34 @@ void RenderTriangleGeometries::write_acceleration_structure_build_input(
     build_input = triangles;
 }
 
-void RenderTriangleGeometries::update_buffers(sgl::CommandEncoder* command_encoder)
+void RenderTriangleGeometries::update_buffers(sgl::CommandEncoder* command_encoder, double time)
 {
     m_descs.update_buffer(command_encoder);
     m_vertices.update_buffers(command_encoder);
     m_indices.update_buffers(command_encoder);
     m_additional_attributes.update_buffers(command_encoder);
+    // TODO: Preserve GPU data and old buffer lifetimes on growth instead of resetting on geometry changes.
+    const bool initialize = std::exchange(m_initialize_deformation, false);
+    m_dynamic_vertices.update_buffers(command_encoder, initialize);
+    for (const auto& updater : m_geometry_updaters.updaters()) {
+        updater->prepare(command_encoder, time, initialize);
+        if (!updater->has_work())
+            continue;
+        for (uint16_t slot = 0; slot < m_dynamic_vertices.slot_count(); ++slot)
+            for (uint16_t member = 0; member < 2; ++member)
+                command_encoder->set_buffer_state(
+                    m_dynamic_vertices.buffer(slot, member),
+                    sgl::ResourceState::unordered_access
+                );
+        updater->dispatch(command_encoder);
+    }
+    // Bindless readers (including LSS bounds) cannot infer these transitions.
+    for (uint16_t slot = 0; slot < m_dynamic_vertices.slot_count(); ++slot)
+        for (uint16_t member = 0; member < 2; ++member)
+            command_encoder->set_buffer_state(
+                m_dynamic_vertices.buffer(slot, member),
+                sgl::ResourceState::shader_resource
+            );
 }
 
 void RenderTriangleGeometries::bind(sgl::ShaderCursor cursor) const
@@ -401,6 +447,14 @@ RenderLSSGeometries::RenderLSSGeometries(
               .usage = sgl::BufferUsage::shader_resource | sgl::BufferUsage::unordered_access
                   | sgl::BufferUsage::acceleration_structure_build_input,
               .label = "LSSGeometryData::vertices",
+          }
+      )
+    , m_dynamic_vertices(
+          handles,
+          {
+              .usage = sgl::BufferUsage::shader_resource | sgl::BufferUsage::unordered_access
+                  | sgl::BufferUsage::acceleration_structure_build_input,
+              .label = "LSSGeometryData::dynamic_vertices",
           }
       )
     , m_indices(
@@ -433,11 +487,12 @@ RenderLSSGeometryHandle RenderLSSGeometries::create(const RenderLSSGeometryDesc&
     RenderLSSGeometryHandle handle = m_pool.allocate();
     RenderLSSGeometry& geometry = m_pool[handle];
 
+    geometry.is_dynamic = desc.is_dynamic;
     geometry.vertex_count = desc.vertex_count;
     geometry.index_count = desc.index_count;
 
     // Allocate vertex data.
-    geometry.vertex_allocation = m_vertices.allocate(desc.vertex_count);
+    geometry.vertex_allocation = vertex_pool(geometry).allocate(desc.vertex_count, geometry.is_dynamic ? 2 : 1);
     FALCOR_CHECK(geometry.vertex_allocation.is_valid(), "Failed to allocate vertex data");
     geometry.vertex_offset = geometry.vertex_allocation.range.offset;
 
@@ -449,7 +504,7 @@ RenderLSSGeometryHandle RenderLSSGeometries::create(const RenderLSSGeometryDesc&
     // Allocate descriptor.
     m_descs.ensure_size(handle.index() + 1);
     m_descs[handle.index()] = {
-        .vertex_buffer = m_vertices.buffer_index(geometry.vertex_allocation),
+        .vertex_buffer = vertex_pool(geometry).buffer_index(geometry.vertex_allocation),
         .index_buffer = m_indices.buffer_index(geometry.index_allocation),
 
         .vertex_offset = geometry.vertex_offset,
@@ -458,8 +513,10 @@ RenderLSSGeometryHandle RenderLSSGeometries::create(const RenderLSSGeometryDesc&
     };
     m_descs.mark_dirty(handle.index(), handle.index() + 1);
 
-    m_pool.mark_dirty(handle, true);
+    m_pool.mark_dirty(handle, RenderGeometryDirtyFlags::rebuild);
 
+    if (geometry.is_dynamic)
+        m_initialize_deformation = true;
     return handle;
 }
 
@@ -467,9 +524,12 @@ void RenderLSSGeometries::destroy(RenderLSSGeometryHandle handle)
 {
     RenderLSSGeometry& geometry = m_pool[handle];
 
+    if (geometry.is_dynamic)
+        m_initialize_deformation = true;
+
     // Free vertex data.
     if (geometry.vertex_allocation.is_valid())
-        m_vertices.free(geometry.vertex_allocation);
+        vertex_pool(geometry).free(geometry.vertex_allocation);
 
     // Free index data.
     if (geometry.index_allocation.is_valid())
@@ -484,17 +544,25 @@ void RenderLSSGeometries::destroy(RenderLSSGeometryHandle handle)
     m_pool.free(handle);
 }
 
-void RenderLSSGeometries::update(RenderLSSGeometryHandle handle, const RenderLSSGeometryData& data)
+void RenderLSSGeometries::update(
+    RenderLSSGeometryHandle handle,
+    const RenderLSSGeometryData& data,
+    RenderGeometryDirtyFlags flags
+)
 {
     RenderLSSGeometry& geometry = m_pool[handle];
 
+    FALCOR_ASSERT(flags != RenderGeometryDirtyFlags::none);
     // Copy vertex data.
     FALCOR_CHECK_EQ(data.vertices.size(), geometry.vertex_count);
     std::memcpy(
-        m_vertices.mutable_data(geometry.vertex_allocation).data(),
+        vertex_pool(geometry).mutable_data(geometry.vertex_allocation).data(),
         data.vertices.data(),
         data.vertices.size_bytes()
     );
+
+    if (geometry.is_dynamic)
+        m_initialize_deformation = true;
 
     // Copy index data.
     FALCOR_CHECK_EQ(data.indices.size(), geometry.index_count);
@@ -507,7 +575,7 @@ void RenderLSSGeometries::update(RenderLSSGeometryHandle handle, const RenderLSS
     m_additional_attributes
         .update(handle.index(), geometry.vertex_count, geometry.additional_attributes, data.additional_attributes);
 
-    m_pool.mark_dirty(handle, true);
+    m_pool.mark_dirty(handle, flags);
 }
 
 void RenderLSSGeometries::write_geometry_instance_desc(
@@ -519,11 +587,11 @@ void RenderLSSGeometries::write_geometry_instance_desc(
     shared::LSSGeometryInstanceDesc& lss_desc = reinterpret_cast<shared::LSSGeometryInstanceDesc&>(desc);
     lss_desc.header.type_and_flags = shared::detail::pack_geometry_instance_type_and_flags(
         shared::GeometryType::lss,
-        shared::GeometryInstanceFlags::none
+        geometry.is_dynamic ? shared::GeometryInstanceFlags::vertex_motion : shared::GeometryInstanceFlags::none
     );
     lss_desc.header.geometry_id = shared::GeometryID{handle.index()};
     lss_desc.vertex_offset = geometry.vertex_offset;
-    lss_desc.vertex_buffer = m_vertices.buffer_index(geometry.vertex_allocation);
+    lss_desc.vertex_buffer = vertex_pool(geometry).buffer_index(geometry.vertex_allocation);
     lss_desc.index_buffer = m_indices.buffer_index(geometry.index_allocation);
     lss_desc.index_offset = geometry.index_offset;
 }
@@ -549,13 +617,13 @@ void RenderLSSGeometries::write_acceleration_structure_build_input(
         lss.vertex_count = geometry.vertex_count;
         lss.primitive_count = geometry.index_count;
         lss.vertex_position_buffers = {sgl::BufferOffsetPair(
-            m_vertices.buffer(geometry.vertex_allocation.slot_index),
+            vertex_pool(geometry).buffer(geometry.vertex_allocation.slot_index),
             geometry.vertex_offset * sizeof(shared::PackedLSSVertex)
         )};
         lss.vertex_position_format = sgl::Format::rgb32_float;
         lss.vertex_position_stride = sizeof(shared::PackedLSSVertex);
         lss.vertex_radius_buffers = {sgl::BufferOffsetPair(
-            m_vertices.buffer(geometry.vertex_allocation.slot_index),
+            vertex_pool(geometry).buffer(geometry.vertex_allocation.slot_index),
             geometry.vertex_offset * sizeof(shared::PackedLSSVertex) + sizeof(float3)
         )};
         lss.vertex_radius_format = sgl::Format::r32_float;
@@ -573,12 +641,34 @@ void RenderLSSGeometries::write_acceleration_structure_build_input(
     }
 }
 
-void RenderLSSGeometries::update_buffers(sgl::CommandEncoder* command_encoder)
+void RenderLSSGeometries::update_buffers(sgl::CommandEncoder* command_encoder, double time)
 {
     m_descs.update_buffer(command_encoder);
     m_vertices.update_buffers(command_encoder);
     m_indices.update_buffers(command_encoder);
     m_additional_attributes.update_buffers(command_encoder);
+    // TODO: Preserve GPU data and old buffer lifetimes on growth instead of resetting on geometry changes.
+    const bool initialize = std::exchange(m_initialize_deformation, false);
+    m_dynamic_vertices.update_buffers(command_encoder, initialize);
+    for (const auto& updater : m_geometry_updaters.updaters()) {
+        updater->prepare(command_encoder, time, initialize);
+        if (!updater->has_work())
+            continue;
+        for (uint16_t slot = 0; slot < m_dynamic_vertices.slot_count(); ++slot)
+            for (uint16_t member = 0; member < 2; ++member)
+                command_encoder->set_buffer_state(
+                    m_dynamic_vertices.buffer(slot, member),
+                    sgl::ResourceState::unordered_access
+                );
+        updater->dispatch(command_encoder);
+    }
+    // Bindless readers (including LSS bounds) cannot infer these transitions.
+    for (uint16_t slot = 0; slot < m_dynamic_vertices.slot_count(); ++slot)
+        for (uint16_t member = 0; member < 2; ++member)
+            command_encoder->set_buffer_state(
+                m_dynamic_vertices.buffer(slot, member),
+                sgl::ResourceState::shader_resource
+            );
 
     if (m_intersection_mode == LSSIntersectionMode::procedural && m_pool.is_dirty()) {
         // Each index-buffer slot has a matching AABB buffer: index i describes AABB i.
@@ -610,15 +700,15 @@ void RenderLSSGeometries::update_buffers(sgl::CommandEncoder* command_encoder)
             if (m_pool.is_dirty(handle) || recompute_all[slot]) {
                 const auto& aabbs = m_aabb_buffers[slot];
                 if (!aabb_written[slot]) {
-                    // Handles hide UAV access from automatic binding transitions and resource retention.
+                    // Pointer values hide UAV access from automatic binding transitions and resource retention.
                     // Input pools already declare shader_resource access in update_buffers() above.
                     command_encoder->set_buffer_state(aabbs, sgl::ResourceState::unordered_access);
                     aabb_written[slot] = true;
                 }
                 m_aabb_work[work_count++] = {
-                    .vertex_buffer = to_handle(m_vertices.buffer(geometry.vertex_allocation.slot_index)),
-                    .index_buffer = to_handle(m_indices.buffer(slot)),
-                    .aabb_buffer = to_rw_handle(aabbs),
+                    .vertex_buffer = to_buffer_ptr(vertex_pool(geometry).buffer(geometry.vertex_allocation.slot_index)),
+                    .index_buffer = to_buffer_ptr(m_indices.buffer(slot)),
+                    .aabb_buffer = to_rw_buffer_ptr(aabbs, 0, 8),
                     .vertex_offset = geometry.vertex_offset,
                     .index_offset = geometry.index_offset,
                     .index_count = geometry.index_count,
@@ -629,15 +719,16 @@ void RenderLSSGeometries::update_buffers(sgl::CommandEncoder* command_encoder)
         m_aabb_work.resize(work_count);
         m_aabb_work.update_buffer(command_encoder);
 
-        // 64 threads per group in X, one geometry per row. Split both dimensions
-        // at the portable group limit, retaining offsets into each geometry/work list.
-        constexpr uint32_t MAX_THREADS_X = 65535 * 64;
-        constexpr uint32_t MAX_THREADS_Y = 65535;
+        // One geometry per row. Split both dimensions at the device/kernel limits,
+        // retaining offsets into each geometry/work list.
+        const uint2 max_tile_size = geometry_dispatch_max_tile_size(m_compute_aabbs_kernel);
         const uint32_t height = sgl::narrow_cast<uint32_t>(work_count);
-        for (uint32_t y = 0; y < height; y += MAX_THREADS_Y) {
-            for (uint32_t x = 0; x < width; x += MAX_THREADS_X) {
+        for (uint32_t y = 0; y < height;) {
+            const uint32_t count_y = std::min(height - y, max_tile_size.y);
+            for (uint32_t x = 0; x < width;) {
+                const uint32_t count_x = std::min(width - x, max_tile_size.x);
                 m_compute_aabbs_kernel->dispatch(
-                    uint3(std::min(width - x, MAX_THREADS_X), std::min(height - y, MAX_THREADS_Y), 1),
+                    uint3(count_x, count_y, 1),
                     [&](sgl::ShaderCursor cursor)
                     {
                         cursor = cursor.find_entry_point(0);
@@ -646,7 +737,9 @@ void RenderLSSGeometries::update_buffers(sgl::CommandEncoder* command_encoder)
                     },
                     command_encoder
                 );
+                x += count_x;
             }
+            y += count_y;
         }
     }
 }
@@ -899,9 +992,13 @@ RenderTriangleGeometry& RenderScene::get_triangle_geometry(RenderTriangleGeometr
     return m_triangle_geometries.m_pool[handle];
 }
 
-void RenderScene::update_triangle_geometry(RenderTriangleGeometryHandle handle, const RenderTriangleGeometryData& data)
+void RenderScene::update_triangle_geometry(
+    RenderTriangleGeometryHandle handle,
+    const RenderTriangleGeometryData& data,
+    RenderGeometryDirtyFlags flags
+)
 {
-    m_triangle_geometries.update(handle, data);
+    m_triangle_geometries.update(handle, data, flags);
 }
 
 RenderLSSGeometryHandle RenderScene::create_lss_geometry(const RenderLSSGeometryDesc& desc)
@@ -945,9 +1042,13 @@ RenderAreaLightGeometry& RenderScene::get_area_light_geometry(RenderAreaLightGeo
     return m_area_light_geometries.m_pool[handle];
 }
 
-void RenderScene::update_lss_geometry(RenderLSSGeometryHandle handle, const RenderLSSGeometryData& data)
+void RenderScene::update_lss_geometry(
+    RenderLSSGeometryHandle handle,
+    const RenderLSSGeometryData& data,
+    RenderGeometryDirtyFlags flags
+)
 {
-    m_lss_geometries.update(handle, data);
+    m_lss_geometries.update(handle, data, flags);
 }
 
 RenderGeometryGroupHandle RenderScene::create_geometry_group(const RenderGeometryGroupDesc& desc)
@@ -986,7 +1087,7 @@ RenderGeometryGroupHandle RenderScene::create_geometry_group(const RenderGeometr
     }
     geometry_group.geometry_type = geometry_type;
 
-    m_geometry_group_pool.mark_dirty(handle, true);
+    m_geometry_group_pool.mark_dirty(handle, RenderGeometryDirtyFlags::rebuild);
 
     return handle;
 }
@@ -1135,6 +1236,8 @@ struct RenderScene::UpdateContext {
     {
     }
 
+    double time = 0;
+
     const HitGroupPolicy& hit_group_policy() const { return m_hit_group_policy; }
 
     sgl::CommandEncoder* command_encoder()
@@ -1158,7 +1261,7 @@ private:
     ref<sgl::CommandEncoder> m_command_encoder;
 };
 
-bool RenderScene::update(const HitGroupPolicy& hit_group_policy, bool requires_opacity_evaluation)
+bool RenderScene::update(const HitGroupPolicy& hit_group_policy, bool requires_opacity_evaluation, double time)
 {
     if (m_requires_opacity_evaluation != requires_opacity_evaluation) {
         m_requires_opacity_evaluation = requires_opacity_evaluation;
@@ -1170,6 +1273,7 @@ bool RenderScene::update(const HitGroupPolicy& hit_group_policy, bool requires_o
     }
 
     UpdateContext ctx(m_device, hit_group_policy);
+    ctx.time = time;
     bool changed = update(ctx);
     ctx.submit_command_encoder();
     return changed;
@@ -1288,8 +1392,8 @@ bool RenderScene::update(UpdateContext& ctx)
 
     // Update geometries.
     // Update all device-side geometry buffers (vertices, indices, descriptors).
-    m_triangle_geometries.update_buffers(ctx.command_encoder());
-    m_lss_geometries.update_buffers(ctx.command_encoder());
+    m_triangle_geometries.update_buffers(ctx.command_encoder(), ctx.time);
+    m_lss_geometries.update_buffers(ctx.command_encoder(), ctx.time);
     m_geometry_buffers.update_buffer(ctx.command_encoder());
     m_area_light_geometries.update_buffers(ctx.command_encoder());
     // TODO(scene): This is where we might call back to user code to run compute shaders on vertex data (displacement
@@ -1299,7 +1403,10 @@ bool RenderScene::update(UpdateContext& ctx)
         for (const auto& [handle, geometry] : m_triangle_geometries.m_pool) {
             if (m_triangle_geometries.m_pool.is_dirty(handle)) {
                 for (const RenderGeometryGroupHandle& geometry_group : geometry.geometry_groups) {
-                    m_geometry_group_pool.mark_dirty(geometry_group, true);
+                    m_geometry_group_pool.mark_dirty(
+                        geometry_group,
+                        m_triangle_geometries.m_pool.dirty_flags()[handle.index()]
+                    );
                 }
             }
         }
@@ -1309,7 +1416,10 @@ bool RenderScene::update(UpdateContext& ctx)
         for (const auto& [handle, geometry] : m_lss_geometries.m_pool) {
             if (m_lss_geometries.m_pool.is_dirty(handle)) {
                 for (const RenderGeometryGroupHandle& geometry_group : geometry.geometry_groups) {
-                    m_geometry_group_pool.mark_dirty(geometry_group, true);
+                    m_geometry_group_pool.mark_dirty(
+                        geometry_group,
+                        m_lss_geometries.m_pool.dirty_flags()[handle.index()]
+                    );
                 }
             }
         }
@@ -1318,14 +1428,13 @@ bool RenderScene::update(UpdateContext& ctx)
         for (const auto& [handle, geometry] : m_area_light_geometries.m_pool) {
             if (m_area_light_geometries.m_pool.is_dirty(handle)) {
                 for (const RenderGeometryGroupHandle& geometry_group : geometry.geometry_groups)
-                    m_geometry_group_pool.mark_dirty(geometry_group, true);
+                    m_geometry_group_pool.mark_dirty(geometry_group, RenderGeometryDirtyFlags::rebuild);
             }
         }
     }
 
     // Update geometry groups.
 
-    // TODO(scene): Collect all dirty geometry groups and update their BLASes only.
     // Mark geometry instances referencing dirty geometry groups as dirty.
     if (m_geometry_group_pool.is_dirty()) {
         for (const auto& [geometry_instance_handle, geometry_instance] : m_geometry_instance_pool) {
@@ -1460,18 +1569,24 @@ void RenderScene::update_blases(UpdateContext& ctx)
 {
     // Update acceleration structures.
     for (const auto& [handle, geometry_group] : m_geometry_group_pool) {
+        if (!m_geometry_group_pool.is_dirty(handle))
+            continue;
         // Build BLAS for the geometry group.
         std::vector<sgl::AccelerationStructureBuildInput> build_inputs;
+        bool has_dynamic_geometry = false;
         for (const RenderHandle& geometry_handle : geometry_group.geometries) {
             sgl::AccelerationStructureBuildInput input;
             switch (geometry_handle.type()) {
             case RenderObjectType::triangle_geometry:
+                has_dynamic_geometry
+                    |= m_triangle_geometries.m_pool[RenderTriangleGeometryHandle{geometry_handle}].is_dynamic;
                 m_triangle_geometries.write_acceleration_structure_build_input(
                     RenderTriangleGeometryHandle{geometry_handle},
                     input
                 );
                 break;
             case RenderObjectType::lss_geometry:
+                has_dynamic_geometry |= m_lss_geometries.m_pool[RenderLSSGeometryHandle{geometry_handle}].is_dynamic;
                 m_lss_geometries.write_acceleration_structure_build_input(
                     RenderLSSGeometryHandle{geometry_handle},
                     input
@@ -1491,17 +1606,33 @@ void RenderScene::update_blases(UpdateContext& ctx)
 
         sgl::AccelerationStructureBuildDesc build_desc;
         build_desc.inputs = build_inputs;
+        if (has_dynamic_geometry)
+            build_desc.flags = sgl::AccelerationStructureBuildFlags::allow_update;
+
+        const auto flags = m_geometry_group_pool.dirty_flags()[handle.index()];
+        const bool refit = has_dynamic_geometry && geometry_group.blas && is_set(flags, RenderGeometryDirtyFlags::refit)
+            && !is_set(flags, RenderGeometryDirtyFlags::rebuild);
+        if (refit)
+            build_desc.mode = sgl::AccelerationStructureBuildMode::update;
 
         sgl::AccelerationStructureSizes sizes = m_device->get_acceleration_structure_sizes(build_desc);
 
-        geometry_group.blas = m_device->create_acceleration_structure({
-            .size = sizes.acceleration_structure_size,
-            .label = fmt::format("GeometryGroup{}", handle.index()),
-        });
+        if (!geometry_group.blas || geometry_group.blas->desc().size < sizes.acceleration_structure_size) {
+            FALCOR_ASSERT(!refit);
+            geometry_group.blas = m_device->create_acceleration_structure({
+                .size = sizes.acceleration_structure_size,
+                .label = fmt::format("GeometryGroup{}", handle.index()),
+            });
+        }
 
-        sgl::Buffer* scratch_buffer = get_scratch_buffer(sizes.scratch_size);
+        sgl::Buffer* scratch_buffer = get_scratch_buffer(refit ? sizes.update_scratch_size : sizes.scratch_size);
 
-        ctx.command_encoder()->build_acceleration_structure(build_desc, geometry_group.blas, nullptr, scratch_buffer);
+        ctx.command_encoder()->build_acceleration_structure(
+            build_desc,
+            geometry_group.blas,
+            refit ? geometry_group.blas.get() : nullptr,
+            scratch_buffer
+        );
 
         ctx.submit_command_encoder();
     }

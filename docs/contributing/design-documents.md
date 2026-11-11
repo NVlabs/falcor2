@@ -6,6 +6,10 @@ agents enough context to find ownership boundaries, follow runtime flow, and und
 reading implementation diaries. This guide is the policy authority for pages under `docs/design/` and for the
 manual process that distills useful knowledge from `.plans/`.
 
+Apply [Writing technical documentation for humans and agents](documentation-writing.md) for general writing
+quality. This design-document policy defines the architecture-specific page contract, evidence requirements,
+length guidance, and review lifecycle.
+
 ## Purpose and boundaries
 
 A design page answers one architectural question. It describes responsibilities, relationships, control or data
@@ -73,6 +77,15 @@ review handoff rather than guessing. Source landmarks must exist at the verifica
 numbers because normal edits make them brittle.
 
 ## Scope, length, and writing style
+
+Use the general writing guide's sections on [reader outcomes](documentation-writing.md#define-the-reader-and-outcome),
+[explanation](documentation-writing.md#explanation), [organization](documentation-writing.md#organize-a-navigable-page),
+[precise prose](documentation-writing.md#write-precise-prose),
+[retrieval context](documentation-writing.md#support-search-and-agent-retrieval),
+[authority](documentation-writing.md#establish-authority-and-freshness), and
+[reader-task review](documentation-writing.md#review-documentation-through-reader-tasks).
+Consult its guidance on procedures, examples, API contracts, or visual presentation when the page includes that
+material. The requirements below specialize that guidance for architectural explanations.
 
 Prefer one coherent architectural question over a source-directory tour. Target 800-1,600 words for a normal page.
 Review pages below 400 words for missing substance or merger, and pages above 2,000 words for splitting. Normally
@@ -153,8 +166,9 @@ migration ledger.
 ## Maintenance skill
 
 The repository-local `$falcor2-maintain-design-docs` skill applies this guide in Audit, Distill, or Retire mode. It is
-explicit-only and must never become a scheduled job or automatic plan-closeout hook. Version one is instruction-only
-and reads this guide rather than duplicating its policy. OpenAI's
+explicit-only and must never become a scheduled job or automatic plan-closeout hook. The skill reads this policy
+and the relevant sections of the general writing guide, then checks architectural accuracy and reader usefulness
+separately. OpenAI's
 [skill documentation](https://learn.chatgpt.com/docs/build-skills) describes the repository skill layout and
 explicit invocation metadata.
 
@@ -163,7 +177,15 @@ explicit invocation metadata.
 Before handing off a page for review, verify its unique target, YAML metadata, opening summary, required sections,
 word count, ASCII source, local links, and every source-landmark path. Confirm that each hidden toctree contains only
 files that exist and that planned filenames remain unlinked. Run pre-commit on all changed files. MyST and Sphinx
-build validation is deferred until the repository intentionally adds that infrastructure.
+validation follows [Building documentation](building-documentation.md#build-and-preview); inspect the rendered page
+and report build warnings or unavailable checks. A successful HTML build does not verify examples or architectural
+claims.
+
+Apply the writing guide's [reader-task review](documentation-writing.md#review-documentation-through-reader-tasks):
+check whether readers can identify the page's question, explain ownership and runtime flow, interpret a substantive
+section independently, and find the relevant source. Report usability findings separately from factual errors,
+with the affected passage, reader consequence, applicable principle, and a focused correction. Keep optional
+editorial suggestions distinct from required fixes. A harmless style preference does not make a claim stale.
 
 Before retirement, repeat page verification at the current commit, inspect dirty files, search the whole repository
 for inbound references, and review the literal deletion set. Stop without deleting anything if approval, evidence,
