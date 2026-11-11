@@ -5,9 +5,10 @@
 #include "falcor2/core/python_interpreter.h"
 #include "falcor2/core/platform.h"
 #include "falcor2/render/scene.h"
+#include "falcor2/importers/mesh_import.h"
+#include "falcor2/importers/light_import.h"
 #include "falcor2/render/material/standard_material.h"
-#include "falcor2/render/material/standard_specgloss_material.h"
-#include "falcor2/render/material/openpbr_material.h"
+#include "falcor2/importers/gltf_importer/gltf_conversions.h"
 #include "falcor2/render/geometry/static_mesh_geometry.h"
 #include "falcor2/render/geometry/static_curve_geometry.h"
 #include "falcor2/render/component/geometry_instance.h"
@@ -18,6 +19,7 @@
 
 #include "falcor2/importers/importer.h"
 #include "falcor2/importers/importer_types.h"
+#include "falcor2/utils/math/transform.h"
 #include "falcor2/importers/gltf_importer/gltf_importer.h"
 #include "falcor2/importers/material_conversions.h"
 #include "falcor2/importers/usd_importer/usd_importer.h"
@@ -26,44 +28,29 @@
 #include <sgl/core/string.h>
 #include <sgl/core/thread.h>
 #include <sgl/core/memory_stream.h>
+#include <sgl/core/crypto.h>
 #include <sgl/device/device.h>
+#include <sgl/device/sampler.h>
 #include <sgl/utils/texture_loader.h>
 
 #include <filesystem>
+#include <fstream>
+#include <cmath>
 #include <map>
 #include <span>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 namespace falcor {
 
-/// Temporary switch for using the OpenPBRMaterial vs StandardMaterial.
-static constexpr bool USE_OPENPBR_MATERIAL = false;
-
-static void set_common_light_properties(Light* light, const ImporterLight& importer_light)
-{
-    light->set_exposure(importer_light.exposure);
-    light->set_enable_color_temperature(importer_light.enable_color_temperature);
-    light->set_color_temperature(importer_light.color_temperature);
-}
-
-template<typename LightT>
-static void set_light_shaping_properties(LightT* light, const ImporterLight& importer_light)
-{
-    set_common_light_properties(light, importer_light);
-    light->set_enable_shaping(importer_light.enable_shaping);
-    light->set_shaping_cone_angle(importer_light.shaping_cone_angle);
-    light->set_shaping_cone_softness(importer_light.shaping_cone_softness);
-    light->set_shaping_focus(importer_light.shaping_focus);
-}
-
 /// Helper function to create a texture from importer embedded texture data.
 /// Returns a ref<sgl::Texture> on success, or an empty ref if no embedded data.
 static ref<sgl::Texture> create_texture_from_embedded_data(
-    sgl::Device* device,
+    Scene* scene,
     std::span<const uint8_t> texture_data,
-    bool load_as_srgb,
+    TextureLoadFlags flags,
     std::string_view source_name
 )
 {
@@ -73,8 +60,10 @@ static ref<sgl::Texture> create_texture_from_embedded_data(
 
     try {
         sgl::MemoryStream stream(texture_data.data(), texture_data.size());
-        sgl::TextureLoader loader{ref<sgl::Device>(device)};
-        return loader.load_texture(&stream, sgl::TextureLoader::Options{.load_as_srgb = load_as_srgb});
+        sgl::TextureLoader loader{ref<sgl::Device>(scene->device())};
+        const auto options
+            = texture_loader_options(flags, sgl::TextureUsage::shader_resource, scene->config().max_mip_count);
+        return loader.load_texture(&stream, options);
     } catch (const std::exception& e) {
         sgl::log_warn("Failed to load embedded texture data for '{}': {}", source_name, e.what());
     }
@@ -85,29 +74,25 @@ static ref<sgl::Texture> create_texture_from_embedded_data(
 /// Helper function to create a texture from importer embedded texture data.
 /// Returns a ref<sgl::Texture> on success, or an empty ref if no embedded data.
 static ref<sgl::Texture>
-create_texture_from_embedded_data(sgl::Device* device, const ImporterTexture& importer_texture, bool load_as_srgb)
+create_texture_from_embedded_data(Scene* scene, const ImporterTexture& importer_texture, TextureLoadFlags flags)
 {
-    return create_texture_from_embedded_data(
-        device,
-        importer_texture.texture_data,
-        load_as_srgb,
-        importer_texture.source_name
-    );
+    return create_texture_from_embedded_data(scene, importer_texture.texture_data, flags, importer_texture.source_name);
 }
 
 struct ImportedTextureSource {
     ref<sgl::Texture> texture;
     std::filesystem::path path;
+    ref<sgl::Sampler> sampler;
 };
 
 class ImportedTextureResolver {
 public:
     ImportedTextureResolver(
-        sgl::Device* device,
+        Scene* scene,
         std::span<const ImporterAsset> importer_assets,
         std::span<const ImporterTexture> importer_textures
     )
-        : m_device(device)
+        : m_scene(scene)
     {
         for (const ImporterTexture& texture : importer_textures) {
             if (!texture.texture_path.empty() && !texture.texture_data.empty())
@@ -117,39 +102,127 @@ public:
             m_assets.try_emplace(asset.path, std::span<const uint8_t>(asset.data));
     }
 
-    ImportedTextureSource resolve(const ImporterTexture& importer_texture, bool load_as_srgb)
+    ImportedTextureSource resolve(const ImporterTexture& importer_texture, TextureLoadFlags flags)
     {
-        if (auto texture = create_texture_from_embedded_data(m_device, importer_texture, load_as_srgb))
-            return {.texture = std::move(texture)};
-        if (auto texture = resolve(importer_texture.texture_path, load_as_srgb))
-            return {.texture = std::move(texture)};
-        return {.path = importer_texture.texture_path};
+        auto sampler = resolve_sampler(importer_texture);
+        if (auto texture = resolve(importer_texture.texture_path, flags))
+            return {.texture = std::move(texture), .sampler = sampler};
+        if (auto texture = create_texture_from_embedded_data(m_scene, importer_texture, flags))
+            return {.texture = std::move(texture), .sampler = sampler};
+        return {.path = importer_texture.texture_path, .sampler = sampler};
     }
 
-    ref<sgl::Texture> resolve(const std::filesystem::path& path, bool load_as_srgb)
+    std::filesystem::path materialx_path(const ImporterTexture& texture)
     {
-        auto& cache = load_as_srgb ? m_srgb_textures : m_linear_textures;
-        if (auto it = cache.find(path); it != cache.end())
+        std::span<const uint8_t> bytes = texture.texture_data;
+        if (bytes.empty()) {
+            if (auto it = m_assets.find(texture.texture_path); it != m_assets.end())
+                bytes = it->second;
+        }
+        if (bytes.empty())
+            return std::filesystem::absolute(texture.texture_path);
+
+        // MaterialX's existing resource loader consumes filenames. Keep embedded
+        // images content-addressed so deferred loads outlive the importer data.
+        const auto directory = platform::app_data_directory() / "gltf-images";
+        std::filesystem::create_directories(directory);
+        const auto hash = sgl::SHA1(bytes.data(), bytes.size()).hex_digest();
+        const auto extension = texture.mime_type == "image/jpeg" ? ".jpg" : ".png";
+        const auto path = directory / (hash + extension);
+        platform::FileLock lock(directory / (hash + ".lock"));
+        FALCOR_CHECK(lock.try_lock(), "Timed out caching embedded glTF texture '{}'", texture.source_name);
+        if (!std::filesystem::exists(path) || std::filesystem::file_size(path) != bytes.size()) {
+            std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+            stream.write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
+            stream.close();
+            FALCOR_CHECK(stream.good(), "Failed to cache embedded glTF texture '{}'", path);
+        }
+        return path;
+    }
+
+    ref<sgl::Texture> resolve(const std::filesystem::path& path, TextureLoadFlags flags)
+    {
+        const auto key = std::make_tuple(path, flags);
+        if (auto it = m_textures.find(key); it != m_textures.end())
             return it->second;
 
         auto asset_it = m_assets.find(path);
         if (asset_it == m_assets.end())
             return {};
 
-        ref<sgl::Texture> texture
-            = create_texture_from_embedded_data(m_device, asset_it->second, load_as_srgb, path.string());
+        ref<sgl::Texture> texture = create_texture_from_embedded_data(m_scene, asset_it->second, flags, path.string());
         if (!texture)
             FALCOR_THROW("Failed to decode embedded texture '{}'", path.string());
 
-        cache.emplace(path, texture);
+        m_textures.emplace(key, texture);
         return texture;
     }
 
 private:
-    sgl::Device* m_device;
+    ref<sgl::Sampler> resolve_sampler(const ImporterTexture& texture)
+    {
+        const auto key = std::make_tuple(
+            texture.min_filter,
+            texture.mag_filter,
+            texture.mip_filter,
+            texture.wrap_s,
+            texture.wrap_t,
+            texture.use_mipmaps
+        );
+        if (auto it = m_samplers.find(key); it != m_samplers.end())
+            return it->second;
+
+        const auto filter = [](TextureFilterMode mode)
+        {
+            return mode == TextureFilterMode::nearest ? sgl::TextureFilteringMode::point
+                                                      : sgl::TextureFilteringMode::linear;
+        };
+        const auto address = [](TextureWrapMode mode)
+        {
+            switch (mode) {
+            case TextureWrapMode::repeat:
+                return sgl::TextureAddressingMode::wrap;
+            case TextureWrapMode::mirror_repeat:
+                return sgl::TextureAddressingMode::mirror_repeat;
+            case TextureWrapMode::clamp_to_edge:
+                return sgl::TextureAddressingMode::clamp_to_edge;
+            }
+            FALCOR_UNREACHABLE();
+        };
+        sgl::SamplerDesc desc;
+        desc.min_filter = filter(texture.min_filter);
+        desc.mag_filter = filter(texture.mag_filter);
+        desc.mip_filter = filter(texture.mip_filter);
+        desc.address_u = address(texture.wrap_s);
+        desc.address_v = address(texture.wrap_t);
+        if (!texture.use_mipmaps)
+            desc.max_lod = 0.f;
+
+        // Leave unspecified/default bindings on the existing scene sampler.
+        const sgl::SamplerDesc defaults;
+        ref<sgl::Sampler> sampler;
+        if (desc.min_filter != defaults.min_filter || desc.mag_filter != defaults.mag_filter
+            || desc.mip_filter != defaults.mip_filter || desc.address_u != defaults.address_u
+            || desc.address_v != defaults.address_v || desc.max_lod != defaults.max_lod) {
+            if (m_scene->device()->type() == sgl::DeviceType::cuda && desc.min_filter != desc.mag_filter)
+                sgl::log_warn(
+                    "Texture '{}': CUDA uses the minification filter for magnification too; "
+                    "the authored min/mag filters differ.",
+                    texture.source_name
+                );
+            sampler = m_scene->device()->create_sampler(desc);
+        }
+        m_samplers.emplace(key, sampler);
+        return sampler;
+    }
+
+    Scene* m_scene;
     std::unordered_map<std::filesystem::path, std::span<const uint8_t>> m_assets;
-    std::unordered_map<std::filesystem::path, ref<sgl::Texture>> m_srgb_textures;
-    std::unordered_map<std::filesystem::path, ref<sgl::Texture>> m_linear_textures;
+    std::map<std::tuple<std::filesystem::path, TextureLoadFlags>, ref<sgl::Texture>> m_textures;
+    std::map<
+        std::tuple<TextureFilterMode, TextureFilterMode, TextureFilterMode, TextureWrapMode, TextureWrapMode, bool>,
+        ref<sgl::Sampler>>
+        m_samplers;
 };
 
 static void set_texture_property(
@@ -163,26 +236,8 @@ static void set_texture_property(
         properties.set(property_name, source.texture);
     else if (!source.path.empty())
         properties.set(property_name_path, source.path);
-}
-
-/// Helper function to set texture properties from importer texture.
-/// Sets the texture reference if embedded data is available, and sets the path property
-/// only if embedded data is not available and path is available.
-static void set_texture_property(
-    Properties& properties,
-    ImportedTextureResolver& texture_resolver,
-    const std::string& property_name,
-    const std::string& property_name_path,
-    const ImporterTexture& importer_texture,
-    bool load_as_srgb = true
-)
-{
-    set_texture_property(
-        properties,
-        property_name,
-        property_name_path,
-        texture_resolver.resolve(importer_texture, load_as_srgb)
-    );
+    if (source.sampler && (source.texture || !source.path.empty()))
+        properties.set(property_name + "_sampler", source.sampler);
 }
 
 static void resolve_embedded_texture_properties(Properties& properties, ImportedTextureResolver& texture_resolver)
@@ -197,7 +252,10 @@ static void resolve_embedded_texture_properties(Properties& properties, Imported
         const std::filesystem::path path = properties.get<std::filesystem::path>(path_property_name);
         const bool srgb = importer_material::is_texture_srgb(properties, path_property_name);
 
-        ref<sgl::Texture> texture = texture_resolver.resolve(path, srgb);
+        auto flags = TextureLoadFlags::generate_mips;
+        if (srgb)
+            flags |= TextureLoadFlags::srgb;
+        ref<sgl::Texture> texture = texture_resolver.resolve(path, flags);
         if (!texture)
             continue;
 
@@ -208,27 +266,20 @@ static void resolve_embedded_texture_properties(Properties& properties, Imported
     }
 }
 
-static void set_alpha_properties(Properties& properties, const Properties& params)
-{
-    properties.set("alpha_mode", params.get("alphaMode", AlphaMode::opaque));
-    properties.set("alpha_cutoff", params.get("alphaCutoff", 0.5f));
-}
-
 static Material* load_importer_material(
     Scene* scene,
     const ImporterMaterial& importer_material,
     std::span<const ImporterTexture> importer_textures,
-    ImportedTextureResolver& texture_resolver
+    ImportedTextureResolver& texture_resolver,
+    bool use_vertex_color
 )
 {
     const Properties& params = importer_material.params;
-    const AlphaMode alpha_mode = params.get("alphaMode", AlphaMode::opaque);
     if (importer_material.constructor) {
         Material* material = importer_material.constructor(*scene, importer_material);
         if (!material) {
             FALCOR_THROW("Constructor for importer material '{}' returned null", importer_material.name);
         }
-        material->set_name(importer_material.name);
         return material;
     }
 
@@ -236,7 +287,6 @@ static Material* load_importer_material(
         Properties resolved_params = params;
         resolve_embedded_texture_properties(resolved_params, texture_resolver);
         auto material = scene->create_material(*scene_material_type, resolved_params);
-        material->set_name(importer_material.name);
         return material;
     }
 
@@ -247,262 +297,101 @@ static Material* load_importer_material(
             resolve_embedded_texture_properties(*converted, texture_resolver);
             auto material
                 = scene->create_material(converted->get<std::string_view>("_scene_material_type"), *converted);
-            material->set_name(importer_material.name);
             return material;
         }
     }
 
-    if (USE_OPENPBR_MATERIAL) {
-        OpenPBRMaterial* material = scene->create_material<OpenPBRMaterial>();
+    std::optional<Properties> converted;
+    const GLTFTextureSetter set_texture
+        = [&](Properties& properties, std::string_view name, const ImporterTexture& texture, TextureLoadFlags flags)
+    {
+        set_texture_property(
+            properties,
+            std::string(name),
+            fmt::format("{}_path", name),
+            texture_resolver.resolve(texture, flags)
+        );
+    };
+    const auto target = params.get<std::string>("_gltf_target", "");
+    if (target == "standard_material")
+        converted = gltf_to_standard(importer_material, importer_textures, use_vertex_color, set_texture);
+    else if (target == "openpbr")
+        converted = gltf_to_openpbr(importer_material, importer_textures, use_vertex_color, set_texture);
+    else if (target == "materialx")
+        converted = gltf_to_mtlx(
+            importer_material,
+            importer_textures,
+            use_vertex_color,
+            scene->config().uv_origin,
+            [&](const ImporterTexture& texture)
+            {
+                return texture_resolver.materialx_path(texture);
+            }
+        );
+    if (!target.empty())
+        FALCOR_CHECK(
+            converted,
+            "glTF material '{}' cannot be converted to requested target '{}'",
+            importer_material.name,
+            target
+        );
+    if (!converted && params.get("_gltf_use_mdl", false)) {
+        converted = gltf_to_mdl(
+            importer_material,
+            importer_textures,
+            scene->config().uv_origin,
+            [&](Properties& properties, std::string_view name, const ImporterTexture& texture, bool srgb)
+            {
+                const auto flags = srgb ? TextureLoadFlags::color : TextureLoadFlags::data_rgb;
+                auto resolved = texture_resolver.resolve(texture, flags);
+                if (!resolved.texture) {
+                    sgl::TextureLoader loader{ref<sgl::Device>(scene->device())};
+                    resolved.texture = loader.load_texture(
+                        resolved.path,
+                        texture_loader_options(flags, sgl::TextureUsage::shader_resource, scene->config().max_mip_count)
+                    );
+                }
+                properties.set(fmt::format("{}:texture", name), resolved.texture);
+                properties.set(fmt::format("{}:sampler", name), resolved.sampler);
+                properties.set(fmt::format("{}:srgb", name), srgb);
+            }
+        );
+    }
+    if (!converted) {
+        converted = gltf_to_gltf(
+            importer_material,
+            importer_textures,
+            use_vertex_color,
+            [&](Properties& properties, std::string_view name, const ImporterTexture& texture, TextureLoadFlags flags)
+            {
+                set_texture_property(
+                    properties,
+                    std::string(name),
+                    fmt::format("{}_path", name),
+                    texture_resolver.resolve(texture, flags)
+                );
+            }
+        );
+    }
+    if (converted) {
+        auto material = scene->create_material(converted->get<std::string_view>("_scene_material_type"), *converted);
         material->set_name(importer_material.name);
-        Properties properties;
-        if (alpha_mode == AlphaMode::mask)
-            properties.set("opacity_threshold", params.get("alphaCutoff", 0.5f));
-
-        if (type && type.value() == "gltf_pbrMetallicRoughness") {
-            if (auto property = params.get_optional<float4>("baseColorFactor")) {
-                properties.set("base_color", property.value().xyz());
-                if (alpha_mode != AlphaMode::opaque)
-                    properties.set("opacity_factor", property.value().w);
-            }
-            if (auto property = params.get_optional<int>("baseColorTexture")) {
-                ImportedTextureSource source = texture_resolver.resolve(importer_textures[property.value()], true);
-                set_texture_property(properties, "base_color_texture", "base_color_texture_path", source);
-                if (alpha_mode != AlphaMode::opaque)
-                    set_texture_property(properties, "opacity_texture", "opacity_texture_path", source);
-            }
-            if (auto property = params.get_optional<float>("metallicFactor")) {
-                properties.set("base_metalness", property.value());
-            }
-            if (auto property = params.get_optional<float>("roughnessFactor")) {
-                properties.set("specular_roughness", property.value());
-            }
-            if (auto property = params.get_optional<int>("metallicRoughnessTexture")) {
-                set_texture_property(
-                    properties,
-                    texture_resolver,
-                    "base_metalness_texture",
-                    "base_metalness_texture_path",
-                    importer_textures[property.value()],
-                    false
-                );
-                // glTF metallic-roughness texture uses B channel for metallic
-                properties.set("base_metalness_texture_channel", 2u);
-                set_texture_property(
-                    properties,
-                    texture_resolver,
-                    "specular_roughness_texture",
-                    "specular_roughness_texture_path",
-                    importer_textures[property.value()],
-                    false
-                );
-                // glTF metallic-roughness texture uses G channel for roughness
-                properties.set("specular_roughness_texture_channel", 1);
-            }
-            if (auto property = params.get_optional<int>("normalTexture")) {
-                set_texture_property(
-                    properties,
-                    texture_resolver,
-                    "normal_texture",
-                    "normal_texture_path",
-                    importer_textures[property.value()],
-                    false
-                );
-            }
-            if (auto property = params.get_optional<float>("normalTexture_strength")) {
-                properties.set("normal_texture_scale", property.value());
-            }
-            if (auto property = params.get_optional<float3>("emissiveFactor")) {
-                properties.set("emission_luminance", 1.f);
-                properties.set("emission_color", property.value());
-            }
-            if (auto property = params.get_optional<int>("emissiveTexture")) {
-                properties.set("emission_luminance", 1.f);
-                set_texture_property(
-                    properties,
-                    texture_resolver,
-                    "emission_color_texture",
-                    "emission_color_texture_path",
-                    importer_textures[property.value()]
-                );
-            }
-        } else if (type && type.value() == "gltf_pbrSpecularGlossiness") {
-
-        } else {
-        }
-
-        material->set_properties(properties);
-
-        return material;
-
-    } else {
-        Material* material = nullptr;
-        Properties properties;
-        set_alpha_properties(properties, params);
-
-        if (type && type.value() == "gltf_pbrMetallicRoughness") {
-            material = scene->create_material<StandardMaterial>();
-
-            if (auto property = params.get_optional<float4>("baseColorFactor")) {
-                properties.set("base_color_factor", property.value().xyz());
-                properties.set("alpha_factor", property.value().w);
-            }
-            if (auto property = params.get_optional<int>("baseColorTexture")) {
-                ImportedTextureSource source = texture_resolver.resolve(importer_textures[property.value()], true);
-                set_texture_property(properties, "base_color_texture", "base_color_texture_path", source);
-            }
-            if (auto property = params.get_optional<float>("metallicFactor")) {
-                properties.set("metallic_factor", property.value());
-            }
-            if (auto property = params.get_optional<float>("roughnessFactor")) {
-                properties.set("roughness_factor", property.value());
-            }
-            if (auto property = params.get_optional<int>("metallicRoughnessTexture")) {
-                set_texture_property(
-                    properties,
-                    texture_resolver,
-                    "metallic_roughness_texture",
-                    "metallic_roughness_texture_path",
-                    importer_textures[property.value()],
-                    false
-                );
-                // glTF metallic-roughness texture uses B channel for metallic
-                properties.set("metallic_texture_channel", 2u);
-            }
-            if (auto property = params.get_optional<int>("normalTexture")) {
-                set_texture_property(
-                    properties,
-                    texture_resolver,
-                    "normal_texture",
-                    "normal_texture_path",
-                    importer_textures[property.value()],
-                    false
-                );
-            }
-            if (auto property = params.get_optional<float>("normalTexture_strength")) {
-                properties.set("normal_texture_scale", property.value());
-            }
-            if (auto property = params.get_optional<float3>("emissiveFactor")) {
-                properties.set("emissive_factor", property.value());
-            }
-            if (auto property = params.get_optional<int>("emissiveTexture")) {
-                set_texture_property(
-                    properties,
-                    texture_resolver,
-                    "emissive_texture",
-                    "emissive_texture_path",
-                    importer_textures[property.value()]
-                );
-            }
-        } else if (type && type.value() == "gltf_pbrSpecularGlossiness") {
-            material = scene->create_material<StandardSpecGlossMaterial>();
-
-            if (auto property = params.get_optional<float4>("diffuseFactor")) {
-                properties.set("diffuse_factor", property.value().xyz());
-                properties.set("alpha_factor", property.value().w);
-            }
-            if (auto property = params.get_optional<int>("diffuseTexture")) {
-                ImportedTextureSource source = texture_resolver.resolve(importer_textures[property.value()], true);
-                set_texture_property(properties, "diffuse_texture", "diffuse_texture_path", source);
-            }
-            if (auto property = params.get_optional<float3>("specularFactor")) {
-                properties.set("specular_factor", property.value());
-            }
-            if (auto property = params.get_optional<float>("glossinessFactor")) {
-                properties.set("glossiness_factor", property.value());
-            }
-            if (auto property = params.get_optional<int>("specularGlossinessTexture")) {
-                set_texture_property(
-                    properties,
-                    texture_resolver,
-                    "specular_glossiness_texture",
-                    "specular_glossiness_texture_path",
-                    importer_textures[property.value()]
-                );
-            }
-            if (auto property = params.get_optional<int>("normalTexture")) {
-                set_texture_property(
-                    properties,
-                    texture_resolver,
-                    "normal_texture",
-                    "normal_texture_path",
-                    importer_textures[property.value()],
-                    false
-                );
-            }
-            if (auto property = params.get_optional<float>("normalTexture_strength")) {
-                properties.set("normal_texture_scale", property.value());
-            }
-            if (auto property = params.get_optional<float3>("emissiveFactor")) {
-                properties.set("emissive_factor", property.value());
-            }
-            if (auto property = params.get_optional<int>("emissiveTexture")) {
-                set_texture_property(
-                    properties,
-                    texture_resolver,
-                    "emissive_texture",
-                    "emissive_texture_path",
-                    importer_textures[property.value()]
-                );
-            }
-        } else {
-            material = scene->create_material<StandardMaterial>();
-        }
-
-        if (auto property = params.get_optional<bool>("doubleSided")) {
-            properties.set("double_sided", property.value());
-        }
-
-        material->set_name(importer_material.name);
-        material->set_properties(properties);
-
         return material;
     }
+
+    Properties properties;
+    properties.set("alpha_mode", params.get("alphaMode", AlphaMode::opaque));
+    properties.set("alpha_cutoff", params.get("alphaCutoff", 0.5f));
+    properties.set("use_vertex_color", use_vertex_color);
+    auto material = scene->create_material<StandardMaterial>();
+    material->set_properties(properties);
+    return material;
 }
 
 static StaticMeshGeometry* load_importer_mesh(Scene* scene, const ImporterMesh& importer_mesh)
 {
-    StaticMeshGeometryDataDesc desc = {};
-    std::vector<float2> converted_texcoords;
-    auto texcoord_stream = importer_mesh.texcoord_stream();
-    // SceneConfig defines the target convention for loaded scene UVs.
-    // ImporterMesh::uv_origin describes the mesh's authored texcoords, so convert only when they differ.
-    if (importer_mesh.uv_origin != scene->config().uv_origin && texcoord_stream.valid()) {
-        converted_texcoords.resize(importer_mesh.vertex_count());
-        for (size_t i = 0; i < importer_mesh.vertex_count(); ++i) {
-            converted_texcoords[i] = texcoord_stream[i];
-            converted_texcoords[i].y = 1.f - converted_texcoords[i].y;
-        }
-    }
-
-    desc.name = importer_mesh.name;
-    desc.vertex_count = sgl::narrow_cast<uint32_t>(importer_mesh.vertex_count());
-    desc.position_stream.data = reinterpret_cast<const float3*>(importer_mesh.position_stream().data);
-    desc.position_stream.stride = importer_mesh.position_stream().stride;
-    desc.normal_stream.data = reinterpret_cast<const float3*>(importer_mesh.normal_stream().data);
-    desc.normal_stream.stride = importer_mesh.normal_stream().stride;
-    desc.tangent_stream.data = reinterpret_cast<const float3*>(importer_mesh.tangent_stream().data);
-    desc.tangent_stream.stride = importer_mesh.tangent_stream().stride;
-    desc.handedness_stream.data = reinterpret_cast<const float*>(importer_mesh.handedness_stream().data);
-    desc.handedness_stream.stride = importer_mesh.handedness_stream().stride;
-    if (converted_texcoords.empty()) {
-        desc.texcoord_stream.data = reinterpret_cast<const float2*>(texcoord_stream.data);
-        desc.texcoord_stream.stride = texcoord_stream.stride;
-    } else {
-        desc.texcoord_stream.data = converted_texcoords.data();
-        desc.texcoord_stream.stride = sizeof(float2);
-    }
-    for (const ImporterMesh::Subgeometry& subgeo : importer_mesh.subgeometries) {
-        StaticMeshGeometryDataDesc::SubMesh sub_mesh = {};
-        sub_mesh.name = subgeo.name;
-        sub_mesh.index_count = sgl::narrow_cast<uint32_t>(subgeo.indices.size()) * 3;
-        sub_mesh.index_stream.data = reinterpret_cast<const uint32_t*>(subgeo.indices.data());
-        sub_mesh.index_stream.stride = sizeof(float);
-        desc.sub_meshes.push_back(sub_mesh);
-    }
-
-    StaticMeshGeometry* geometry = scene->create_geometry<StaticMeshGeometry>();
-    geometry->set_mesh_data(desc);
+    auto* geometry = scene->create_geometry<StaticMeshGeometry>();
+    update_imported_mesh(geometry, importer_mesh, scene->config().uv_origin);
     return geometry;
 }
 
@@ -510,49 +399,115 @@ static StaticCurveGeometry* load_importer_curve(Scene* scene, const ImporterCurv
 {
     StaticCurveGeometryDataDesc desc = {};
     desc.name = importer_curve.name;
-    desc.vertex_count = sgl::narrow_cast<uint32_t>(importer_curve.positions.size());
-    desc.position_stream.data = importer_curve.positions.data();
-    desc.position_stream.stride = sizeof(float3);
-    desc.radius_stream.data = importer_curve.radii.data();
-    desc.radius_stream.stride = sizeof(float);
+    desc.vertex_count = sgl::narrow_cast<uint32_t>(importer_curve.vertex_count());
+    const auto positions = importer_curve.position_stream();
+    const auto radii = importer_curve.radius_stream();
+    desc.position_stream.data = reinterpret_cast<const float3*>(positions.data);
+    desc.position_stream.stride = positions.stride;
+    desc.radius_stream.data = reinterpret_cast<const float*>(radii.data);
+    desc.radius_stream.stride = radii.stride;
     desc.index_count = sgl::narrow_cast<uint32_t>(importer_curve.indices.size());
     desc.index_stream.data = importer_curve.indices.data();
     desc.index_stream.stride = sizeof(uint32_t);
     desc.indexing_mode = importer_curve.indexing_mode;
 
+    std::span<const float2> texcoords = importer_curve.texcoords;
+    std::vector<float2> converted_texcoords;
+    GeometryVertexAttributeDesc texcoord_attribute = {};
+    if (!texcoords.empty()) {
+        FALCOR_CHECK(texcoords.size() == desc.vertex_count, "Curve '{}' UV count does not match positions", desc.name);
+        if (importer_curve.uv_origin != scene->config().uv_origin) {
+            converted_texcoords.assign(texcoords.begin(), texcoords.end());
+            for (float2& uv : converted_texcoords)
+                uv.y = 1.f - uv.y;
+            texcoords = converted_texcoords;
+        }
+        texcoord_attribute = {
+            .semantic = MeshAttributeSemantic::tex_coord,
+            .index = 0,
+            .type = sgl::DataType::float32,
+            .component_count = 2,
+            .data = texcoords.data(),
+            .stride = sizeof(float2),
+            .data_size = texcoords.size() * sizeof(float2),
+        };
+        desc.vertex_attributes = std::span(&texcoord_attribute, 1);
+    }
+
     StaticCurveGeometry* geometry = scene->create_geometry<StaticCurveGeometry>();
     geometry->set_curve_data(desc);
+    geometry->_set_source_asset_ref(importer_curve.source_asset_ref);
     return geometry;
 }
 
 static SceneConfig resolve_scene_config(std::optional<SceneConfig> config, const ImporterScene& importer_scene)
 {
-    return config.value_or(SceneConfig(importer_scene.uv_origin));
+    SceneConfig result = config.value_or(SceneConfig{.uv_origin = importer_scene.uv_origin});
+    if (importer_scene.max_mip_count)
+        result.max_mip_count = result.max_mip_count ? std::min(result.max_mip_count, importer_scene.max_mip_count)
+                                                    : importer_scene.max_mip_count;
+    return result;
 }
 
 static void append_importer_scene(Scene* scene, const ImporterScene& importer_scene)
 {
-    ImportedTextureResolver texture_resolver(scene->device(), importer_scene.assets, importer_scene.textures);
+    ImportedTextureResolver texture_resolver(scene, importer_scene.assets, importer_scene.textures);
+
+    std::vector<bool> indexed_vertex_color_materials(importer_scene.materials.size(), false);
+    bool default_material_uses_vertex_color = false;
+    for (const ImporterMesh& mesh : importer_scene.meshes) {
+        if (!mesh.color_attribute().valid())
+            continue;
+        for (const ImporterMesh::Subgeometry& subgeometry : mesh.subgeometries) {
+            if (subgeometry.material_index >= 0
+                && subgeometry.material_index < static_cast<int>(importer_scene.materials.size()))
+                indexed_vertex_color_materials[subgeometry.material_index] = true;
+            else
+                default_material_uses_vertex_color = true;
+        }
+    }
 
     // Import materials.
-    std::map<std::string, Material*> name_to_material;
-    for (const ImporterMaterial& importer_material : importer_scene.materials) {
-        name_to_material[importer_material.name]
-            = load_importer_material(scene, importer_material, importer_scene.textures, texture_resolver);
+    std::vector<Material*> imported_materials;
+    imported_materials.reserve(importer_scene.materials.size());
+    for (size_t material_index = 0; material_index < importer_scene.materials.size(); ++material_index) {
+        const ImporterMaterial& importer_material = importer_scene.materials[material_index];
+        Material* material = load_importer_material(
+            scene,
+            importer_material,
+            importer_scene.textures,
+            texture_resolver,
+            indexed_vertex_color_materials[material_index]
+        );
+        if (importer_material.params.get<bool>("double_sided", false)) {
+            Properties properties;
+            properties.set("double_sided", true);
+            properties.set("enable_backface_culling", false);
+            material->set_properties(properties);
+        }
+        material->set_name(importer_material.name);
+        if (importer_material.source_asset_ref)
+            material->_set_source_asset_ref(importer_material.source_asset_ref);
+        imported_materials.push_back(material);
     }
 
     Material* default_material = nullptr;
-    auto resolve_material = [&](const std::string& material_name) -> Material*
+    auto resolve_material = [&](int material_index) -> Material*
     {
-        if (auto it = name_to_material.find(material_name); it != name_to_material.end())
-            return it->second;
-
-        if (!material_name.empty())
-            sgl::log_warn("Importer geometry references missing material '{}'; using default material", material_name);
+        if (material_index >= 0 && material_index < static_cast<int>(imported_materials.size()))
+            return imported_materials[material_index];
+        if (material_index != -1)
+            sgl::log_warn(
+                "Importer geometry references invalid material index {}; using default material",
+                material_index
+            );
 
         if (!default_material) {
             default_material = scene->create_material<StandardMaterial>();
             default_material->set_name("DefaultMaterial");
+            Properties properties;
+            properties.set("use_vertex_color", default_material_uses_vertex_color);
+            default_material->set_properties(properties);
         }
         return default_material;
     };
@@ -565,7 +520,7 @@ static void append_importer_scene(Scene* scene, const ImporterScene& importer_sc
         mesh_geometries.push_back(mesh_geometry);
         std::vector<Material*> materials;
         for (const ImporterMesh::Subgeometry& subgeo : importer_mesh.subgeometries) {
-            materials.push_back(resolve_material(subgeo.material_name));
+            materials.push_back(resolve_material(subgeo.material_index));
         }
         mesh_geometry_to_materials[mesh_geometry] = std::move(materials);
     }
@@ -576,7 +531,7 @@ static void append_importer_scene(Scene* scene, const ImporterScene& importer_sc
     for (const ImporterCurve& importer_curve : importer_scene.curves) {
         StaticCurveGeometry* curve_geometry = load_importer_curve(scene, importer_curve);
         curve_geometries.push_back(curve_geometry);
-        curve_geometry_to_material[curve_geometry] = resolve_material(importer_curve.material_name);
+        curve_geometry_to_material[curve_geometry] = resolve_material(importer_curve.material_index);
     }
 
     // Create Animation object from importer scene (before entities, so TransformAnimation can reference it).
@@ -584,17 +539,20 @@ static void append_importer_scene(Scene* scene, const ImporterScene& importer_sc
     if (!importer_scene.animation.channels.empty()) {
         animation = scene->create_animation();
         animation->set_name(importer_scene.animation.name);
-        animation->channels.reserve(importer_scene.animation.channels.size());
+        animation->_set_source_asset_ref(importer_scene.animation.source_asset_ref);
+        std::vector<ref<AnimationChannel>> channels;
+        channels.reserve(importer_scene.animation.channels.size());
         for (const ImporterAnimationChannel& src : importer_scene.animation.channels) {
-            AnimationChannel dst;
-            dst.value_type = src.value_type;
-            dst.interpolation_mode = src.interpolation_mode;
-            dst.times = src.times;
-            dst.values = src.values;
-            dst.in_tangents = src.in_tangents;
-            dst.out_tangents = src.out_tangents;
-            animation->channels.push_back(std::move(dst));
+            auto dst = make_ref<AnimationChannel>();
+            dst->set_value_type(src.value_type);
+            dst->set_interpolation_mode(src.interpolation_mode);
+            dst->set_times(src.times);
+            dst->set_values(src.values);
+            dst->set_in_tangents(src.in_tangents);
+            dst->set_out_tangents(src.out_tangents);
+            channels.push_back(std::move(dst));
         }
+        animation->set_channels(std::move(channels));
     }
 
     auto create_entities_recursive = [&](int node_idx, Entity* parent, std::string_view prefix, auto recurse) -> void
@@ -602,16 +560,18 @@ static void append_importer_scene(Scene* scene, const ImporterScene& importer_sc
         const ImporterNode& importer_node = importer_scene.nodes[node_idx];
 
         Entity* entity = scene->create_entity();
-        entity->set_name(fmt::format("{}{}", prefix, importer_node.name));
         entity->set_transform(Transform(importer_node.transform));
         entity->set_parent(parent);
+        entity->set_name(fmt::format("{}{}", prefix, importer_node.name));
+        entity->_set_source_asset_ref(importer_node.source_asset_ref);
 
         // Create TransformAnimation component if this node has animation channels.
         if (animation
             && (importer_node.animation_translation >= 0 || importer_node.animation_rotation >= 0
                 || importer_node.animation_scale >= 0)) {
-            const int channel_count = static_cast<int>(animation->channels.size());
+            const int channel_count = static_cast<int>(animation->channels().size());
             TransformAnimation* ta = entity->create_component<TransformAnimation>();
+            ta->_set_source_asset_ref(importer_node.source_asset_ref);
             ta->set_animation(animation);
             if (importer_node.animation_translation >= 0 && importer_node.animation_translation < channel_count)
                 ta->set_translation_channel(importer_node.animation_translation);
@@ -622,8 +582,9 @@ static void append_importer_scene(Scene* scene, const ImporterScene& importer_sc
         }
 
         if (importer_node.mesh_index >= 0) {
-            FALCOR_ASSERT_LT(importer_node.mesh_index, mesh_geometries.size());
+            FALCOR_ASSERT_LT(static_cast<size_t>(importer_node.mesh_index), mesh_geometries.size());
             GeometryInstance* instance = entity->create_component<GeometryInstance>();
+            instance->_set_source_asset_ref(importer_node.source_asset_ref);
             StaticMeshGeometry* mesh_geometry = mesh_geometries[importer_node.mesh_index];
             instance->set_geometry(mesh_geometry);
             auto it = mesh_geometry_to_materials.find(mesh_geometry);
@@ -631,8 +592,9 @@ static void append_importer_scene(Scene* scene, const ImporterScene& importer_sc
             instance->set_materials(it->second);
         }
         if (importer_node.curve_index >= 0) {
-            FALCOR_ASSERT_LT(importer_node.curve_index, curve_geometries.size());
+            FALCOR_ASSERT_LT(static_cast<size_t>(importer_node.curve_index), curve_geometries.size());
             GeometryInstance* instance = entity->create_component<GeometryInstance>();
+            instance->_set_source_asset_ref(importer_node.source_asset_ref);
             StaticCurveGeometry* curve_geometry = curve_geometries[importer_node.curve_index];
             instance->set_geometry(curve_geometry);
             auto it = curve_geometry_to_material.find(curve_geometry);
@@ -641,75 +603,21 @@ static void append_importer_scene(Scene* scene, const ImporterScene& importer_sc
             }
         }
         if (importer_node.light_index >= 0) {
-            FALCOR_ASSERT_LT(importer_node.light_index, importer_scene.lights.size());
+            FALCOR_ASSERT_LT(static_cast<size_t>(importer_node.light_index), importer_scene.lights.size());
             const ImporterLight& importer_light = importer_scene.lights[importer_node.light_index];
-            switch (importer_light.type) {
-            case ImporterLight::Type::distant: {
-                DistantLight* distant_light = entity->create_component<DistantLight>();
-                distant_light->set_radiance(importer_light.intensity);
-                set_common_light_properties(distant_light, importer_light);
-                // Scene distant light expects a half angle
-                distant_light->set_cutoff_angle(0.5f * importer_light.degree_angular_diameter);
-                break;
-            }
-            case ImporterLight::Type::rectangular: {
-                RectLight* rect_light = entity->create_component<RectLight>();
-                rect_light->set_radiance(importer_light.intensity);
-                set_light_shaping_properties(rect_light, importer_light);
-                rect_light->set_width(importer_light.width);
-                rect_light->set_height(importer_light.height);
-                break;
-            }
-            case ImporterLight::Type::sphere: {
-                SphereLight* sphere_light = entity->create_component<SphereLight>();
-                sphere_light->set_radiance(importer_light.intensity);
-                set_light_shaping_properties(sphere_light, importer_light);
-                sphere_light->set_radius(importer_light.radius);
-                sphere_light->set_enable_virtual_sphere_shrinking(importer_light.enable_virtual_sphere_shrinking);
-                break;
-            }
-            case ImporterLight::Type::point: {
-                PointLight* point_light = entity->create_component<PointLight>();
-                point_light->set_intensity(importer_light.intensity);
-                set_light_shaping_properties(point_light, importer_light);
-                break;
-            }
-            case ImporterLight::Type::disk: {
-                DiskLight* disk_light = entity->create_component<DiskLight>();
-                disk_light->set_radiance(importer_light.intensity);
-                set_light_shaping_properties(disk_light, importer_light);
-                disk_light->set_radius(importer_light.radius);
-                break;
-            }
-            case ImporterLight::Type::dome: {
-                if (importer_light.env_map_path.empty()) {
-                    ConstantLight* constant_light = entity->create_component<ConstantLight>();
-                    constant_light->set_radiance(importer_light.intensity);
-                    set_common_light_properties(constant_light, importer_light);
-                } else {
-                    EnvMapLight* env_map_light = entity->create_component<EnvMapLight>();
-                    if (ref<sgl::Texture> texture = texture_resolver.resolve(importer_light.env_map_path, false))
-                        env_map_light->set_env_map_texture(std::move(texture));
-                    else
-                        env_map_light->set_env_map_path(importer_light.env_map_path);
-                    env_map_light->set_intensity(importer_light.intensity);
-                    set_common_light_properties(env_map_light, importer_light);
-                }
-                break;
-            }
-            case ImporterLight::Type::constant: {
-                ConstantLight* constant_light = entity->create_component<ConstantLight>();
-                constant_light->set_radiance(importer_light.intensity);
-                set_common_light_properties(constant_light, importer_light);
-                break;
-            }
+            Light* light = update_imported_light(entity, nullptr, importer_light);
+            if (auto* env_map_light = dynamic_cast<EnvMapLight*>(light)) {
+                if (ref<sgl::Texture> texture
+                    = texture_resolver.resolve(importer_light.env_map_path, TextureLoadFlags::environment))
+                    env_map_light->set_env_map_texture(std::move(texture));
             }
         }
         if (importer_node.camera_index >= 0) {
-            FALCOR_ASSERT_LT(importer_node.camera_index, importer_scene.cameras.size());
+            FALCOR_ASSERT_LT(static_cast<size_t>(importer_node.camera_index), importer_scene.cameras.size());
             const ImporterCamera& importer_camera = importer_scene.cameras[importer_node.camera_index];
             Camera* camera = entity->create_component<Camera>();
             camera->set_name(importer_camera.name);
+            camera->_set_source_asset_ref(importer_camera.source_asset_ref);
             // Normalize directional importer data to Camera's vertical film-fit model.
             camera->set_focal_length(importer_camera.focal_length);
             camera->set_fstop(importer_camera.fstop);
@@ -729,7 +637,7 @@ static void append_importer_scene(Scene* scene, const ImporterScene& importer_sc
 
         // Process instanced prototype
         if (importer_node.prototype_index >= 0) {
-            FALCOR_ASSERT_LT(importer_node.prototype_index, importer_scene.prototypes.size());
+            FALCOR_ASSERT_LT(static_cast<size_t>(importer_node.prototype_index), importer_scene.prototypes.size());
             recurse(
                 importer_scene.prototypes[importer_node.prototype_index].root_node,
                 entity,
@@ -799,6 +707,17 @@ ref<Scene> Scene::load(
         }
     );
     return scene;
+}
+
+ref<Scene> Scene::from_stage(
+    ref<sgl::Device> device,
+    const pxr::UsdStage& stage,
+    std::optional<ImportOptions> import_options,
+    std::optional<SceneConfig> config
+)
+{
+    ref<ImporterScene> importer_scene = UsdImporter().import_stage(stage, import_options.value_or(ImportOptions{}));
+    return from_importer_scene(std::move(device), *importer_scene, config);
 }
 
 ref<Scene> Scene::from_importer_scene(

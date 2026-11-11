@@ -60,8 +60,8 @@ public struct RayTracingSceneIntersector : ISceneIntersector
         RayPayload payload = {};
         TraceRay(
             g_scene.tlas,
-            0,
-            0xff,
+            TRIANGLE_BACKFACE_CULLING_RAY_FLAG,
+            INSTANCE_INCLUSION_MASK_REGULAR_GEOMETRY,
             0 /* RayContributionToHitGroupIndex */,
             0 /* MultiplierForGeometryContributionHitGroupIndex */,
             0 /* MissShaderIndex */,

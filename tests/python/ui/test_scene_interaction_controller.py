@@ -243,6 +243,7 @@ def test_selection_version_starts_at_zero():
     assert editor.selection_version == 0
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_selection_version_increments_on_set_selected_object(
     device_type: spy.DeviceType,
@@ -299,6 +300,7 @@ def test_scene_editor_keyboard_shortcuts_without_scene():
     )
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_scene_editor_keyboard_shortcuts(device_type: spy.DeviceType):
     device = helpers.get_device(device_type)

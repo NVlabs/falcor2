@@ -172,9 +172,17 @@ class Scene:
     MAX_INSTANCE_COUNT = 8000
     MAX_EMISSIVE_TRIANGLE_COUNT = 1024 * 1024
 
-    def __init__(self, device: "Device"):
+    def __init__(
+        self,
+        device: "Device",
+        *,
+        initial_vertex_capacity: int = 10_000_000,
+        initial_index_capacity: int = 10_000_000,
+    ):
         super().__init__()
         self.device = device
+        self.initial_vertex_capacity = initial_vertex_capacity
+        self.initial_index_capacity = initial_index_capacity
         self.geometry_instances: list[GeometryInstance] = []
         self.geometries: list[Geometry] = []
         self.materials: list[Material] = []
@@ -321,7 +329,7 @@ class Scene:
             if idx >= 0:
                 return i, idx
 
-        size = 10000000
+        size = self.initial_vertex_capacity
         if count > size:
             size = count
 
@@ -340,7 +348,7 @@ class Scene:
             if idx >= 0:
                 return i, idx
 
-        size = 10000000
+        size = self.initial_index_capacity
         if count > size:
             size = count
 

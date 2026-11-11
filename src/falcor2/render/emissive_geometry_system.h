@@ -4,11 +4,13 @@
 #pragma once
 
 #include "falcor2/render/scene_system.h"
+#include "falcor2/render/scene_requirements.h"
 #include "falcor2/render/shared_emissive_geometry_types.h"
 
 #include <sgl/device/fwd.h>
 #include <sgl/device/shader.h>
 
+#include <array>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -63,8 +65,42 @@ public:
     FALCOR_API std::span<const shared::EmissiveTriangleID> active_triangle_ids() const;
 
 private:
+    struct TransformChanges {
+        bool geometry_changed{false};
+        bool flux_changed{false};
+    };
+
+    struct TransformStretch {
+        std::array<double, 3> diagonal{};
+        // The symmetric metric's remaining entries, in XY, YZ, ZX order.
+        std::array<double, 3> off_diagonal{};
+        double tolerance_scale{0.0};
+
+        explicit TransformStretch(const float4x4& world_matrix);
+        bool preserves_area(const TransformStretch& reference) const;
+    };
+
+    struct EntityTransformStretch {
+        const Entity* entity;
+        TransformStretch reference;
+    };
+
     void create_kernels();
     void clear_resources();
+
+    /// Checks dirty tracked entities and updates reference metrics when flux is invalidated.
+    TransformChanges classify_transform_changes();
+    /// Rebuilds tracked entities from triangle counts indexed by geometry instance.
+    /// Returns whether a contributing entity has a dirty transform.
+    bool rebuild_transform_stretch(std::span<const uint32_t> triangle_counts);
+    /// Returns whether a contributing entity has a dirty transform, including during material edits.
+    bool rebuild_emission(SceneUpdateContext& ctx, uint32_t geometry_instance_count);
+    /// Requires initialized, nonempty triangle data. Submits GPU work and blocks for emission sampling readbacks.
+    void sample_triangle_emission(SceneUpdateContext& ctx);
+    /// Requires sampled emission for nonempty triangle data. Submits GPU work and reads back the active count.
+    void rebuild_active_triangles(SceneUpdateContext& ctx);
+    /// Updates world-space geometry, preserving cached flux when update_flux is false.
+    void update_triangles(SceneUpdateContext& ctx, bool update_flux);
 
 private:
     sgl::Device* m_device;
@@ -85,8 +121,12 @@ private:
     ref<sgl::ComputeKernel> m_setup_active_triangle_mapping_kernel;
     ref<sgl::ComputeKernel> m_update_triangle_kernel;
 
-    uint64_t m_requirements_generation{0};
+    ref<const SceneRequirements> m_scene_requirements;
     EmissiveGeometryGenerations m_generations;
+
+    // Borrowed entities remain alive until scene collection compaction, after this system updates.
+    // Membership is rebuilt from GPU triangle counts whenever emission data changes.
+    std::vector<EntityTransformStretch> m_transform_stretch;
 
     uint32_t m_triangle_count{0};
     uint32_t m_active_triangle_count{0};

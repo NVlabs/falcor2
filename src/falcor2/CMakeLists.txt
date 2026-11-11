@@ -1,6 +1,7 @@
 
 add_library(falcor2 SHARED)
 
+
 target_sources(falcor2 PRIVATE
     falcor2.cpp
     falcor2.h
@@ -52,6 +53,15 @@ target_sources(falcor2 PRIVATE
     core/ustring.cpp
     core/ustring.h
 
+    streaming/frame_converter.cpp
+    streaming/frame_converter.h
+    streaming/video_encoder.cpp
+    streaming/video_encoder.h
+    streaming/video_format.h
+    streaming/webrtc.cpp
+    streaming/webrtc.h
+    streaming/webrtc_internal.h
+
     ui/camera_controller.cpp
     ui/camera_controller.h
     ui/editor_command.cpp
@@ -75,6 +85,7 @@ target_sources(falcor2 PRIVATE
     ui/selection_overlay.h
     ui/widgets.cpp
     ui/widgets.h
+
     external/imguizmo.cpp
     external/tiny_gltf.cpp
     external/tiny_gltf.h
@@ -114,8 +125,16 @@ target_sources(falcor2 PRIVATE
     importers/importer_collections.h
     importers/importer_edits.cpp
     importers/importer_edits.h
+    geometry/tangent_transfer.cpp
+    geometry/tangent_transfer.h
+
     importers/importer_types.cpp
     importers/importer_types.h
+    importers/importer_utils.h
+    importers/light_import.cpp
+    importers/light_import.h
+    importers/mesh_import.cpp
+    importers/mesh_import.h
     importers/vertex_remap.cpp
     importers/vertex_remap.h
     importers/importer.cpp
@@ -124,15 +143,29 @@ target_sources(falcor2 PRIVATE
     importers/mikkt.h
     importers/mikkt_internal.h
 
+    importers/curve_tessellator/curve_tessellator.cpp
+    importers/curve_tessellator/curve_tessellator.h
+    importers/curve_tessellator/curve_tessellator_internal.h
+    importers/curve_tessellator/curve_tessellator_ribbons.cpp
+    importers/usd_importer/usd_importer_curve_adapter.cpp
+    importers/usd_importer/usd_importer_curve_adapter.h
     importers/mesh_tessellator/mesh_tessellator.cpp
     importers/mesh_tessellator/mesh_tessellator.h
     importers/mesh_tessellator/mesh_tessellator_bfr.cpp
     importers/mesh_tessellator/mesh_tessellator_common.cpp
     importers/mesh_tessellator/mesh_tessellator_internal.h
+    importers/mesh_tessellator/mesh_tessellator_normals.cpp
     importers/mesh_tessellator/mesh_tessellator_triangulate.cpp
 
     importers/gltf_importer/gltf_importer.cpp
     importers/gltf_importer/gltf_importer.h
+    importers/gltf_importer/gltf_conversions.h
+    importers/gltf_importer/gltf_to_gltf.cpp
+    importers/gltf_importer/gltf_to_mdl.cpp
+    importers/gltf_importer/gltf_conversion_utils.h
+    importers/gltf_importer/gltf_to_standard.cpp
+    importers/gltf_importer/gltf_to_openpbr.cpp
+    importers/gltf_importer/gltf_to_mtlx.cpp
 
     importers/material_conversions.cpp
     importers/material_conversions.h
@@ -151,10 +184,11 @@ target_sources(falcor2 PRIVATE
     importers/usd_importer/usd_importer_materialx.cpp
     importers/usd_importer/usd_importer_materialx.h
     importers/usd_importer/usdshade_to_mtlx.h
-    importers/usd_importer/usd_importer_curve_tesselator.cpp
-    importers/usd_importer/usd_importer_curve_tesselator.h
     importers/usd_importer/usd_importer_mesh_adapter.cpp
     importers/usd_importer/usd_importer_mesh_adapter.h
+    importers/usd_importer/usd_importer_skinning.cpp
+    importers/usd_importer/usd_importer_skinning_animated.cpp
+    importers/usd_importer/usd_importer_skinning.h
     importers/usd_importer/usd_importer_utils.cpp
     importers/usd_importer/usd_importer_utils.h
     importers/usd_importer/usd_importer.cpp
@@ -165,9 +199,12 @@ target_sources(falcor2 PRIVATE
     utils/color.h
     utils/buffer_handle.cpp
     utils/buffer_handle.h
+    utils/buffer_offset_pair.cpp
+    utils/buffer_offset_pair.h
+    utils/buffer_suballocator.cpp
+    utils/buffer_suballocator.h
     utils/fnv_hash.h
     utils/indexed_vector.h
-    utils/managed_buffer.h
     utils/managed_vector.h
     utils/offset_allocator.cpp
     utils/offset_allocator.h
@@ -194,6 +231,8 @@ target_sources(falcor2 PRIVATE
     render/emissive_geometry_system.h
     render/light_sampler.cpp
     render/light_sampler.h
+    render/reconstruction_filter.cpp
+    render/reconstruction_filter.h
     render/emissive_triangle_tree.cpp
     render/emissive_triangle_tree.h
     render/shared_emissive_triangle_tree_types.h
@@ -201,25 +240,30 @@ target_sources(falcor2 PRIVATE
     render/entity.h
     render/animation.cpp
     render/animation.h
+    render/animation_timing.h
     render/geometry.cpp
     render/geometry.h
-    render/hit_group_policy.h
+    render/ray_tracing_policy.h
     render/light_system.cpp
     render/light_system.h
+    render/material_aov_registry.cpp
+    render/material_aov_registry.h
     render/material_system.cpp
     render/material_system.h
     render/material.cpp
     render/material.h
-    render/material_types.h
+    render/scene_types.h
     render/ray_tracing_setup.cpp
     render/ray_tracing_setup.h
     render/render_scene.cpp
     render/render_scene.h
+    render/scene_capabilities.h
     render/scene_config.h
     render/scene_globals.h
     render/scene_import.cpp
     render/scene_object.cpp
     render/scene_object.h
+    render/scene_render_request.h
     render/scene_requirements.h
     render/scene_system.cpp
     render/scene_system.h
@@ -227,6 +271,7 @@ target_sources(falcor2 PRIVATE
     render/scene_update.h
     render/scene.cpp
     render/scene.h
+    render/source_asset_ref.h
     render/texture_manager.cpp
     render/texture_manager.h
     render/transform.cpp
@@ -243,6 +288,10 @@ target_sources(falcor2 PRIVATE
 
     render/geometry/geometry_group.cpp
     render/geometry/geometry_group.h
+    render/geometry/geometry_attribute_registry.cpp
+    render/geometry/geometry_attribute_registry.h
+    render/geometry/geometry_vertex_attribute.cpp
+    render/geometry/geometry_vertex_attribute.h
     render/geometry/static_mesh_geometry.cpp
     render/geometry/static_mesh_geometry.h
     render/geometry/static_curve_geometry.cpp
@@ -269,6 +318,13 @@ target_sources(falcor2 PRIVATE
     render/material/mtlx/lut_globals.h
     render/material/emission_only_material.cpp
     render/material/emission_only_material.h
+    render/material/material_texture_utils.h
+    render/material/gltf_material.cpp
+    render/material/gltf_material.h
+    render/material/gltf_specgloss_material.cpp
+    render/material/gltf_specgloss_material.h
+    render/material/gltf_texture_transform.h
+    render/material/shared_gltf_texture_selectors.h
     render/material/standard_material.cpp
     render/material/standard_material.h
     render/material/standard_specgloss_material.cpp
@@ -318,15 +374,17 @@ if(WIN32)
     target_link_libraries(falcor2 PRIVATE Dbghelp)
 endif()
 
-target_compile_definitions(falcor2 PUBLIC FALCOR_ENABLE_NGX=$<BOOL:${FALCOR_ENABLE_NGX}>)
-
 if(FALCOR_ENABLE_NGX)
     target_link_libraries(falcor2 PRIVATE falcor2_ngx)
 endif()
 
+if(FALCOR_ENABLE_STREAMING)
+    target_link_libraries(falcor2 PRIVATE falcor2_openh264 LibDataChannel::LibDataChannel)
+endif()
+
 # Link against Python for embedded interpreter
 if(FALCOR_BUILD_PYTHON)
-    find_package(Python 3.9 COMPONENTS Interpreter Development.Embed REQUIRED)
+    find_package(Python 3.10 COMPONENTS Interpreter Development.Embed REQUIRED)
     target_link_libraries(falcor2 PRIVATE Python::Python)
     # Query the Python prefix so the embedded interpreter can find the standard library.
     execute_process(
@@ -335,7 +393,10 @@ if(FALCOR_BUILD_PYTHON)
         OUTPUT_STRIP_TRAILING_WHITESPACE
     )
     cmake_path(NORMAL_PATH _python_prefix)
-    target_compile_definitions(falcor2 PRIVATE "FALCOR_PYTHON_HOME=\"${_python_prefix}\"")
+    set(FALCOR_PYTHON_HOME "${_python_prefix}" CACHE PATH "Python home for the embedded interpreter")
+    if(FALCOR_PYTHON_HOME)
+        target_compile_definitions(falcor2 PRIVATE "FALCOR_PYTHON_HOME=\"${FALCOR_PYTHON_HOME}\"")
+    endif()
 endif()
 
 target_link_libraries(falcor2
@@ -343,12 +404,7 @@ target_link_libraries(falcor2
         git_version_falcor2
         mdl-sdk
         # usd_importer requirements
-        usd
-        ar
-        usdShade
-        usdGeom
-        usdSkel
-        usdLux
+        falcor2_usd
         falcor2_header_only
         OpenSubdiv::osdCPU_static
         mikktspace::mikktspace)
@@ -419,24 +475,7 @@ add_dependencies(falcor2_copy_mtlx
     falcor2_copy_mtlx_standard_libraries
 )
 
-# Copy USD plugins as described here: https://github.com/microsoft/vcpkg/issues/37947
-if (FALCOR_LINUX)
-    add_custom_command(TARGET falcor2
-    POST_BUILD
-    # Copy all directories from "/lib/usd" and "/bin/usd" of OpenUSD installed by vcpkg to the "/usd" of your application.
-    COMMAND rsync -r "${pxr_DIR}/../../lib/usd" ${FALCOR_OUTPUT_DIRECTORY}
-    )
-else()
-    # NOTE: Using copy_directory instead of copy_directory_if_different due to old CMake (3.22.1) on some Linux CI machines.
-    # copy_directory_if_different was added in CMake 3.26. This should be reverted once the CI CMake version is updated.
-    add_custom_command(TARGET falcor2
-        # Create the directory where the plugins information files will be copied over.
-        POST_BUILD COMMAND ${CMAKE_COMMAND} -E make_directory "${FALCOR_OUTPUT_DIRECTORY}/usd/"
-        # Copy all directories from "/lib/usd" and "/bin/usd" of OpenUSD installed by vcpkg to the "/usd" of your application.
-        COMMAND ${CMAKE_COMMAND} -E copy_directory  "${pxr_DIR}/../../lib/usd" "${FALCOR_OUTPUT_DIRECTORY}/usd"
-        COMMAND ${CMAKE_COMMAND} -E copy_directory  "${pxr_DIR}/../../bin/usd" "${FALCOR_OUTPUT_DIRECTORY}/usd"
-    )
-endif()
+add_dependencies(falcor2 falcor2_usd_deployment)
 
 # Copy openpbr-bsdf shaders files.
 add_custom_command(TARGET falcor2
@@ -449,7 +488,7 @@ set_target_properties(falcor2 PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY ${FALCOR_LIBRARY_OUTPUT_DIRECTORY}
 )
 
-target_compile_definitions(falcor2 PRIVATE FALCOR_DLL FALCOR_PROJECT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../")
+target_compile_definitions(falcor2 PRIVATE FALCOR_DLL FALCOR_PROJECT_DIR="${FALCOR_PROJECT_DIR}")
 
 target_compile_definitions(falcor2 PRIVATE
     MI_NEURAYLIB_DEPRECATED_15_0
@@ -462,13 +501,13 @@ target_compile_definitions(falcor2 PRIVATE
     _SILENCE_CXX17_ITERATOR_BASE_CLASS_DEPRECATION_WARNING  # MSVC C4996: TBB uses deprecated std::iterator base class
 )
 
+
 file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${FALCOR_BUILD_TYPE}/include/falcor2/core/config.h CONTENT
 "#pragma once
 
 #define FALCOR_BUILD_TYPE \"${FALCOR_BUILD_TYPE}\"
-#ifndef FALCOR_ENABLE_NGX
-#define FALCOR_ENABLE_NGX $<BOOL:${FALCOR_ENABLE_NGX}>
-#endif
+${FALCOR_OPTIONAL_CONFIG_DEFINITIONS}#define FALCOR_ENABLE_NGX $<BOOL:${FALCOR_ENABLE_NGX}>
+#define FALCOR_ENABLE_STREAMING $<BOOL:${FALCOR_ENABLE_STREAMING}>
 
 "
 )
@@ -483,12 +522,7 @@ target_include_directories(falcor2_mtlx_usd_importer
         ../../slang
         ${CMAKE_CURRENT_BINARY_DIR}/${FALCOR_BUILD_TYPE}/include
 )
-target_compile_definitions(falcor2_mtlx_usd_importer
-    PRIVATE
-        FALCOR_DLL
-        FALCOR_PROJECT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../"
-        MTLX_STANDARD_LIBRARY_PATH="${FALCOR_OUTPUT_DIRECTORY}/mtlx/standard"
-)
+target_compile_definitions(falcor2_mtlx_usd_importer PRIVATE FALCOR_DLL)
 target_link_libraries(falcor2_mtlx_usd_importer
     PRIVATE
         sgl
@@ -498,6 +532,38 @@ target_link_libraries(falcor2_mtlx_usd_importer
 )
 set_target_properties(falcor2_mtlx_usd_importer PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(falcor2 PRIVATE falcor2_mtlx_usd_importer)
+
+install(
+    TARGETS falcor2 ${FALCOR_MTLX_RUNTIME_TARGETS}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_BINDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
+install(
+    DIRECTORY "${CMAKE_SOURCE_DIR}/slang/"
+    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/slang
+)
+install(
+    DIRECTORY "${CMAKE_SOURCE_DIR}/external/MaterialX/libraries/"
+    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/mtlx/standard
+)
+install(
+    DIRECTORY "${MTLX_LIBRARY}/"
+    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/mtlx/libraries
+)
+install(
+    DIRECTORY "${MTLX_SNIPPET_LIBRARY}/"
+    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/mtlx/snippets
+)
+install(
+    FILES "${CMAKE_SOURCE_DIR}/external/MaterialX/resources/Lights/san_giuseppe_bridge.hdr"
+    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/mtlx/resources/Lights
+)
+install(
+    DIRECTORY "${CMAKE_SOURCE_DIR}/external/openpbr-bsdf/"
+    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/shaders/openpbr-bsdf
+    PATTERN ".git" EXCLUDE
+)
 
 target_compile_options(falcor2
     PUBLIC

@@ -48,6 +48,9 @@ public:
 
     virtual void update_render_state() override;
 
+    /// Refresh culling on the existing render instance after material eligibility changes.
+    void update_backface_culling();
+
     /// Reflect this class.
     template<reflection::ClassReflector R>
     static void reflect(R& r)
@@ -56,6 +59,8 @@ public:
     }
 
 private:
+    bool compute_backface_culling() const;
+
     Geometry* m_geometry{nullptr};
     std::vector<Material*> m_materials;
 

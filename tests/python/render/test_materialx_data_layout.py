@@ -9,6 +9,8 @@ import falcor2.testing.helpers as helpers
 import pytest
 import slangpy as spy
 
+from .geometry_property_helpers import TRIANGLE_INDICES, TRIANGLE_POSITIONS, read_material_probe
+
 
 _LARGE_EDITABLE_DOCUMENT = """\
 <materialx version="1.39">
@@ -126,5 +128,32 @@ def test_materialx_data_size_bound_and_buffer_write(
         reflected_stride = module.layout.get_type_layout(buffer_type).element_type_layout.stride
 
         assert estimated_size >= reflected_stride
+
+        other = scene.create_material(
+            f2.MaterialXMaterial,
+            f2.Properties(
+                {
+                    "mtlx_buffer": _LARGE_EDITABLE_DOCUMENT,
+                    "mtlx_node_name": "material",
+                    "mtlx_editable_params": "*",
+                }
+            ),
+        )
+        other["inputs:shader_alpha_mode"] = 2
+        other["inputs:shader_alpha"] = 0.8
+        geometry = scene.create_geometry(f2.StaticMeshGeometry)
+        geometry.set_mesh_data(positions=TRIANGLE_POSITIONS, sub_mesh_indices=[TRIANGLE_INDICES])
+        instances = []
+        for value in (material, other):
+            instance = scene.create_entity().create_component(f2.GeometryInstance)
+            instance.geometry = geometry
+            instance.materials = [value]
+            instances.append(instance)
+        material["inputs:shader_alpha_mode"] = 2
+        for expected in (0.4, 0.6):
+            material["inputs:shader_alpha"] = expected
+            scene.update()
+            results = read_material_probe(device, scene, instances, "synthetic_material_probe")
+            assert [result["opacity"] for result in results] == pytest.approx((expected, 0.8))
     finally:
         device.close()

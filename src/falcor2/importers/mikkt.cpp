@@ -29,9 +29,9 @@ namespace {
 struct OfficialMikkContext {
     std::vector<uint3> flattened_faces;
     std::span<const uint3> faces;
-    ImporterVertexStreamRO<float3> positions;
-    ImporterVertexStreamRO<float3> normals;
-    ImporterVertexStreamRO<float2> uvs;
+    ImporterVertexStream<const float3> positions;
+    ImporterVertexStream<const float3> normals;
+    ImporterVertexStream<const float2> uvs;
     std::vector<float4> tangent_space;
 
     explicit OfficialMikkContext(const ImporterMesh& mesh)
@@ -73,7 +73,7 @@ struct OfficialMikkContext {
     }
 
     template<typename T>
-    T read_vertex(ImporterVertexStreamRO<T> stream, int32_t face, int32_t corner) const
+    T read_vertex(ImporterVertexStream<const T> stream, int32_t face, int32_t corner) const
     {
         return stream[faces[face][corner]];
     }
@@ -132,6 +132,33 @@ std::vector<float4> generate_official_mikktspace(const ImporterMesh& mesh)
     if (!genTangSpaceDefault(&context))
         SGL_THROW("Failed to generate tangents");
     return std::move(state.tangent_space);
+}
+
+// Constant UVs can leave MikkTSpace's default tangent parallel to the vertex normal.
+// Repair fresh generation before caching; authored tangents and cache hits retain their values.
+void repair_degenerate_tangents(const ImporterMesh& mesh, std::span<float4> tangent_space)
+{
+    const auto normals = mesh.normal_stream();
+    size_t corner = 0;
+    for (const auto& subgeometry : mesh.subgeometries) {
+        for (const uint3 face : subgeometry.indices) {
+            for (int i = 0; i < 3; ++i) {
+                float4& tangent = tangent_space[corner++];
+                const float3 normal = normalize(normals[face[i]]);
+                const float3 bitangent = cross(normal, tangent.xyz());
+                constexpr float EPSILON = std::numeric_limits<float>::epsilon();
+                if (dot(bitangent, bitangent) > EPSILON * EPSILON * dot(tangent.xyz(), tangent.xyz()))
+                    continue;
+
+                // The least-aligned axis gives a well-conditioned perpendicular vector.
+                const float3 abs_normal = abs(normal);
+                const float3 axis = abs_normal.x <= abs_normal.y && abs_normal.x <= abs_normal.z
+                    ? float3(1.f, 0.f, 0.f)
+                    : (abs_normal.y <= abs_normal.z ? float3(0.f, 1.f, 0.f) : float3(0.f, 0.f, 1.f));
+                tangent = float4(normalize(cross(axis, normal)), tangent.w);
+            }
+        }
+    }
 }
 
 struct TangentVariant {
@@ -224,7 +251,7 @@ void assemble_tangent_variants(ImporterMesh& mesh, std::vector<float4> corner_ta
         // binding guards this path until vertex buffers use allocation-owned copy-on-write storage.
         mesh.allocate_vertices(extra_variant_count);
 
-        for (ImporterMeshBuffer& buffer : mesh.buffers()) {
+        for (ImporterVertexBuffer& buffer : mesh.buffers()) {
             for (const TangentVariant& variant : variants) {
                 if (variant.output_vertex < source_vertex_count)
                     continue;
@@ -257,7 +284,7 @@ std::span<const uint8_t> as_bytes(std::span<const float4> values)
 }
 
 template<typename T>
-void hash_vertex_stream(sgl::SHA1& sha1, ImporterVertexStreamRO<T> stream)
+void hash_vertex_stream(sgl::SHA1& sha1, ImporterVertexStream<const T> stream)
 {
     if (stream.stride == sizeof(T)) {
         sha1.update(stream.data, stream.size * sizeof(T));
@@ -314,6 +341,7 @@ std::vector<float4> get_cached_corner_tangent_space(const ImporterMesh& mesh, Bl
         // the official implementation produces its own per-corner output.
         std::vector<float4>().swap(tangent_space);
         tangent_space = generate_official_mikktspace(mesh);
+        repair_degenerate_tangents(mesh, tangent_space);
     }
 
     if (cache_hit)
@@ -331,7 +359,9 @@ std::vector<float4> get_cached_corner_tangent_space(const ImporterMesh& mesh, Bl
 void mikkt_generate_tangent_space(ImporterMesh& mesh)
 {
     std::vector<float4> tangent_space = generate_official_mikktspace(mesh);
+    repair_degenerate_tangents(mesh, tangent_space);
     assemble_tangent_variants(mesh, std::move(tangent_space));
+    mesh.update_motion_tangents();
 }
 
 #if defined(FALCOR_ENABLE_MIKKT_COMPARISON)
@@ -351,7 +381,9 @@ std::vector<float4> generate_corner_tangent_space(const ImporterMesh& mesh, Gene
 void generate_tangent_space(ImporterMesh& mesh, Generator generator)
 {
     std::vector<float4> tangent_space = generate_corner_tangent_space(mesh, generator);
+    repair_degenerate_tangents(mesh, tangent_space);
     assemble_tangent_variants(mesh, std::move(tangent_space));
+    mesh.update_motion_tangents();
 }
 
 } // namespace mikkt_detail
@@ -361,6 +393,7 @@ void mikkt_generate_tangent_space(ImporterMesh& mesh, BlobCache& cache)
 {
     std::vector<float4> tangent_space = get_cached_corner_tangent_space(mesh, cache);
     assemble_tangent_variants(mesh, std::move(tangent_space));
+    mesh.update_motion_tangents();
 }
 
 } // namespace falcor

@@ -62,6 +62,12 @@ def test_pipeline_is_reflected_and_owns_its_settings() -> None:
     assert not hasattr(pipeline, "persist_settings")
 
 
+@pytest.mark.nightly_if(
+    device_type=(
+        spy.DeviceType.cuda,
+        spy.DeviceType.d3d12,
+    )
+)
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pipeline_single_iteration(
     device_type: spy.DeviceType, device: spy.Device, helmet_scene: f2.Scene
@@ -71,6 +77,9 @@ def test_pipeline_single_iteration(
 
     pipeline = PathTracerPipeline.create(device)
     assert pipeline.accumulation_mode == AccumulationMode.normal
+    assert isinstance(pipeline.path_tracer.pixel_filter, f2.GaussianReconstructionFilter)
+    assert pipeline.path_tracer.pixel_filter.sigma == 0.5
+    assert pipeline.path_tracer.pixel_filter.radius == 1.5
     cam = helpers.create_test_camera(helmet_scene, width=64, height=64, fov_y=45)
     image = pipeline(helmet_scene, cam)
     assert image.width == 64
@@ -81,6 +90,67 @@ def test_pipeline_single_iteration(
     assert pipeline.reweighting_accumulator._sample_count == 0
 
 
+@pytest.mark.nightly_if_not_vk
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_pipeline_updates_scene_before_resolving_active_camera(
+    device_type: spy.DeviceType,
+    device: spy.Device,
+    empty_scene: f2.Scene,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from falcor2.rendernodes import AccumulationMode, PathTracerPipeline
+
+    camera = helpers.create_test_camera(empty_scene, width=16, height=8, fov_y=45)
+    assert empty_scene.active_camera is None
+
+    pipeline = PathTracerPipeline.create(device)
+    pipeline.accumulation_mode = AccumulationMode.off
+    pipeline.tone_map = False
+    expected_image = object()
+
+    def render_once(
+        scene: f2.Scene,
+        resolved_camera: f2.Camera,
+        cmd: spy.CommandEncoder | None = None,
+    ) -> tuple[object, dict[str, Any | None]]:
+        assert scene is empty_scene
+        assert resolved_camera is camera
+        return expected_image, {}
+
+    monkeypatch.setattr(pipeline, "_render_raw_iteration", render_once)
+
+    assert pipeline(empty_scene) is expected_image
+    assert empty_scene.active_camera is camera
+
+    # Check filter invalidation and DLSS ownership using the same stubbed renderer.
+    resets: list[int] = []
+    request_reset = pipeline.request_reset
+
+    def record_reset() -> None:
+        resets.append(pipeline.path_tracer.pixel_filter.generation)
+        request_reset()
+
+    monkeypatch.setattr(pipeline, "request_reset", record_reset)
+    ordinary_filter = pipeline.path_tracer.pixel_filter
+    assert pipeline(empty_scene) is expected_image
+    assert not resets
+    ordinary_filter.sigma = 0.75
+    assert pipeline(empty_scene) is expected_image
+    assert resets == [ordinary_filter.generation]
+
+    monkeypatch.setattr(pipeline, "_render_dlss_rr_iteration", render_once)
+    pipeline.enable_dlss_rr = True
+    pipeline.reset()  # A history reset must not consume the pending filter switch.
+    assert pipeline(empty_scene) is expected_image
+    assert pipeline.path_tracer.pixel_filter is pipeline._dlss_pixel_filter
+    assert pipeline.path_tracer.pixel_filter.width == 0
+    pipeline.enable_dlss_rr = False
+    pipeline.reset()
+    assert pipeline(empty_scene) is expected_image
+    assert pipeline.path_tracer.pixel_filter is ordinary_filter
+
+
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pipeline_accumulation_modes_select_exactly_one_policy(
     device_type: spy.DeviceType, device: spy.Device, helmet_scene: f2.Scene
@@ -91,26 +161,38 @@ def test_pipeline_accumulation_modes_select_exactly_one_policy(
     pipeline = PathTracerPipeline.create(device)
     pipeline.tone_map = False
     pipeline.spp = 3
+    scene_updates: list[f2.SceneUpdateFlags] = []
+    update_connection = helmet_scene.updated.connect(scene_updates.append)
 
     pipeline.accumulation_mode = AccumulationMode.off
     pipeline(helmet_scene, camera)
+    assert len(scene_updates) == 1
     assert pipeline._iteration == 1
     assert pipeline.accumulator._sample_count == 0
     assert pipeline.reweighting_accumulator._sample_count == 0
 
     pipeline.accumulation_mode = AccumulationMode.normal
     pipeline(helmet_scene, camera)
+    assert len(scene_updates) == 2
     assert pipeline._iteration == 3
     assert pipeline.accumulator._sample_count == 3
     assert pipeline.reweighting_accumulator._sample_count == 0
 
     pipeline.accumulation_mode = AccumulationMode.weighted
     pipeline(helmet_scene, camera)
+    assert len(scene_updates) == 3
     assert pipeline._iteration == 3
     assert pipeline.accumulator._sample_count == 0
     assert pipeline.reweighting_accumulator._sample_count == 3
+    update_connection.disconnect()
 
 
+@pytest.mark.nightly_if(
+    device_type=(
+        spy.DeviceType.d3d12,
+        spy.DeviceType.vulkan,
+    )
+)
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pipeline_with_optix_denoiser(
     device_type: spy.DeviceType,
@@ -152,6 +234,7 @@ def test_pipeline_with_optix_denoiser(
     assert np.isfinite(image.to_numpy()).all()
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pipeline_accumulation_converges(
     device_type: spy.DeviceType, device: spy.Device, helmet_scene: f2.Scene
@@ -172,6 +255,7 @@ def test_pipeline_accumulation_converges(
     assert img9.max() > 0.0
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pipeline_resets_on_camera_change(
     device_type: spy.DeviceType, device: spy.Device, helmet_scene: f2.Scene
@@ -180,16 +264,18 @@ def test_pipeline_resets_on_camera_change(
     from falcor2.rendernodes import PathTracerPipeline
 
     pipeline = PathTracerPipeline.create(device)
+    pipeline.spp = 3
     cam = helpers.create_test_camera(helmet_scene, width=64, height=64, fov_y=45)
     pipeline(helmet_scene, cam)
-    assert pipeline._iteration == 1
+    assert pipeline._iteration == 3
     t = f2.Transform()
     t.translation = spy.float3(5.0, 0.0, 0.0)
     cam.entity.transform = t
     pipeline(helmet_scene, cam)
-    assert pipeline._iteration == 1  # reset to 0, then incremented to 1
+    assert pipeline._iteration == 3  # reset once, then render all three samples
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pipeline_tonemap(
     device_type: spy.DeviceType, device: spy.Device, helmet_scene: f2.Scene
@@ -205,6 +291,7 @@ def test_pipeline_tonemap(
     assert image.max() <= 1.0 + 1e-5
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pipeline_auto_exposure_forwards_delta_time_and_resets_history(
     device_type: spy.DeviceType,
@@ -241,6 +328,7 @@ def test_pipeline_auto_exposure_forwards_delta_time_and_resets_history(
     assert not pipeline.tonemapper._exposure_history_valid
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pipeline_request_reset_resets_next_render(
     device_type: spy.DeviceType, device: spy.Device, helmet_scene: f2.Scene
@@ -260,6 +348,7 @@ def test_pipeline_request_reset_resets_next_render(
     assert pipeline._iteration == 1
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pipeline_reweighting_mode_accumulates_each_spp_and_resolves_once(
     device_type: spy.DeviceType,
@@ -327,6 +416,7 @@ def test_pipeline_reweighting_mode_accumulates_each_spp_and_resolves_once(
     assert data.max() <= 1.0 + 1e-5
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pipeline_reweighting_reset_and_resolve_controls(
     device_type: spy.DeviceType, device: spy.Device, helmet_scene: f2.Scene
@@ -375,6 +465,12 @@ def test_pipeline_reweighting_reset_and_resolve_controls(
     assert pipeline.reweighting_accumulator._sample_count == 0
 
 
+@pytest.mark.nightly_if(
+    device_type=(
+        spy.DeviceType.d3d12,
+        spy.DeviceType.vulkan,
+    )
+)
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pipeline_reweighting_tensor_output(
     device_type: spy.DeviceType, device: spy.Device, helmet_scene: f2.Scene
@@ -400,6 +496,7 @@ def test_pipeline_reweighting_tensor_output(
     assert np.isfinite(image.to_numpy()).all()
 
 
+@pytest.mark.nightly
 def test_pipeline_can_output_torch_tensor() -> None:
     """Torch output spec returns a torch.Tensor and propagates back to the path tracer."""
     try:

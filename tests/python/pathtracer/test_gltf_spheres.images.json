@@ -1,0 +1,56 @@
+{
+  "test_gltf_sphere_grid[core-DeviceType.d3d12]": {
+    "reference": "d922b83155865fab97318b8d50905de47aae60379dd348483eef3f72c326daa5"
+  },
+  "test_gltf_sphere_grid[core-DeviceType.vulkan]": {
+    "reference": "18ac7108a19fb84b8f47d2f9bea0bc4f4984f83844a63fd0acc4562668d51758"
+  },
+  "test_gltf_sphere_grid[core-DeviceType.cuda]": {
+    "reference": "2d3c4ed59b848383ef06210da72ab830c7f0c0840b54704a647b4df434335c0a"
+  },
+  "test_gltf_sphere_grid[layers-DeviceType.d3d12]": {
+    "reference": "313d2dfbe7b79d5ce4d673cbcadd9d08caa8aa1964d7e17d51ec24b2124a4bd7"
+  },
+  "test_gltf_sphere_grid[layers-DeviceType.vulkan]": {
+    "reference": "4712709315154bd8b888465c7636a317da609d0223245ca4ebefab5cfaefba44"
+  },
+  "test_gltf_sphere_grid[layers-DeviceType.cuda]": {
+    "reference": "1903f4725e28caed38df0c6e2836bdb8a4ec5293f5249e6d19c41acc3d4d916f"
+  },
+  "test_gltf_sphere_grid[anisotropy-DeviceType.d3d12]": {
+    "reference": "571dac9c4059ba1b1349ec7ac24d5508fe51b72296b065962e080bea0e31bbcc"
+  },
+  "test_gltf_sphere_grid[anisotropy-DeviceType.vulkan]": {
+    "reference": "05c8adb66e3c818fca22662bbc95cb0f7d78da2182e743b3c099477144f6265c"
+  },
+  "test_gltf_sphere_grid[anisotropy-DeviceType.cuda]": {
+    "reference": "9262dda6479634c9bd757d6fcfedde023a0cc92256bbe9b335f7567adbced9e5"
+  },
+  "test_gltf_sphere_grid[transmission-DeviceType.d3d12]": {
+    "reference": "27248ef67a152d94a5901272148c447b554b1384d5c99b9f6aef3d2f8be618ca"
+  },
+  "test_gltf_sphere_grid[transmission-DeviceType.vulkan]": {
+    "reference": "435b4fd917ee0a514fca159912e45e5195420685bd611411fe6a67eea0060cee"
+  },
+  "test_gltf_sphere_grid[transmission-DeviceType.cuda]": {
+    "reference": "9d18d065af85d6c18544f9fd4db523e279b7220c78406652bcc527ea425d6bd6"
+  },
+  "test_gltf_sphere_grid[textures-DeviceType.d3d12]": {
+    "reference": "486f3ae9dfd1a6ee7c634dba353137cf98869acc571192f15c7db1d07984fb69"
+  },
+  "test_gltf_sphere_grid[textures-DeviceType.vulkan]": {
+    "reference": "4e7ab5dedc32ff8fefb10198f20502f303714d362853d231c6d8ef5056e56961"
+  },
+  "test_gltf_sphere_grid[textures-DeviceType.cuda]": {
+    "reference": "1ea96ae105b9712f0fd8e426b104aca983ed38ff58855732b740666478e8a41e"
+  },
+  "test_gltf_sphere_grid[converters-DeviceType.d3d12]": {
+    "reference": "52f8cc863d119ec646c32acbf1c57898a6472175c211f03d1002e5498defeb73"
+  },
+  "test_gltf_sphere_grid[converters-DeviceType.vulkan]": {
+    "reference": "42a8a31febdd8b4dc1d9dfbb12b8b169e94fa65e8b42c9d48fd70617d85794bd"
+  },
+  "test_gltf_sphere_grid[converters-DeviceType.cuda]": {
+    "reference": "32e98bfe7a83e2654c47e5538e304274265eb1f23248d0c0bdec319226005625"
+  }
+}

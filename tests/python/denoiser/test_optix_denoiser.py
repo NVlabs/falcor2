@@ -59,6 +59,7 @@ def test_create_denoiser(device_type: spy.DeviceType):
     assert denoiser.device == device
 
 
+@pytest.mark.nightly_if(device_type=(spy.DeviceType.cuda,), shared=(True,))
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 @pytest.mark.parametrize("shared", [False, True], ids=["non-shared", "shared"])
 def test_denoise_checkerboard(device_type: spy.DeviceType, shared: bool):
@@ -123,6 +124,7 @@ def get_samples_and_resolution(device_type: spy.DeviceType):
     return samples, width, height
 
 
+@pytest.mark.nightly
 @pytest.mark.slow
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_raytraced_image(device_type: spy.DeviceType):
@@ -232,7 +234,10 @@ def test_raytraced_image(device_type: spy.DeviceType):
     assert mse_noisy > mse_albedonormal_denoised
 
 
-@pytest.mark.parametrize("device_type", [spy.DeviceType.cuda])
+@pytest.mark.parametrize(
+    "device_type",
+    [device for device in helpers.DEFAULT_DEVICE_TYPES if device == spy.DeviceType.cuda],
+)
 @pytest.mark.parametrize("custom_stream", [False, True], ids=["defaultstream", "customstream"])
 def test_denoise_torch(device_type: spy.DeviceType, custom_stream: bool):
     """Test denoising a checkerboard pattern with added noise using torch tensors."""

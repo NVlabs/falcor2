@@ -4,7 +4,12 @@
 # Minimal script that handles the cross platform bit and
 # windows env setup to run a CMake build.
 
-import sys, os, subprocess, shutil, stat
+import argparse
+import os
+import shutil
+import stat
+import subprocess
+import sys
 from pathlib import Path
 
 SOURCE_DIR = Path(__file__).parent.parent.resolve()
@@ -113,10 +118,21 @@ def get_build_env() -> dict[str, str]:
     env = os.environ.copy()
     if os.name == "nt":
         env = _get_msvc_env("x64", env)
+    env["FALCOR_PYTHON_EXECUTABLE"] = sys.executable
+    env["FALCOR_PYTHON_ABI"] = sys.implementation.cache_tag
+    existing_keep_env = env.get("VCPKG_KEEP_ENV_VARS") or env.get("vcpkg_keep_env_vars", "")
+    keep_vars = {item for item in existing_keep_env.split(";") if item}
+    keep_vars.update(("FALCOR_PYTHON_EXECUTABLE", "FALCOR_PYTHON_ABI"))
+    env["VCPKG_KEEP_ENV_VARS"] = ";".join(sorted(keep_vars))
+    env.pop("vcpkg_keep_env_vars", None)
     return env
 
 
-def configure(preset: str, cmake_extra_args: list[str] = []):
+def configure(
+    preset: str,
+    cmake_extra_args: list[str] | None = None,
+    fresh: bool = False,
+):
     env = get_build_env()
     build_dir = get_build_dir(preset)
 
@@ -126,16 +142,37 @@ def configure(preset: str, cmake_extra_args: list[str] = []):
     cmake_args = [
         "--preset",
         preset,
+    ]
+    if fresh:
+        cmake_args.append("--fresh")
+    cmake_args += [
         "-B",
         build_dir,
         f"-DPython_ROOT_DIR:PATH={sys.prefix}",
+        f"-DPython_EXECUTABLE:FILEPATH={sys.executable}",
+        f"-DFALCOR_PYTHON_ABI:STRING={sys.implementation.cache_tag}",
         f"-DPython_FIND_REGISTRY:STRING=NEVER",
     ]
     if not is_multi_config:
         cmake_args.append("-DCMAKE_DEFAULT_BUILD_TYPE=Release")
-    cmake_args += cmake_extra_args
+    if cmake_extra_args:
+        cmake_args += cmake_extra_args
 
-    subprocess.run(["cmake", *cmake_args], env=env, cwd=SOURCE_DIR, check=True)
+    try:
+        subprocess.run(["cmake", *cmake_args], env=env, cwd=SOURCE_DIR, check=True)
+    except subprocess.CalledProcessError:
+        # Keep dependency failures visible even when CI cannot upload artifacts.
+        for name in ("vcpkg-bootstrap.log", "vcpkg-manifest-install.log"):
+            path = Path(build_dir) / name
+            try:
+                contents = path.read_text(encoding="utf-8", errors="replace")
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                print(f"Could not read {path}: {exc}", file=sys.stderr, flush=True)
+                continue
+            print(f"\n--- {path} ---\n{contents}", file=sys.stderr, flush=True)
+        raise
 
 
 def build(preset: str, config: str = "Release"):
@@ -153,6 +190,11 @@ def build(preset: str, config: str = "Release"):
 
 
 if __name__ == "__main__":
-    preset = get_default_preset()
-    configure(preset)
-    build(preset)
+    parser = argparse.ArgumentParser(description="Configure and build Falcor2.")
+    parser.add_argument("--preset", default=get_default_preset())
+    parser.add_argument("--config", default="Release")
+    parser.add_argument("--fresh", action="store_true", help="Discard the existing CMake cache.")
+    args = parser.parse_args()
+
+    configure(args.preset, fresh=args.fresh)
+    build(args.preset, args.config)

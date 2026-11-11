@@ -11,6 +11,7 @@ import numpy as np
 import slangpy as spy
 from slangpy.core.function import FunctionNode
 
+from falcor2.editor.utils import create_device as create_falcor_device
 from falcor2.minitracer.camera import Camera
 from falcor2.minitracer.accumulator import Accumulator
 from falcor2.minitracer.pathtracer import PathTracer
@@ -18,16 +19,14 @@ from falcor2.minitracer.scene import Scene, DirtyFlag
 from falcor2.minitracer.importerutils import load_usd_scene, load_gltf_scene
 
 import falcor2.minitracer.slangpyextensions  # type: ignore
+from falcor2._package_paths import falcor_slang_include_paths
 
 
-def get_slang_include_paths():
+def get_slang_include_paths() -> list[Path]:
     """
     Get core slang include paths required to compile MiniTracer shaders.
     """
-    return [
-        Path(__file__).parent.parent.parent / "slang",
-        spy.SHADER_PATH,
-    ]
+    return falcor_slang_include_paths() + [Path(spy.SHADER_PATH)]
 
 
 def create_device(
@@ -38,12 +37,13 @@ def create_device(
     Helper to creates a new SlangPy device configured correctly for use with MiniTracer
     with the most basic options.
     """
-    return spy.Device(
-        type=device_type,
-        compiler_options={
-            "include_paths": get_slang_include_paths()
-            + [Path(p) for p in additional_include_paths],
-        },
+    return create_falcor_device(
+        {
+            "type": device_type,
+            "compiler_options": {
+                "include_paths": [Path(p) for p in additional_include_paths],
+            },
+        }
     )
 
 
@@ -440,9 +440,7 @@ class Viewer:
                 return
 
         if event.type == spy.KeyboardEventType.key_press:
-            if event.key == spy.KeyCode.escape:
-                self.window.close()
-            elif event.key == spy.KeyCode.space:
+            if event.key == spy.KeyCode.space:
                 self.current_view = (self.current_view + 1) % len(self.views)
                 print(f"Switched to view: {self.views[self.current_view]}")
                 self.reset_accumulation = True

@@ -1,0 +1,21 @@
+--- a/cmake/macros/Public.cmake
++++ b/cmake/macros/Public.cmake
+@@ -1295,8 +1295,17 @@
+         endforeach()
+ 
+         if(BUILD_SHARED_LIBS)
++            target_compile_definitions(usd_m INTERFACE
++                __TBB_NO_IMPLICIT_LINKAGE=1
++                __TBBMALLOC_NO_IMPLICIT_LINKAGE=1
++                $<$<CONFIG:Debug>:TBB_USE_DEBUG=1>
++            )
++            target_include_directories(usd_m INTERFACE
++                $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
++                $<INSTALL_INTERFACE:include>
++            )
+             target_link_libraries(usd_m
+-                PUBLIC
++                PRIVATE
+                     ${PXR_OBJECT_LIBS}
+                     ${PXR_MALLOC_LIBRARY}
+                     ${PXR_THREAD_LIBS}

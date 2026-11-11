@@ -1,0 +1,4 @@
+interface:
+  display_name: "Falcor2 Health Check"
+  short_description: "Verify Python imports and GPU availability"
+  default_prompt: "Use $falcor2-health-check to check this project's Falcor2 installation, native imports, and GPU driver availability."

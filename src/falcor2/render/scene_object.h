@@ -4,6 +4,7 @@
 #pragma once
 
 #include "falcor2/render/fwd.h"
+#include "falcor2/render/source_asset_ref.h"
 
 #include "falcor2/core/fwd.h"
 #include "falcor2/core/object.h"
@@ -18,6 +19,7 @@
 #include <span>
 #include <initializer_list>
 #include <functional>
+#include <memory>
 
 namespace falcor {
 
@@ -98,6 +100,10 @@ public:
     const std::string& name() const { return m_name; }
     void set_name(std::string_view name);
 
+    /// Reference to the object in the source asset from which this object was imported.
+    /// Returns nullptr for objects without provenance.
+    const SourceAssetRef* source_asset_ref() const { return m_source_asset_ref.get(); }
+
     /// Destroy this object.
     /// This does not immediately delete the object, but has the following effects:
     /// - Marks the object as removed
@@ -140,6 +146,9 @@ public:
     /// Called when an object is added to the scene to set a default name.
     void _set_default_name();
 
+    /// Set importer provenance. Passing nullopt clears the reference.
+    void _set_source_asset_ref(std::optional<SourceAssetRef> source_asset_ref);
+
 protected:
     /// Scene this object belongs to.
     Scene* m_scene{nullptr};
@@ -147,9 +156,12 @@ protected:
     SceneObjectCollectionIndex m_collection_index{INVALID_SCENE_OBJECT_COLLECTION_INDEX};
     /// Name of the object.
     std::string m_name;
+    /// Allocate provenance only for objects that have a source asset reference.
+    std::unique_ptr<SourceAssetRef> m_source_asset_ref;
 
     bool m_removed{false};
 
+private:
     friend class Scene;
     template<typename>
     friend class SceneObjectCollection;
@@ -411,29 +423,22 @@ public:
         // Early out if empty or no objects are marked for removal.
         if (empty() || !has_dirty(DirtyFlags::removed))
             return;
-        // Remove marked objects from the collection and compact the collection.
-        size_t current_index = 0;
         size_t target_index = 0;
-        while (target_index < m_objects.size()) {
-            // Find next target index that is not marked for removal.
-            while (target_index < m_objects.size() && is_set(m_dirty_flags[target_index], DirtyFlags::removed))
-                ++target_index;
-            // If we reached the end, we're done.
-            if (target_index >= m_objects.size())
-                break;
-            // Destroy object if marked for removal.
-            if (m_objects[current_index]->m_removed)
-                m_objects[current_index]->_destroy();
-            // Move object from target index to current index.
-            if (current_index != target_index) {
-                m_objects[current_index] = m_objects[target_index];
-                m_objects[current_index]->m_collection_index = SceneObjectCollectionIndex(current_index);
-                m_dirty_flags[current_index] = m_dirty_flags[target_index];
+        for (size_t source_index = 0; source_index < m_objects.size(); ++source_index) {
+            // Teardown must also run for consecutive and trailing removals when
+            // callers retain references after this collection releases ownership.
+            if (is_set(m_dirty_flags[source_index], DirtyFlags::removed)) {
+                m_objects[source_index]->_destroy();
+                continue;
             }
-            ++current_index;
+            if (source_index != target_index) {
+                m_objects[target_index] = m_objects[source_index];
+                m_objects[target_index]->m_collection_index = SceneObjectCollectionIndex(target_index);
+                m_dirty_flags[target_index] = m_dirty_flags[source_index];
+            }
             ++target_index;
         }
-        resize(current_index);
+        resize(target_index);
     }
 
 private:

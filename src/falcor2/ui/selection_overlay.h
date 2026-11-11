@@ -112,7 +112,7 @@ private:
     ref<sgl::ComputeKernel> m_kernel;
     ref<sgl::ComputeKernel> m_probe_kernel;
     ref<sgl::Texture> m_selected_hit_texture;
-    SceneRequirements m_scene_requirements;
+    ref<const SceneRequirements> m_scene_requirements;
     std::vector<uint32_t> m_selection_bitmap;
     bool m_selection_bitmap_dirty{false};
     ref<sgl::Buffer> m_selection_bitmap_buffer;
@@ -126,7 +126,6 @@ private:
 
     // Raytracing pipeline state (for CUDA/OptiX).
     bool m_use_raytracing_pipeline{false};
-    uint64_t m_requirements_generation{0};
     struct ProbeRT {
         ref<sgl::ShaderProgram> program;
         ref<sgl::RayTracingPipeline> pipeline;

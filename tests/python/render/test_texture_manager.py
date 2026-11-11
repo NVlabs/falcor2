@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 
 import slangpy as spy
-from falcor2 import AssetResolver, TextureHandle, TextureManager
+from falcor2 import AssetResolver, TextureHandle, TextureLoadFlags, TextureManager
 import numpy as np
 import pytest
 import falcor2.testing.helpers as helpers
@@ -111,13 +111,15 @@ def test_load_texture(
     texture_manager = TextureManager(device)
 
     expected_sampler = sampler if custom_sampler else texture_manager.default_sampler
+    flags = TextureLoadFlags.generate_mips if generate_mips else TextureLoadFlags.raw
+    if srgb:
+        flags |= TextureLoadFlags.srgb
     expected_format = spy.Format.rgba8_unorm_srgb if srgb else spy.Format.rgba8_unorm
 
     white_1k_handle = texture_manager.load_texture(
         path=DATA_DIR / "assets/textures/test_texture_manager/white_1k.png",
         sampler=sampler,
-        generate_mips=generate_mips,
-        srgb=srgb,
+        flags=flags,
         load_deferred=load_deferred,
     )
 
@@ -129,8 +131,7 @@ def test_load_texture(
     regular_blue_handle = texture_manager.load_texture(
         path=DATA_DIR / "assets/textures/test_texture_manager/regular_blue.png",
         sampler=sampler,
-        generate_mips=generate_mips,
-        srgb=srgb,
+        flags=flags,
         load_deferred=load_deferred,
     )
 
@@ -147,8 +148,7 @@ def test_load_texture(
         texture_manager.load_texture(
             path=DATA_DIR / "assets/textures/test_texture_manager/white_1k.png",
             sampler=sampler,
-            generate_mips=generate_mips,
-            srgb=srgb,
+            flags=flags,
             load_deferred=load_deferred,
         )
         == white_1k_handle
@@ -157,8 +157,7 @@ def test_load_texture(
         texture_manager.load_texture(
             path=DATA_DIR / "assets/textures/test_texture_manager/regular_blue.png",
             sampler=sampler,
-            generate_mips=generate_mips,
-            srgb=srgb,
+            flags=flags,
             load_deferred=load_deferred,
         )
         == regular_blue_handle
@@ -238,6 +237,83 @@ def test_load_texture(
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.parametrize("load_deferred", [False, True])
+@pytest.mark.parametrize("srgb_gamma", [False, True])
+def test_grayscale_texture_interpretations_are_cached_separately(
+    device_type: spy.DeviceType, load_deferred: bool, srgb_gamma: bool, tmp_path: Path
+) -> None:
+    assert spy.Bitmap.supports_png_metadata()
+    path = tmp_path / "grayscale.png"
+    values = np.arange(64, dtype=np.uint8).reshape(8, 8) * 4
+    spy.Bitmap(values, pixel_format=spy.Bitmap.PixelFormat.y, srgb_gamma=srgb_gamma).write(path)
+    assert spy.Bitmap(path).srgb_gamma == srgb_gamma
+    # Explicit color interpretation overrides metadata; data bindings retain encoded values.
+    rgba = np.concatenate(
+        [np.repeat(values[:, :, None], 3, axis=2), np.full((8, 8, 1), 255, dtype=np.uint8)],
+        axis=2,
+    )
+    device = helpers.get_device(device_type)
+    sampler = device.create_sampler(
+        min_filter=spy.TextureFilteringMode.point,
+        mag_filter=spy.TextureFilteringMode.point,
+        address_u=spy.TextureAddressingMode.mirror_repeat,
+    )
+    module = spy.Module.load_from_file(device, "render/test_texture_manager.slang")
+
+    for generate_mips in (False, True):
+        manager = TextureManager(device)
+        handles: list[TextureHandle] = []
+        # Encoding and RGB promotion are independent cache-key choices.
+        for srgb, require_rgb in ((False, False), (False, True), (True, False), (True, True)):
+            flags = TextureLoadFlags.generate_mips if generate_mips else TextureLoadFlags.raw
+            if srgb:
+                flags |= TextureLoadFlags.srgb
+            if require_rgb:
+                flags |= TextureLoadFlags.expand_luminance
+            options = dict(
+                sampler=sampler,
+                flags=flags,
+                load_deferred=load_deferred,
+            )
+            handle = manager.load_texture(path, **options)
+            assert manager.load_texture(path, **options) == handle
+            assert all(handle != previous for previous in handles)
+            assert handle.is_finalized() == (not load_deferred)
+            if load_deferred:
+                assert handle.texture is None
+            handles.append(handle)
+
+        manager.update()
+        assert manager.stats.total_texture_count == 4
+        for index, handle in enumerate(handles):
+            assert handle.is_finalized()
+            assert handle.sampler == sampler
+            texture = handle.texture
+            assert texture is not None
+            assert texture.mip_count == (4 if generate_mips else 1)
+            assert texture.format == (
+                spy.Format.r8_unorm
+                if index in (0, 2)
+                else (spy.Format.rgba8_unorm_srgb if index == 3 else spy.Format.rgba8_unorm)
+            )
+            np.testing.assert_array_equal(texture.to_numpy(), values if index in (0, 2) else rgba)
+            sample = module.test_2d(
+                handle=handle,
+                uv=spy.float2(4.5 / 8, 4.5 / 8),
+                default_value=spy.float4(0),
+            )
+            encoded = float(values[4, 4]) / 255.0
+            value = ((encoded + 0.055) / 1.055) ** 2.4 if index == 3 else encoded
+            if index in (0, 2):
+                # Raw R8's missing alpha is backend-dependent and is not changed here.
+                assert [sample.x, sample.y, sample.z] == pytest.approx([value, 0.0, 0.0], abs=5e-4)
+            else:
+                assert [sample.x, sample.y, sample.z, sample.w] == pytest.approx(
+                    [value] * 3 + [1.0], abs=5e-4
+                )
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_deferred_load_filters_loaded_and_repeated_ids(device_type: spy.DeviceType) -> None:
     device = helpers.get_device(device_type)
     texture_manager = TextureManager(device)
@@ -289,7 +365,7 @@ def test_load_udim_texture(
     udim_handle = texture_manager.load_texture(
         path=DATA_DIR / "assets/textures/test_texture_manager/udim_<UDIM>.png",
         sampler=sampler,
-        generate_mips=generate_mips,
+        flags=TextureLoadFlags.color if generate_mips else TextureLoadFlags.environment,
         load_deferred=load_deferred,
     )
 
@@ -322,7 +398,7 @@ def test_load_udim_texture(
         texture_manager.load_texture(
             path=DATA_DIR / "assets/textures/test_texture_manager/udim_<UDIM>.png",
             sampler=sampler,
-            generate_mips=generate_mips,
+            flags=TextureLoadFlags.color if generate_mips else TextureLoadFlags.environment,
             load_deferred=load_deferred,
         )
         == udim_handle
@@ -560,6 +636,82 @@ def test_register_texture(device_type: spy.DeviceType):
     assert stats.regular_texture_count == 0
     assert stats.udim_texture_count == 0
     assert stats.total_sampler_count == 1
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.parametrize("load_deferred", [False, True])
+def test_texture_load_presets_share_resources(
+    device_type: spy.DeviceType, load_deferred: bool, tmp_path: Path
+) -> None:
+    path = tmp_path / "gray.png"
+    values = np.full((4, 4), 128, dtype=np.uint8)
+    spy.Bitmap(values, pixel_format=spy.Bitmap.PixelFormat.y).write(path)
+    device = helpers.get_device(device_type)
+    manager = TextureManager(device)
+    groups = [
+        (TextureLoadFlags.raw, TextureLoadFlags.none),
+        (TextureLoadFlags.data, TextureLoadFlags.generate_mips),
+        (
+            TextureLoadFlags.data_rgb,
+            TextureLoadFlags.normal,
+            TextureLoadFlags.generate_mips | TextureLoadFlags.expand_luminance,
+        ),
+        (TextureLoadFlags.color, TextureLoadFlags.data_rgb | TextureLoadFlags.srgb),
+        (
+            TextureLoadFlags.environment,
+            TextureLoadFlags.srgb | TextureLoadFlags.expand_luminance,
+        ),
+    ]
+    handles = []
+    for group in groups:
+        handle = manager.load_texture(path, flags=group[0], load_deferred=load_deferred)
+        for alias in group[1:]:
+            assert manager.load_texture(path, flags=alias, load_deferred=load_deferred) == handle
+        handles.append(handle)
+    assert manager.load_texture(path, load_deferred=load_deferred) == handles[3]
+    alternate_sampler = device.create_sampler(address_u=spy.TextureAddressingMode.clamp_to_edge)
+    alternate = manager.load_texture(
+        path, flags=TextureLoadFlags.normal, sampler=alternate_sampler, load_deferred=load_deferred
+    )
+    manager.update()
+    assert alternate != handles[2]
+    assert alternate.texture == handles[2].texture
+    assert manager.stats.total_texture_count == 5
+    assert [h.texture.mip_count for h in handles] == [1, 3, 3, 3, 1]
+    assert [h.texture.format for h in handles] == [
+        spy.Format.r8_unorm,
+        spy.Format.r8_unorm,
+        spy.Format.rgba8_unorm,
+        spy.Format.rgba8_unorm_srgb,
+        spy.Format.rgba8_unorm_srgb,
+    ]
+    module = spy.Module.load_from_file(device, "render/test_texture_manager.slang")
+    sample = module.test_2d(handle=handles[4], uv=spy.float2(0.5), default_value=spy.float4(0))
+    linear = ((128.0 / 255.0 + 0.055) / 1.055) ** 2.4
+    assert [sample.x, sample.y, sample.z, sample.w] == pytest.approx([linear] * 3 + [1.0], abs=5e-4)
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_texture_load_color_preserves_hdr(device_type: spy.DeviceType, tmp_path: Path) -> None:
+    path = tmp_path / "linear.exr"
+    values = np.full((4, 4, 4), [0.25, 0.5, 2.0, 0.75], dtype=np.float32)
+    spy.Bitmap(values, pixel_format=spy.Bitmap.PixelFormat.rgba, srgb_gamma=False).write(path)
+    manager = TextureManager(helpers.get_device(device_type))
+    handle = manager.load_texture(path, flags=TextureLoadFlags.environment)
+    assert handle.texture.mip_count == 1
+    assert handle.texture.format in (spy.Format.rgba16_float, spy.Format.rgba32_float)
+    np.testing.assert_allclose(handle.texture.to_numpy(), values)
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_raw_texture_retains_authored_mips(device_type: spy.DeviceType) -> None:
+    path = DATA_DIR.parent / "external/slangpy/data/test_images/dds/bc1-unorm.dds"
+    authored_mips = int.from_bytes(path.read_bytes()[28:32], "little")
+    assert authored_mips > 1
+    manager = TextureManager(helpers.get_device(device_type))
+    raw = manager.load_texture(path, flags=TextureLoadFlags.raw)
+    assert raw.texture.format == spy.Format.bc1_unorm
+    assert raw.texture.mip_count == authored_mips
 
 
 if __name__ == "__main__":

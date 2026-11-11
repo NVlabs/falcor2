@@ -3,12 +3,13 @@
 
 #include "usd_importer_context.h"
 #include "usd_importer_mesh_adapter.h"
-#include "usd_importer_curve_tesselator.h"
+#include "usd_importer_curve_adapter.h"
 #include "usd_importer_utils.h"
 #include "usd_importer_macros.h"
 #include "falcor2/importers/importer_types.h"
 #include "falcor2/importers/usd_importer/usd_importer_material.h"
 #include "falcor2/render/transform.h"
+#include "falcor2/utils/math/transform.h"
 
 BEGIN_DISABLE_USD_WARNINGS
 #include <pxr/base/gf/matrix4d.h>
@@ -22,6 +23,7 @@ BEGIN_DISABLE_USD_WARNINGS
 
 #include <pxr/usd/usdGeom/tokens.h>
 #include <pxr/usd/usdGeom/metrics.h>
+#include <pxr/usd/usdGeom/gprim.h>
 #include <pxr/usd/usdGeom/subset.h>
 #include <pxr/usd/usdGeom/xformCommonAPI.h>
 #include <pxr/usd/usdGeom/xformable.h>
@@ -29,6 +31,7 @@ BEGIN_DISABLE_USD_WARNINGS
 #include <pxr/usd/usdGeom/pointInstancer.h>
 #include <pxr/usd/usdGeom/scope.h>
 
+#include <pxr/usd/usdLux/cylinderLight.h>
 #include <pxr/usd/usdLux/distantLight.h>
 #include <pxr/usd/usdLux/rectLight.h>
 #include <pxr/usd/usdLux/sphereLight.h>
@@ -55,15 +58,58 @@ namespace falcor {
 namespace usd_importer {
 namespace {
 
-template<typename TUsdLuxLightType>
-float3 get_light_intensity(const TUsdLuxLightType& light, const pxr::UsdPrim& prim)
+pxr::UsdPrim get_prototype_root(pxr::UsdPrim prim)
 {
-    using namespace pxr;
+    while (!prim.IsPrototype())
+        prim = prim.GetParent();
+    return prim;
+}
 
-    float intensity = get_authored_attribute(light.GetIntensityAttr(), prim.GetAttribute(TfToken("intensity")), 1.f);
-    GfVec3f color
-        = get_authored_attribute(light.GetColorAttr(), prim.GetAttribute(TfToken("color")), GfVec3f(1.f, 1.f, 1.f));
-    return intensity * to_falcor(color);
+std::map<pxr::SdfPath, pxr::SdfPath> build_prototype_source_paths(const pxr::UsdStageRefPtr& stage)
+{
+    // Prototype names are stage-local. Choose a deterministic authored instance as the
+    // representative for shared provenance, resolving enclosing prototypes for nested instances.
+    // Runtime instances retain this shared reference. Changing the instance set may change the representative.
+    std::map<pxr::SdfPath, pxr::SdfPath> paths;
+    auto resolve = [&](const pxr::UsdPrim& prim, auto&& recurse) -> pxr::SdfPath
+    {
+        if (!prim.IsInPrototype())
+            return prim.GetPath();
+
+        const pxr::UsdPrim prototype = get_prototype_root(prim);
+        auto it = paths.find(prototype.GetPath());
+        if (it == paths.end()) {
+            pxr::SdfPath instance_path;
+            for (const auto& instance : prototype.GetInstances()) {
+                const pxr::SdfPath candidate = recurse(instance, recurse);
+                if (instance_path.IsEmpty() || candidate < instance_path)
+                    instance_path = candidate;
+            }
+            FALCOR_CHECK(
+                !instance_path.IsEmpty(),
+                "USD prototype '{}' has no instances",
+                prototype.GetPath().GetString()
+            );
+            it = paths.emplace(prototype.GetPath(), instance_path).first;
+        }
+        return prim.GetPath().ReplacePrefix(prototype.GetPath(), it->second);
+    };
+    for (const auto& prototype : stage->GetPrototypes())
+        resolve(prototype, resolve);
+    return paths;
+}
+
+template<typename T>
+T get_light_attribute(const pxr::UsdAttribute& attribute, const pxr::UsdAttribute& legacy_attribute, const T& fallback)
+{
+    T value = fallback;
+    if (attribute && attribute.IsAuthored())
+        attribute.Get(&value);
+    else if (legacy_attribute && legacy_attribute.IsAuthored())
+        legacy_attribute.Get(&value);
+    else if (attribute)
+        attribute.Get(&value);
+    return value;
 }
 
 template<typename TUsdLuxDomeLightType>
@@ -72,7 +118,6 @@ void read_dome_light_properties(const TUsdLuxDomeLightType& light, const pxr::Us
     using namespace pxr;
 
     result.type = ImporterLight::Type::dome;
-    result.intensity = get_light_intensity(light, prim);
 
     const SdfAssetPath texture_path = get_authored_attribute(
         light.GetTextureFileAttr(),
@@ -82,7 +127,7 @@ void read_dome_light_properties(const TUsdLuxDomeLightType& light, const pxr::Us
     result.env_map_path = texture_path.GetResolvedPath();
 }
 
-float4x4 get_dome_light_orientation(const pxr::UsdLuxDomeLight_1& light)
+EnvMapPoleAxis get_dome_light_pole_axis(const pxr::UsdLuxDomeLight_1& light)
 {
     using namespace pxr;
 
@@ -92,93 +137,18 @@ float4x4 get_dome_light_orientation(const pxr::UsdLuxDomeLight_1& light)
     if (pole_axis == UsdLuxTokens->scene)
         pole_axis = UsdGeomGetStageUpAxis(prim.GetStage()) == UsdGeomTokens->z ? UsdLuxTokens->Z : UsdLuxTokens->Y;
 
-    // DomeLight_1 permits only scene, Y, and Z. Y matches Falcor's environment map convention.
+    // Resolve the USD stage-dependent value before passing the light to the runtime.
     if (pole_axis == UsdLuxTokens->Y)
-        return float4x4::identity();
+        return EnvMapPoleAxis::y;
     if (pole_axis == UsdLuxTokens->Z)
-        return sgl::math::matrix_from_rotation_x(sgl::math::radians(90.f));
+        return EnvMapPoleAxis::z;
 
     sgl::log_warn(
         "DomeLight_1 '{}' has unsupported poleAxis '{}'; treating it as Y.",
         prim.GetPath().GetString(),
         pole_axis.GetString()
     );
-    return float4x4::identity();
-}
-
-float distant_light_size_factor(float degree_angular_diameter)
-{
-    // UsdLux normalization divides emitted radiance by this projected solid-angle factor.
-    // See https://openusd.org/release/user_guides/schemas/usdLux/LightAPI.html#inputs-normalize
-    // Distance lights normalization.
-    const float pi = static_cast<float>(M_PI);
-    const float half_angle = std::clamp(sgl::math::radians(degree_angular_diameter) * 0.5f, 0.f, pi);
-    if (half_angle == 0.f)
-        return 1.f;
-
-    const float sin_half_angle = std::sin(half_angle);
-    const float sin_squared = sin_half_angle * sin_half_angle;
-    return pi * (half_angle <= 0.5f * pi ? sin_squared : 2.f - sin_squared);
-}
-
-struct LightWorldAxes {
-    float3 x;
-    float3 y;
-    float3 z;
-};
-
-LightWorldAxes get_light_world_axes(const pxr::UsdPrim& prim)
-{
-    const float4x4 world_from_light
-        = to_falcor(pxr::UsdGeomXformable(prim).ComputeLocalToWorldTransform(pxr::UsdTimeCode::Default()));
-    return {
-        sgl::math::transform_vector(world_from_light, float3(1.f, 0.f, 0.f)),
-        sgl::math::transform_vector(world_from_light, float3(0.f, 1.f, 0.f)),
-        sgl::math::transform_vector(world_from_light, float3(0.f, 0.f, 1.f)),
-    };
-}
-
-float planar_light_size_factor(const pxr::UsdPrim& prim, float local_area)
-{
-    const LightWorldAxes axes = get_light_world_axes(prim);
-    const float world_area_scale = sgl::math::length(sgl::math::cross(axes.x, axes.y));
-    const float meters_per_unit = static_cast<float>(pxr::UsdGeomGetStageMetersPerUnit(prim.GetStage()));
-    const float world_area = sgl::math::abs(local_area) * world_area_scale * meters_per_unit * meters_per_unit;
-    return world_area > 0.f && sgl::math::isfinite(world_area) ? world_area : 1.f;
-}
-
-float sphere_light_size_factor(const pxr::UsdPrim& prim, float radius)
-{
-    const LightWorldAxes axes = get_light_world_axes(prim);
-    const float x_scale_squared = sgl::math::dot(axes.x, axes.x);
-    const float y_scale_squared = sgl::math::dot(axes.y, axes.y);
-    const float z_scale_squared = sgl::math::dot(axes.z, axes.z);
-    const float max_scale_squared = sgl::math::max(x_scale_squared, sgl::math::max(y_scale_squared, z_scale_squared));
-    const float tolerance = max_scale_squared * 1e-6f;
-    const bool is_uniform_scale = max_scale_squared > 0.f && sgl::math::isfinite(max_scale_squared)
-        && sgl::math::abs(x_scale_squared - y_scale_squared) <= tolerance
-        && sgl::math::abs(x_scale_squared - z_scale_squared) <= tolerance
-        && sgl::math::abs(sgl::math::dot(axes.x, axes.y)) <= tolerance
-        && sgl::math::abs(sgl::math::dot(axes.x, axes.z)) <= tolerance
-        && sgl::math::abs(sgl::math::dot(axes.y, axes.z)) <= tolerance;
-
-    float world_area_scale = 1.f;
-    if (is_uniform_scale) {
-        world_area_scale = (x_scale_squared + y_scale_squared + z_scale_squared) / 3.f;
-    } else {
-        // OpenUSD recommends using light size attributes instead of non-uniform transforms because the latter
-        // complicate light sampling and integration. Preserve the authored spherical area in that case.
-        sgl::log_warn(
-            "SphereLight '{}' has a non-uniform scale or shear; ignoring transform scaling for light "
-            "normalization. Use the radius attribute to size the light.",
-            prim.GetPath().GetString()
-        );
-    }
-
-    const float pi = static_cast<float>(M_PI);
-    const float meters_per_unit = static_cast<float>(pxr::UsdGeomGetStageMetersPerUnit(prim.GetStage()));
-    const float world_area = 4.f * pi * radius * radius * world_area_scale * meters_per_unit * meters_per_unit;
-    return world_area > 0.f && sgl::math::isfinite(world_area) ? world_area : 1.f;
+    return EnvMapPoleAxis::y;
 }
 
 float4x4 sanitize_planar_light_transform(const pxr::UsdPrim& prim, float4x4 transform)
@@ -201,10 +171,10 @@ bool read_light_shaping(const pxr::UsdPrim& prim, ImporterLight& light)
 {
     using namespace pxr;
 
-    const UsdLuxShapingAPI shaping(prim);
-    if (!shaping)
+    if (!prim.HasAPI<UsdLuxShapingAPI>())
         return false;
 
+    const UsdLuxShapingAPI shaping(prim);
     light.shaping_cone_angle = get_authored_attribute(
         shaping.GetShapingConeAngleAttr(),
         prim.GetAttribute(TfToken("inputs:shaping:cone:angle")),
@@ -228,12 +198,6 @@ bool read_light_shaping(const pxr::UsdPrim& prim, ImporterLight& light)
         0.f
     );
     return true;
-}
-
-template<typename TUsdLuxLightType>
-bool is_light_normalized(const TUsdLuxLightType& light, const pxr::UsdPrim& prim)
-{
-    return get_authored_attribute(light.GetNormalizeAttr(), prim.GetAttribute(pxr::TfToken("normalize")), false);
 }
 
 quatf euler_to_quat(const pxr::GfVec3f& degrees, pxr::UsdGeomXformCommonAPI::RotationOrder order)
@@ -323,8 +287,16 @@ bool has_unreal_exporter_provenance(const pxr::UsdStageRefPtr& stage)
 
 } // namespace
 
-UsdImporterContext::UsdImporterContext(const pxr::UsdStageRefPtr& stage, bool parallel_adds)
+UsdImporterContext::UsdImporterContext(
+    const pxr::UsdStageRefPtr& stage,
+    const ImportOptions& import_options,
+    ustring source_asset_path,
+    bool parallel_adds
+)
     : m_usd_stage(stage)
+    , m_source_asset_path(source_asset_path)
+    , m_prototype_source_paths(build_prototype_source_paths(stage))
+    , m_import_options(import_options)
     , m_parallel_adds(parallel_adds)
 {
     m_node_idx_stacks.resize(1);
@@ -341,28 +313,39 @@ int UsdImporterContext::push_transform(const pxr::UsdGeomXformable& prim)
 
     const pxr::UsdPrim usd_prim = prim.GetPrim();
     const float4x4 transform = sanitize_planar_light_transform(usd_prim, to_falcor(usd_transform));
-    const int node_idx = push_transform(transform, get_name(usd_prim), resets ? root_node_idx() : parent_node_idx());
+    const int node_idx = push_transform(transform, get_name(usd_prim), resets ? root_node_idx() : current_node_idx());
+    m_scene->nodes[node_idx].source_asset_ref = source_asset_ref_for_prim(usd_prim);
     // Track prim path -> node index for animation extraction.
     m_prim_path_to_node_idx[usd_prim.GetPath()] = node_idx;
     return node_idx;
 }
 
-std::string
-UsdImporterContext::resolve_material(const pxr::UsdShadeMaterialBindingAPI& binding_api, std::string_view mesh_name)
+int UsdImporterContext::resolve_material(const pxr::UsdShadeMaterialBindingAPI& binding_api, std::string_view mesh_name)
 {
     FALCOR_UNUSED(mesh_name);
     using namespace pxr;
 
+    // Subsets use the containing gprim's sidedness. Promote a shared material if any binding needs it.
+    UsdPrim geometry_prim = binding_api.GetPrim();
+    if (geometry_prim.IsA<UsdGeomSubset>())
+        geometry_prim = geometry_prim.GetParent();
+    bool double_sided = false;
+    if (UsdGeomGprim gprim{geometry_prim})
+        gprim.GetDoubleSidedAttr().Get(&double_sided);
+
     auto usd_material = get_bound_material(binding_api);
     std::string material_name = usd_material.GetPath().GetString();
     if (material_name.empty())
-        return "";
+        return -1;
 
     {
         std::scoped_lock l(m_scene_mutexes.material);
         auto it = m_material_name_to_index.find(material_name);
-        if (it != m_material_name_to_index.end())
-            return material_name;
+        if (it != m_material_name_to_index.end()) {
+            if (double_sided)
+                m_scene->materials[it->second].params.set("double_sided", true);
+            return it->second;
+        }
     }
 
     std::set<TfToken> contexts;
@@ -376,6 +359,7 @@ UsdImporterContext::resolve_material(const pxr::UsdShadeMaterialBindingAPI& bind
 
     ImporterMaterial material;
     material.name = material_name;
+    material.source_asset_ref = source_asset_ref_for_prim(usd_material.GetPrim());
     auto register_asset = [this](const std::filesystem::path& path)
     {
         add_asset_to_scene(path);
@@ -442,12 +426,17 @@ UsdImporterContext::resolve_material(const pxr::UsdShadeMaterialBindingAPI& bind
     {
         std::scoped_lock l(m_scene_mutexes.material);
         auto it = m_material_name_to_index.find(material_name);
-        if (it != m_material_name_to_index.end())
-            return material_name;
+        if (it != m_material_name_to_index.end()) {
+            if (double_sided)
+                m_scene->materials[it->second].params.set("double_sided", true);
+            return it->second;
+        }
+        if (double_sided)
+            material.params.set("double_sided", true);
         int material_id = (int)m_scene->materials.size();
         m_scene->materials.push_back(std::move(material));
         m_material_name_to_index[material_name] = material_id;
-        return material_name;
+        return material_id;
     }
 }
 
@@ -466,10 +455,18 @@ void UsdImporterContext::traverse_scene(const pxr::UsdPrim& root)
     for (auto it = range.begin(); it != range.end(); ++it) {
         UsdPrim prim = *it;
         const std::string& prim_name = get_name(prim);
+        const UsdGeomXformable xformable(prim);
+        const bool is_instance = prim.IsInstance() && !DEINSTANCE;
+        // Use the same ownership condition on entry and exit, including pruned or invisible prims.
+        const bool owns_node = xformable || is_instance || prim.IsA<UsdGeomScope>();
 
         if (!it.IsPostVisit()) {
-            if (prim.IsA<UsdGeomXformable>()) {
-                push_transform(UsdGeomXformable(prim));
+            int node_idx = -1;
+            if (xformable)
+                node_idx = push_transform(xformable);
+            else if (owns_node) {
+                node_idx = push_transform(float4x4::identity(), prim_name);
+                m_scene->nodes[node_idx].source_asset_ref = source_asset_ref_for_prim(prim);
             }
 
             // User-defined primitive drops, drops all subprims as well.
@@ -490,26 +487,26 @@ void UsdImporterContext::traverse_scene(const pxr::UsdPrim& root)
                 return !imageable || is_renderable(imageable);
             };
 
-            if (prim.IsInstance() && !DEINSTANCE) {
+            if (is_instance) {
                 if (is_renderable_prim())
-                    add_instance(prim);
+                    add_instance(prim, node_idx);
             } else if (prim.IsA<UsdGeomPointInstancer>()) {
                 if (is_renderable_prim())
-                    add_point_instancer(prim);
+                    add_point_instancer(prim, node_idx);
             } else if (prim.IsA<UsdGeomMesh>()) {
                 if (is_renderable_prim())
-                    add_mesh(prim);
+                    add_mesh(prim, node_idx);
             } else if (prim.IsA<UsdGeomBasisCurves>()) {
                 if (is_renderable_prim())
-                    add_curve(prim);
+                    add_curve(prim, node_idx);
             } else if (prim.IsA<UsdSkelRoot>()) {
                 // TODO(tdavidovic): Add skinning once we support animation.
                 continue;
             } else if (prim.IsA<UsdLuxBoundableLightBase>() || prim.IsA<UsdLuxNonboundableLightBase>()) {
                 if (is_renderable_prim())
-                    add_light(prim);
+                    add_light(prim, node_idx);
             } else if (prim.IsA<UsdGeomCamera>()) {
-                add_camera(prim);
+                add_camera(prim, node_idx);
             } else if (prim.IsA<UsdGeomXform>() || prim.IsA<UsdGeomScope>()) {
                 continue;
             } else if (!prim.GetTypeName().IsEmpty()) {
@@ -521,77 +518,58 @@ void UsdImporterContext::traverse_scene(const pxr::UsdPrim& root)
             }
         } else {
             // Post visits
-            if (prim.IsA<UsdGeomXformable>()) {
+            if (owns_node) {
                 pop_transform();
             }
         }
     }
 }
 
-void UsdImporterContext::add_mesh(pxr::UsdPrim prim, bool run_immediate)
+void UsdImporterContext::add_mesh(pxr::UsdPrim prim, int node_idx, bool run_immediate)
 {
-    auto resolve_material_func = [&](const pxr::UsdShadeMaterialBindingAPI& binding_api, std::string_view mesh_name)
-    {
-        return resolve_material(binding_api, mesh_name);
-    };
-    auto add_mesh_task
-        = [prim, parent = parent_node_idx(), &scene = m_scene, &scene_mutexes = m_scene_mutexes, resolve_material_func]
-    {
-        add_mesh(prim, parent, scene, scene_mutexes, resolve_material_func);
-    };
-
-    process_task(add_mesh_task, run_immediate);
+    process_task(
+        [this, prim, node_idx]
+        {
+            extract_mesh(prim, node_idx);
+        },
+        run_immediate
+    );
 }
 
-void UsdImporterContext::add_curve(pxr::UsdPrim prim, bool run_immediate)
+void UsdImporterContext::add_curve(pxr::UsdPrim prim, int node_idx, bool run_immediate)
 {
-    auto resolve_material_func = [&](const pxr::UsdShadeMaterialBindingAPI& binding_api, std::string_view curve_name)
-    {
-        return resolve_material(binding_api, curve_name);
-    };
-    auto add_curve_task
-        = [prim, parent = parent_node_idx(), &scene = m_scene, &scene_mutexes = m_scene_mutexes, resolve_material_func]
-    {
-        add_curve(prim, parent, scene, scene_mutexes, resolve_material_func);
-    };
-
-    process_task(add_curve_task, run_immediate);
+    process_task(
+        [this, prim, node_idx]
+        {
+            extract_curve(prim, node_idx);
+        },
+        run_immediate
+    );
 }
 
-void UsdImporterContext::add_light(pxr::UsdPrim prim, bool run_immediate)
+void UsdImporterContext::add_light(pxr::UsdPrim prim, int node_idx, bool run_immediate)
 {
-    auto register_asset = [this](const std::filesystem::path& path)
-    {
-        add_asset_to_scene(path);
-    };
-    auto add_light_task = [prim,
-                           parent = parent_node_idx(),
-                           &scene = m_scene,
-                           &scene_mutexes = m_scene_mutexes,
-                           register_asset,
-                           enable_virtual_sphere_shrinking = m_enable_virtual_sphere_shrinking]
-    {
-        add_light(prim, parent, scene, scene_mutexes, register_asset, enable_virtual_sphere_shrinking);
-    };
-
-    process_task(add_light_task, run_immediate);
+    process_task(
+        [this, prim, node_idx]
+        {
+            extract_light(prim, node_idx);
+        },
+        run_immediate
+    );
 }
 
-void UsdImporterContext::add_camera(pxr::UsdPrim prim, bool run_immediate)
+void UsdImporterContext::add_camera(pxr::UsdPrim prim, int node_idx, bool run_immediate)
 {
-    auto add_camera_task = [prim,
-                            parent = parent_node_idx(),
-                            meters_per_unit = get_meters_per_unit(),
-                            &scene = m_scene,
-                            &scene_mutexes = m_scene_mutexes]
-    {
-        add_camera(prim, parent, meters_per_unit, scene, scene_mutexes);
-    };
-
-    process_task(add_camera_task, run_immediate);
+    process_task(
+        [this, prim, node_idx]
+        {
+            extract_camera(prim, node_idx);
+        },
+        run_immediate
+    );
 }
 
-void UsdImporterContext::add_instance(pxr::UsdPrim prim)
+void UsdImporterContext::add_instance(pxr::UsdPrim prim, int node_idx)
 {
     const pxr::UsdPrim prototype(prim.GetPrototype());
     if (!prototype.IsValid()) {
@@ -602,20 +580,12 @@ void UsdImporterContext::add_instance(pxr::UsdPrim prim)
         return;
 
     int new_prototype_idx = add_prototype(prototype);
-    int parent = parent_node_idx();
     std::scoped_lock l(m_scene_mutexes.nodes);
-    int new_node_idx = static_cast<int>(m_scene->nodes.size());
-    m_scene->nodes.push_back(
-        ImporterNode{
-            .name = get_name(prim),
-            .prototype_index = new_prototype_idx,
-            .parent = parent,
-        }
-    );
-    m_scene->nodes[parent].children.push_back(new_node_idx);
+    FALCOR_ASSERT(node_idx >= 0 && node_idx < static_cast<int>(m_scene->nodes.size()));
+    m_scene->nodes[node_idx].prototype_index = new_prototype_idx;
 }
 
-void UsdImporterContext::add_point_instancer(pxr::UsdPrim prim)
+void UsdImporterContext::add_point_instancer(pxr::UsdPrim prim, int node_idx)
 {
     using namespace pxr;
 
@@ -675,8 +645,9 @@ void UsdImporterContext::add_point_instancer(pxr::UsdPrim prim)
         return;
     }
 
-    int parent = parent_node_idx();
+    const SourceAssetRef source_asset_ref = source_asset_ref_for_prim(prim);
     std::scoped_lock l(m_scene_mutexes.nodes);
+    FALCOR_ASSERT(node_idx >= 0 && node_idx < static_cast<int>(m_scene->nodes.size()));
 
     for (size_t i = 0; i < prototype_usd_indices.size(); ++i) {
         int prototype_index = prototype_indices[prototype_usd_indices[i]];
@@ -688,11 +659,12 @@ void UsdImporterContext::add_point_instancer(pxr::UsdPrim prim)
         m_scene->nodes.push_back(
             ImporterNode{
                 .name = fmt::format("{}_{}", name, i),
+                .source_asset_ref = source_asset_ref,
                 .prototype_index = prototype_index,
-                .parent = parent,
+                .parent = node_idx,
             }
         );
-        m_scene->nodes[parent].children.push_back(new_node_idx);
+        m_scene->nodes[node_idx].children.push_back(new_node_idx);
     }
 }
 
@@ -707,6 +679,7 @@ int UsdImporterContext::add_prototype(pxr::UsdPrim prototype)
     ImporterPrototype importer_prototype;
     importer_prototype.name = get_name(prototype);
     importer_prototype.root_node = push_transform(float4x4::identity(), get_name(prototype) + "_root");
+    m_scene->nodes[importer_prototype.root_node].source_asset_ref = source_asset_ref_for_prim(prototype);
     m_prototype_to_index[prototype] = new_prototype_idx;
     m_scene->prototypes.push_back(std::move(importer_prototype));
 
@@ -717,305 +690,186 @@ int UsdImporterContext::add_prototype(pxr::UsdPrim prototype)
     return new_prototype_idx;
 }
 
-void UsdImporterContext::add_mesh(
-    pxr::UsdPrim prim,
-    int parent,
-    ImporterScene* scene,
-    UsdSceneMutexes& scene_mutexes,
-    std::function<std::string(const pxr::UsdShadeMaterialBindingAPI& binding_api, std::string_view)>
-        resolve_material_func
-)
+void UsdImporterContext::extract_mesh(pxr::UsdPrim prim, int node_idx)
 {
+    auto resolve_material_func = [this](const pxr::UsdShadeMaterialBindingAPI& binding_api, std::string_view mesh_name)
+    {
+        return resolve_material(binding_api, mesh_name);
+    };
     pxr::UsdGeomMesh usd_mesh(prim);
-    const std::string prim_name = usd_mesh.GetPath().GetString();
-    ImporterMesh result = convert_usd_mesh(usd_mesh, resolve_material_func);
+    ImporterMesh result = convert_usd_mesh(usd_mesh, resolve_material_func, m_import_options);
+    result.source_asset_ref = source_asset_ref_for_prim(prim);
 
     /// Some USDs contain invalid meshes as part of their hierarchy (e.g., Casa_GP), we discard those.
     if (!result.position_stream().valid())
         return;
 
-    std::scoped_lock l(scene_mutexes.nodes, scene_mutexes.mesh);
-    int new_node_idx = static_cast<int>(scene->nodes.size());
-    int new_mesh_idx = static_cast<int>(scene->meshes.size());
-    scene->meshes.push_back(std::move(result));
-    scene->nodes.push_back(
-        ImporterNode{
-            .name = prim_name,
-            .mesh_index = new_mesh_idx,
-            .parent = parent,
-        }
-    );
-    scene->nodes[parent].children.push_back(new_node_idx);
+    std::scoped_lock l(m_scene_mutexes.nodes, m_scene_mutexes.mesh);
+    int new_mesh_idx = static_cast<int>(m_scene->meshes.size());
+    m_scene->meshes.push_back(std::move(result));
+    FALCOR_ASSERT(node_idx >= 0 && node_idx < static_cast<int>(m_scene->nodes.size()));
+    m_scene->nodes[node_idx].mesh_index = new_mesh_idx;
 }
 
-void UsdImporterContext::add_curve(
-    pxr::UsdPrim prim,
-    int parent,
-    ImporterScene* scene,
-    UsdSceneMutexes& scene_mutexes,
-    std::function<std::string(const pxr::UsdShadeMaterialBindingAPI& binding_api, std::string_view)>
-        resolve_material_func
-)
+void UsdImporterContext::extract_curve(pxr::UsdPrim prim, int node_idx)
 {
     using namespace pxr;
 
-    UsdGeomBasisCurves usd_curves(prim);
-    std::string prim_name = prim.GetPath().GetString();
-
-    // Read curve type (linear or cubic).
-    TfToken type_token;
-    usd_curves.GetTypeAttr().Get(&type_token);
-
-    bool is_linear = (type_token == UsdGeomTokens->linear);
-    bool is_cubic = (type_token == UsdGeomTokens->cubic);
-
-    if (!is_linear && !is_cubic) {
-        sgl::log_warn("Skipping BasisCurves prim '{}' with unsupported type '{}'", prim_name, type_token.GetString());
+    auto geometry = convert_usd_curves(
+        UsdGeomBasisCurves(prim),
+        [this](const UsdShadeMaterialBindingAPI& binding, std::string_view name)
+        {
+            return resolve_material(binding, name);
+        },
+        m_import_options
+    );
+    if (!geometry)
         return;
-    }
-
-    // Read points.
-    VtArray<GfVec3f> usd_points;
-    usd_curves.GetPointsAttr().Get(&usd_points);
-    if (usd_points.empty()) {
-        sgl::log_warn("Skipping BasisCurves prim '{}' with no points", prim_name);
-        return;
-    }
-
-    // Read curve vertex counts.
-    VtArray<int> usd_vertex_counts;
-    usd_curves.GetCurveVertexCountsAttr().Get(&usd_vertex_counts);
-    if (usd_vertex_counts.empty()) {
-        sgl::log_warn("Skipping BasisCurves prim '{}' with no vertex counts", prim_name);
-        return;
-    }
-
-    // Read widths (USD widths are diameters, convert to radii).
-    VtArray<float> usd_widths;
-    usd_curves.GetWidthsAttr().Get(&usd_widths);
-
-    // Build tessellation input.
-    TesselatorInputCurve input;
-    input.name = prim_name;
-    input.points = std::move(usd_points);
-    input.widths = std::move(usd_widths);
-    input.vertex_counts = std::move(usd_vertex_counts);
-
-    if (is_linear) {
-        input.type = TesselatorInputCurve::Type::linear;
-    } else {
-        input.type = TesselatorInputCurve::Type::cubic;
-
-        TfToken basis_token;
-        usd_curves.GetBasisAttr().Get(&basis_token);
-
-        if (basis_token == UsdGeomTokens->bezier) {
-            input.basis = TesselatorInputCurve::Basis::bezier;
-        } else if (basis_token == UsdGeomTokens->bspline) {
-            input.basis = TesselatorInputCurve::Basis::bspline;
-        } else if (basis_token == UsdGeomTokens->catmullRom) {
-            input.basis = TesselatorInputCurve::Basis::catmull_rom;
-        } else {
-            sgl::log_warn(
-                "Skipping cubic BasisCurves prim '{}' with unsupported basis '{}'",
-                prim_name,
-                basis_token.GetString()
-            );
+    if (auto* ribbon = std::get_if<ImporterMesh>(&*geometry)) {
+        if (!ribbon->position_stream().valid())
             return;
-        }
-
-        TfToken wrap_token;
-        usd_curves.GetWrapAttr().Get(&wrap_token);
-        if (wrap_token == UsdGeomTokens->periodic) {
-            sgl::log_warn(
-                "BasisCurves prim '{}' uses periodic wrap mode which is not yet supported, treating as nonperiodic",
-                prim_name
-            );
-        }
+        ribbon->source_asset_ref = source_asset_ref_for_prim(prim);
+        std::scoped_lock lock(m_scene_mutexes.nodes, m_scene_mutexes.mesh);
+        const int index = static_cast<int>(m_scene->meshes.size());
+        m_scene->meshes.push_back(std::move(*ribbon));
+        m_scene->nodes[node_idx].mesh_index = index;
+    } else {
+        auto& curve = std::get<ImporterCurve>(*geometry);
+        curve.source_asset_ref = source_asset_ref_for_prim(prim);
+        std::scoped_lock lock(m_scene_mutexes.nodes, m_scene_mutexes.curve);
+        const int index = static_cast<int>(m_scene->curves.size());
+        m_scene->curves.push_back(std::move(curve));
+        m_scene->nodes[node_idx].curve_index = index;
     }
-
-    ImporterCurve curve = tessellate_curves(input);
-
-    if (curve.indices.empty())
-        return;
-
-    curve.material_name = resolve_material_func(pxr::UsdShadeMaterialBindingAPI(prim), prim_name);
-
-    std::scoped_lock l(scene_mutexes.nodes, scene_mutexes.curve);
-    int new_node_idx = static_cast<int>(scene->nodes.size());
-    int new_curve_idx = static_cast<int>(scene->curves.size());
-    scene->curves.push_back(std::move(curve));
-    scene->nodes.push_back(
-        ImporterNode{
-            .name = prim_name,
-            .curve_index = new_curve_idx,
-            .parent = parent,
-        }
-    );
-    scene->nodes[parent].children.push_back(new_node_idx);
 }
 
-void UsdImporterContext::add_light(
-    pxr::UsdPrim prim,
-    int parent,
-    ImporterScene* scene,
-    UsdSceneMutexes& scene_mutexes,
-    std::function<void(const std::filesystem::path&)> register_asset,
-    bool enable_virtual_sphere_shrinking
-)
-{
-    ImporterLight light = create_light(prim, enable_virtual_sphere_shrinking);
-    if (!light.env_map_path.empty())
-        register_asset(light.env_map_path);
-
-    std::scoped_lock l(scene_mutexes.nodes, scene_mutexes.light);
-    int new_node_idx = static_cast<int>(scene->nodes.size());
-    int new_light_idx = static_cast<int>(scene->lights.size());
-
-    float4x4 light_transform = float4x4::identity();
-    switch (light.type) {
-    case ImporterLight::Type::dome:
-        if (auto dome_light = pxr::UsdLuxDomeLight_1(prim))
-            light_transform = get_dome_light_orientation(dome_light);
-        break;
-    default:
-        break;
-    }
-
-    scene->lights.push_back(std::move(light));
-    scene->nodes.push_back(
-        ImporterNode{
-            .name = prim.GetPath().GetString(),
-            .transform = light_transform,
-            .light_index = new_light_idx,
-            .parent = parent,
-        }
-    );
-    scene->nodes[parent].children.push_back(new_node_idx);
-}
-
-ImporterLight UsdImporterContext::create_light(pxr::UsdPrim prim, bool enable_virtual_sphere_shrinking)
+void UsdImporterContext::extract_light(pxr::UsdPrim prim, int node_idx)
 {
     /// We do not scale any of the dimensions with get_meters_per_unit(),
     /// because that is already baked into the Scene's root transform.
     ///
-    /// Light intensities are adjusted for lights marked as normalize, as per
-    /// https://openusd.org/release/user_guides/schemas/usdLux/LightAPI.html#inputs-normalize
-    ///
-    /// Scaling is applied during normalize, however none-uniform scaling of sphere lights results
-    /// in a warning, and scaling is general is not recommended by the spec:
-    /// https://openusd.org/release/api/usd_lux_page_front.html#usdLux_Geometry
+    /// Authored radiometric controls are preserved independently. Normalization is
+    /// evaluated later from the represented light's final world-space dimensions.
 
     using namespace pxr;
 
     ImporterLight result;
     result.name = prim.GetPath().GetString();
+    result.source_asset_ref = source_asset_ref_for_prim(prim);
     const UsdLuxLightAPI light_api(prim);
+    result.intensity
+        = get_light_attribute(light_api.GetIntensityAttr(), prim.GetAttribute(TfToken("intensity")), result.intensity);
+    result.color = to_falcor(get_light_attribute(
+        light_api.GetColorAttr(),
+        prim.GetAttribute(TfToken("color")),
+        GfVec3f(result.color.x, result.color.y, result.color.z)
+    ));
     result.exposure
-        = get_authored_attribute(light_api.GetExposureAttr(), prim.GetAttribute(TfToken("exposure")), result.exposure);
-    result.enable_color_temperature = get_authored_attribute(
+        = get_light_attribute(light_api.GetExposureAttr(), prim.GetAttribute(TfToken("exposure")), result.exposure);
+    result.normalize
+        = get_light_attribute(light_api.GetNormalizeAttr(), prim.GetAttribute(TfToken("normalize")), result.normalize);
+    result.enable_color_temperature = get_light_attribute(
         light_api.GetEnableColorTemperatureAttr(),
         prim.GetAttribute(TfToken("enableColorTemperature")),
         result.enable_color_temperature
     );
-    result.color_temperature = get_authored_attribute(
+    result.color_temperature = get_light_attribute(
         light_api.GetColorTemperatureAttr(),
         prim.GetAttribute(TfToken("colorTemperature")),
         result.color_temperature
     );
 
     result.geometry_visible
+        = get_attribute(prim.GetAttribute(TfToken("inputs:enableInPrimaryRay")), result.geometry_visible);
+    result.geometry_visible
         = get_attribute(prim.GetAttribute(TfToken("karma:light:renderlightgeo")), result.geometry_visible);
     result.geometry_visible
         = get_attribute(prim.GetAttribute(TfToken("falcor:geometryVisible")), result.geometry_visible);
 
-    if (auto light = UsdLuxDistantLight(prim)) {
+    if (auto distant_light = UsdLuxDistantLight(prim)) {
         result.type = ImporterLight::Type::distant;
-        result.intensity = get_light_intensity(light, prim);
-        result.degree_angular_diameter = get_authored_attribute(
-            light.GetAngleAttr(),
+        result.degree_angular_diameter = get_light_attribute(
+            distant_light.GetAngleAttr(),
             prim.GetAttribute(TfToken("angle")),
             result.degree_angular_diameter
         );
-        if (is_light_normalized(light, prim))
-            result.intensity /= distant_light_size_factor(result.degree_angular_diameter);
-
-        return result;
-    }
-
-    if (auto light = UsdLuxRectLight(prim)) {
+    } else if (auto rect_light = UsdLuxRectLight(prim)) {
         result.type = ImporterLight::Type::rectangular;
         result.enable_shaping = read_light_shaping(prim, result);
-        result.intensity = get_light_intensity(light, prim);
-        result.width = get_authored_attribute(light.GetWidthAttr(), prim.GetAttribute(TfToken("width")), result.width);
+        result.width
+            = get_light_attribute(rect_light.GetWidthAttr(), prim.GetAttribute(TfToken("width")), result.width);
         result.height
-            = get_authored_attribute(light.GetHeightAttr(), prim.GetAttribute(TfToken("height")), result.height);
-        if (is_light_normalized(light, prim))
-            result.intensity /= planar_light_size_factor(prim, result.width * result.height);
-
-        return result;
-    }
-
-    if (auto light = UsdLuxSphereLight(prim)) {
+            = get_light_attribute(rect_light.GetHeightAttr(), prim.GetAttribute(TfToken("height")), result.height);
+    } else if (auto sphere_light = UsdLuxSphereLight(prim)) {
         result.type = ImporterLight::Type::sphere;
-        result.intensity = get_light_intensity(light, prim);
-        result.radius
-            = get_authored_attribute(light.GetRadiusAttr(), prim.GetAttribute(TfToken("radius")), result.radius);
-        if (is_light_normalized(light, prim))
-            result.intensity /= sphere_light_size_factor(prim, result.radius);
-
-        result.enable_shaping = read_light_shaping(prim, result);
-        const bool treat_as_point
-            = get_authored_attribute(light.GetTreatAsPointAttr(), prim.GetAttribute(TfToken("treatAsPoint")), false);
-        if (treat_as_point) {
-            result.intensity *= sphere_light_size_factor(prim, result.radius);
-            result.radius = 0;
-
-            // USD represents spot lights as point-treated SphereLights with ShapingAPI.
-            result.type = ImporterLight::Type::point;
-        } else if (result.radius == 0) {
-            result.type = ImporterLight::Type::point;
+        const float4x4 world_from_light
+            = to_falcor(UsdGeomXformable(prim).ComputeLocalToWorldTransform(UsdTimeCode::Default()));
+        if (!is_similarity_transform(world_from_light)) {
+            sgl::log_warn(
+                "SphereLight '{}' has non-uniform world scaling or shear; using volume-equivalent uniform scale {}.",
+                prim.GetPath().GetString(),
+                volume_equivalent_uniform_scale(world_from_light)
+            );
         }
+        result.radius
+            = get_light_attribute(sphere_light.GetRadiusAttr(), prim.GetAttribute(TfToken("radius")), result.radius);
+        result.enable_shaping = read_light_shaping(prim, result);
+        result.treat_as_point = get_light_attribute(
+            sphere_light.GetTreatAsPointAttr(),
+            prim.GetAttribute(TfToken("treatAsPoint")),
+            result.treat_as_point
+        );
 
         result.enable_virtual_sphere_shrinking
-            = enable_virtual_sphere_shrinking && result.type == ImporterLight::Type::sphere;
+            = m_enable_virtual_sphere_shrinking && result.type == ImporterLight::Type::sphere && !result.treat_as_point;
+    } else if (auto cylinder_light = UsdLuxCylinderLight(prim)) {
+        result.type = ImporterLight::Type::cylinder;
+        result.enable_shaping = read_light_shaping(prim, result);
+        result.radius
+            = get_light_attribute(cylinder_light.GetRadiusAttr(), prim.GetAttribute(TfToken("radius")), result.radius);
+        result.length
+            = get_light_attribute(cylinder_light.GetLengthAttr(), prim.GetAttribute(TfToken("length")), result.length);
+        result.treat_as_line = get_light_attribute(
+            cylinder_light.GetTreatAsLineAttr(),
+            prim.GetAttribute(TfToken("treatAsLine")),
+            result.treat_as_line
+        );
 
-        return result;
-    }
-
-    if (auto light = UsdLuxDiskLight(prim)) {
+        const float4x4 world_from_light
+            = to_falcor(UsdGeomXformable(prim).ComputeLocalToWorldTransform(UsdTimeCode::Default()));
+        if (!is_axially_symmetric_transform(world_from_light, 0)) {
+            sgl::log_warn(
+                "CylinderLight '{}' has radial non-uniform scaling or shear; using an area-equivalent circular "
+                "radius.",
+                prim.GetPath().GetString()
+            );
+        }
+    } else if (auto disk_light = UsdLuxDiskLight(prim)) {
         result.type = ImporterLight::Type::disk;
         result.enable_shaping = read_light_shaping(prim, result);
-        result.intensity = get_light_intensity(light, prim);
         result.radius
-            = get_authored_attribute(light.GetRadiusAttr(), prim.GetAttribute(TfToken("radius")), result.radius);
-        if (is_light_normalized(light, prim)) {
-            const float pi = static_cast<float>(M_PI);
-            result.intensity /= planar_light_size_factor(prim, pi * result.radius * result.radius);
-        }
-
-        return result;
+            = get_light_attribute(disk_light.GetRadiusAttr(), prim.GetAttribute(TfToken("radius")), result.radius);
+    } else if (auto dome_light = UsdLuxDomeLight(prim)) {
+        read_dome_light_properties(dome_light, prim, result);
+    } else if (auto dome_light_1 = UsdLuxDomeLight_1(prim)) {
+        read_dome_light_properties(dome_light_1, prim, result);
+        result.pole_axis = get_dome_light_pole_axis(dome_light_1);
     }
 
-    if (auto light = UsdLuxDomeLight(prim)) {
-        read_dome_light_properties(light, prim, result);
-        return result;
-    }
-    if (auto light = UsdLuxDomeLight_1(prim)) {
-        read_dome_light_properties(light, prim, result);
-        return result;
-    }
+    result.properties = ImporterLight::make_properties(m_import_options, result.type);
+    read_import_property<bool>(prim, "falcor:convertToMesh", result.properties, "convert_to_mesh");
 
-    return result;
+    if (!result.env_map_path.empty())
+        add_asset_to_scene(result.env_map_path);
+
+    std::scoped_lock l(m_scene_mutexes.nodes, m_scene_mutexes.light);
+    int new_light_idx = static_cast<int>(m_scene->lights.size());
+    m_scene->lights.push_back(std::move(result));
+    FALCOR_ASSERT(node_idx >= 0 && node_idx < static_cast<int>(m_scene->nodes.size()));
+    m_scene->nodes[node_idx].light_index = new_light_idx;
 }
 
-void UsdImporterContext::add_camera(
-    pxr::UsdPrim prim,
-    int parent,
-    float meters_per_unit,
-    ImporterScene* scene,
-    UsdSceneMutexes& scene_mutexes
-)
+void UsdImporterContext::extract_camera(pxr::UsdPrim prim, int node_idx)
 {
     using namespace pxr;
 
@@ -1023,6 +877,7 @@ void UsdImporterContext::add_camera(
 
     ImporterCamera result;
     result.name = prim.GetName().GetString();
+    result.source_asset_ref = source_asset_ref_for_prim(prim);
 
     // value is tenths of a world unit, so *10 to get meters and then /1000 to go to mm
     // (Many scenes have cm as their scene unit, so this becomes a no-op)
@@ -1055,9 +910,9 @@ void UsdImporterContext::add_camera(
     }
 
     result.enable_depth_of_field = usd_fstop > 0.f;
-    result.focus_distance = usd_camera.GetFocusDistance() * meters_per_unit;
+    result.focus_distance = usd_camera.GetFocusDistance() * m_meters_per_unit;
     result.depth_range
-        = float2(usd_camera.GetClippingRange().GetMin(), usd_camera.GetClippingRange().GetMax()) * meters_per_unit;
+        = float2(usd_camera.GetClippingRange().GetMin(), usd_camera.GetClippingRange().GetMax()) * m_meters_per_unit;
 
     switch (usd_camera.GetProjection()) {
     case GfCamera::Projection::Perspective:
@@ -1068,18 +923,11 @@ void UsdImporterContext::add_camera(
         break;
     }
 
-    std::scoped_lock l(scene_mutexes.nodes, scene_mutexes.camera);
-    int new_node_idx = static_cast<int>(scene->nodes.size());
-    int new_camera_idx = static_cast<int>(scene->cameras.size());
-    scene->cameras.push_back(std::move(result));
-    scene->nodes.push_back(
-        ImporterNode{
-            .name = prim.GetPath().GetString(),
-            .camera_index = new_camera_idx,
-            .parent = parent,
-        }
-    );
-    scene->nodes[parent].children.push_back(new_node_idx);
+    std::scoped_lock l(m_scene_mutexes.nodes, m_scene_mutexes.camera);
+    int new_camera_idx = static_cast<int>(m_scene->cameras.size());
+    m_scene->cameras.push_back(std::move(result));
+    FALCOR_ASSERT(node_idx >= 0 && node_idx < static_cast<int>(m_scene->nodes.size()));
+    m_scene->nodes[node_idx].camera_index = new_camera_idx;
 }
 
 int UsdImporterContext::add_texture_to_scene(const ImporterTexture& texture)
@@ -1123,6 +971,9 @@ void UsdImporterContext::extract_animations()
     if (time_codes_per_second <= 0.0)
         time_codes_per_second = 24.0;
 
+    const auto interpolation = m_usd_stage->GetInterpolationType() == pxr::UsdInterpolationTypeHeld
+        ? AnimationInterpolationMode::step
+        : AnimationInterpolationMode::linear;
     bool has_animation = false;
 
     for (const auto& [prim_path, node_idx] : m_prim_path_to_node_idx) {
@@ -1218,7 +1069,7 @@ void UsdImporterContext::extract_animations()
         if (has_translation_anim) {
             ImporterAnimationChannel channel;
             channel.value_type = AnimationValueType::float3;
-            channel.interpolation_mode = AnimationInterpolationMode::linear;
+            channel.interpolation_mode = interpolation;
             channel.times = times;
             channel.values = std::move(translations);
             node.animation_translation = static_cast<int>(m_scene->animation.channels.size());
@@ -1228,7 +1079,7 @@ void UsdImporterContext::extract_animations()
         if (has_rotation_anim) {
             ImporterAnimationChannel channel;
             channel.value_type = AnimationValueType::quatf;
-            channel.interpolation_mode = AnimationInterpolationMode::linear;
+            channel.interpolation_mode = interpolation;
             channel.times = times;
             channel.values = std::move(rotations);
             node.animation_rotation = static_cast<int>(m_scene->animation.channels.size());
@@ -1238,13 +1089,32 @@ void UsdImporterContext::extract_animations()
         if (has_scale_anim) {
             ImporterAnimationChannel channel;
             channel.value_type = AnimationValueType::float3;
-            channel.interpolation_mode = AnimationInterpolationMode::linear;
+            channel.interpolation_mode = interpolation;
             channel.times = times;
             channel.values = std::move(scales);
             node.animation_scale = static_cast<int>(m_scene->animation.channels.size());
             m_scene->animation.channels.push_back(std::move(channel));
         }
     }
+}
+
+pxr::SdfPath UsdImporterContext::source_path_for_prim(const pxr::UsdPrim& prim) const
+{
+    if (!prim.IsInPrototype())
+        return prim.GetPath();
+    const pxr::SdfPath prototype_path = get_prototype_root(prim).GetPath();
+    return prim.GetPath().ReplacePrefix(prototype_path, m_prototype_source_paths.at(prototype_path));
+}
+
+SourceAssetRef UsdImporterContext::source_asset_ref_for_object(std::string_view object_path) const
+{
+    static const ustring format("usd");
+    return SourceAssetRef(format, m_source_asset_path, ustring(object_path));
+}
+
+SourceAssetRef UsdImporterContext::source_asset_ref_for_prim(const pxr::UsdPrim& prim) const
+{
+    return source_asset_ref_for_object(source_path_for_prim(prim).GetString());
 }
 
 } // namespace usd_importer

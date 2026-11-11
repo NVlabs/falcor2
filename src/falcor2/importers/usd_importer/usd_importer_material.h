@@ -11,10 +11,12 @@
 BEGIN_DISABLE_USD_WARNINGS
 #include <pxr/pxr.h>
 #include <pxr/usd/usdShade/material.h>
+#include <pxr/usd/usdShade/materialBindingAPI.h>
 END_DISABLE_USD_WARNINGS
 
 #include <filesystem>
 #include <functional>
+#include <string_view>
 
 namespace falcor {
 
@@ -22,6 +24,9 @@ struct ImporterMaterial;
 struct ImporterTexture;
 
 namespace usd_importer {
+
+using ResolveMaterial
+    = std::function<int(const pxr::UsdShadeMaterialBindingAPI& binding_api, std::string_view prim_name)>;
 
 /// NOTE: Material graph extraction in build_material is adapted in part from
 /// OpenUSD's UsdImaging material graph utilities

@@ -4,19 +4,17 @@
 implementing render;
 
 namespace stdmat {
-bool is_normal_mapping_enabled(const MaterialInstanceHints hints)
+struct TCBits
 {
-    return !(hints & MaterialInstanceHints::disable_normal_mapping);
-}
-
-public float3 decode_normal_map(const float3 encoded)
-{
-    float3 normal = encoded * 2.0 - 1.0;
-    // BC5 samples return zero for the absent blue channel. Reconstruct the
-    // positive tangent-space Z component after filtering the stored XY pair.
-    if (encoded.z == 0.0)
-        normal.z = sqrt(saturate(1.0 - dot(normal.xy, normal.xy)));
-    return normalize(normal);
+    typedef BitField<uint, 0, 3> base_color;
+    typedef BitField<uint, 0, 3> diffuse;
+    typedef BitField<uint, 3, 3> metallic_roughness;
+    typedef BitField<uint, 3, 3> specular_glossiness;
+    typedef BitField<uint, 6, 3> normal;
+    typedef BitField<uint, 9, 3> emissive;
+    typedef BitField<uint, 12, 3> transmission;
+    typedef BitField<uint, 15, 1> use_vertex_color;
+    typedef BitField<uint, 16, 1> normal_map_encoded;
 }
 
 float get_metallic(const float3 diffuse, const float3 specular)
@@ -32,42 +30,4 @@ float get_metallic(const float3 diffuse, const float3 specular)
     return saturate((root - b) * 12.5);
 }
 
-Frame orient_shading_frame(const SurfaceInteraction si, const Frame shading_frame_ws, const bool orient_backface)
-{
-    Frame result = shading_frame_ws;
-    if (!si.front_facing && orient_backface)
-        result.normal = -result.normal;
-    return result;
-}
-
-bool is_valid_hemisphere_reflection_or_transmission(
-    const SurfaceInteraction si,
-    const Frame shading_frame_ws,
-    const float3 wi_ls,
-    const float3 wo_ls,
-    const float3 wo_ws
-)
-{
-    const bool is_transmission = wi_ls.z * wo_ls.z < 0.0;
-
-    if (min(wi_ls.z, abs(wo_ls.z)) < BSDF_MIN_COS_THETA)
-        return false;
-
-    const bool wi_top = si.front_facing;
-    const bool wo_top = dot(wo_ws, si.normal_ws) >= 0.0;
-
-    if (is_transmission) {
-        if (wi_top == wo_top)
-            return false;
-    } else {
-        if (wi_top != wo_top)
-            return false;
-    }
-
-    const bool shading_top = dot(shading_frame_ws.normal, si.normal_ws) >= 0.0;
-    if (wi_top != shading_top)
-        return false;
-
-    return true;
-}
 }

@@ -3,7 +3,7 @@
 
 implementing render;
 
-static constexpr float HENYEY_GREENSTEIN_ISOTROPIC_THRESHOLD = 1e-3;
+static const float HENYEY_GREENSTEIN_ISOTROPIC_THRESHOLD = 1e-3;
 
 /// Scalar Henyey-Greenstein phase function.
 ///

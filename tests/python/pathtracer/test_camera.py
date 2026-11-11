@@ -20,6 +20,7 @@ def fov_y_from_focal_length(focal_length: float, sensor_height: float) -> float:
     return float(np.degrees(2.0 * np.arctan(sensor_height / (2.0 * focal_length))))
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_camera_modify(device_type: spy.DeviceType, device: spy.Device) -> None:
     scene = f2.Scene.create(device)
@@ -31,6 +32,7 @@ def test_camera_modify(device_type: spy.DeviceType, device: spy.Device) -> None:
     assert abs(np.dot(u, v)) < 1e-5
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_camera_physical_projection_properties(
     device_type: spy.DeviceType, device: spy.Device
@@ -55,6 +57,7 @@ def test_camera_physical_projection_properties(
     )
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_camera_matrix_calculators(device_type: spy.DeviceType, device: spy.Device) -> None:
     """Camera matrices are calculated on demand, not GPU camera uniforms."""
@@ -100,6 +103,7 @@ def test_camera_matrix_calculators(device_type: spy.DeviceType, device: spy.Devi
     np.testing.assert_allclose(far_ndc[2], 1.0, atol=1e-5)
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_camera_clip_uses_render_dims_without_dirtying(
     device_type: spy.DeviceType, device: spy.Device
@@ -121,6 +125,7 @@ def test_camera_clip_uses_render_dims_without_dirtying(
     assert scene.update_generation == update_generation
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_camera_uniforms_use_render_dims_without_dirtying(
     device_type: spy.DeviceType, device: spy.Device
@@ -148,6 +153,7 @@ def test_camera_uniforms_use_render_dims_without_dirtying(
     assert scene.update_generation == update_generation
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_camera_transform(device_type: spy.DeviceType, device: spy.Device) -> None:
     """Camera transform position/rotation affects uniforms."""

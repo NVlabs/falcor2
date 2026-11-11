@@ -11,9 +11,9 @@ public struct UniformSampleGenerator : ISampleGenerator
 {
     Xoshiro128StarStar rng;
 
-    public __init(uint seed)
+    public __init(uint sample_index, uint scrambling_seed = 0)
     {
-        LCG init_rng = LCG(seed);
+        LCG init_rng = LCG(scrambling_seed == 0 ? sample_index : jenkins_hash(sample_index ^ scrambling_seed));
         uint4 seed;
         seed.x = init_rng.next_uint();
         seed.y = init_rng.next_uint();

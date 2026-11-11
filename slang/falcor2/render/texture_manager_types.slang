@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include "falcor2/shared_types_compat.slangh"
+
 #ifndef FALCOR_SHARED_HOST
 implementing render;
 import falcor2.utils;
@@ -30,6 +32,8 @@ typedef TextureHandleFieldsNonCUDA TextureHandleFields;
 #endif
 #endif
 
-static constexpr uint INVALID_TEXTURE_HANDLE = 0xffffffff;
+FALCOR_SHARED_CONSTANT uint INVALID_TEXTURE_HANDLE = 0xffffffff;
 
 } // namespace detail
+
+#include "falcor2/shared_types_compat_undef.slangh"

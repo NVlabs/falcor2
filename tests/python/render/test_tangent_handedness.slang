@@ -72,5 +72,5 @@ float2 materialx_normalmap_probe(float handedness)
 
 float3 bc5_normalmap_probe(float2 encoded_xy)
 {
-    return stdmat::decode_normal_map(float3(encoded_xy, 0.0));
+    return surface_material::decode_normal_map(float3(encoded_xy, 0.0), true);
 }

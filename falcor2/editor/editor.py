@@ -13,6 +13,7 @@ from falcor2.editor.scene_shader import SceneShaderHelper
 from falcor2.editor.graph_settings import GraphSettingsPanel
 from falcor2.rendergraph import is_torch_tensor, torch_to_slangpy
 from falcor2.rendergraph.render_node import RenderNode
+from falcor2.streaming.config import StreamingConfig
 
 
 _active_editor: ReferenceType["Editor"] | None = None
@@ -51,11 +52,19 @@ class RenderMode(IntEnum):
 
 @dataclass
 class EditorConfig:
+    """Editor presentation options.
+
+    Disable window for offscreen rendering. With streaming enabled, width and
+    height fix the complete video frame size; the docked viewport can be smaller.
+    """
+
     width: int = 1280
     height: int = 720
     title: str = "Falcor2"
     vsync: bool = True
     mcp: bool = True
+    window: bool = True
+    streaming: StreamingConfig | None = None
 
 
 @dataclass
@@ -76,23 +85,37 @@ class Editor:
         self.device = device
         self.config = config or EditorConfig()
 
-        self.window = spy.Window(
-            width=self.config.width,
-            height=self.config.height,
-            title=self.config.title,
-            resizable=True,
-        )
-        self.surface = self.device.create_surface(self.window)
-        self.surface.configure(
-            width=self.config.width,
-            height=self.config.height,
-            vsync=self.config.vsync,
-        )
+        if self.config.width < 1 or self.config.height < 1:
+            raise ValueError("Editor dimensions must be positive")
+        if self.config.streaming is not None:
+            self.config.streaming._server_config(self.config.width, self.config.height)
+        self.window = None
+        self.surface = None
+        if self.config.window:
+            self.window = spy.Window(
+                width=self.config.width,
+                height=self.config.height,
+                title=self.config.title,
+                resizable=self.config.streaming is None,
+            )
+            self.surface = self.device.create_surface(self.window)
+            self.surface.configure(
+                width=self.config.width,
+                height=self.config.height,
+                vsync=self.config.vsync,
+            )
 
         self._output: Optional[FrameOutput] = None
         self._cmd = None
         self._image = None
         self._closed = False
+        self._shutdown_complete = False
+        self._stream = None
+        self._composite = None
+        self._capture_image = None
+        self._swapchain_image = None
+        self._rendered_frames = 0
+        self._ui_frame_active = False
         self._needs_render = False
         self._dt = 0.0
         self._timer = spy.Timer()
@@ -122,8 +145,7 @@ class Editor:
             [
                 ("F5", "Toggle scene editor"),
                 ("F6", "Toggle profiler"),
-                ("F12", "Cycle render mode"),
-                ("Escape", "Close application"),
+                ("F12", "Cycle render mode (D3D12/Vulkan)"),
             ],
         )
         self._scene_picker = f2.ui.ScenePicker(device)
@@ -146,13 +168,32 @@ class Editor:
         self.on_keyboard_event: Optional[Callable[..., Any]] = None
         self.on_mouse_event: Optional[Callable[..., Any]] = None
 
-        self.window.on_keyboard_event = self._on_keyboard_event
-        self.window.on_mouse_event = self._on_mouse_event
-        self.window.on_resize = self._on_resize
+        if self.window is not None:
+            self.window.on_keyboard_event = self._on_local_keyboard_event
+            self.window.on_mouse_event = self._on_local_mouse_event
+            self.window.on_resize = self._on_resize
 
         # Set initial scene.
         self.scene = scene
-        self._start_mcp_bridge()
+        try:
+            if self.config.streaming is not None:
+                from falcor2.streaming.editor import EditorStream
+
+                self._stream = EditorStream(
+                    self.device,
+                    self.config.streaming,
+                    self.config.width,
+                    self.config.height,
+                    self._on_keyboard_event,
+                    self._on_mouse_event,
+                    self._cancel_interaction,
+                )
+            self._start_mcp_bridge()
+            if self.streaming_url is not None:
+                print(f"Open {self.streaming_url} to control the editor.", flush=True)
+        except Exception:
+            self.close()
+            raise
         _set_active_editor(self)
 
     @classmethod
@@ -186,6 +227,19 @@ class Editor:
         return self._output
 
     @property
+    def streaming_url(self) -> str | None:
+        """Browser URL, including the configured token, while streaming is enabled."""
+        return self._stream.url if self._stream is not None else None
+
+    @property
+    def frame_texture(self) -> spy.Texture | None:
+        """Complete offscreen frame, in sRGB, for headless or streaming editors.
+
+        The editor reuses this texture each frame. Local-only editors return None.
+        """
+        return self._composite
+
+    @property
     def cmd(self):
         return self._cmd
 
@@ -204,16 +258,43 @@ class Editor:
     @render_mode.setter
     def render_mode(self, value: RenderMode):
         mode = value if isinstance(value, RenderMode) else RenderMode(value)
+        if mode != RenderMode.path_traced and self.device.info.type == spy.DeviceType.cuda:
+            raise ValueError("Editor debug render modes require D3D12 or Vulkan")
         if mode != self._render_mode:
             self._render_mode = mode
 
     def close(self):
         self._closed = True
+        if self._shutdown_complete:
+            return
+        self._shutdown_complete = True
         _clear_active_editor(self)
-        self._stop_mcp_bridge()
-        self._end_profile_frame()
-        self._wait_for_device()
-        self.window.close()
+        try:
+            if self._stream is not None:
+                self._stream.close()
+        finally:
+            self._stream = None
+            self._stop_mcp_bridge()
+            if self._ui_frame_active:
+                # Finish ImGui even when the application closes mid-frame.
+                assert self._image is not None
+                self._ui_frame_active = False
+                if self._cmd is None:
+                    self._cmd = self.device.create_command_encoder()
+                self._ui_context.end_frame(self._image, self._cmd)
+            self._cmd = self._image = self._swapchain_image = None
+            self._needs_render = False
+            self._end_profile_frame()
+            self._wait_for_device()
+            if self.surface is not None:
+                self.surface.unconfigure()
+                self.surface = None
+            if self.window is not None:
+                self.window.close()
+                self.window.on_keyboard_event = None
+                self.window.on_mouse_event = None
+                self.window.on_resize = None
+                self.window = None
 
     def _set_render_node(self, node: RenderNode) -> None:
         self._render_node = ref(node)
@@ -222,10 +303,29 @@ class Editor:
         return self._render_node() if self._render_node is not None else None
 
     def _on_camera_capture(self, captured: bool) -> None:
-        self.window.cursor_mode = spy.CursorMode.disabled if captured else spy.CursorMode.normal
+        if self.window is not None:
+            remote = self._stream is not None and self._stream.controls_input
+            self.window.cursor_mode = (
+                spy.CursorMode.disabled if captured and not remote else spy.CursorMode.normal
+            )
+
+    def _cancel_interaction(self) -> None:
+        self._interaction_controller.cancel_pointer_owner()
+        # Clear ImGui's held local state when control changes hands.
+        for key in spy.KeyCode:
+            event = spy.KeyboardEvent()
+            event.type, event.key = spy.KeyboardEventType.key_release, key
+            self._ui_context.handle_keyboard_event(event)
+        for button in (spy.MouseButton.left, spy.MouseButton.middle, spy.MouseButton.right):
+            event = spy.MouseEvent()
+            event.type, event.button = spy.MouseEventType.button_up, button
+            self._ui_context.handle_mouse_event(event)
 
     def update(self) -> bool:
-        """Core frame driver. Returns False when the window is closed."""
+        """Core frame driver. Returns False when the editor is closed."""
+        if self._closed:
+            self.close()
+            return False
         if self._image is not None or self._cmd is not None:
             raise RuntimeError("Editor.update() called before the previous frame was presented.")
 
@@ -234,11 +334,12 @@ class Editor:
         self._timer.reset()
 
         # Process window events
-        self.window.process_events()
-        if self.window.should_close() or self._closed:
-            _clear_active_editor(self)
-            self._stop_mcp_bridge()
-            self._wait_for_device()
+        if self.window is not None:
+            self.window.process_events()
+        if self._stream is not None:
+            self._stream.update(self._streaming_stats())
+        if (self.window is not None and self.window.should_close()) or self._closed:
+            self.close()
             return False
 
         self._update_mcp_bridge()
@@ -247,6 +348,9 @@ class Editor:
 
         # Advance animation playback (driven by transport UI play/pause).
         self._scene_editor.update_playback(self._dt)
+
+        # Clear a deleted selection before Scene.update() destroys its entity.
+        self._interaction_controller.update_selection_overlay()
 
         # Update scene and check for changes
         if scene is not None:
@@ -266,15 +370,13 @@ class Editor:
             if camera is not None:
                 camera.entity.set_world_transform(self._camera_controller.transform)
 
-        # Check surface
-        if not self.surface.config:
-            self._output = None
-            self._cmd = None
-            self._needs_render = False
-            return True
-
         # Acquire swapchain image
-        self._image = self.surface.acquire_next_image()
+        if self.surface is None or self._stream is not None:
+            self._image = self._ensure_composite()
+            if self.surface is not None and self.surface.config:
+                self._swapchain_image = self.surface.acquire_next_image()
+        else:
+            self._image = self.surface.acquire_next_image() if self.surface.config else None
         if self._image is None:
             self._output = None
             self._cmd = None
@@ -284,8 +386,12 @@ class Editor:
         self._begin_profile_frame()
 
         # Begin ImGui frame (pass window when camera is not captured to allow ImGui to manage the cursor).
-        ui_window = None if self._interaction_controller.has_pointer_capture() else self.window
+        remote = self._stream is not None and self._stream.controls_input
+        ui_window = (
+            None if remote or self._interaction_controller.has_pointer_capture() else self.window
+        )
         self._ui_context.begin_frame(self._image.width, self._image.height, ui_window)
+        self._ui_frame_active = True
 
         # Determine viewport render resolution.
         # When scene editor is visible, use the docked viewport panel size.
@@ -325,12 +431,18 @@ class Editor:
 
         return True
 
-    def run(self, renderer: Any):
-        """Convenience method for the default render loop."""
-        while self.update():
-            if self.needs_render:
-                image = renderer(self._scene)
-                self.present(image)
+    def run(self, renderer: Callable[[Optional[f2.Scene]], Any]) -> None:
+        """Render requested frames with renderer(scene) until the editor closes.
+
+        Always close the editor on completion or failure. The caller retains
+        ownership of the device. Custom loops can use update() and present().
+        """
+        try:
+            while self.update():
+                if self.needs_render:
+                    self.present(renderer(self._scene))
+        finally:
+            self.close()
 
     def present(self, image: Any):
         assert self._cmd
@@ -384,6 +496,10 @@ class Editor:
 
         fps = 1.0 / self._dt if self._dt > 0 else 0.0
 
+        # Update selection state before drawing the overlay so this render pass uses
+        # the latest selection observed by the interaction controller.
+        self._interaction_controller.update_selection_overlay()
+
         # Scene editor GPU passes (only when editor is visible).
         if self._scene_editor.visible and self._scene is not None and self._camera is not None:
             self._scene_picker.render(self._cmd, self._scene, self._camera)
@@ -395,10 +511,9 @@ class Editor:
                 self._camera,
             )
 
-        # Update selection overlay state (checks version counter).
-        self._interaction_controller.update_selection_overlay()
-
         # Render UI.
+        if self._composite is not None:
+            self._cmd.clear_texture_float(self._image, clear_value=spy.float4(0, 0, 0, 1))
         if self._scene_editor.visible:
             # Docked editor mode: outliner, inspector, toolbar, viewport panel.
             self._scene_editor.editor_ui()
@@ -417,18 +532,87 @@ class Editor:
             spy.ui.render_profiler_window(self.profiler)
 
         # Finalize ImGui and render to swapchain.
+        self._ui_frame_active = False
         self._ui_context.end_frame(self._image, self._cmd)
 
         # Submit and present
-        self._cmd.set_texture_state(self._image, spy.ResourceState.present)
+        if self._stream is not None:
+            # Raw compatible-format copy preserves sRGB bytes for the encoder.
+            assert self._capture_image is not None
+            self._cmd.copy_texture(
+                self._capture_image,
+                0,
+                0,
+                spy.uint3(0),
+                self._image,
+                0,
+                0,
+                spy.uint3(0),
+            )
+        present_image = self._swapchain_image if self._composite is not None else self._image
+        if present_image is not None:
+            if self._composite is not None:
+                self._cmd.blit(present_image, self._image)
+            self._cmd.set_texture_state(present_image, spy.ResourceState.present)
         self.device.submit_command_buffer(self._cmd.finish())
         self._end_profile_frame()
         self.profiler.tick()
         del self._image
         self._image = None
         self._cmd = None
-        self.surface.present()
+        if self._stream is not None:
+            from falcor2.streaming import InputTransfer
+
+            assert self._capture_image is not None
+            self._stream.capture(self._capture_image, InputTransfer.srgb)
+        if present_image is not None:
+            assert self.surface is not None
+            self.surface.present()
+        self._swapchain_image = None
+        if self._composite is not None:
+            # Bound application work, including CUDA's host submission fences.
+            self.device.wait_for_idle()
+        self._rendered_frames += 1
         self._needs_render = False
+
+    def _ensure_composite(self) -> spy.Texture:
+        if self._composite is None:
+            usage = spy.TextureUsage.shader_resource
+            usage |= (
+                spy.TextureUsage.render_target
+                if self.device.has_feature(spy.Feature.rasterization)
+                else spy.TextureUsage.unordered_access
+            )
+            self._composite = self.device.create_texture(
+                format=spy.Format.rgba8_unorm_srgb,
+                width=self.config.width,
+                height=self.config.height,
+                mip_count=1,
+                usage=usage,
+                label="editor_composite",
+            )
+            if self._stream is not None:
+                self._capture_image = self.device.create_texture(
+                    format=spy.Format.rgba8_unorm,
+                    width=self.config.width,
+                    height=self.config.height,
+                    mip_count=1,
+                    usage=spy.TextureUsage.shader_resource,
+                    label="editor_capture",
+                )
+        return self._composite
+
+    def _streaming_stats(self) -> dict[str, Any]:
+        result = {
+            "mode": "editor",
+            "rendered": self._rendered_frames,
+            "render_mode": self._render_mode.name,
+            "editor_visible": self._scene_editor.visible,
+        }
+        if self._camera is not None:
+            pos = self._camera_controller.transform.translation
+            result["camera_position"] = [pos.x, pos.y, pos.z]
+        return result
 
     def _begin_profile_frame(self) -> None:
         if self._profile_frame is not None:
@@ -477,10 +661,10 @@ class Editor:
 
     def _get_viewer_function(self, scene: f2.Scene, name: str):
         helper = self._get_scene_shader()
-        module = helper.get_module(scene, "falcor2.editor")
+        module, requirements = helper.prepare(scene, "falcor2.editor")
         return (
             getattr(module, name)
-            .type_conformances(scene.requirements.type_conformances)
+            .type_conformances(requirements.type_conformances)
             .write(helper.bind_scene)
         )
 
@@ -531,7 +715,17 @@ class Editor:
 
     # -- Event handlers --------------------------------------------------------
 
+    def _on_local_keyboard_event(self, event: spy.KeyboardEvent) -> None:
+        if self._stream is None or not self._stream.controls_input:
+            self._on_keyboard_event(event)
+
+    def _on_local_mouse_event(self, event: spy.MouseEvent) -> None:
+        if self._stream is None or not self._stream.controls_input:
+            self._on_mouse_event(event)
+
     def _cycle_render_mode(self):
+        if self.device.info.type == spy.DeviceType.cuda:
+            return
         modes = list(RenderMode)
         next_index = (modes.index(self._render_mode) + 1) % len(modes)
         self.render_mode = modes[next_index]
@@ -543,6 +737,18 @@ class Editor:
         # Forward to interaction controller for camera movement/modifier tracking.
         camera_consumed = self._interaction_controller.handle_keyboard_event(event)
 
+        # These application function keys must work even while ImGui owns focus.
+        if event.type == spy.KeyboardEventType.key_press:
+            if event.key == spy.KeyCode.f5:
+                self._scene_editor.visible = not self._scene_editor.visible
+                return
+            if event.key == spy.KeyCode.f6:
+                self._toggle_profiler()
+                return
+            if event.key == spy.KeyCode.f12:
+                self._cycle_render_mode()
+                return
+
         if imgui_consumed or camera_consumed:
             return
 
@@ -551,21 +757,9 @@ class Editor:
 
         # Remaining app hotkeys.
         if event.type == spy.KeyboardEventType.key_press:
-            if event.key == spy.KeyCode.escape:
-                self.close()
-                return
-            elif event.key == spy.KeyCode.space:
+            if event.key == spy.KeyCode.space:
                 if not self._scene_editor.visible:
                     self._scene_editor.playing = not self._scene_editor.playing
-                return
-            elif event.key == spy.KeyCode.f12:
-                self._cycle_render_mode()
-                return
-            elif event.key == spy.KeyCode.f5:
-                self._scene_editor.visible = not self._scene_editor.visible
-                return
-            elif event.key == spy.KeyCode.f6:
-                self._toggle_profiler()
                 return
         if self.on_keyboard_event is not None:
             self.on_keyboard_event(event)
@@ -596,6 +790,8 @@ class Editor:
             self.on_mouse_event(event)
 
     def _on_resize(self, width: int, height: int):
+        if self.surface is None:
+            return
         self.device.wait()
         if width <= 0 or height <= 0:
             self.surface.unconfigure()

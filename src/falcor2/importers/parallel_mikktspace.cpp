@@ -56,9 +56,9 @@ void for_blocks(size_t count, size_t block_size, size_t work_item_count, Func&& 
 struct ParallelMikkContext {
     std::vector<uint3> flattened_faces;
     std::span<const uint3> faces;
-    ImporterVertexStreamRO<float3> positions;
-    ImporterVertexStreamRO<float3> normals;
-    ImporterVertexStreamRO<float2> uvs;
+    ImporterVertexStream<const float3> positions;
+    ImporterVertexStream<const float3> normals;
+    ImporterVertexStream<const float2> uvs;
 
     explicit ParallelMikkContext(const ImporterMesh& mesh)
         : positions(mesh.position_stream())

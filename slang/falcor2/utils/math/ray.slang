@@ -11,7 +11,7 @@ public struct Ray : IDifferentiable
     public float t_max = 0;
 
     [Differentiable]
-    public __init(float3 origin, float3 dir, float t_min = 0.f, float t_max = 1000.0)
+    public __init(float3 origin, float3 dir, float t_min = 0.f, float t_max = float.MAX)
     {
         this.origin = origin;
         this.dir = dir;

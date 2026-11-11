@@ -11,6 +11,7 @@ from falcor2.minitracer.scene import Scene
 from falcor2.minitracer.camera import Camera
 from falcor2.minitracer.properties import PropertyObject, Property
 from falcor2.minitracer.accumulator import Accumulator
+from falcor2.utils.cuda_workarounds import ensure_optix_cuda_stack
 
 import slangpy as spy
 
@@ -19,6 +20,7 @@ class PathTracer(PropertyObject):
     def __init__(self, device: "Device"):
         super().__init__()
         self._device = device
+        ensure_optix_cuda_stack(device)
         self._utils = spy.Module(device.load_module("falcor2.utils"))
         self._scene = spy.Module(device.load_module("falcor2.minitracer.scene"))
         self._module = spy.Module(

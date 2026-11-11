@@ -3,19 +3,21 @@
 
 #pragma once
 
-#include "scene_requirements.h"
-
 #include "falcor2/render/fwd.h"
+#include "falcor2/render/scene_requirements.h"
+#include "falcor2/render/scene_capabilities.h"
+#include "falcor2/render/scene_render_request.h"
 #include "falcor2/render/scene_object.h"
 #include "falcor2/render/scene_update.h"
 #include "falcor2/render/material.h"
+#include "falcor2/render/material_aov_registry.h"
 #include "falcor2/render/scene_globals.h"
 #include "falcor2/render/geometry.h"
 #include "falcor2/render/animation.h"
 #include "falcor2/render/entity.h"
 #include "falcor2/render/component.h"
 #include "falcor2/render/scene_config.h"
-#include "falcor2/render/hit_group_policy.h"
+#include "falcor2/render/ray_tracing_policy.h"
 #include "falcor2/render/render_scene.h"
 
 #include "falcor2/core/fwd.h"
@@ -29,6 +31,8 @@
 #include <sgl/device/fwd.h>
 #include <sgl/device/shader.h>
 
+#include <pxr/pxr.h>
+
 #include <algorithm>
 #include <functional>
 #include <map>
@@ -40,7 +44,17 @@
 #include <typeinfo>
 #include <utility>
 
+PXR_NAMESPACE_OPEN_SCOPE
+class UsdStage;
+PXR_NAMESPACE_CLOSE_SCOPE
+
 namespace falcor {
+
+namespace mtlx {
+class CodeGenCache;
+}
+
+enum class MeshAttributeSemantic;
 
 // Prevent implicit instantiation in other translation units.
 // Explicit instantiations are provided in scene.cpp.
@@ -96,6 +110,9 @@ using SceneUpdatedSignal = Signal<void(SceneUpdateFlags)>;
 class FALCOR_API Scene : public Object {
     FALCOR_OBJECT(Scene)
 public:
+    static constexpr uint32_t NAMED_ATTRIBUTE_ID_BEGIN = 16;
+    static constexpr uint32_t NAMED_ATTRIBUTE_ID_END = 32;
+
     /// Destructor.
     virtual ~Scene() override;
 
@@ -114,6 +131,19 @@ public:
     static ref<Scene> load(
         ref<sgl::Device> device,
         const std::filesystem::path& path,
+        std::optional<ImportOptions> import_options = {},
+        std::optional<SceneConfig> config = {}
+    );
+
+    /// Create a scene from a caller-owned USD stage without modifying it.
+    /// @param device The device to use for rendering.
+    /// @param stage USD stage to import.
+    /// @param import_options Optional import behavior. If unset, uses default import options.
+    /// @param config Optional live-scene configuration. If unset, uses the imported scene's preferred UV origin.
+    /// @return The created scene.
+    static ref<Scene> from_stage(
+        ref<sgl::Device> device,
+        const pxr::UsdStage& stage,
         std::optional<ImportOptions> import_options = {},
         std::optional<SceneConfig> config = {}
     );
@@ -159,6 +189,10 @@ public:
 
     /// Immutable live-scene configuration.
     const SceneConfig& config() const { return m_config; }
+
+    /// Scene-local catalog of permanent typed material AOV declarations.
+    MaterialAOVRegistry* material_aov_registry() const { return m_material_aov_registry.get(); }
+    mtlx::CodeGenCache* materialx_codegen_cache() const { return m_materialx_codegen_cache.get(); }
 
     /// Add scene globals to the scene.
     /// Scene globals are shader globals that are set on the scene and automatically bound when rendering.
@@ -222,6 +256,10 @@ public:
     /// and automatically cleared if the active camera is removed.
     Camera* active_camera() const;
     void set_active_camera(Camera* camera);
+
+    /// Find all valid scene objects with the given source asset reference.
+    /// Scans the scene collections; intended for occasional inspection and editor queries.
+    std::vector<SceneObject*> find_objects_by_source_asset_ref(const SourceAssetRef& source_asset_ref) const;
 
     /// Create a material of a specific type and add it to the scene.
     /// The material is owned by the scene and will be marked with DirtyFlags::added.
@@ -288,10 +326,10 @@ public:
     /// This will only take effect on the next update() call.
     void set_time(double time);
 
-    /// Get the maximum duration across all animations (0 if no animations).
-    double animation_duration() const;
+    /// Get the keyframe interval across all animations in seconds; invalid when there are no keys.
+    AnimationTimeRange animation_range() const;
 
-    /// Returns true if this scene has any animation data.
+    /// True if a live entity has a bound animation channel with keyframes.
     bool has_animation() const;
 
     /// Update the scene, processing all pending changes.
@@ -323,11 +361,28 @@ public:
     /// Signal emitted when the scene is updated. The signal parameter indicates what changed.
     SceneUpdatedSignal& updated() { return m_updated_signal; }
 
-    /// Get the modules and conformances required to make the scene fully work.
-    const SceneRequirements& requirements() const;
+    /// Returns the capabilities required by the scene after its last completed update.
+    /// Combines requirements from all valid materials. Attribute availability alone does not add requirements.
+    /// Requirements are conservative. Returns an empty set before the first update.
+    SceneCapabilities required_capabilities() const { return m_required_capabilities; }
 
-    /// A monotonically increasing generation counter that is incremented when scene requirements change.
-    /// This can be used to track if the scene requirements have changed since a certain point in time.
+    /// Shared immutable snapshot with all capabilities enabled. Retained snapshots survive scene updates.
+    ref<const SceneRequirements> requirements() const { return m_requirements; }
+
+    /// Resolve shader and ray-tracing requirements after the last completed update, without modifying the scene.
+    /// Requests add consumer shader operations and material AOV dependencies. Call after update().
+    /// specified_capabilities is used only with SceneCapabilityPolicy::specified.
+    /// Throws for unknown AOVs, unsupported requirements, or specified selections omitting required capabilities.
+    /// Equivalent effective selections share a snapshot, independently of requested output bindings.
+    ref<const SceneRequirements> resolve_requirements(
+        const SceneRenderRequest& request = {},
+        SceneCapabilityPolicy policy = SceneCapabilityPolicy::all,
+        SceneCapabilities specified_capabilities = SceneCapabilities::all()
+    ) const;
+
+    /// Advances when synchronized scene changes may affect requirements.
+    /// Compare resolved shader inputs or full requirements before rebuilding shaders or pipelines.
+    /// Consumer or selection changes require resolution independently of this counter.
     uint64_t requirements_generation() const { return m_requirements_generation; }
 
     /// Hit group policy used when building TLAS instance metadata.
@@ -345,6 +400,25 @@ public:
     /// Get the low-level render scene that manages geometry data and acceleration structures.
     RenderScene* _render_scene() { return m_render_scene; }
     const RenderScene* _render_scene() const { return m_render_scene; }
+
+    /// Get the shader ID for a geometry attribute without modifying the scene registry.
+    std::optional<uint32_t>
+    _get_geometry_attribute_id(MeshAttributeSemantic semantic, uint32_t index, std::string_view name) const;
+
+    /// Reserve a shader ID for a named geometry attribute before its source stream is available.
+    uint32_t _reserve_geometry_attribute_id(std::string_view name);
+
+    /// Get or create the shader ID for a geometry attribute and validate its stored source signature.
+    std::optional<uint32_t> _get_or_create_geometry_attribute_id(
+        MeshAttributeSemantic semantic,
+        uint32_t index,
+        std::string_view name,
+        shared::AdditionalAttributeType type,
+        uint32_t component_count
+    );
+
+    // Get shared storage for material parameter data.
+    MaterialSystem* _material_system() { return m_material_system; }
 
     // Get internal light data for renderer-owned sampling strategies and tests.
     LightSystem* _light_system() { return m_light_system; }
@@ -421,10 +495,14 @@ public:
     void _mark_material_removed(Material* material);
     /// Mark a material as dirty. Called by Material::mark_dirty().
     void _mark_material_dirty(Material* material, Material::DirtyFlags flags);
+    /// Mark animation data as dirty. Called by Animation setters.
+    void _mark_animation_dirty(Animation* animation, Animation::DirtyFlags flags);
     /// Mark a geometry as removed. Called by Geometry::remove().
     void _mark_geometry_removed(Geometry* geometry);
     /// Mark a geometry as dirty. Called by Geometry::mark_dirty().
     void _mark_geometry_dirty(Geometry* geometry, Geometry::DirtyFlags flags);
+    /// Mark an animation as removed. Called by Animation::remove().
+    void _mark_animation_removed(Animation* animation);
     /// Mark an entity as removed. Called by Entity::remove().
     void _mark_entity_removed(Entity* entity);
     /// Mark an entity as dirty. Called by Entity::mark_dirty().
@@ -441,6 +519,18 @@ public:
     void _handle_removed_objects();
 
 private:
+    /// The source type/component count checked for all streams sharing a named ID, independent of material reads.
+    struct NamedAttributeSourceSignature {
+        shared::AdditionalAttributeType type;
+        uint32_t component_count;
+    };
+
+    struct NamedAttributeRegistryEntry {
+        uint32_t id;
+        /// Empty after name-only reservation; populated by the first geometry source.
+        std::optional<NamedAttributeSourceSignature> source_signature;
+    };
+
     /// Construct a scene with a fully resolved configuration.
     Scene(ref<sgl::Device> device, const SceneConfig& config);
 
@@ -456,6 +546,9 @@ private:
     MaterialCollection m_material_collection;
     /// View of materials collection.
     MaterialCollectionView m_materials;
+    /// Scene-local catalog of permanent typed material AOV declarations.
+    ref<MaterialAOVRegistry> m_material_aov_registry{make_ref<MaterialAOVRegistry>()};
+    std::unique_ptr<mtlx::CodeGenCache> m_materialx_codegen_cache;
     /// Collection of all geometries.
     GeometryCollection m_geometry_collection;
     /// View of geometries collection.
@@ -495,18 +588,24 @@ private:
     ref<sgl::SlangModule> m_render_module;
     /// Slang settings module that specializes scene conventions.
     ref<sgl::SlangModule> m_settings_module;
+    /// Caches settings modules by capability selection for reuse across consumers.
+    /// Mutable so resolve_requirements() can populate it lazily without changing the default requirements.
+    mutable std::map<SceneCapabilityFlags, ref<sgl::SlangModule>> m_specialized_settings_modules;
     /// Shader object for binding scene data.
     ref<sgl::ShaderObject> m_scene_shader_object;
 
     /// Internal render scene representation.
     ref<RenderScene> m_render_scene;
 
+    /// Stable scene-wide mappings for named geometry attributes.
+    std::map<std::string, NamedAttributeRegistryEntry, std::less<>> m_named_attribute_registry;
+
     /// Hit group policy used for scene ray tracing setup.
     /// This is currently hard-coded but will eventually be configurable.
     HitGroupPolicy m_hit_group_policy{
         .mode = HitGroupPolicy::Mode::per_geometry_type,
         .ray_type_count = 3,
-        .geometry_type_count = 2,
+        .geometry_type_count = 3,
     };
 
     /// Current animation time.
@@ -525,10 +624,21 @@ private:
     /// Signal emitted when the scene is updated. The signal parameter indicates what changed.
     SceneUpdatedSignal m_updated_signal;
 
-    /// Cached requirements for scene to work.
-    SceneRequirements m_requirements;
+    /// Default immutable snapshot with all capabilities enabled.
+    ref<const SceneRequirements> m_requirements;
 
-    /// A monotonically increasing generation counter for requirements changes.
+    /// Snapshots cached by effective capability selection, populated lazily by resolve_requirements().
+    /// Cleared when the default snapshot changes.
+    mutable std::map<SceneCapabilityFlags, ref<const SceneRequirements>> m_selected_requirements;
+
+    /// Capabilities required by synchronized scene materials, excluding consumer demand.
+    SceneCapabilities m_required_capabilities;
+
+    /// AOV catalog revision observed by the last update(); bounds the output IDs accepted in render requests.
+    uint64_t m_material_aov_output_generation{0};
+
+    /// Globally unique revision assigned at construction and advanced when synchronized requirements inputs change.
+    /// Covers snapshot, material capability, and AOV catalog changes so consumers know when to resolve again.
     uint64_t m_requirements_generation{0};
 
     FALCOR_NON_COPYABLE_AND_MOVABLE(Scene);

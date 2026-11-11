@@ -25,6 +25,10 @@ public struct RectLight : ILight
         out LightSample sample
     )
     {
+        sample = {};
+        if (surface_area <= 0.0 || dot(normal_ws, ctx.pos_ws - center_ws) <= 0.0)
+            return false;
+
         const float2 offset = 2.0 * next_float2(sg) - 1.0;
         const float3 sampled_pos_ws = center_ws + offset.x * half_extent_u_ws + offset.y * half_extent_v_ws;
         return finalize_analytic_area_light_sample(
@@ -37,5 +41,31 @@ public struct RectLight : ILight
             normal_ws,
             sample
         );
+    }
+
+    public override bool intersect_surface(const Ray ray, out float t)
+    {
+        return intersect_analytic_planar_light(ray, center_ws, half_extent_u_ws, half_extent_v_ws, normal_ws, false, t);
+    }
+
+    public override float3 eval_surface_normal(const float3 pos_ws) { return normal_ws; }
+
+    public override float3
+    eval_surface_radiance(const float3 receiver_pos_ws, const float3 emitter_pos_ws, const float3 emitter_normal_ws)
+    {
+        return eval_analytic_area_light_surface_radiance(
+            receiver_pos_ws,
+            emitter_pos_ws,
+            emitter_normal_ws,
+            radiance,
+            shaping,
+            normal_ws
+        );
+    }
+
+    public override float
+    eval_surface_sampling_pdf(const LightSampleContext ctx, const float3 emitter_pos_ws, const float3 emitter_normal_ws)
+    {
+        return eval_area_sample_solid_angle_pdf(ctx.pos_ws, emitter_pos_ws, emitter_normal_ws, surface_area);
     }
 };

@@ -1,0 +1,10 @@
+--- a/pxr/usd/ar/wrapResolver.cpp
++++ b/pxr/usd/ar/wrapResolver.cpp
+@@ -11,6 +11,7 @@
+ #include "pxr/external/boost/python/tuple.hpp"
+ 
+ #include "pxr/pxr.h"
++#include "pxr/usd/ar/asset.h"
+ #include "pxr/usd/ar/assetInfo.h"
+ #include "pxr/usd/ar/resolver.h"
+ #include "pxr/usd/ar/resolverContext.h"

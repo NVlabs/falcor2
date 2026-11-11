@@ -9,7 +9,8 @@ implementing mtlx_snippets;
 /// enable or disable the repair return a constant without storing material hints.
 bool mx_should_adjust_shading_normal()
 {
-    return bool(MaterialInstanceHints(hints) & MaterialInstanceHints::adjust_shading_normal);
+    // TODO: Use is_set() once https://github.com/shader-slang/slang/issues/12926 is fixed.
+    return (MaterialInstanceHints(hints) & MaterialInstanceHints::adjust_shading_normal) != MaterialInstanceHints::none;
 }
 
 /// @brief Converts and optionally repairs a MaterialX surface-lobe normal.

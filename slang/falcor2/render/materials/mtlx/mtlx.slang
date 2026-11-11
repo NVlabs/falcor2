@@ -22,5 +22,7 @@ __include falcor2.render.materials.mtlx.dielectric;
 __include falcor2.render.materials.mtlx.generalized_schlick;
 __include falcor2.render.materials.mtlx.sheen;
 __include falcor2.render.materials.mtlx.beer;
+__include falcor2.render.materials.mtlx.surface_unlit_transparent;
 __include falcor2.render.materials.mtlx.chiang_hair;
+__include falcor2.render.materials.mtlx.chiang_hair_material_instance;
 __include falcor2.render.materials.mtlx.flat_layering;

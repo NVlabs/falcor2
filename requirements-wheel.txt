@@ -1,0 +1,9 @@
+# Frontend and no-isolation build requirements used by tools/ci.py build-wheels.
+build
+setuptools>=77.0.0
+wheel
+cmake==3.31.6
+ninja
+typing_extensions
+libcst
+numpy>=1.26.0

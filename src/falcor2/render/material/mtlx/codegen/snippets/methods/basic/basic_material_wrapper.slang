@@ -6,42 +6,8 @@
 #define MATERIALX_OPACITY_IS_OPAQUE $MxOpacityIsOpaque
 #define MATERIALX_STATIC_OPACITY $MxStaticOpacity
 
-public struct $MxMaterialInstanceName : IMaterialInstance
-{
-    typealias mtlx_ns = $MxAliasesName;
-    public Frame shading_frame_ws;
-    public mtlx_ns::RootBSDF bsdf;
-    public float3 emissive_radiance = {};
-    public BSDFEval eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both, S : ISampleGenerator>(
-        const SurfaceInteraction si,
-        const float3 wo_ws,
-        inout S sg
-    )
-    {
-        float3 wi_ls = shading_frame_ws.to_local(si.wi_ws);
-        float3 wo_ls = shading_frame_ws.to_local(wo_ws);
-        return bsdf.eval_with_pdf(wi_ls, wo_ls, sg, BSDFContext());
-    }
-    public bool sample<S : ISampleGenerator>(const SurfaceInteraction si, inout S sg, out MaterialSample sample)
-    {
-        sample = {};
-        float3 wi_ls = shading_frame_ws.to_local(si.wi_ws);
-        BSDFSample bsdf_sample;
-        bool valid = bsdf.sample(wi_ls, bsdf_sample, sg, BSDFContext());
-        sample.wo_ws = shading_frame_ws.to_global(bsdf_sample.wo);
-        sample.pdf = bsdf_sample.pdf;
-        sample.weight = bsdf_sample.weight;
-        sample.flags = bsdf_sample.flags;
-        return valid;
-    }
-    public override bool is_emissive() { return any(emissive_radiance > 0.0); }
-    public override float3 eval_emissive_radiance() { return emissive_radiance; }
-    $MxCollectPropertiesMethod$MxCollectExtraBsdfPropertiesMethod public BSDFFlags
-    get_lobe_types(const SurfaceInteraction si)
-    {
-        return $MxLobes;
-    }
-};
+// clang-format off: replacement blocks below are not standalone Slang syntax.
+$MxMaterialInstanceDeclaration
 
 public struct $MxMaterialName : IMaterial
 {
@@ -51,14 +17,15 @@ public struct $MxMaterialName : IMaterial
 #if MATERIALX_PAYLOAD_SIZE <= MATERIAL_PAYLOAD_LIMIT
     public $MxMaterialDataName data;
 #else
-    public BufferHandle data_buffer;
+    public BufferOffsetPair data_buffer;
 #endif
     static SurfaceInteraction prepare_graph_si(const SurfaceInteraction si, const MaterialInstanceHints hints)
     {
         SurfaceInteraction graph_si = si;
         if (!graph_si.front_facing)
             graph_si.shading_frame_ws.normal = -graph_si.shading_frame_ws.normal;
-        if (hints & MaterialInstanceHints::adjust_shading_normal) {
+        // TODO: Use is_set() once https://github.com/shader-slang/slang/issues/12926 is fixed.
+        if (!$MxIsHair && (hints & MaterialInstanceHints::adjust_shading_normal) != MaterialInstanceHints::none) {
             adjust_shading_normal(graph_si.shading_frame_ws, graph_si.front_normal_ws(), graph_si.wi_ws);
         }
         return graph_si;
@@ -126,7 +93,17 @@ public struct $MxMaterialName : IMaterial
         return MATERIALX_STATIC_OPACITY;
 #endif
     }
-    public override bool is_emissive() { return MATERIALX_HAS_EMISSION != 0; }
+    public override bool is_emissive()
+    {
+#if MATERIALX_HAS_EMISSION
+#if MATERIALX_PAYLOAD_SIZE > MATERIAL_PAYLOAD_LIMIT
+        let data = data_buffer.load<$MxMaterialDataName>(0);
+#endif
+        return $MxEmissionPredicate;
+#else
+        return false;
+#endif
+    }
     public override float3 eval_emissive_radiance<TLodSampler : ILodSampler>(
         const SurfaceInteraction si,
         const TLodSampler lod_sampler,
@@ -156,4 +133,6 @@ public struct $MxMaterialName : IMaterial
         return float3(0.0);
 #endif
     }
+$MxWriteMaterialAOVsMethod
 };
+// clang-format on

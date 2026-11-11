@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "mdl_material.h"
+#include "mdl_sdk_wrapper.h"
 
 #include "falcor2/render/scene.h"
 
@@ -10,10 +11,11 @@
 
 #include <sgl/core/crypto.h>
 #include <sgl/core/hash.h>
+#include <sgl/device/sampler.h>
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
-#include <unordered_map>
 
 namespace falcor {
 
@@ -25,31 +27,78 @@ const bool USE_RENDERER_ADAPT_NORMAL = true;
 /// Material shader source code template.
 extern std::string SHADER_SOURCE_TEMPLATE;
 
-class ScopedSearchPaths {
-public:
-    ScopedSearchPaths(MDLContext& mdl_context, std::filesystem::path path)
-        : m_mdl_context(mdl_context)
-        , m_path(std::move(path))
-    {
-        m_mdl_context.add_search_paths({&m_path, 1});
+std::string material_aov_value(const MDLContext::CompileResult::MaterialAOVOutput& output)
+{
+    const std::string value = fmt::format("${{NAME}}_ns::{}(state)", output.callable_name);
+    switch (output.component_count) {
+    case 1:
+        return fmt::format("float4({}, 0.0f, 0.0f, 0.0f)", value);
+    case 2:
+        return fmt::format("float4({}, 0.0f, 0.0f)", value);
+    case 3:
+        return fmt::format("float4({}, 0.0f)", value);
+    case 4:
+        return fmt::format("float4({})", value);
+    default:
+        FALCOR_UNREACHABLE();
     }
+}
 
-    ~ScopedSearchPaths() { m_mdl_context.remove_search_paths({&m_path, 1}); }
+std::string emit_material_aov_writer(const MDLContext::CompileResult& result)
+{
+    if (result.material_aov_outputs.empty())
+        return {};
+    std::string source
+        = R"(    public override void write_material_aovs_impl<Writer : IMaterialAOVWriter, LodSampler : ILodSampler>(
+        uint2 coord, const SurfaceInteraction si, const LodSampler lod_sampler,
+        const MaterialInstanceHints hints = MaterialInstanceHints::none
+    )
+    {
+        if (!()";
+    for (size_t i = 0; i < result.material_aov_outputs.size(); ++i) {
+        if (i)
+            source += " || ";
+        source += fmt::format("Writer::generic_data_enabled({}u)", result.material_aov_outputs[i].id);
+    }
+    source += "))\n            return;\n        var state = init_shading_state(si, hints);\n";
+    for (const MDLContext::CompileResult::MaterialAOVOutput& output : result.material_aov_outputs) {
+        source += fmt::format("        if (Writer::generic_data_enabled({}u))\n", output.id);
+        source += fmt::format(
+            "            Writer::generic_data(coord, {0}u, {1});\n",
+            output.id,
+            material_aov_value(output)
+        );
+    }
+    source += "    }\n";
+    return source;
+}
 
-private:
-    MDLContext& m_mdl_context;
-    std::filesystem::path m_path;
-};
+std::string emit_emission_predicate(const MDLContext::CompileResult& result)
+{
+    if (!result.potentially_emissive)
+        return "        return false;\n";
+    if (result.emission_zero_checks.empty())
+        return "        return true;\n";
+    std::string source = "        ${NAME}_ns::gMDLMaterialData = data;\n"
+                         "        ${NAME}_ns::Shading_state_material state = {};\n";
+    for (const auto& check : result.emission_zero_checks) {
+        source += "        if (";
+        if (!check.condition_function.empty()) {
+            source += fmt::format(
+                "${{NAME}}_ns::{}(state) == {} && ",
+                check.condition_function,
+                check.condition_value ? "true" : "false"
+            );
+        }
+        source += fmt::format("all(${{NAME}}_ns::{}(state) == 0.0)) return false;\n", check.value_function);
+    }
+    return source + "        return true;\n";
+}
 
 } // namespace
 
 MDLMaterial::MDLMaterial()
 {
-    m_mdl_data = ManagedBuffer::create({
-        .usage = sgl::BufferUsage::shader_resource | sgl::BufferUsage::unordered_access,
-        .label = fmt::format("MDLMaterial::m_mdl_data ({})", (void*)this),
-    });
-
     m_material_properties.set_instance(this);
 }
 
@@ -70,72 +119,78 @@ void MDLMaterial::set_properties(const Properties& props)
 
 void MDLMaterial::on_load_resources()
 {
-    m_texture_table_needs_update = true;
-
-    using ParamType = MDLContext::CompileResult::ArgumentLayout::Type;
-    const uint8_t* arg_block_data = reinterpret_cast<const uint8_t*>(m_mdl_data->cdata()) + m_arg_block_offset;
-
-    // Update textures from properties
-    for (auto& it : m_result.arg_block_layout) {
-        if (it.second.type != ParamType::texture)
-            continue;
-
-        const void* data = arg_block_data + it.second.offset;
-        // MDL uses index 0 to mean "no texture", and then offsets by 1
-        uint32_t texture_index = *reinterpret_cast<const uint32_t*>(data);
-        if (texture_index == 0)
-            continue;
-        texture_index--;
-
-        const auto& texture = m_result.textures[texture_index];
-        auto& texture_resource = m_texture_resources[texture_index];
-
-        // We only allow Texture2D to be controlled by properties
-        if (texture.type != MDLContext::CompileResult::Texture::Type::Texture2D)
-            continue;
-
-        // At this stage we know the argument is a texture that does exist in the properties.
-        const std::string& texture_path = m_material_properties.get_ref<std::string>(it.first);
-        bool texture_srgb = m_material_properties.get<bool>(texture_resource.srgb_property_name);
-
-        // If there is no change from the currently loaded texture, we just skip
-        if (texture_resource.srgb == texture_srgb && texture_resource.path == texture_path)
-            continue;
-
-        // If the texture has changed, we store the new paths and reset the handle, indicating
-        // that the texture needs to be reloaded.
-        texture_resource.path = try_resolve(texture_path);
-        texture_resource.srgb = texture_srgb;
-        texture_resource.texture_handle = {};
+    // Generate before enumerating the complete texture table.
+    if (m_require_codegen) {
+        // Regeneration must not reset edited parameters or texture paths.
+        Properties previous_material_properties;
+        m_material_properties.write_to_properties(previous_material_properties);
+        run_codegen();
+        m_material_properties.read_from_properties(previous_material_properties);
     }
 
-    // Actually load the textures that aren't loaded and should be (arg handling above just set the properties)
-    for (size_t i = 0; i < m_result.textures.size(); ++i) {
-        const auto& texture = m_result.textures[i];
-        auto& texture_resource = m_texture_resources[i];
+    m_texture_table_needs_update = true;
 
-        // Already loaded, no need to re-load it
+    // Each entry owns its load source and any editable argument binding.
+    for (size_t i = 0; i < m_texture_resources.size(); ++i) {
+        auto& texture_resource = m_texture_resources[i];
+        auto& source = texture_resource.source;
+        if (texture_resource.parameter) {
+            const auto& parameter = *texture_resource.parameter;
+            const auto& path = m_material_properties.get_ref<std::string>(parameter.name);
+            const bool srgb = m_material_properties.get<bool>(parameter.name + ":srgb");
+            const auto& texture = m_material_properties.get_ref<ref<sgl::Texture>>(parameter.name + ":texture");
+            const auto& sampler = m_material_properties.get_ref<ref<sgl::Sampler>>(parameter.name + ":sampler");
+
+            // Match native materials: an explicit texture overrides the file path.
+            // TextureManager reuses existing resources when only other parameters changed.
+            if (texture) {
+                texture_resource.texture_handle = m_scene->texture_manager()->register_texture({
+                    .texture = texture,
+                    .sampler = sampler,
+                });
+            } else if (!path.empty()) {
+                texture_resource.texture_handle = m_scene->texture_manager()->load_texture({
+                    .path = try_resolve(path),
+                    .sampler = sampler,
+                    .flags = srgb ? TextureLoadFlags::color : TextureLoadFlags::data,
+                    .usage = sgl::TextureUsage::shader_resource,
+                    .load_deferred = true,
+                });
+            } else {
+                texture_resource.texture_handle = {};
+            }
+
+            // Empty defaults remain editable; no source image is needed during compilation.
+            // Clearing both inputs restores texture_isvalid()'s zero resource ID.
+            const uint32_t resource_id = texture || !path.empty() ? sgl::narrow_cast<uint32_t>(i + 1) : 0;
+            set_material_data(mutable_data(), m_arg_block_offset + parameter.argument_offset, resource_id);
+            continue;
+        }
         if (texture_resource.texture_handle.is_valid())
             continue;
 
-        if (texture.type == MDLContext::CompileResult::Texture::Type::Texture2D) {
+        // Match the resource shapes supported by MDLContext's extraction path.
+        using TextureType = MDLContext::TextureSource::Type;
+        switch (source.type) {
+        case TextureType::Texture2D:
+            if (source.path.empty())
+                continue;
             texture_resource.texture_handle = m_scene->texture_manager()->load_texture({
-                .path = texture_resource.path,
-                .generate_mips = true,
-                .srgb = texture_resource.srgb,
+                .path = source.path,
+                .flags = source.srgb ? TextureLoadFlags::color : TextureLoadFlags::data,
                 .usage = sgl::TextureUsage::shader_resource,
                 .load_deferred = true,
             });
-
-        } else {
-            sgl::SubresourceData subresource = {.data = texture.data.data(), .size = texture.data.size()};
+            break;
+        case TextureType::TextureBSDFData: {
+            sgl::SubresourceData subresource = {.data = source.data.data(), .size = source.data.size()};
 
             auto texture_3d = m_scene->device()->create_texture({
                 .type = sgl::TextureType::texture_3d,
-                .format = texture.format,
-                .width = texture.width,
-                .height = texture.height,
-                .depth = texture.depth,
+                .format = source.format,
+                .width = source.width,
+                .height = source.height,
+                .depth = source.depth,
                 .usage = sgl::TextureUsage::shader_resource,
                 .data = {&subresource, 1},
             });
@@ -143,18 +198,23 @@ void MDLMaterial::on_load_resources()
             texture_resource.texture_handle = m_scene->texture_manager()->register_texture({
                 .texture = std::move(texture_3d),
             });
+            break;
+        }
+        default:
+            FALCOR_THROW("Unsupported MDL texture resource type");
         }
     }
 }
 
-void MDLMaterial::update(SceneUpdateContext& ctx)
+void MDLMaterial::update(SceneUpdateContext&)
 {
     // Write texture table only after on_load_resources() has run.
     if (m_texture_table_needs_update) {
         for (size_t i = 0; i < m_texture_resources.size(); ++i) {
-            m_mdl_data->set_data(
-                m_texture_resources[i].texture_handle.data(),
-                m_texture_table_offset + i * sizeof(uint32_t)
+            set_material_data(
+                mutable_data(),
+                m_texture_table_offset + i * sizeof(uint32_t),
+                m_texture_resources[i].texture_handle.data()
             );
         }
         m_texture_table_needs_update = false;
@@ -167,28 +227,40 @@ void MDLMaterial::update(SceneUpdateContext& ctx)
         defines += fmt::format("#define MDL_NUM_TEXTURE_RESULTS {}\n", m_request.options.num_texture_results);
         defines += fmt::format("#define MDL_NUM_TEXTURE_SPACES {}\n", m_request.options.num_texture_spaces);
         defines += fmt::format("#define MDL_DF_HANDLE_SLOT_MODE {}\n", m_request.options.df_handle_slot_mode);
+        defines += fmt::format("#define MDL_HAS_SURFACE_EMISSION {}\n", m_result.has_surface_emission ? 1 : 0);
+        defines += fmt::format("#define MDL_EMISSION_HANDLE_COUNT {}\n", m_result.surface_emission_handle_count);
+        defines += fmt::format("#define MDL_HAS_SCENE_DATA {}\n", m_result.referenced_scene_data.empty() ? 0 : 1);
+        // SDK state usage is coarse: texture-coordinate use requires all four supported slots.
+        defines += fmt::format(
+            "#define MDL_USES_TEXTURE_COORDINATES {}\n",
+            (m_result.render_state_usage & mi::neuraylib::ITarget_code::SU_TEXTURE_COORDINATE) != 0 ? 1 : 0
+        );
+        defines += fmt::format(
+            "#define MDL_USES_TRANSFORMS {}\n",
+            (m_result.render_state_usage & mi::neuraylib::ITarget_code::SU_TRANSFORMS) != 0 ? 1 : 0
+        );
         defines += fmt::format(
             "#define MDL_USE_RENDERER_ADAPT_NORMAL {}\n",
             m_request.options.use_renderer_adapt_normal ? "1" : "0"
         );
 
-        std::string texture_space_cases;
-        for (size_t i = 1; i < m_texture_space_geomprop_ids.size(); ++i) {
-            if (!m_texture_space_geomprop_ids[i])
-                continue;
-            texture_space_cases += fmt::format(
-                "            case {}: mdl_uv = GeomPropProvider::get_float2(si, {}u); break;\n",
-                i,
-                *m_texture_space_geomprop_ids[i]
-            );
+        std::string scene_data_cases;
+        for (uint32_t string_id = 1; string_id < m_result.string_constants.size(); ++string_id) {
+            const std::string binding = "mdl_scene_data:" + m_result.string_constants[string_id];
+            if (m_material_properties.find_property(binding)) {
+                const uint32_t attribute_id = m_material_properties.get<uint32_t>(binding);
+                scene_data_cases += fmt::format("        case {}u: return {}u;\n", string_id, attribute_id);
+            }
         }
 
         std::string source = replace_substrings(
             SHADER_SOURCE_TEMPLATE,
             std::map<std::string, std::string>({
                 {"${MDL_DEFINES}", defines},
-                {"${MDL_TEXTURE_SPACE_CASES}", texture_space_cases},
+                {"${MDL_SCENE_DATA_CASES}", scene_data_cases},
                 {"${MDL_CODE}", m_result.code},
+                {"${MDL_WRITE_MATERIAL_AOVS}", emit_material_aov_writer(m_result)},
+                {"${MDL_EMISSION_PREDICATE}", emit_emission_predicate(m_result)},
             })
         );
 
@@ -230,7 +302,6 @@ void MDLMaterial::update(SceneUpdateContext& ctx)
     }
 
     if (m_result.arg_block_segments.size() > 0) {
-        uint8_t* arg_block_data = reinterpret_cast<uint8_t*>(m_mdl_data->data_unsafe()) + m_arg_block_offset;
         for (auto& it : m_result.arg_block_layout) {
             const std::string& arg_name = it.first;
             size_t arg_offset = m_arg_block_offset + it.second.offset;
@@ -262,27 +333,22 @@ void MDLMaterial::update(SceneUpdateContext& ctx)
             };
         }
     }
-
-    m_mdl_data->update_buffer(ctx.command_encoder());
 }
 
 template<typename CursorT>
 void MDLMaterial::write_to_cursor_impl(CursorT cursor) const
 {
     auto data = cursor["data"];
-    data["data"] = to_handle(m_mdl_data);
-    data["arg_block_offset"] = m_arg_block_offset;
-    data["texture_table_offset"] = m_texture_table_offset;
+    const auto data_buffer = data_ref();
+    data["data"] = data_buffer.buffer;
+    data["ro_data_offset"] = data_buffer.offset;
+    data["arg_block_offset"] = data_buffer.offset + m_arg_block_offset;
+    data["texture_table_offset"] = data_buffer.offset + m_texture_table_offset;
     data["surface_scatter_bsdf_count"] = m_result.surface_scatter_handle_count;
 }
 
 template void MDLMaterial::write_to_cursor_impl(sgl::BufferElementCursor cursor) const;
 template void MDLMaterial::write_to_cursor_impl(sgl::ShaderCursor cursor) const;
-
-ref<sgl::SlangModule> MDLMaterial::required_module() const
-{
-    return m_slang_module;
-}
 
 Material::OpacityDesc MDLMaterial::opacity_desc() const
 {
@@ -304,12 +370,29 @@ Material::OpacityDesc MDLMaterial::opacity_desc() const
     return result;
 }
 
+SceneCapabilities MDLMaterial::required_capabilities() const
+{
+    // Texture-coordinate usage is SDK-wide, not per slot. The runtime populates secondary slots.
+    const uint32_t geometry_state
+        = mi::neuraylib::ITarget_code::SU_TRANSFORMS | mi::neuraylib::ITarget_code::SU_TEXTURE_COORDINATE;
+    bool uses_geometry_properties
+        = !m_result.referenced_scene_data.empty() || (m_result.render_state_usage & geometry_state) != 0;
+    return material_capabilities(uses_geometry_properties);
+}
+
+ref<sgl::SlangModule> MDLMaterial::required_module() const
+{
+    return m_slang_module;
+}
+
 std::vector<TextureHandle> MDLMaterial::build_texture_list() const
 {
     std::vector<TextureHandle> result;
     result.reserve(m_texture_resources.size());
     for (const auto& tex : m_texture_resources) {
-        if (tex.texture_handle.is_valid())
+        // Captured defaults and editable parameters can reference the same handle in different MDL slots.
+        if (tex.texture_handle.is_valid()
+            && std::find(result.begin(), result.end(), tex.texture_handle) == result.end())
             result.push_back(tex.texture_handle);
     }
     return result;
@@ -317,7 +400,7 @@ std::vector<TextureHandle> MDLMaterial::build_texture_list() const
 
 void MDLMaterial::require_codegen()
 {
-    mark_dirty(DirtyFlags::properties);
+    mark_dirty(DirtyFlags::properties | DirtyFlags::resources | DirtyFlags::emission);
     m_require_codegen = true;
 }
 
@@ -326,67 +409,40 @@ void MDLMaterial::run_codegen()
     if (!m_require_codegen)
         return;
 
-    const std::vector<std::string>& geomprop_names = m_mdl_geomprop_names.as_vector<std::string>();
-    const std::vector<uint32_t> geomprop_id_values
-        = detail::from_storage_vector<uint32_t>(m_mdl_geomprop_ids.as_vector<int64_t>(), "mdl_geomprop_ids");
-    FALCOR_CHECK(
-        geomprop_names.size() == geomprop_id_values.size(),
-        "MDL geomprop name/ID lists must have the same length ({} names, {} IDs).",
-        geomprop_names.size(),
-        geomprop_id_values.size()
-    );
-    std::unordered_map<std::string, uint32_t> geomprop_ids;
-    geomprop_ids.reserve(geomprop_names.size());
-    for (size_t i = 0; i < geomprop_names.size(); ++i) {
-        const std::string& name = geomprop_names[i];
-        FALCOR_CHECK(!name.empty(), "MDL geomprop names cannot be empty.");
-        FALCOR_CHECK(
-            geomprop_ids.emplace(name, geomprop_id_values[i]).second,
-            "Duplicate MDL geomprop name `{}`.",
-            name
-        );
-    }
-
-    std::vector<std::optional<uint32_t>> texture_space_geomprop_ids(
-        MDLContext::CompileRequest{}.options.num_texture_spaces
-    );
-    for (size_t i = 1; i < texture_space_geomprop_ids.size(); ++i) {
-        const auto it = geomprop_ids.find(fmt::format("texcoord_{}", i));
-        if (it != geomprop_ids.end())
-            texture_space_geomprop_ids[i] = it->second;
-    }
-
     // Hash the properties influencing codegen to determine if we actually need to re-run.
-    size_t codegen_properties_hash
-        = sgl::hash(m_mdl_library_path, m_mdl_material_name, m_mdl_class_compilation, m_learnable);
-    codegen_properties_hash = sgl::hash_combine(codegen_properties_hash, sgl::hash(texture_space_geomprop_ids.size()));
-    for (const std::optional<uint32_t>& id : texture_space_geomprop_ids) {
-        codegen_properties_hash = sgl::hash_combine(codegen_properties_hash, sgl::hash(id.has_value(), id.value_or(0)));
-    }
-    if (codegen_properties_hash == m_codegen_properties_hash)
+    size_t codegen_properties_hash = sgl::hash(
+        m_mdl_library_path,
+        m_mdl_material_name,
+        m_mdl_source,
+        m_mdl_class_compilation,
+        m_mdl_target_material_type,
+        m_learnable
+    );
+    if (codegen_properties_hash == m_codegen_properties_hash) {
+        m_require_codegen = false;
         return;
-    m_codegen_properties_hash = codegen_properties_hash;
-    m_texture_space_geomprop_ids = std::move(texture_space_geomprop_ids);
+    }
 
     MDLContext& mdl_context = MDLContext::get();
 
     /// We are rebuilding the material.
-    mark_dirty(DirtyFlags::resources | DirtyFlags::properties);
+    mark_dirty(DirtyFlags::resources | DirtyFlags::properties | DirtyFlags::emission);
     m_slang_module.reset();
     m_library_path_resolver = make_ref<AssetResolver>(m_mdl_library_path);
 
-    FALCOR_CHECK(!m_mdl_library_path.empty(), "MDL library path must not be empty");
     FALCOR_CHECK(!m_mdl_material_name.empty(), "MDL material name must not be empty");
-
-    ScopedSearchPaths scoped_search_paths(mdl_context, m_mdl_library_path);
 
     // Compile material.
     m_request = {};
     m_request.qualified_material_name = m_mdl_material_name;
+    m_request.module_source = m_mdl_source;
     m_request.instance_name = "";
+    m_request.target_material_type = m_mdl_target_material_type;
     // m_request.options.opt_level = 1;
     m_request.options.use_renderer_adapt_normal = USE_RENDERER_ADAPT_NORMAL;
     m_request.use_class_compilation = m_mdl_class_compilation;
+
+    m_request.material_aov_registry = m_scene->material_aov_registry();
 
     if (m_learnable) {
         // Learning relies on evaluating all BSDF components of the material separately (normal, roughness, tint, etc)
@@ -408,129 +464,172 @@ void MDLMaterial::run_codegen()
         m_request.options.enable_tagged_df_properties = false;
     }
 
-    m_result = mdl_context.compile(m_request);
-    if (!m_result.success)
-        FALCOR_THROW("Failed to compile MDL material {}: {}", m_mdl_material_name, m_result.error_msg);
-
-    if (m_result.surface_scatter_handle_count > 16)
-        FALCOR_THROW(
-            "MDL material exceeds supported df count {} : {}",
-            m_mdl_material_name,
-            m_result.surface_scatter_handle_count
-        );
-
-    m_arg_block_offset = (uint32_t)m_result.ro_data_segment_size();
-    m_texture_table_offset = m_arg_block_offset + (uint32_t)m_result.arg_block_segment_size();
-
-    /// Create data buffer with the default values.
-    /// TODO(@tdavidovic): Could be moved to update, but on_load_resources would need to flag
-    /// if a texture_handle is dirty, instead of using mdl_data's dirty tracking
-    m_mdl_data->resize(
-        m_result.ro_data_segment_size() + m_result.arg_block_segment_size()
-        + m_result.textures.size() * sizeof(uint32_t)
-    );
-
-    /// TODO(@tdavidovic): Can be moved to update.
-    if (m_result.ro_data_segments.size() > 0)
-        m_mdl_data->set_data(m_result.ro_data_segments[0].data.data(), m_result.ro_data_segment_size(), 0);
-
-    if (m_result.arg_block_segments.size() > 0)
-        m_mdl_data->set_data(
-            m_result.arg_block_segments[0].data.data(),
-            m_result.arg_block_segment_size(),
-            m_arg_block_offset
-        );
-
-    // Set the texture_resource information for all textures.
-    // TODO(@tdavidovic): This *could* be moved to on_load_resources.
-    // The problem is that not all textures are exposed as properties,
-    // we need to set this for both cases (constant and mutable)
-    m_texture_resources.clear();
-    m_texture_resources.resize(m_result.textures.size());
-    for (size_t i = 0; i < m_result.textures.size(); ++i) {
-        const auto& texture = m_result.textures[i];
-        auto& texture_resource = m_texture_resources[i];
-
-        if (texture.type == MDLContext::CompileResult::Texture::Type::Texture2D) {
-            texture_resource.path = try_resolve(texture.path);
-            texture_resource.srgb = texture.srgb;
+    try {
+        {
+            MDLSearchPathScope search_paths(mdl_context, m_library_path_resolver->get_search_paths());
+            m_result = mdl_context.compile(m_request);
         }
-    }
+        if (!m_result.success)
+            FALCOR_THROW("Failed to compile MDL material {}: {}", m_mdl_material_name, m_result.error_msg);
+        if (m_result.surface_scatter_handle_count > 16)
+            FALCOR_THROW(
+                "MDL material exceeds supported df count {} : {}",
+                m_mdl_material_name,
+                m_result.surface_scatter_handle_count
+            );
 
-    /// Create default material properties.
-    m_material_properties.clear();
-    if (m_result.arg_block_segments.size() > 0) {
-        std::vector<uint8_t>& arg_block_data = m_result.arg_block_segments[0].data;
+        m_arg_block_offset = (uint32_t)m_result.ro_data_segment_size();
+        m_texture_table_offset = m_arg_block_offset + (uint32_t)m_result.arg_block_segment_size();
 
-        auto on_change = reflection::on_change<MDLMaterial>(
-            [](MDLMaterial& self)
-            {
-                // We only need updating resources when textures change.
-                // We rely on on_load_resources() to be quick in case no work needs to be done.
-                self.mark_dirty(DirtyFlags::properties | DirtyFlags::resources);
-            }
-        );
-        auto ui_group = reflection::ui_group("Material Parameters");
+        // Convert SDK resources once, preserving their IDs. Runtime loading owns all source data.
+        m_texture_resources.clear();
+        m_texture_resources.reserve(m_result.textures.size());
+        for (auto& texture : m_result.textures) {
+            FALCOR_CHECK(
+                texture.index == m_texture_resources.size() + 1,
+                "MDL texture resource IDs must be consecutive"
+            );
+            m_texture_resources.push_back({.source = std::move(texture.source)});
+        }
 
-        for (auto& it : m_result.arg_block_layout) {
-            void* data = arg_block_data.data() + it.second.offset;
-            using ParamType = MDLContext::CompileResult::ArgumentLayout::Type;
-
-            switch (it.second.type) {
-            case ParamType::int_:
-                m_material_properties
-                    .add_property(it.first, *reinterpret_cast<const int*>(data), false, on_change, ui_group);
-                break;
-            case ParamType::bool_:
-                m_material_properties
-                    .add_property(it.first, *reinterpret_cast<const bool*>(data), false, on_change, ui_group);
-                break;
-            case ParamType::float_:
-                m_material_properties
-                    .add_property(it.first, *reinterpret_cast<const float*>(data), false, on_change, ui_group);
-                break;
-            case ParamType::float2_:
-                m_material_properties
-                    .add_property(it.first, *reinterpret_cast<const float2*>(data), false, on_change, ui_group);
-                break;
-            case ParamType::float3_:
-                m_material_properties
-                    .add_property(it.first, *reinterpret_cast<const float3*>(data), false, on_change, ui_group);
-                break;
-            case ParamType::float4_:
-                m_material_properties
-                    .add_property(it.first, *reinterpret_cast<const float4*>(data), false, on_change, ui_group);
-                break;
-            case ParamType::float4x4_:
-                break;
-            case ParamType::texture: {
-                uint32_t texture_index = *reinterpret_cast<const uint32_t*>(data);
-                // MDL uses index 0 to mean "no texture", and then offsets by 1
-                if (texture_index > 0) {
-                    const auto& texture = m_result.textures[texture_index - 1];
-                    auto& texture_resource = m_texture_resources[texture_index - 1];
-
-                    if (texture.type == MDLContext::CompileResult::Texture::Type::Texture2D) {
-                        texture_resource.srgb_property_name = it.first + ":srgb";
-                        m_material_properties.add_property(it.first, texture.path, false, on_change, ui_group);
-                        m_material_properties.add_property(
-                            texture_resource.srgb_property_name,
-                            texture.srgb,
-                            false,
-                            on_change,
-                            ui_group
-                        );
+        /// Create default material properties.
+        m_material_properties.clear();
+        for (const auto& name : m_result.referenced_scene_data) {
+            if (name.empty())
+                continue;
+            m_material_properties.add_property(
+                "mdl_scene_data:" + name,
+                m_scene->_reserve_geometry_attribute_id(name),
+                false,
+                "Geometry attribute ID for this MDL scene-data name. Defaults to the ordinary named attribute. "
+                "An importer may override it with a fixed semantic ID. Changing it rebuilds the Slang wrapper.",
+                reflection::on_change<MDLMaterial>(
+                    [](MDLMaterial& self)
+                    {
+                        self.m_slang_module = nullptr;
+                        self.mark_dirty(DirtyFlags::properties | DirtyFlags::emission);
                     }
-                }
-                break;
-            }
-            case ParamType::unsupported:
-                break;
-            };
+                ),
+                reflection::ui_group("Scene Data")
+            );
         }
-    }
+        if (m_result.arg_block_segments.size() > 0) {
+            std::vector<uint8_t>& arg_block_data = m_result.arg_block_segments[0].data;
 
-    m_require_codegen = false;
+            auto on_change = reflection::on_change<MDLMaterial>(
+                [](MDLMaterial& self)
+                {
+                    // We only need updating resources when textures change.
+                    // We rely on on_load_resources() to be quick in case no work needs to be done.
+                    self.mark_dirty(DirtyFlags::properties | DirtyFlags::resources | DirtyFlags::emission);
+                }
+            );
+            auto ui_group = reflection::ui_group("Material Parameters");
+
+            for (auto& it : m_result.arg_block_layout) {
+                void* data = arg_block_data.data() + it.second.offset;
+                using ParamType = MDLContext::CompileResult::ArgumentLayout::Type;
+
+                switch (it.second.type) {
+                case ParamType::int_:
+                    m_material_properties
+                        .add_property(it.first, *reinterpret_cast<const int*>(data), false, on_change, ui_group);
+                    break;
+                case ParamType::bool_:
+                    m_material_properties
+                        .add_property(it.first, *reinterpret_cast<const bool*>(data), false, on_change, ui_group);
+                    break;
+                case ParamType::float_:
+                    m_material_properties
+                        .add_property(it.first, *reinterpret_cast<const float*>(data), false, on_change, ui_group);
+                    break;
+                case ParamType::float2_:
+                    m_material_properties
+                        .add_property(it.first, *reinterpret_cast<const float2*>(data), false, on_change, ui_group);
+                    break;
+                case ParamType::float3_:
+                    m_material_properties
+                        .add_property(it.first, *reinterpret_cast<const float3*>(data), false, on_change, ui_group);
+                    break;
+                case ParamType::float4_:
+                    m_material_properties
+                        .add_property(it.first, *reinterpret_cast<const float4*>(data), false, on_change, ui_group);
+                    break;
+                case ParamType::float4x4_:
+                    break;
+                case ParamType::texture: {
+                    if (it.second.texture_type != MDLContext::TextureSource::Type::Texture2D)
+                        break;
+                    const uint32_t default_index = *reinterpret_cast<const uint32_t*>(data);
+                    MDLContext::TextureSource source{.type = it.second.texture_type};
+                    std::string default_path;
+                    if (default_index > 0) {
+                        source = m_texture_resources.at(default_index - 1).source;
+                        default_path = source.path.string();
+                    }
+                    m_material_properties.add_property(it.first, default_path, false, on_change, ui_group);
+                    m_material_properties.add_property(it.first + ":srgb", source.srgb, false, on_change, ui_group);
+                    m_material_properties.add_property(
+                        it.first + ":texture",
+                        ref<sgl::Texture>{},
+                        false,
+                        "Optional GPU texture overriding the filename. Clear it to use the filename again. "
+                        "Its format determines color-space decoding; :srgb only applies to file loading.",
+                        on_change,
+                        ui_group
+                    );
+                    m_material_properties.add_property(
+                        it.first + ":sampler",
+                        ref<sgl::Sampler>{},
+                        false,
+                        "Optional sampler for either a GPU texture or a filename. Null uses the scene default.",
+                        on_change,
+                        ui_group
+                    );
+                    m_texture_resources.push_back({
+                        .source = std::move(source),
+                        .parameter = TextureParameter{it.first, it.second.offset},
+                    });
+                    break;
+                }
+                case ParamType::unsupported:
+                    break;
+                };
+            }
+        }
+
+        // Preserve the original default paths in properties before resolving the runtime sources.
+        for (auto& texture : m_texture_resources) {
+            if (!texture.source.path.empty())
+                texture.source.path = try_resolve(texture.source.path);
+        }
+
+        // Include runtime parameter slots without changing the SDK's constant resource IDs.
+        ensure_data_size(
+            m_result.ro_data_segment_size() + m_result.arg_block_segment_size()
+            + m_texture_resources.size() * sizeof(uint32_t)
+        );
+        if (!m_result.ro_data_segments.empty())
+            set_material_data(
+                mutable_data(),
+                0,
+                m_result.ro_data_segments[0].data.data(),
+                m_result.ro_data_segment_size()
+            );
+        if (!m_result.arg_block_segments.empty())
+            set_material_data(
+                mutable_data(),
+                m_arg_block_offset,
+                m_result.arg_block_segments[0].data.data(),
+                m_result.arg_block_segment_size()
+            );
+
+        m_codegen_properties_hash = codegen_properties_hash;
+        m_require_codegen = false;
+    } catch (...) {
+        m_codegen_properties_hash = 0;
+        throw;
+    }
 }
 
 FALCOR_SCENE_REGISTER_MATERIAL(MDLMaterial);
@@ -546,9 +645,20 @@ namespace ${NAME}_ns {
 
 ${MDL_DEFINES}
 
+// SDK string IDs and Scene attribute IDs are distinct. UINT_MAX cannot address a Scene attribute.
+uint mdl_scene_data_attribute_id(uint string_id)
+{
+    switch (string_id) {
+${MDL_SCENE_DATA_CASES}
+    default: return 0xffffffffu;
+    }
+}
+
 #include "falcor2/render/materials/mdl/mdl_runtime.slangh"
 
 ${MDL_CODE}
+
+#include "falcor2/render/materials/mdl/mdl_emission.slangh"
 
 } // ${NAME}_ns
 
@@ -558,11 +668,17 @@ struct ${NAME}_Instance : IMaterialInstance
     ${NAME}_ns::Shading_state_material state;
     float3 ior1, ior2;
     float interior_ior;
+    float3 emitted_radiance;
 
     override float get_interior_ior() { return interior_ior; }
 
+    override bool is_emissive() { return any(emitted_radiance > 0.f); }
+    override float3 eval_emissive_radiance() { return emitted_radiance; }
+
     override HomogeneousMediumProperties get_interior_medium()
     {
+        // SDK expressions may take inout state; Falcor's material instance remains immutable.
+        var state = this.state;
         ${NAME}_ns::gMDLMaterialData = data;
         HomogeneousMediumProperties result = {};
         result.sigma_a = ${NAME}_ns::volume_absorption_coefficient(state);
@@ -577,6 +693,7 @@ struct ${NAME}_Instance : IMaterialInstance
         if (Hints == BSDFEvalHints::none)
             return BSDFEval();
 
+        var state = this.state;
         ${NAME}_ns::gMDLMaterialData = data;
 
         BSDFEval result = {};
@@ -617,6 +734,7 @@ struct ${NAME}_Instance : IMaterialInstance
 
     bool sample<S : ISampleGenerator>(const SurfaceInteraction si, inout S sg, out MaterialSample sample)
     {
+        var state = this.state;
         ${NAME}_ns::Bsdf_sample_data sample_data = {};
         sample_data.ior1 = ior1;          // IOR current medium
         sample_data.ior2 = ior2;          // IOR other side
@@ -649,7 +767,10 @@ struct ${NAME}_Instance : IMaterialInstance
 
     MaterialProperties collect_properties(const SurfaceInteraction si)
     {
+        var state = this.state;
         MaterialProperties result = {};
+
+        result.emission = emitted_radiance;
 
         ${NAME}_ns::gMDLMaterialData = data;
         ${NAME}_ns::Bsdf_auxiliary_data aux = {};
@@ -700,6 +821,7 @@ struct ${NAME}_Instance : IMaterialInstance
 
     override Optional<ExtraBsdfProperties> collect_extra_bsdf_properties(const SurfaceInteraction si, const float3 wo)
     {
+        var state = this.state;
         ExtraBsdfProperties result = {};
 
         ${NAME}_ns::gMDLMaterialData = data;
@@ -779,31 +901,42 @@ public struct ${NAME} : IMaterial
             state.normal = -state.normal;
         state.position = si.position_ws;
         state.animation_time = 0.f;
+#if MDL_USES_TEXTURE_COORDINATES || MDL_USES_TRANSFORMS
+        let geomprops = si.get_geomprop_accessor();
+#endif
         [ForceUnroll]
         for (uint i = 0; i < MDL_NUM_TEXTURE_SPACES; ++i) {
-            // Match MaterialX texture-coordinate resolution: UV0 is built in, mapped texcoord_<i> streams use their
-            // integration-defined provider IDs, and unmapped streams fall back to UV0.
-            float2 mdl_uv = si.uv;
-            switch (i) {
-${MDL_TEXTURE_SPACE_CASES}            }
+            // UV0 is built in; absent secondary streams use the Scene's zero-UV convention.
+            float2 mdl_uv = i == 0 ? si.uv : float2(0);
+#if MDL_USES_TEXTURE_COORDINATES
+            if (i > 0)
+                mdl_uv = geomprops.get_additional_texcoord(i, float2(0));
+#endif
             // MDL always receives lower-left coordinates. If the scene was upper-left, v_mdl = 1-v_scene
             // makes positive MDL V point opposite the scene bitangent.
-            if (!FALCOR_TEXTURE_COORDINATE_ORIGIN_LOWER_LEFT)
+            if (!UV_ORIGIN_LOWER_LEFT)
                 mdl_uv.y = 1.0 - mdl_uv.y;
             state.text_coords[i] = float3(mdl_uv, 0);
             // Falcor currently stores one per-vertex tangent frame, conventionally derived from UV0.
             state.tangent_u[i] = sf.tangent;
             state.tangent_v[i] = sf.bitangent;
-            if (!FALCOR_TEXTURE_COORDINATE_ORIGIN_LOWER_LEFT)
+            if (!UV_ORIGIN_LOWER_LEFT)
                 state.tangent_v[i] = -state.tangent_v[i];
         }
         state.ro_data_segment_offset = 0;
         state.world_to_object = float4x4(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
         state.object_to_world = float4x4(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
+#if MDL_USES_TRANSFORMS
+        state.world_to_object = geomprops.get_space_transform(GeomPropSpace::object, GeomPropSpace::world);
+        state.object_to_world = geomprops.get_space_transform(GeomPropSpace::world, GeomPropSpace::object);
+#endif
         // state.object_id
         state.meters_per_scene_unit = 1.f;
         state.arg_block_offset = 0;
         state.renderer_state.V = si.wi_ws;
+#if MDL_HAS_SCENE_DATA
+        state.renderer_state.hit_info = si.hit_info;
+#endif
 
         ${NAME}_ns::gMDLMaterialData = data;
         ${NAME}_ns::init(state);
@@ -817,8 +950,46 @@ ${MDL_TEXTURE_SPACE_CASES}            }
         const MaterialInstanceHints hints = MaterialInstanceHints::none
     )
     {
-        let state = init_shading_state(si, hints);
+        var state = init_shading_state(si, hints);
         return saturate(${NAME}_ns::geometry_cutout_opacity(state));
+    }
+
+    public override bool is_emissive()
+    {
+${MDL_EMISSION_PREDICATE}
+    }
+
+    public override uint2 compute_emission_sampling_grid(float2 uv[3])
+    {
+        return uint2(100);
+    }
+
+    public override float3 eval_emission<TLodSampler : ILodSampler>(
+        const SurfaceInteraction si,
+        const TLodSampler lod_sampler,
+        const MaterialInstanceHints hints = MaterialInstanceHints::none
+    )
+    {
+#if MDL_HAS_SURFACE_EMISSION
+        var state = init_shading_state(si, hints);
+        return ${NAME}_ns::mdl_emission_exitance(state);
+#else
+        return float3(0);
+#endif
+    }
+
+    public override float3 eval_emissive_radiance<TLodSampler : ILodSampler>(
+        const SurfaceInteraction si,
+        const TLodSampler lod_sampler,
+        const MaterialInstanceHints hints = MaterialInstanceHints::none
+    )
+    {
+#if MDL_HAS_SURFACE_EMISSION
+        var state = init_shading_state(si, hints);
+        return ${NAME}_ns::mdl_emission_radiance(state, si.wi_ws);
+#else
+        return float3(0);
+#endif
     }
 
     MaterialInstance setup_material_instance<TLodSampler : ILodSampler>(
@@ -827,7 +998,7 @@ ${MDL_TEXTURE_SPACE_CASES}            }
         const MaterialInstanceHints hints
     )
     {
-        let state = init_shading_state(si, hints);
+        var state = init_shading_state(si, hints);
 
         // We use ior(state) instead of the IOR from the material system because MDL compares to the IoR and we have
         // quantization errors since we store it as float16_t
@@ -838,10 +1009,15 @@ ${MDL_TEXTURE_SPACE_CASES}            }
         const float3 ior2 = select(si.front_facing, interiorIoR, exteriorIoR);
         const float interior_ior = (interiorIoR.x + interiorIoR.y + interiorIoR.z) / 3.0;
 
-        ${NAME}_Instance mi = { data, state, ior1, ior2, interior_ior };
+        // Reuse the already initialized state and textures. EDFs describe emitted
+        // light and do not alter the SDK BSDF sampling/evaluation contract.
+        float3 emission = ${NAME}_ns::mdl_emission_radiance(state, si.wi_ws);
+        ${NAME}_Instance mi = { data, state, ior1, ior2, interior_ior, emission };
 
         return mi;
     }
+
+${MDL_WRITE_MATERIAL_AOVS}
 };
 )";
 }

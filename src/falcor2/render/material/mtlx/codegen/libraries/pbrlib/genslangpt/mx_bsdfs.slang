@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #ifdef MTLX_STACK_HAS_BSDF_FRAMES
+[mutating]
 void mx_store_bsdf_frame(BSDF bsdf)
 {
     const int bsdf_index = bsdf.get_index();
     mx_stack.bsdf_frames[bsdf_index] = Frame(mx_stack.bsdf_n[bsdf_index], mx_stack.bsdf_t[bsdf_index]);
 }
 
+[mutating]
 void mx_store_curve_bsdf_frame(BSDF bsdf)
 {
     const int bsdf_index = bsdf.get_index();
@@ -16,23 +18,37 @@ void mx_store_curve_bsdf_frame(BSDF bsdf)
 }
 #endif
 
+[mutating]
 void mx_prepare_bsdf(BSDF bsdf, float3 normal, float3 tangent)
 {
-    mx_stack.bsdf_n[bsdf.get_index()] = adjust_normal(normal);
-    mx_stack.bsdf_t[bsdf.get_index()] = si.shading_frame_ws.to_local(tangent);
-    orthonormalize(mx_stack.bsdf_n[bsdf.get_index()], mx_stack.bsdf_t[bsdf.get_index()]);
+    float3 n = adjust_normal(normal);
+    float3 t = si.shading_frame_ws.to_local(tangent);
+    orthonormalize(n, t);
+#ifdef MTLX_SCALARIZED_GRAPH_STORAGE
+    mx_stack.set_bsdf_frame(bsdf.get_index(), n, t);
+#else
+    mx_stack.bsdf_n[bsdf.get_index()] = n;
+    mx_stack.bsdf_t[bsdf.get_index()] = t;
+#endif
 #ifdef MTLX_STACK_HAS_BSDF_FRAMES
     mx_store_bsdf_frame(bsdf);
 #endif
 }
 
+[mutating]
 void mx_prepare_bsdf_with_default_tangent(BSDF bsdf, float3 normal)
 {
-    mx_stack.bsdf_n[bsdf.get_index()] = adjust_normal(normal);
+    float3 n = adjust_normal(normal);
     // Match the 1.38 MaterialX path: default explicit-normal lobes inherit the
     // surface tangent, then orthonormalize it against the BSDF normal.
-    mx_stack.bsdf_t[bsdf.get_index()] = si.shading_frame_ws.to_local(si.shading_frame_ws.tangent);
-    orthonormalize(mx_stack.bsdf_n[bsdf.get_index()], mx_stack.bsdf_t[bsdf.get_index()]);
+    float3 t = si.shading_frame_ws.to_local(si.shading_frame_ws.tangent);
+    orthonormalize(n, t);
+#ifdef MTLX_SCALARIZED_GRAPH_STORAGE
+    mx_stack.set_bsdf_frame(bsdf.get_index(), n, t);
+#else
+    mx_stack.bsdf_n[bsdf.get_index()] = n;
+    mx_stack.bsdf_t[bsdf.get_index()] = t;
+#endif
 #ifdef MTLX_STACK_HAS_BSDF_FRAMES
     mx_store_bsdf_frame(bsdf);
 #endif
@@ -46,30 +62,44 @@ float3 mx_default_tangent_from_normal(float3 normal)
     return float3(1.0 + sign * normal.x * normal.x * a, sign * b, -sign * normal.x);
 }
 
+[mutating]
 void mx_prepare_subsurface_diffuse_fallback_bsdf(BSDF bsdf, float3 normal)
 {
     // MX_SUBSURFACE_ID uses MTLX's diffuse fallback. Prepare a stable
     // normal-derived tangent while keeping the BSDF itself local.
-    const float3 n = adjust_normal(normal);
+    float3 n = adjust_normal(normal);
+    float3 t = mx_default_tangent_from_normal(n);
+    orthonormalize(n, t);
+#ifdef MTLX_SCALARIZED_GRAPH_STORAGE
+    mx_stack.set_bsdf_frame(bsdf.get_index(), n, t);
+#else
     mx_stack.bsdf_n[bsdf.get_index()] = n;
-    mx_stack.bsdf_t[bsdf.get_index()] = mx_default_tangent_from_normal(n);
-    orthonormalize(mx_stack.bsdf_n[bsdf.get_index()], mx_stack.bsdf_t[bsdf.get_index()]);
+    mx_stack.bsdf_t[bsdf.get_index()] = t;
+#endif
 #ifdef MTLX_STACK_HAS_BSDF_FRAMES
     mx_store_bsdf_frame(bsdf);
 #endif
 }
 
+[mutating]
 void mx_prepare_curve_bsdf(BSDF bsdf, float3 normal, float3 curve_direction)
 {
     // Curves preserve their authored normal and do not use the surface
     // geometric-normal adjustment policy.
-    mx_stack.bsdf_n[bsdf.get_index()] = normalize(si.shading_frame_ws.to_local(normal));
-    mx_stack.bsdf_t[bsdf.get_index()] = normalize(si.shading_frame_ws.to_local(curve_direction));
+    const float3 n = normalize(si.shading_frame_ws.to_local(normal));
+    const float3 t = normalize(si.shading_frame_ws.to_local(curve_direction));
+#ifdef MTLX_SCALARIZED_GRAPH_STORAGE
+    mx_stack.set_curve_bsdf_frame(bsdf.get_index(), n, t);
+#else
+    mx_stack.bsdf_n[bsdf.get_index()] = n;
+    mx_stack.bsdf_t[bsdf.get_index()] = t;
+#endif
 #ifdef MTLX_STACK_HAS_BSDF_FRAMES
     mx_store_curve_bsdf_frame(bsdf);
 #endif
 }
 
+[mutating]
 void mx_oren_nayar_diffuse_bsdf(
     ClosureData closure_data,
     float weight,
@@ -81,11 +111,16 @@ void mx_oren_nayar_diffuse_bsdf(
 )
 {
     bsdf.set_bsdf(mx_stack_next_bsdf++);
+#ifdef MTLX_SCALARIZED_GRAPH_STORAGE
+    mx_stack.set_bsdf_weight(bsdf.get_index(), float3(weight));
+#else
     mx_stack.bsdf_weights[bsdf.get_index()] = float3(weight);
+#endif
     mx_stack.set_bsdf(bsdf.get_index(), create_mx_oren_nayar(color, roughness, normal, energy_compensation));
     mx_prepare_bsdf_with_default_tangent(bsdf, normal);
 }
 
+[mutating]
 void mx_burley_diffuse_bsdf(
     ClosureData closure_data,
     float weight,
@@ -96,19 +131,29 @@ void mx_burley_diffuse_bsdf(
 )
 {
     bsdf.set_bsdf(mx_stack_next_bsdf++);
+#ifdef MTLX_SCALARIZED_GRAPH_STORAGE
+    mx_stack.set_bsdf_weight(bsdf.get_index(), float3(weight));
+#else
     mx_stack.bsdf_weights[bsdf.get_index()] = float3(weight);
+#endif
     mx_stack.set_bsdf(bsdf.get_index(), create_mx_burley(color, roughness, normal));
     mx_prepare_bsdf_with_default_tangent(bsdf, normal);
 }
 
+[mutating]
 void mx_translucent_bsdf(ClosureData closure_data, float weight, float3 color, float3 normal, out BSDF bsdf)
 {
     bsdf.set_bsdf(mx_stack_next_bsdf++);
+#ifdef MTLX_SCALARIZED_GRAPH_STORAGE
+    mx_stack.set_bsdf_weight(bsdf.get_index(), float3(weight));
+#else
     mx_stack.bsdf_weights[bsdf.get_index()] = float3(weight);
+#endif
     mx_stack.set_bsdf(bsdf.get_index(), create_mx_translucent(color, normal));
     mx_prepare_bsdf_with_default_tangent(bsdf, normal);
 }
 
+[mutating]
 void mx_subsurface_bsdf(
     ClosureData closure_data,
     float weight,
@@ -120,12 +165,17 @@ void mx_subsurface_bsdf(
 )
 {
     bsdf.set_bsdf(mx_stack_next_bsdf++);
+#ifdef MTLX_SCALARIZED_GRAPH_STORAGE
+    mx_stack.set_bsdf_weight(bsdf.get_index(), float3(weight));
+#else
     mx_stack.bsdf_weights[bsdf.get_index()] = float3(weight);
+#endif
     // MTLX maps MaterialX subsurface to a diffuse reflection fallback.
     mx_stack.set_bsdf(bsdf.get_index(), create_mx_subsurface_diffuse_fallback(color));
     mx_prepare_subsurface_diffuse_fallback_bsdf(bsdf, normal);
 }
 
+[mutating]
 void mx_beer_bsdf(
     ClosureData closure_data,
     float weight,
@@ -136,11 +186,16 @@ void mx_beer_bsdf(
 )
 {
     bsdf.set_bsdf(mx_stack_next_bsdf++);
+#ifdef MTLX_SCALARIZED_GRAPH_STORAGE
+    mx_stack.set_bsdf_weight(bsdf.get_index(), float3(weight));
+#else
     mx_stack.bsdf_weights[bsdf.get_index()] = float3(weight);
+#endif
     mx_stack.set_bsdf(bsdf.get_index(), create_mx_beer(absorption, pathshortening));
     mx_prepare_bsdf_with_default_tangent(bsdf, normal);
 }
 
+[mutating]
 void mx_scratchconductor_brdf(
     ClosureData closure_data,
     float weight,
@@ -158,7 +213,11 @@ void mx_scratchconductor_brdf(
 )
 {
     bsdf.set_bsdf(mx_stack_next_bsdf++);
+#ifdef MTLX_SCALARIZED_GRAPH_STORAGE
+    mx_stack.set_bsdf_weight(bsdf.get_index(), float3(weight));
+#else
     mx_stack.bsdf_weights[bsdf.get_index()] = float3(weight);
+#endif
     mx_stack.set_bsdf(
         bsdf.get_index(),
         create_mx_scratch_conductor(
@@ -177,6 +236,7 @@ void mx_scratchconductor_brdf(
     mx_prepare_bsdf(bsdf, normal, tangent);
 }
 
+[mutating]
 void mx_dielectric_bsdf(
     ClosureData closure_data,
     float weight,
@@ -194,7 +254,11 @@ void mx_dielectric_bsdf(
 )
 {
     bsdf.set_bsdf(mx_stack_next_bsdf++);
+#ifdef MTLX_SCALARIZED_GRAPH_STORAGE
+    mx_stack.set_bsdf_weight(bsdf.get_index(), float3(weight));
+#else
     mx_stack.bsdf_weights[bsdf.get_index()] = float3(weight);
+#endif
     mx_stack.set_bsdf(
         bsdf.get_index(),
         create_mx_dielectric(
@@ -214,6 +278,7 @@ void mx_dielectric_bsdf(
     mx_prepare_bsdf(bsdf, normal, tangent);
 }
 
+[mutating]
 void mx_conductor_bsdf(
     ClosureData closure_data,
     float weight,
@@ -230,7 +295,11 @@ void mx_conductor_bsdf(
 )
 {
     bsdf.set_bsdf(mx_stack_next_bsdf++);
+#ifdef MTLX_SCALARIZED_GRAPH_STORAGE
+    mx_stack.set_bsdf_weight(bsdf.get_index(), float3(weight));
+#else
     mx_stack.bsdf_weights[bsdf.get_index()] = float3(weight);
+#endif
     mx_stack.set_bsdf(
         bsdf.get_index(),
         create_mx_conductor(
@@ -248,6 +317,7 @@ void mx_conductor_bsdf(
     mx_prepare_bsdf(bsdf, normal, tangent);
 }
 
+[mutating]
 void mx_generalized_schlick_bsdf(
     ClosureData closure_data,
     float weight,
@@ -267,7 +337,11 @@ void mx_generalized_schlick_bsdf(
 )
 {
     bsdf.set_bsdf(mx_stack_next_bsdf++);
+#ifdef MTLX_SCALARIZED_GRAPH_STORAGE
+    mx_stack.set_bsdf_weight(bsdf.get_index(), float3(weight));
+#else
     mx_stack.bsdf_weights[bsdf.get_index()] = float3(weight);
+#endif
     mx_stack.set_bsdf(
         bsdf.get_index(),
         create_mx_generalized_schlick(
@@ -289,6 +363,7 @@ void mx_generalized_schlick_bsdf(
     mx_prepare_bsdf(bsdf, normal, tangent);
 }
 
+[mutating]
 void mx_sheen_bsdf(
     ClosureData closure_data,
     float weight,
@@ -300,11 +375,16 @@ void mx_sheen_bsdf(
 )
 {
     bsdf.set_bsdf(mx_stack_next_bsdf++);
+#ifdef MTLX_SCALARIZED_GRAPH_STORAGE
+    mx_stack.set_bsdf_weight(bsdf.get_index(), float3(weight));
+#else
     mx_stack.bsdf_weights[bsdf.get_index()] = float3(weight);
+#endif
     mx_stack.set_bsdf(bsdf.get_index(), create_mx_sheen(color, roughness, normal, mode, si.front_facing));
     mx_prepare_bsdf(bsdf, normal, si.shading_frame_ws.tangent);
 }
 
+[mutating]
 void mx_chiang_hair_bsdf(
     ClosureData closure_data,
     float3 tint_R,
@@ -322,7 +402,11 @@ void mx_chiang_hair_bsdf(
 )
 {
     bsdf.set_bsdf(mx_stack_next_bsdf++);
+#ifdef MTLX_SCALARIZED_GRAPH_STORAGE
+    mx_stack.set_bsdf_weight(bsdf.get_index(), float3(1.0));
+#else
     mx_stack.bsdf_weights[bsdf.get_index()] = float3(1.0);
+#endif
     mx_stack.set_bsdf(
         bsdf.get_index(),
         create_mx_chiang_hair(

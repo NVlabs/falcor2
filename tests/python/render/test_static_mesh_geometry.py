@@ -11,6 +11,15 @@ import falcor2 as f2
 import falcor2.testing.helpers as helpers
 
 
+class _CapturingLoggerOutput(spy.LoggerOutput):
+    def __init__(self) -> None:
+        super().__init__()
+        self.messages: list[str] = []
+
+    def write(self, level: spy.LogLevel, name: str, msg: str) -> None:
+        self.messages.append(msg)
+
+
 @pytest.fixture
 def device(device_type: spy.DeviceType) -> spy.Device:
     return helpers.get_device(device_type)
@@ -143,6 +152,29 @@ class TestStaticMeshGeometryMutation:
         np.testing.assert_array_equal(mesh.texcoords(0), texcoords)
         np.testing.assert_array_equal(mesh.indices(0), indices)
 
+    def test_set_texcoords_updates_all_uv0_components(self, device: spy.Device):
+        scene = f2.Scene.create(device)
+        mesh = scene.create_geometry(f2.StaticMeshGeometry)
+        positions = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
+        indices = np.array([[0, 1, 2]], dtype=np.uint32)
+        uv0 = np.array([[0, 0, 1], [1, 0, 2], [0, 1, 3]], dtype=np.float32)
+        updated_uv0 = np.array([[2, 3, 4], [5, 6, 7], [8, 9, 10]], dtype=np.float32)
+
+        mesh.set_mesh_data(
+            positions,
+            [indices],
+            vertex_attributes=[f2.MeshVertexAttribute(f2.MeshAttributeSemantic.tex_coord, 0, uv0)],
+        )
+        mesh.set_texcoords(0, updated_uv0)
+
+        attribute = next(
+            attribute
+            for attribute in mesh.vertex_attributes(0)
+            if attribute.semantic == f2.MeshAttributeSemantic.tex_coord and attribute.index == 0
+        )
+        np.testing.assert_array_equal(attribute.data, updated_uv0)
+        np.testing.assert_array_equal(mesh.texcoords(0), updated_uv0[:, :2])
+
     def test_set_positions_updates_local_aabb(
         self, quad_mesh: tuple[f2.Scene, f2.StaticMeshGeometry, dict[str, np.ndarray]]
     ):
@@ -195,8 +227,7 @@ class TestStaticMeshGeometryMutation:
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 class TestStaticMeshGeometryProceduralCreation:
-    """Tests for set_mesh_data numpy-array binding used by neuralappearance to
-    author procedural preview geometry (see .plans/materialport.md Phase 1a)."""
+    """Tests the set_mesh_data NumPy binding for procedural preview geometry."""
 
     def test_set_mesh_data_quad(self, device: spy.Device):
         scene = f2.Scene.create(device)
@@ -234,6 +265,13 @@ class TestStaticMeshGeometryProceduralCreation:
         assert geom.vertex_count(0) == 4
         # UVs should round-trip exactly.
         np.testing.assert_array_equal(geom.texcoords(0), texcoords)
+        attributes = geom.vertex_attributes(0)
+        uv0 = next(
+            attribute
+            for attribute in attributes
+            if attribute.semantic == f2.MeshAttributeSemantic.tex_coord and attribute.index == 0
+        )
+        np.testing.assert_array_equal(uv0.data, texcoords)
 
     def test_set_mesh_data_positions_only(self, device: spy.Device):
         # Optional attributes should be accepted as None; the mesh must still
@@ -263,3 +301,193 @@ class TestStaticMeshGeometryProceduralCreation:
                 sub_mesh_indices=[indices],
                 normals=normals_wrong,
             )
+
+    @pytest.mark.parametrize(
+        "name, semantic, values, default",
+        [
+            ("normals", f2.MeshAttributeSemantic.normal, [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]),
+            ("tangents", f2.MeshAttributeSemantic.tangent, [1.0, 0.0, 0.0], None),
+            ("handedness", f2.MeshAttributeSemantic.handedness, -1.0, 0.0),
+            ("texcoords", f2.MeshAttributeSemantic.tex_coord, [0.25, 0.5], [0.0, 0.0]),
+        ],
+    )
+    def test_optional_getters_without_source_streams(
+        self,
+        device: spy.Device,
+        name: str,
+        semantic: f2.MeshAttributeSemantic,
+        values: list[float] | float,
+        default: list[float] | float | None,
+    ):
+        scene = f2.Scene.create(device)
+        mesh = scene.create_geometry(f2.StaticMeshGeometry)
+        positions = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
+        indices = np.array([[0, 1, 2]], dtype=np.uint32)
+        mesh.set_mesh_data(positions, [indices])
+
+        assert all(attribute.semantic != semantic for attribute in mesh.vertex_attributes(0))
+        getter = getattr(mesh, name)
+        initial = getter(0)
+        expected = np.array([values] * 3, dtype=np.float32)
+        assert initial.shape == expected.shape
+        assert initial.dtype == np.float32
+        assert np.isfinite(initial).all()
+        if default is not None:
+            np.testing.assert_array_equal(initial, np.array([default] * 3, dtype=np.float32))
+
+        # A source stream remains absent after legacy setters update the packed
+        # vertices. Getters must return those runtime values, not invented zeros.
+        getattr(mesh, f"set_{name}")(0, expected)
+        assert all(attribute.semantic != semantic for attribute in mesh.vertex_attributes(0))
+        actual = getter(0)
+        np.testing.assert_allclose(actual, expected, rtol=0, atol=1e-4)
+        actual[...] = 7.0
+        np.testing.assert_allclose(getter(0), expected, rtol=0, atol=1e-4)
+
+        scene.update()
+        np.testing.assert_allclose(getter(0), expected, rtol=0, atol=1e-4)
+
+    def test_uv0_getter_defaults_with_only_uv1(self, device: spy.Device):
+        scene = f2.Scene.create(device)
+        mesh = scene.create_geometry(f2.StaticMeshGeometry)
+        positions = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
+        indices = np.array([[0, 1, 2]], dtype=np.uint32)
+        uv1 = np.array([[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]], dtype=np.float32)
+        mesh.set_mesh_data(
+            positions,
+            [indices],
+            vertex_attributes=[f2.MeshVertexAttribute(f2.MeshAttributeSemantic.tex_coord, 1, uv1)],
+        )
+
+        np.testing.assert_array_equal(mesh.texcoords(0), np.zeros((3, 2), dtype=np.float32))
+        attribute = next(
+            attribute
+            for attribute in mesh.vertex_attributes(0)
+            if attribute.semantic == f2.MeshAttributeSemantic.tex_coord
+        )
+        assert attribute.index == 1
+        np.testing.assert_array_equal(attribute.data, uv1)
+
+    def test_named_vertex_attribute_identity_uses_name(self, device: spy.Device):
+        scene = f2.Scene.create(device)
+        geom = scene.create_geometry(f2.StaticMeshGeometry)
+        positions = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
+        indices = np.array([[0, 1, 2]], dtype=np.uint32)
+        values = np.zeros((3, 2), dtype=np.float32)
+
+        geom.set_mesh_data(
+            positions,
+            [indices],
+            vertex_attributes=[
+                f2.MeshVertexAttribute(f2.MeshAttributeSemantic.weights, 0, values, name="first"),
+                f2.MeshVertexAttribute(f2.MeshAttributeSemantic.weights, 0, values, name="second"),
+            ],
+        )
+        assert {attribute.name for attribute in geom.vertex_attributes(0)} >= {"first", "second"}
+
+        with pytest.raises(
+            RuntimeError, match="Duplicate static mesh named vertex attribute 'shared'"
+        ):
+            geom.set_mesh_data(
+                positions,
+                [indices],
+                vertex_attributes=[
+                    f2.MeshVertexAttribute(
+                        f2.MeshAttributeSemantic.weights, 0, values, name="shared"
+                    ),
+                    f2.MeshVertexAttribute(
+                        f2.MeshAttributeSemantic.joints, 0, values, name="shared"
+                    ),
+                ],
+            )
+
+    def test_set_mesh_data_retains_generic_vertex_attributes(self, device: spy.Device):
+        scene = f2.Scene.create(device)
+        geom = scene.create_geometry(f2.StaticMeshGeometry)
+        positions = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], dtype=np.float32)
+        indices = np.array([[2, 0, 3], [3, 0, 1]], dtype=np.uint32)
+        uv0 = np.array([[0, 0, 2], [1, 0, 3], [0, 1, 4], [1, 1, 5]], dtype=np.float32)
+        uv6 = np.array(
+            [[10, 11, 12, 13], [20, 21, 22, 23], [30, 31, 32, 33], [40, 41, 42, 43]],
+            dtype=np.float32,
+        )
+        uv8 = np.array([[10, 11], [20, 21], [30, 31], [40, 41]], dtype=np.float32)
+        colors = np.array(
+            [[1, 0, 0, 0.1], [0, 1, 0, 0.2], [0, 0, 1, 0.3], [1, 1, 1, 0.4]], dtype=np.float32
+        )
+        colors1 = np.array(
+            [[0.1, 0.2, 0.3], [0.2, 0.3, 0.4], [0.3, 0.4, 0.5], [0.4, 0.5, 0.6]],
+            dtype=np.float32,
+        )
+        custom_values = np.array([[10, 11], [20, 21], [30, 31], [40, 41]], dtype=np.uint16)
+        joints = np.array(
+            [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16]],
+            dtype=np.uint8,
+        )
+        attributes = [
+            f2.MeshVertexAttribute(f2.MeshAttributeSemantic.tex_coord, 0, uv0),
+            f2.MeshVertexAttribute(f2.MeshAttributeSemantic.tex_coord, 6, uv6),
+            f2.MeshVertexAttribute(f2.MeshAttributeSemantic.tex_coord, 8, uv8, name="TEXCOORD_8"),
+            f2.MeshVertexAttribute(f2.MeshAttributeSemantic.color, 0, colors),
+            f2.MeshVertexAttribute(f2.MeshAttributeSemantic.color, 1, colors1, name="COLOR_1"),
+            f2.MeshVertexAttribute(
+                f2.MeshAttributeSemantic.unknown,
+                4,
+                custom_values,
+                name="matx_custom_index",
+            ),
+            f2.MeshVertexAttribute(
+                f2.MeshAttributeSemantic.joints,
+                0,
+                joints,
+                name="JOINTS_0",
+            ),
+        ]
+
+        log_output = _CapturingLoggerOutput()
+        logger = spy.Logger.get()
+        logger.add_output(log_output)
+        try:
+            geom.set_mesh_data(positions, [indices], vertex_attributes=attributes)
+            scene.update()
+        finally:
+            logger.remove_output(log_output)
+
+        unsupported_messages = [
+            message
+            for message in log_output.messages
+            if "will not be available to shaders" in message
+        ]
+        assert len(unsupported_messages) == 2
+        assert any("matx_custom_index" in message for message in unsupported_messages)
+        assert any("JOINTS_0" in message for message in unsupported_messages)
+
+        expected_order = np.array([2, 0, 3, 1])
+        returned = {
+            (attribute.semantic, attribute.index): attribute
+            for attribute in geom.vertex_attributes(0)
+        }
+        np.testing.assert_array_equal(
+            returned[(f2.MeshAttributeSemantic.tex_coord, 0)].data, uv0[expected_order]
+        )
+        np.testing.assert_array_equal(
+            returned[(f2.MeshAttributeSemantic.tex_coord, 6)].data, uv6[expected_order]
+        )
+        np.testing.assert_array_equal(
+            returned[(f2.MeshAttributeSemantic.tex_coord, 8)].data, uv8[expected_order]
+        )
+        np.testing.assert_array_equal(
+            returned[(f2.MeshAttributeSemantic.color, 0)].data, colors[expected_order]
+        )
+        np.testing.assert_array_equal(
+            returned[(f2.MeshAttributeSemantic.color, 1)].data, colors1[expected_order]
+        )
+        np.testing.assert_array_equal(geom.texcoords(0), uv0[expected_order, :2])
+        custom = returned[(f2.MeshAttributeSemantic.unknown, 4)]
+        assert custom.name == "matx_custom_index"
+        assert custom.data.dtype == np.uint16
+        np.testing.assert_array_equal(custom.data, custom_values[expected_order])
+        joint_attribute = returned[(f2.MeshAttributeSemantic.joints, 0)]
+        assert joint_attribute.name == "JOINTS_0"
+        assert joint_attribute.data.dtype == np.uint8
+        np.testing.assert_array_equal(joint_attribute.data, joints[expected_order])

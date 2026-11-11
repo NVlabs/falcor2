@@ -4,6 +4,7 @@
 #pragma once
 
 #include "falcor2/render/fwd.h"
+#include "falcor2/render/scene_requirements.h"
 #include "falcor2/render/shared_scene_types.h"
 
 #include "falcor2/core/macros.h"
@@ -71,38 +72,57 @@ struct FALCOR_API SceneRayTracingSetup {
 
     /// Create a ray tracing setup for a scene given ray type descriptions.
     /// Missing ray types, geometry types, and unused scene geometry types are filled with dummy entries.
-    /// @param scene The scene to create the setup for.
-    /// @param ray_descs Per-ray-type descriptions (miss shader + hit groups keyed by geometry type).
+    /// @param scene Scene providing the device and default requirements.
+    /// @param ray_descs Ray types defined with the scene ray-tracing helper macros.
+    /// @param requirements Optional snapshot from this scene. If supplied, all setup inputs use this snapshot;
+    /// otherwise, the scene's current default requirements are used.
     /// @param options Optional configuration options.
     /// @return The populated ray tracing setup.
-    static SceneRayTracingSetup
-    create(const Scene* scene, std::span<const RayDesc> ray_descs, std::optional<Options> options = std::nullopt);
+    static SceneRayTracingSetup create(
+        const Scene* scene,
+        std::span<const RayDesc> ray_descs,
+        const SceneRequirements* requirements = nullptr,
+        std::optional<Options> options = std::nullopt
+    );
 
-    static SceneRayTracingSetup
-    create(const Scene* scene, std::initializer_list<RayDesc> ray_descs, std::optional<Options> options = std::nullopt)
+    static SceneRayTracingSetup create(
+        const Scene* scene,
+        std::initializer_list<RayDesc> ray_descs,
+        const SceneRequirements* requirements = nullptr,
+        std::optional<Options> options = std::nullopt
+    )
     {
-        return create(scene, std::span<const RayDesc>(ray_descs.begin(), ray_descs.size()), options);
+        return create(scene, std::span<const RayDesc>(ray_descs.begin(), ray_descs.size()), requirements, options);
     }
 
     /// Create a ray tracing setup for a scene given per-ray-type descriptions.
     /// Missing ray types, geometry types, and unused scene geometry types are filled with dummy entries.
-    /// @param scene The scene to create the setup for.
+    /// @param scene Scene providing the device and default requirements.
     /// @param ray_descs Per-ray-type descriptions (miss shader + hit groups keyed by geometry type).
+    /// @param requirements Optional snapshot from this scene. If supplied, all setup inputs use this snapshot;
+    /// otherwise, the scene's current default requirements are used.
     /// @param options Optional configuration options.
     /// @return The populated ray tracing setup.
     static SceneRayTracingSetup create(
         const Scene* scene,
         std::span<const PerGeometryTypeRayDesc> ray_descs,
+        const SceneRequirements* requirements = nullptr,
         std::optional<Options> options = std::nullopt
     );
 
     static SceneRayTracingSetup create(
         const Scene* scene,
         std::initializer_list<PerGeometryTypeRayDesc> ray_descs,
+        const SceneRequirements* requirements = nullptr,
         std::optional<Options> options = std::nullopt
     )
     {
-        return create(scene, std::span<const PerGeometryTypeRayDesc>(ray_descs.begin(), ray_descs.size()), options);
+        return create(
+            scene,
+            std::span<const PerGeometryTypeRayDesc>(ray_descs.begin(), ray_descs.size()),
+            requirements,
+            options
+        );
     }
 
     /// Entry point names needed for the ray tracing pipeline.

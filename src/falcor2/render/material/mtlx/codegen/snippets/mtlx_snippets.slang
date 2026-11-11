@@ -23,11 +23,9 @@ struct BSDF
 static SurfaceInteraction si = {};
 static SnippetDirectStack mx_stack = {};
 
-__include "mx_space_constants.slang";
 __include "mx_space_helpers.slang";
 __include "mx_normal_adjustment.slang";
 __include "mx_direct_microfacet_helpers.slang";
-__include "surface_unlit_transparent.slang";
 __include "texture_sampling_helper.slang";
 
 } // namespace mtlx

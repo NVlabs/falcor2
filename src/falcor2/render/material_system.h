@@ -6,8 +6,11 @@
 #include "scene_system.h"
 
 #include "falcor2/render/shared_scene_types.h"
+#include "falcor2/render/scene_capabilities.h"
 
 #include "falcor2/utils/managed_vector.h"
+#include "falcor2/utils/buffer_suballocator.h"
+#include "falcor2/utils/buffer_offset_pair.h"
 
 #include <sgl/device/fwd.h>
 #include <sgl/device/shader.h>
@@ -30,16 +33,20 @@ public:
     virtual SceneUpdateFlags update(SceneUpdateContext& ctx) override;
     virtual void bind_to_scene(const sgl::ShaderCursor& cursor) const override;
 
+    /// Get the required scene capabilities for all active materials.
+    SceneCapabilities required_capabilities() const { return m_required_capabilities; }
+
     /// Get the type conformances for all active materials.
     std::span<const sgl::TypeConformance> required_type_conformances() const { return m_type_conformances; }
 
     /// Get the additional modules required by all active materials.
     std::span<const ref<sgl::SlangModule>> required_modules() const { return m_required_modules; }
 
-    /// Returns true if any valid material uses alpha masking/blending.
-    bool requires_opacity_evaluation() const { return m_requires_opacity_evaluation; }
+    BufferOffsetPair data_ref(BufferSuballocator::Allocation allocation) const;
 
 private:
+    friend class Material;
+
     /// Allocate a new material ID.
     shared::MaterialID allocate_material_id();
     /// Free a material ID.
@@ -48,10 +55,12 @@ private:
     MaterialCollection& m_materials;
 
     ManagedVector<shared::MaterialData> m_material_data;
+    BufferSuballocator m_data_storage;
+    BufferHandle m_data_buffer_handle = to_handle(ref<sgl::Buffer>{});
 
+    SceneCapabilities m_required_capabilities;
     std::vector<sgl::TypeConformance> m_type_conformances;
     std::vector<ref<sgl::SlangModule>> m_required_modules;
-    bool m_requires_opacity_evaluation{false};
 
     // Next material ID to allocate. Starts at 1 since 0 is reserved for InvalidMaterial.
     uint32_t m_next_material_id{1};

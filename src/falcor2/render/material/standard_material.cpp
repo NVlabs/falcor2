@@ -2,11 +2,32 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "standard_material.h"
+#include "material_texture_utils.h"
 
 #include "falcor2/core/properties.h"
 #include "falcor2/render/scene.h"
 
 namespace falcor {
+
+namespace {
+
+uint32_t pack_texture_coordinate_selectors(
+    uint32_t base_color,
+    uint32_t metallic_roughness,
+    uint32_t normal,
+    uint32_t emissive,
+    uint32_t transmission,
+    bool use_vertex_color,
+    bool normal_map_encoded
+)
+{
+    return sgl::narrow_cast<uint32_t>(
+        base_color | (metallic_roughness << 3) | (normal << 6) | (emissive << 9) | (transmission << 12)
+        | (uint32_t(use_vertex_color) << 15) | (uint32_t(normal_map_encoded) << 16)
+    );
+}
+
+} // namespace
 
 StandardMaterial::StandardMaterial()
 {
@@ -17,72 +38,45 @@ StandardMaterial::~StandardMaterial() { }
 
 void StandardMaterial::on_load_resources()
 {
-    if (m_base_color_texture) {
-        m_base_color_texture_handle = m_scene->texture_manager()->register_texture({
-            .texture = m_base_color_texture,
-        });
-    } else if (!m_base_color_texture_path.empty()) {
-        m_base_color_texture_handle = m_scene->texture_manager()->load_texture({
-            .path = m_base_color_texture_path,
-            .load_deferred = true,
-        });
-    } else {
-        m_base_color_texture_handle = {};
-    }
+    m_base_color_texture_handle = load_material_texture(
+        m_scene->texture_manager(),
+        m_base_color_texture,
+        m_base_color_texture_sampler,
+        m_base_color_texture_path,
+        TextureLoadFlags::color
+    );
 
-    if (m_normal_texture) {
-        m_normal_texture_handle = m_scene->texture_manager()->register_texture({
-            .texture = m_normal_texture,
-        });
-    } else if (!m_normal_texture_path.empty()) {
-        m_normal_texture_handle = m_scene->texture_manager()->load_texture({
-            .path = m_normal_texture_path,
-            .srgb = false,
-            .load_deferred = true,
-        });
-    } else {
-        m_normal_texture_handle = {};
-    }
+    m_normal_texture_handle = load_material_texture(
+        m_scene->texture_manager(),
+        m_normal_texture,
+        m_normal_texture_sampler,
+        m_normal_texture_path,
+        TextureLoadFlags::normal
+    );
 
-    if (m_metallic_roughness_texture) {
-        m_metallic_roughness_texture_handle = m_scene->texture_manager()->register_texture({
-            .texture = m_metallic_roughness_texture,
-        });
-    } else if (!m_metallic_roughness_texture_path.empty()) {
-        m_metallic_roughness_texture_handle = m_scene->texture_manager()->load_texture({
-            .path = m_metallic_roughness_texture_path,
-            .srgb = false,
-            .load_deferred = true,
-        });
-    } else {
-        m_metallic_roughness_texture_handle = {};
-    }
+    m_metallic_roughness_texture_handle = load_material_texture(
+        m_scene->texture_manager(),
+        m_metallic_roughness_texture,
+        m_metallic_roughness_texture_sampler,
+        m_metallic_roughness_texture_path,
+        TextureLoadFlags::data_rgb
+    );
 
-    if (m_emissive_texture) {
-        m_emissive_texture_handle = m_scene->texture_manager()->register_texture({
-            .texture = m_emissive_texture,
-        });
-    } else if (!m_emissive_texture_path.empty()) {
-        m_emissive_texture_handle = m_scene->texture_manager()->load_texture({
-            .path = m_emissive_texture_path,
-            .load_deferred = true,
-        });
-    } else {
-        m_emissive_texture_handle = {};
-    }
+    m_emissive_texture_handle = load_material_texture(
+        m_scene->texture_manager(),
+        m_emissive_texture,
+        m_emissive_texture_sampler,
+        m_emissive_texture_path,
+        TextureLoadFlags::color
+    );
 
-    if (m_transmission_texture) {
-        m_transmission_texture_handle = m_scene->texture_manager()->register_texture({
-            .texture = m_transmission_texture,
-        });
-    } else if (!m_transmission_texture_path.empty()) {
-        m_transmission_texture_handle = m_scene->texture_manager()->load_texture({
-            .path = m_transmission_texture_path,
-            .load_deferred = true,
-        });
-    } else {
-        m_transmission_texture_handle = {};
-    }
+    m_transmission_texture_handle = load_material_texture(
+        m_scene->texture_manager(),
+        m_transmission_texture,
+        m_transmission_texture_sampler,
+        m_transmission_texture_path,
+        TextureLoadFlags::color
+    );
 }
 
 void StandardMaterial::update(SceneUpdateContext& ctx)
@@ -107,6 +101,8 @@ Material::OpacityDesc StandardMaterial::opacity_desc() const
         opacity_flags = shared::OpacityFlags::enabled | shared::OpacityFlags::use_threshold;
     else if (m_alpha_mode == AlphaMode::blend)
         opacity_flags = shared::OpacityFlags::enabled;
+    if (opacity_flags != shared::OpacityFlags::none && (m_base_color_texture_texcoord != 0 || m_use_vertex_color))
+        opacity_flags |= shared::OpacityFlags::evaluate_material;
 
     return {
         .flags = opacity_flags,
@@ -115,6 +111,14 @@ Material::OpacityDesc StandardMaterial::opacity_desc() const
         .factor = m_alpha_factor,
         .threshold = m_alpha_cutoff,
     };
+}
+
+SceneCapabilities StandardMaterial::required_capabilities() const
+{
+    bool uses_geometry_properties = m_use_vertex_color || m_base_color_texture_texcoord != 0
+        || m_metallic_roughness_texture_texcoord != 0 || m_normal_texture_texcoord != 0
+        || m_emissive_texture_texcoord != 0 || m_transmission_texture_texcoord != 0;
+    return material_capabilities(uses_geometry_properties);
 }
 
 template<typename CursorT>
@@ -139,6 +143,15 @@ void StandardMaterial::write_to_cursor_impl(CursorT cursor) const
     cursor["volume_anisotropy"] = m_volume_anisotropy;
     cursor["metallic_texture_channel"] = m_metallic_texture_channel;
     cursor["roughness_texture_channel"] = m_roughness_texture_channel;
+    cursor["texture_coordinate_selectors"] = pack_texture_coordinate_selectors(
+        m_base_color_texture_texcoord,
+        m_metallic_roughness_texture_texcoord,
+        m_normal_texture_texcoord,
+        m_emissive_texture_texcoord,
+        m_transmission_texture_texcoord,
+        m_use_vertex_color,
+        is_normal_map_encoded(m_normal_texture_handle)
+    );
 }
 
 template void StandardMaterial::write_to_cursor_impl(sgl::BufferElementCursor cursor) const;

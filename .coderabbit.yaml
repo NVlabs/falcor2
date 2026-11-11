@@ -1,0 +1,6 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+reviews:
+  pre_merge_checks:
+    docstrings:
+      # Documentation quality follows docs/contributing/coding-style.md, not a quota.
+      mode: "off"

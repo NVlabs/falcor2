@@ -8,6 +8,7 @@
 #include "falcor2/core/types.h"
 
 #include "falcor2/render/fwd.h"
+#include "falcor2/render/scene_requirements.h"
 #include "falcor2/render/shared_scene_types.h"
 
 #include <sgl/device/fwd.h>
@@ -63,7 +64,7 @@ private:
     ref<sgl::Texture> m_geometry_instance_id_texture;
 
     bool m_use_raytracing_pipeline{false};
-    uint64_t m_requirements_generation{0};
+    ref<const SceneRequirements> m_scene_requirements;
 
     // Compute pipeline.
     struct RenderIdsCS {

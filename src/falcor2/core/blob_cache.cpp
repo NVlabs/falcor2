@@ -283,10 +283,12 @@ bool BlobCache::WriteStream::try_commit(std::error_code& ec) noexcept
         }
 
         std::filesystem::path tmp_path = m_tmp_path;
+        uint64_t published_bytes = 0;
         try {
             if (m_cache->m_options.flush_after_write)
                 m_stream->flush();
             m_stream->close();
+            published_bytes = std::filesystem::file_size(tmp_path);
             m_stream.reset();
         } catch (...) {
             ec = make_error_code(Error::write_failed);
@@ -303,7 +305,7 @@ bool BlobCache::WriteStream::try_commit(std::error_code& ec) noexcept
 
         m_cache = nullptr;
         m_tmp_path.clear();
-        cache->maybe_evict();
+        cache->maybe_evict(published_bytes);
         return true;
     } catch (...) {
         ec = make_error_code(Error::write_failed);
@@ -391,7 +393,7 @@ bool BlobCache::try_write(
         if (!publish_temp_file(key, resolved_sub_data_name, tmp_path, ec))
             return false;
 
-        maybe_evict();
+        maybe_evict(data.size());
         return true;
     } catch (...) {
         std::error_code remove_ec;
@@ -690,34 +692,39 @@ void BlobCache::evict()
         if (ec)
             return;
 
-        uint64_t target_size = static_cast<uint64_t>(m_options.max_size) * m_options.eviction_target_pct / 100;
-        if (scan.total_size <= target_size)
-            return;
-
-        std::sort(
-            scan.entries.begin(),
-            scan.entries.end(),
-            [](const CacheEntry& a, const CacheEntry& b)
-            {
-                return a.last_access < b.last_access;
-            }
-        );
-
-        uint64_t total_size = scan.total_size;
-        for (const auto& entry : scan.entries) {
-            if (total_size <= target_size)
-                break;
-
-            std::error_code remove_ec;
-            std::filesystem::remove_all(entry.key_dir, remove_ec);
-            if (remove_ec) {
-                sgl::log_warn("BlobCache: failed to delete cache entry during eviction: {}", entry.key_dir.string());
-                continue;
-            }
-            total_size -= std::min(entry.total_size, total_size);
-        }
+        evict_entries(scan);
     } catch (...) {
         sgl::log_warn("BlobCache: evict failed");
+    }
+}
+
+void BlobCache::evict_entries(ScanResult& scan)
+{
+    uint64_t target_size = static_cast<uint64_t>(m_options.max_size) * m_options.eviction_target_pct / 100;
+    if (scan.total_size <= target_size)
+        return;
+
+    std::sort(
+        scan.entries.begin(),
+        scan.entries.end(),
+        [](const CacheEntry& a, const CacheEntry& b)
+        {
+            return a.last_access < b.last_access;
+        }
+    );
+
+    uint64_t total_size = scan.total_size;
+    for (const auto& entry : scan.entries) {
+        if (total_size <= target_size)
+            break;
+
+        std::error_code remove_ec;
+        std::filesystem::remove_all(entry.key_dir, remove_ec);
+        if (remove_ec) {
+            sgl::log_warn("BlobCache: failed to delete cache entry during eviction: {}", entry.key_dir.string());
+            continue;
+        }
+        total_size -= std::min(entry.total_size, total_size);
     }
 }
 
@@ -1053,28 +1060,33 @@ void BlobCache::cleanup_temp_files() noexcept
     }
 }
 
-void BlobCache::maybe_evict() noexcept
+void BlobCache::maybe_evict(uint64_t published_bytes) noexcept
 {
     try {
-        bool needs_eviction = false;
-        {
-            std::lock_guard lock(m_mutex);
+        std::lock_guard lock(m_mutex);
+        m_bytes_since_eviction_check
+            += std::min(published_bytes, std::numeric_limits<uint64_t>::max() - m_bytes_since_eviction_check);
+        auto now = std::chrono::steady_clock::now();
+        if (m_last_eviction_check
+            && now - *m_last_eviction_check < std::chrono::milliseconds(m_options.eviction_check_interval_ms)
+            && m_bytes_since_eviction_check < m_options.eviction_check_bytes)
+            return;
 
-            platform::FileLock file_lock(m_lock_path);
-            if (!file_lock.try_lock())
-                return;
+        // Throttle failed attempts too, so lock contention or I/O errors cannot cause a scan storm.
+        m_last_eviction_check = now;
+        m_bytes_since_eviction_check = 0;
+        platform::FileLock file_lock(m_lock_path);
+        if (!file_lock.try_lock())
+            return;
 
-            std::error_code ec;
-            auto scan = scan_entries(ec);
-            if (ec)
-                return;
+        std::error_code ec;
+        auto scan = scan_entries(ec);
+        if (ec)
+            return;
 
-            uint64_t threshold = static_cast<uint64_t>(m_options.max_size) * m_options.eviction_threshold_pct / 100;
-            needs_eviction = scan.total_size >= threshold;
-        }
-
-        if (needs_eviction)
-            evict();
+        uint64_t threshold = static_cast<uint64_t>(m_options.max_size) * m_options.eviction_threshold_pct / 100;
+        if (scan.total_size >= threshold)
+            evict_entries(scan);
     } catch (...) {
     }
 }

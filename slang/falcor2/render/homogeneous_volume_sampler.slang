@@ -63,6 +63,10 @@ public struct HomogeneousVolumeSampler
     /// Evaluate Beer-Lambert transmittance over a finite non-negative distance.
     public float3 eval_transmittance(const float distance)
     {
+        // A perfectly absorbing channel has infinite extinction, but a zero-length
+        // segment still transmits one (avoid infinity * zero).
+        if (distance == 0.0)
+            return float3(1.0);
         const float3 sigma_t = sigma_a + sigma_s;
         return float3(
             sigma_t.x > 0.0 ? exp(-sigma_t.x * distance) : 1.0,

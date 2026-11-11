@@ -5,19 +5,25 @@ implementing utils;
 
 public interface ISampleGenerator
 {
-    /// Initializes the sample generator from a given seed value.
-    /// @param seed Seed value.
-    public __init(uint seed);
+    /// Selects a point, starting at dimension zero. Keep scrambling_seed fixed across
+    /// points of a QMC sequence. PRNGs combine both inputs to initialize their state.
+    /// The 32-bit index wraps after 2^32 points, independently at each pixel.
+    public __init(uint sample_index, uint scrambling_seed = 0);
 
-    /// Initializes the sample generator for a given pixel and sample index.
-    /// @param pixel Pixel id.
-    /// @param sample_index Sample index.
+    /// Initializes a pixel-local sequence. QMC keeps scrambling fixed across samples
+    /// of the same pixel; PRNGs retain their existing pixel initialization streams.
     public __init(uint2 pixel, uint sample_index);
 
     /// Returns the next sample value.
     /// @return Sample value in [0,2^32).
     [mutating]
     public uint next_uint();
+}
+
+/// Stable pixel identity for QMC randomization; independent of the sample ordinal.
+public uint get_pixel_scrambling_seed(uint2 pixel)
+{
+    return block_cipher_tea(pixel.x, pixel.y, 8).x;
 }
 
 /// Return the next sample value as a float in [0,1).

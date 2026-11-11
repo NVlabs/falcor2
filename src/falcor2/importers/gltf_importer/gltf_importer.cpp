@@ -9,10 +9,12 @@
 #include "falcor2/external/tiny_gltf.h"
 
 #include <sgl/core/error.h>
+#include <sgl/core/logger.h>
 #include <sgl/core/short_vector.h>
 #include <sgl/core/bitmap.h>
 #include <sgl/core/memory_stream.h>
 #include <sgl/core/thread.h>
+#include <sgl/core/type_utils.h>
 
 #include <sgl/math/matrix.h>
 
@@ -22,6 +24,7 @@
 #include <iostream>
 #include <algorithm>
 #include <cstring>
+#include <cmath>
 #include <sstream>
 #include <optional>
 
@@ -255,6 +258,47 @@ struct AttributeInfo {
         return reinterpret_cast<const uint32_t*>(data_ptr + index * stride);
     }
 
+    ImporterJointIndices get_joint_data(size_t vertex_index) const
+    {
+        SGL_CHECK(
+            is_valid() && accessor->type == TINYGLTF_TYPE_VEC4,
+            "Joint accessor must contain four-component vectors"
+        );
+
+        ImporterJointIndices result;
+        if (const uint8_t* uint8_data = get_uint8_data(vertex_index)) {
+            for (size_t i = 0; i < 4; ++i)
+                result.values[i] = uint8_data[i];
+        } else if (const uint16_t* uint16_data = get_uint16_data(vertex_index)) {
+            for (size_t i = 0; i < 4; ++i)
+                result.values[i] = uint16_data[i];
+        } else {
+            SGL_THROW("Joint accessor must use unsigned byte or unsigned short components");
+        }
+        return result;
+    }
+
+    float4 get_weight_data(size_t vertex_index) const
+    {
+        SGL_CHECK(
+            is_valid() && accessor->type == TINYGLTF_TYPE_VEC4,
+            "Weight accessor must contain four-component vectors"
+        );
+
+        if (const float* data = get_float_data(vertex_index)) {
+            return float4(data[0], data[1], data[2], data[3]);
+        }
+        if (const uint8_t* data = get_uint8_data(vertex_index)) {
+            SGL_CHECK(accessor->normalized, "Unsigned byte weight accessors must be normalized");
+            return float4(data[0], data[1], data[2], data[3]) * (1.f / 255.f);
+        }
+        if (const uint16_t* data = get_uint16_data(vertex_index)) {
+            SGL_CHECK(accessor->normalized, "Unsigned short weight accessors must be normalized");
+            return float4(data[0], data[1], data[2], data[3]) * (1.f / 65535.f);
+        }
+        SGL_THROW("Weight accessor must use float, normalized unsigned byte, or normalized unsigned short components");
+    }
+
     // Helper function to load color data with proper type conversion
     float4 get_color_data(size_t vertex_index) const
     {
@@ -312,6 +356,36 @@ struct AttributeInfo {
     }
 };
 
+static float4x4 load_matrix(const AttributeInfo& attribute, size_t index)
+{
+    SGL_CHECK(
+        attribute.is_valid() && attribute.accessor->type == TINYGLTF_TYPE_MAT4,
+        "Matrix accessor must contain 4-by-4 matrices"
+    );
+    const float* data = attribute.get_float_data(index);
+    SGL_CHECK(data, "Matrix accessor must use float components");
+
+    // glTF stores matrices column-major; SGL constructors take row-major coefficients.
+    return float4x4{
+        data[0],
+        data[4],
+        data[8],
+        data[12],
+        data[1],
+        data[5],
+        data[9],
+        data[13],
+        data[2],
+        data[6],
+        data[10],
+        data[14],
+        data[3],
+        data[7],
+        data[11],
+        data[15]
+    };
+}
+
 // Helper function for loading triangle indices
 static uint3 load_triangle_indices(const AttributeInfo& index_attr, size_t triangle_index)
 {
@@ -356,24 +430,36 @@ static bool image_loader(
 
 ref<ImporterScene> GltfImporter::load_scene(const std::filesystem::path& path)
 {
+    return load_scene(path, ImportOptions{});
+}
+
+ref<ImporterScene> GltfImporter::load_scene(const std::filesystem::path& path, const ImportOptions& import_options)
+{
     m_path = path;
+    m_source_asset_path.reset(std::filesystem::absolute(path).lexically_normal().string());
     m_scene = make_ref<ImporterScene>();
     m_model = std::make_unique<tinygltf::Model>();
+    m_mesh_index_map.clear();
 
     if (!load_gltf_file(path)) {
         return nullptr;
     }
 
     extract_textures();
-    extract_materials();
-    extract_meshes();
+    extract_materials(import_options);
+    extract_meshes(import_options);
+    extract_lines(import_options);
     extract_cameras();
     extract_nodes();
     build_node_hierarchy();
+    extract_skins();
     extract_animations();
+
+    detail::apply_import_options(*m_scene, import_options);
 
     return m_scene;
 }
+
 // Extract cameras from GLTF and populate m_scene->cameras
 void GltfImporter::extract_cameras()
 {
@@ -383,6 +469,7 @@ void GltfImporter::extract_cameras()
         const auto& gltf_camera = model.cameras[cam_idx];
         ImporterCamera camera;
         camera.name = gltf_camera.name.empty() ? ("camera_" + std::to_string(cam_idx)) : gltf_camera.name;
+        camera.source_asset_ref = source_asset_ref_for_object(fmt::format("/cameras/{}", cam_idx));
         // Defaults
         camera.focal_length = 50.0f;
         camera.fstop = 8.0f;
@@ -456,7 +543,221 @@ bool GltfImporter::load_gltf_file(const std::filesystem::path& path)
     return true;
 }
 
-void GltfImporter::extract_meshes()
+namespace {
+
+using Double3 = sgl::math::vector<double, 3>;
+constexpr double HEMISPHERE_TOLERANCE = 1e-4;
+
+Double3 repair_face_normal(const ImporterMesh& mesh, const uint3& triangle)
+{
+    SGL_CHECK(
+        triangle.x < mesh.vertex_count() && triangle.y < mesh.vertex_count() && triangle.z < mesh.vertex_count(),
+        "Invalid triangle indices in glTF mesh '{}'",
+        mesh.name
+    );
+    const auto positions = mesh.position_stream();
+    const Double3 e0 = Double3(positions[triangle.y]) - Double3(positions[triangle.x]);
+    const Double3 e1 = Double3(positions[triangle.z]) - Double3(positions[triangle.x]);
+    const Double3 e2 = e1 - e0;
+    const Double3 face = cross(e0, e1);
+    // Ignore nearly collinear faces, independently of source scale.
+    const double min_length = 1e-4 * std::max({dot(e0, e0), dot(e1, e1), dot(e2, e2)});
+    return std::isfinite(dot(face, face)) && dot(face, face) > min_length * min_length ? face : Double3(0.0);
+}
+
+std::vector<uint8_t> invalid_vertex_normals(const ImporterMesh& mesh)
+{
+    const auto normals = mesh.normal_stream();
+    std::vector<uint8_t> invalid(mesh.vertex_count(), false);
+    for (size_t i = 0; i < mesh.vertex_count(); ++i) {
+        const Double3 n(normals[i]);
+        const double length_squared = sgl::math::dot(n, n);
+        invalid[i] = !std::isfinite(length_squared) || length_squared == 0.0;
+    }
+
+    // Ignore roundoff around a tangent normal. Use double precision so that
+    // source scale does not underflow/overflow the geometric comparison.
+    for (const auto& subgeometry : mesh.subgeometries) {
+        for (const auto& triangle : subgeometry.indices) {
+            const Double3 face_normal = repair_face_normal(mesh, triangle);
+            const double face_length_squared = sgl::math::dot(face_normal, face_normal);
+            if (face_length_squared == 0.0)
+                continue;
+            for (uint32_t vertex_index : {triangle.x, triangle.y, triangle.z}) {
+                if (invalid[vertex_index])
+                    continue;
+                const Double3 n(normals[vertex_index]);
+                const double scale = std::sqrt(sgl::math::dot(n, n) * face_length_squared);
+                if (sgl::math::dot(n, face_normal) < -HEMISPHERE_TOLERANCE * scale)
+                    invalid[vertex_index] = true;
+            }
+        }
+    }
+    return invalid;
+}
+
+void repair_vertex_normals(ImporterMesh& mesh, std::vector<uint8_t>& repair)
+{
+    const size_t source_count = mesh.vertex_count();
+    std::vector<Double3> sums(source_count, Double3(0.0));
+    std::vector<std::vector<Double3>> incident_faces(source_count);
+    for (const auto& subgeometry : mesh.subgeometries) {
+        for (const auto& triangle : subgeometry.indices) {
+            const Double3 face = repair_face_normal(mesh, triangle);
+            if (dot(face, face) == 0.0)
+                continue;
+            for (uint32_t vertex : {triangle.x, triangle.y, triangle.z}) {
+                if (repair[vertex]) {
+                    sums[vertex] += face;
+                    incident_faces[vertex].push_back(normalize(face));
+                }
+            }
+        }
+    }
+    std::vector<uint8_t> split(source_count, false);
+    auto normals = mesh.normal_stream();
+    for (size_t vertex = 0; vertex < source_count; ++vertex) {
+        if (!repair[vertex])
+            continue;
+        const auto& faces = incident_faces[vertex];
+        // Preserve finite authored shading directions when only a neighboring
+        // triangle's hemisphere is violated. Replacing them with a face average
+        // can introduce a large discontinuity beside unrepaired vertices.
+        Double3 n(normals[vertex]);
+        const double length_squared = dot(n, n);
+        if (!std::isfinite(length_squared) || length_squared == 0.0)
+            n = sums[vertex];
+        if (dot(n, n) == 0.0)
+            n = faces.empty() ? Double3(0.0, 0.0, 1.0) : faces.front();
+        n = normalize(n);
+        // Project into the incident hemispheres before resorting to corner splits.
+        for (int iteration = 0; iteration < 64; ++iteration) {
+            bool valid = true;
+            for (const Double3 face : faces) {
+                const double alignment = dot(n, face);
+                if (alignment < -HEMISPHERE_TOLERANCE * 0.5) {
+                    n = normalize(n + (1e-6 - alignment) * face);
+                    valid = false;
+                }
+            }
+            if (valid)
+                break;
+        }
+        normals[vertex] = float3(n);
+        split[vertex] = std::any_of(
+            faces.begin(),
+            faces.end(),
+            [&](Double3 face)
+            {
+                return dot(Double3(normals[vertex]), face) < -HEMISPHERE_TOLERANCE;
+            }
+        );
+    }
+
+    struct CornerRepair {
+        uint32_t source;
+        float3 normal;
+    };
+    std::vector<CornerRepair> corners;
+    // Preserve existing attribute seams. Only vertices without a usable shared
+    // normal need per-corner replacements; every other index remains unchanged.
+    for (auto& subgeometry : mesh.subgeometries) {
+        for (auto& triangle : subgeometry.indices) {
+            const Double3 face = repair_face_normal(mesh, triangle);
+            if (dot(face, face) == 0.0)
+                continue;
+            for (int corner = 0; corner < 3; ++corner) {
+                const uint32_t source = triangle[corner];
+                if (split[source]) {
+                    triangle[corner] = sgl::narrow_cast<uint32_t>(source_count + corners.size());
+                    corners.push_back({source, float3(normalize(face))});
+                }
+            }
+        }
+    }
+    if (!corners.empty()) {
+        mesh.allocate_vertices(corners.size());
+        normals = mesh.normal_stream();
+        for (size_t i = 0; i < corners.size(); ++i) {
+            for (auto& buffer : mesh.buffers()) {
+                std::memcpy(
+                    buffer.data.data() + (source_count + i) * buffer.stride,
+                    buffer.data.data() + corners[i].source * buffer.stride,
+                    buffer.stride
+                );
+            }
+            normals[source_count + i] = corners[i].normal;
+        }
+        repair.resize(mesh.vertex_count(), true);
+    }
+}
+
+void repair_vertex_tangents(ImporterMesh& mesh, const std::vector<uint8_t>& repair, bool use_uvs)
+{
+    // MikkTSpace may split a vertex for mirrored UVs. Retain source corner IDs
+    // to restore untouched authored frames after generation and before deduplication.
+    const auto tangents = mesh.tangent_stream();
+    const auto handedness = mesh.handedness_stream();
+    std::vector<float4> authored(mesh.vertex_count());
+    for (size_t i = 0; i < authored.size(); ++i)
+        authored[i] = float4(tangents[i], handedness[i]);
+    std::vector<uint32_t> source_corners;
+    for (const auto& subgeometry : mesh.subgeometries)
+        for (const auto& triangle : subgeometry.indices)
+            source_corners.insert(source_corners.end(), {triangle.x, triangle.y, triangle.z});
+    if (use_uvs)
+        mesh.add_tangents_from_uvs();
+    else
+        mesh.add_tangents_from_normals();
+    auto generated = mesh.tangent_stream();
+    auto signs = mesh.handedness_stream();
+    for (size_t i = 0; i < authored.size(); ++i) {
+        if (!repair[i]) {
+            generated[i] = authored[i].xyz();
+            signs[i] = authored[i].w;
+        }
+    }
+    size_t corner = 0;
+    for (const auto& subgeometry : mesh.subgeometries) {
+        for (const auto& triangle : subgeometry.indices) {
+            for (uint32_t vertex : {triangle.x, triangle.y, triangle.z}) {
+                const uint32_t source = source_corners[corner++];
+                if (!repair[source]) {
+                    generated[vertex] = authored[source].xyz();
+                    signs[vertex] = authored[source].w;
+                }
+            }
+        }
+    }
+}
+
+void repair_invalid_vertex_normals(
+    ImporterMesh& mesh,
+    const std::filesystem::path& path,
+    bool authored_tangents,
+    bool use_uvs
+)
+{
+    auto repair = invalid_vertex_normals(mesh);
+    const size_t count = std::count(repair.begin(), repair.end(), uint8_t(1));
+    if (count == 0)
+        return;
+    const size_t source_vertices = mesh.vertex_count();
+    repair_vertex_normals(mesh, repair);
+    sgl::log_warn(
+        "glTF '{}', mesh '{}': repaired {} invalid vertex normals; {} normal corner splits.",
+        path.string(),
+        mesh.name,
+        count,
+        mesh.vertex_count() - source_vertices
+    );
+    if (authored_tangents)
+        repair_vertex_tangents(mesh, repair, use_uvs);
+}
+
+} // namespace
+
+void GltfImporter::extract_meshes(const ImportOptions& import_options)
 {
     const tinygltf::Model& model = *m_model;
 
@@ -465,19 +766,26 @@ void GltfImporter::extract_meshes()
     // Process each mesh in the GLTF file
     sgl::thread::parallel_for(
         sgl::thread::blocked_range<size_t>(0, model.meshes.size()),
-        [&model, &importer_meshes](const auto& range)
+        [&model, &importer_meshes, &import_options, this](const auto& range)
         {
             size_t mesh_idx = range.begin();
             const auto& gltf_mesh = model.meshes[mesh_idx];
             ImporterMesh& importer_mesh = importer_meshes[mesh_idx];
+            importer_mesh.properties = ImporterMesh::make_properties(import_options);
 
             sgl::short_vector<ImporterVertexStream<float2>> tex_coord_streams;
             sgl::short_vector<AttributeInfo> tex_coord_attrs;
+            sgl::short_vector<ImporterVertexStream<ImporterJointIndices>> joint_streams;
+            sgl::short_vector<ImporterVertexStream<float4>> weight_streams;
+            sgl::short_vector<AttributeInfo> joint_attrs;
+            sgl::short_vector<AttributeInfo> weight_attrs;
 
             importer_mesh.name = gltf_mesh.name.empty() ? "mesh_" + std::to_string(mesh_idx) : gltf_mesh.name;
+            importer_mesh.source_asset_ref = source_asset_ref_for_object(fmt::format("/meshes/{}", mesh_idx));
 
             // Iterate GLTF mesh attributes for each primitive and create corresponding importer attributes
             uint32_t num_tex_coords = 0;
+            uint32_t num_skinning_sets = 0;
             std::vector<ImporterMeshDefaultAttribute> default_attribs;
             for (size_t prim_idx = 0; prim_idx < gltf_mesh.primitives.size(); ++prim_idx) {
                 for (const auto& attribute : gltf_mesh.primitives[prim_idx].attributes) {
@@ -497,9 +805,11 @@ void GltfImporter::extract_meshes()
                         default_attribs.push_back(ImporterMeshDefaultAttribute{ImporterSemantic::color, idx, 4});
                     } else if (attribute.first.find("JOINTS_") == 0) {
                         uint32_t idx = std::stoul(attribute.first.substr(7));
+                        num_skinning_sets = std::max(num_skinning_sets, idx + 1);
                         default_attribs.push_back(ImporterMeshDefaultAttribute{ImporterSemantic::joints, idx});
                     } else if (attribute.first.find("WEIGHTS_") == 0) {
                         uint32_t idx = std::stoul(attribute.first.substr(8));
+                        num_skinning_sets = std::max(num_skinning_sets, idx + 1);
                         default_attribs.push_back(ImporterMeshDefaultAttribute{ImporterSemantic::weights, idx});
                     }
                 }
@@ -521,15 +831,9 @@ void GltfImporter::extract_meshes()
                 ImporterMesh::Subgeometry subgeom;
                 subgeom.name = importer_mesh.name + "_primitive_" + std::to_string(prim_idx);
 
-                // Assign material name
-                if (primitive.material >= 0 && primitive.material < static_cast<int>(model.materials.size())) {
-                    const auto& gltf_material = model.materials[primitive.material];
-                    subgeom.material_name = gltf_material.name.empty()
-                        ? "material_" + std::to_string(primitive.material)
-                        : gltf_material.name;
-                } else {
-                    subgeom.material_name = ""; // No material assigned
-                }
+                // Assign material index.
+                if (primitive.material >= 0 && primitive.material < static_cast<int>(model.materials.size()))
+                    subgeom.material_index = primitive.material;
 
                 // Get position data (required)
                 auto pos_it = primitive.attributes.find("POSITION");
@@ -544,13 +848,29 @@ void GltfImporter::extract_meshes()
                 size_t vertex_count = pos_accessor.count;
                 size_t vertex_offset = importer_mesh.allocate_vertices(vertex_count, true);
 
-                // Get the streams we want (no skinning for now)
+                // Get the streams we want.
                 // Note: This must happen after allocate_vertices() as it may reallocate internal buffers
                 auto positions = importer_mesh.position_stream();
                 auto normals = importer_mesh.normal_stream();
                 auto tangents = importer_mesh.tangent_stream();
                 auto handedness = importer_mesh.handedness_stream();
                 auto colors = importer_mesh.get_stream<float4>(importer_mesh.color_attribute());
+
+                joint_streams.resize(num_skinning_sets);
+                weight_streams.resize(num_skinning_sets);
+                for (uint32_t i = 0; i < num_skinning_sets; ++i) {
+                    auto* joint_attribute = importer_mesh.find_attribute(ImporterSemantic::joints, i);
+                    auto* weight_attribute = importer_mesh.find_attribute(ImporterSemantic::weights, i);
+                    SGL_CHECK(
+                        joint_attribute && weight_attribute,
+                        "Mesh '{}' must provide matching JOINTS_{} and WEIGHTS_{} attributes",
+                        importer_mesh.name,
+                        i,
+                        i
+                    );
+                    joint_streams[i] = importer_mesh.get_stream<ImporterJointIndices>(*joint_attribute);
+                    weight_streams[i] = importer_mesh.get_stream<float4>(*weight_attribute);
+                }
 
                 // Also load all texcoord sets
                 tex_coord_streams.resize(num_tex_coords);
@@ -602,6 +922,37 @@ void GltfImporter::extract_meshes()
                     color_attr = AttributeInfo(model, model.accessors[color_it->second]);
                 }
 
+                joint_attrs.clear();
+                joint_attrs.resize(num_skinning_sets);
+                weight_attrs.clear();
+                weight_attrs.resize(num_skinning_sets);
+                for (uint32_t i = 0; i < num_skinning_sets; ++i) {
+                    const std::string joints_name = fmt::format("JOINTS_{}", i);
+                    const std::string weights_name = fmt::format("WEIGHTS_{}", i);
+                    auto joints_it = primitive.attributes.find(joints_name);
+                    auto weights_it = primitive.attributes.find(weights_name);
+                    SGL_CHECK(
+                        (joints_it == primitive.attributes.end()) == (weights_it == primitive.attributes.end()),
+                        "Primitive {} of mesh '{}' must provide both {} and {}",
+                        prim_idx,
+                        importer_mesh.name,
+                        joints_name,
+                        weights_name
+                    );
+                    if (joints_it != primitive.attributes.end()) {
+                        const auto& joint_accessor = model.accessors[joints_it->second];
+                        const auto& weight_accessor = model.accessors[weights_it->second];
+                        SGL_CHECK(
+                            joint_accessor.count == vertex_count && weight_accessor.count == vertex_count,
+                            "Skinning attribute count does not match POSITION count in primitive {} of mesh '{}'",
+                            prim_idx,
+                            importer_mesh.name
+                        );
+                        joint_attrs[i] = AttributeInfo(model, joint_accessor);
+                        weight_attrs[i] = AttributeInfo(model, weight_accessor);
+                    }
+                }
+
                 // Extract all vertex attributes in a single loop
                 for (size_t vertex_idx = 0; vertex_idx < vertex_count; ++vertex_idx) {
 
@@ -641,6 +992,14 @@ void GltfImporter::extract_meshes()
                     // Vertex color (optional)
                     if (colors.valid())
                         colors[vertex_offset + vertex_idx] = color_attr.get_color_data(vertex_idx);
+
+                    // Joint indices and weights (optional, but always paired).
+                    for (uint32_t i = 0; i < num_skinning_sets; ++i) {
+                        if (joint_attrs[i].is_valid()) {
+                            joint_streams[i][vertex_offset + vertex_idx] = joint_attrs[i].get_joint_data(vertex_idx);
+                            weight_streams[i][vertex_offset + vertex_idx] = weight_attrs[i].get_weight_data(vertex_idx);
+                        }
+                    }
                 }
 
                 // Extract indices
@@ -695,8 +1054,13 @@ void GltfImporter::extract_meshes()
                 importer_mesh.subgeometries.push_back(std::move(subgeom));
             }
 
+            if (import_options.repair_broken_geometry && all_have_normals) {
+                repair_invalid_vertex_normals(importer_mesh, m_path, all_have_tangents, all_have_uvs);
+            }
             if (!all_have_normals) {
                 importer_mesh.add_normals_from_faces();
+                // Tangents authored for the discarded normal frame are no longer valid.
+                all_have_tangents = false;
             }
             if (!all_have_tangents && all_have_uvs) {
                 importer_mesh.add_tangents_from_uvs();
@@ -708,9 +1072,112 @@ void GltfImporter::extract_meshes()
         }
     );
 
-    for (auto& importer_mesh : importer_meshes)
-        if (!importer_mesh.subgeometries.empty())
+    m_mesh_index_map.assign(model.meshes.size(), -1);
+    for (size_t mesh_index = 0; mesh_index < importer_meshes.size(); ++mesh_index) {
+        auto& importer_mesh = importer_meshes[mesh_index];
+        if (!importer_mesh.subgeometries.empty()) {
+            m_mesh_index_map[mesh_index] = sgl::narrow_cast<int>(m_scene->meshes.size());
             m_scene->meshes.push_back(std::move(importer_mesh));
+        }
+    }
+}
+
+void GltfImporter::extract_lines(const ImportOptions& import_options)
+{
+    const auto& model = *m_model;
+    m_curve_index_map.assign(model.meshes.size(), {});
+    for (size_t mesh_index = 0; mesh_index < model.meshes.size(); ++mesh_index) {
+        const auto& mesh = model.meshes[mesh_index];
+        for (size_t primitive_index = 0; primitive_index < mesh.primitives.size(); ++primitive_index) {
+            const auto& primitive = mesh.primitives[primitive_index];
+            if (primitive.mode != TINYGLTF_MODE_LINE)
+                continue;
+            const std::string name = fmt::format("{}_primitive_{}", mesh.name, primitive_index);
+            // The curve importer currently has no authored normal/color or deformation streams.
+            // Diagnose these unsupported cases instead of silently rendering altered attributes.
+            if (primitive.attributes.size() != 1 || !primitive.attributes.contains("POSITION")
+                || !primitive.targets.empty()) {
+                sgl::log_warn("glTF line '{}': only static POSITION-only lines are currently supported", name);
+                continue;
+            }
+            ImporterMaterial material;
+            if (primitive.material >= 0) {
+                SGL_CHECK_LT(size_t(primitive.material), model.materials.size());
+                material = m_scene->materials[primitive.material];
+            }
+            const auto& params = material.params;
+            if (params.get("alphaMode", AlphaMode::opaque) != AlphaMode::opaque
+                || params.has_property("baseColorTexture") || params.has_property("emissiveTexture")
+                || params.get("_type", std::string("gltf_pbrMetallicRoughness")) == "gltf_pbrSpecularGlossiness") {
+                sgl::log_warn("glTF line '{}': only opaque constant-color materials are currently supported", name);
+                continue;
+            }
+
+            ImporterCurve curve;
+            curve.properties = ImporterCurve::make_properties(import_options);
+            curve.name = name;
+            curve.source_asset_ref
+                = source_asset_ref_for_object(fmt::format("/meshes/{}/primitives/{}", mesh_index, primitive_index));
+            const auto& accessor = model.accessors.at(primitive.attributes.at("POSITION"));
+            SGL_CHECK_EQ(accessor.type, TINYGLTF_TYPE_VEC3);
+            AttributeInfo positions(model, accessor);
+            curve.resize_vertices(accessor.count);
+            const auto output_positions = curve.position_stream();
+            for (size_t i = 0; i < accessor.count; ++i) {
+                const float* p = positions.get_float_data(i);
+                SGL_CHECK(p, "glTF line '{}' requires float positions", name);
+                output_positions[i] = float3(p[0], p[1], p[2]);
+            }
+            // glTF 3.9.7 leaves line size/style to the implementation. Use round
+            // segments with a 1 mm local-space diameter, independent of the camera.
+            const auto radii = curve.radius_stream();
+            std::fill(radii.begin(), radii.end(), 0.0005f);
+            if (primitive.indices >= 0) {
+                const auto& index_accessor = model.accessors.at(primitive.indices);
+                SGL_CHECK_EQ(index_accessor.type, TINYGLTF_TYPE_SCALAR);
+                AttributeInfo indices(model, index_accessor);
+                for (size_t i = 0; i < index_accessor.count; ++i) {
+                    if (const auto* data8 = indices.get_uint8_data(i))
+                        curve.indices.push_back(*data8);
+                    else if (const auto* data16 = indices.get_uint16_data(i))
+                        curve.indices.push_back(*data16);
+                    else if (const auto* data32 = indices.get_uint32_data(i))
+                        curve.indices.push_back(*data32);
+                    else
+                        SGL_THROW("glTF line '{}' has an invalid index component type", name);
+                }
+            } else {
+                for (size_t i = 0; i < accessor.count; ++i)
+                    curve.indices.push_back(sgl::narrow_cast<uint32_t>(i));
+            }
+            SGL_CHECK(
+                !curve.indices.empty() && curve.indices.size() % 2 == 0,
+                "glTF line '{}' requires a nonempty sequence of index pairs",
+                name
+            );
+            for (uint32_t index : curve.indices)
+                SGL_CHECK_LT(size_t(index), curve.vertex_count());
+            curve.calculate_local_aabb();
+
+            // Follow 3.9.7's no-NORMAL recommendation without mutating materials
+            // shared with triangles. KHR_materials_unlit already ignores emission.
+            auto color = params.get("baseColorFactor", float4(1.f));
+            if (params.get("_type", std::string()) != "gltf_unlit") {
+                const auto emission = params.get("emissiveFactor", float3(0.f));
+                color = float4(color.xyz() + emission, color.w);
+            }
+            material.name = name + "_unlit";
+            material.params = Properties{};
+            material.params.set("_type", "gltf_unlit");
+            material.params.set("baseColorFactor", color);
+            material.params.set("alphaMode", AlphaMode::opaque);
+            material.params.set("doubleSided", true);
+            curve.material_index = sgl::narrow_cast<int>(m_scene->materials.size());
+            m_scene->materials.push_back(std::move(material));
+            m_curve_index_map[mesh_index].push_back(sgl::narrow_cast<int>(m_scene->curves.size()));
+            m_scene->curves.push_back(std::move(curve));
+        }
+    }
 }
 
 void GltfImporter::extract_nodes()
@@ -726,6 +1193,7 @@ void GltfImporter::extract_nodes()
 
         ImporterNode importer_node;
         importer_node.name = gltf_node.name.empty() ? "node_" + std::to_string(node_idx) : gltf_node.name;
+        importer_node.source_asset_ref = source_asset_ref_for_object(fmt::format("/nodes/{}", node_idx));
 
         // Extract transform matrix
         if (gltf_node.matrix.size() == 16) {
@@ -789,7 +1257,12 @@ void GltfImporter::extract_nodes()
 
         // Set mesh reference if this node references a mesh
         if (gltf_node.mesh >= 0 && gltf_node.mesh < static_cast<int>(model.meshes.size())) {
-            importer_node.mesh_index = gltf_node.mesh;
+            SGL_CHECK_LT(static_cast<size_t>(gltf_node.mesh), m_mesh_index_map.size());
+            importer_node.mesh_index = m_mesh_index_map[gltf_node.mesh];
+        }
+        if (gltf_node.skin >= 0) {
+            SGL_CHECK_LT(static_cast<size_t>(gltf_node.skin), model.skins.size());
+            importer_node.skin_index = gltf_node.skin;
         }
 
         // Set camera reference if this node references a camera
@@ -804,6 +1277,26 @@ void GltfImporter::extract_nodes()
         }
 
         m_scene->nodes.push_back(std::move(importer_node));
+    }
+
+    // Append identity children after all glTF nodes so source node indices used
+    // by hierarchy, animation and skin channels remain unchanged.
+    for (size_t node_index = 0; node_index < model.nodes.size(); ++node_index) {
+        const auto& node = model.nodes[node_index];
+        if (node.mesh < 0)
+            continue;
+        for (int curve_index : m_curve_index_map.at(node.mesh)) {
+            if (node.skin >= 0) {
+                sgl::log_warn("glTF node '{}': skinned lines are not currently supported", node.name);
+                continue;
+            }
+            ImporterNode child;
+            child.name = m_scene->curves[curve_index].name;
+            child.curve_index = curve_index;
+            child.parent = sgl::narrow_cast<int>(node_index);
+            m_scene->nodes[node_index].children.push_back(sgl::narrow_cast<int>(m_scene->nodes.size()));
+            m_scene->nodes.push_back(std::move(child));
+        }
     }
 }
 
@@ -844,16 +1337,52 @@ void GltfImporter::build_node_hierarchy()
     }
 }
 
+void GltfImporter::extract_skins()
+{
+    const tinygltf::Model& model = *m_model;
+    m_scene->skins.reserve(model.skins.size());
+
+    for (size_t skin_index = 0; skin_index < model.skins.size(); ++skin_index) {
+        const tinygltf::Skin& gltf_skin = model.skins[skin_index];
+        ImporterSkin skin;
+        skin.name = gltf_skin.name.empty() ? "skin_" + std::to_string(skin_index) : gltf_skin.name;
+        skin.skeleton_root = gltf_skin.skeleton;
+        skin.joints = gltf_skin.joints;
+        skin.joint_from_bind_mesh.assign(skin.joints.size(), float4x4::identity());
+
+        if (gltf_skin.inverseBindMatrices >= 0) {
+            SGL_CHECK_LT(static_cast<size_t>(gltf_skin.inverseBindMatrices), model.accessors.size());
+            const tinygltf::Accessor& accessor = model.accessors[gltf_skin.inverseBindMatrices];
+            SGL_CHECK(
+                accessor.count == skin.joints.size(),
+                "Skin '{}' must provide one inverse-bind matrix per joint",
+                skin.name
+            );
+            const AttributeInfo inverse_bind_matrices(model, accessor);
+            for (size_t joint_index = 0; joint_index < skin.joints.size(); ++joint_index)
+                skin.joint_from_bind_mesh[joint_index] = load_matrix(inverse_bind_matrices, joint_index);
+        }
+
+        m_scene->skins.push_back(std::move(skin));
+    }
+}
+
 void GltfImporter::extract_animations()
 {
     const tinygltf::Model& model = *m_model;
 
+    FALCOR_CHECK(
+        std::find(model.extensionsRequired.begin(), model.extensionsRequired.end(), "KHR_interactivity")
+            == model.extensionsRequired.end(),
+        "Unsupported required extension KHR_interactivity"
+    );
     if (model.animations.empty())
         return;
 
     // Use first animation only (single animation per scene).
     const auto& gltf_anim = model.animations[0];
     m_scene->animation.name = gltf_anim.name;
+    m_scene->animation.source_asset_ref = source_asset_ref_for_object("/animations/0");
 
     for (const auto& gltf_channel : gltf_anim.channels) {
         // Skip channels without a valid target node.
@@ -997,11 +1526,13 @@ void GltfImporter::extract_textures()
             if (!gltf_image.image.empty()) {
                 // Embedded image data
                 importer_texture.texture_data = gltf_image.image;
+                // A container-local asset key shares decoded images across texture/sampler bindings.
+                importer_texture.texture_path = m_path / "$images" / std::to_string(gltf_texture.source);
                 importer_texture.mime_type = gltf_image.mimeType;
                 importer_texture.source_name = gltf_image.name.empty() ? importer_texture.source_name : gltf_image.name;
             } else if (!gltf_image.uri.empty()) {
                 // External image file
-                importer_texture.texture_path = m_path.remove_filename() / gltf_image.uri;
+                importer_texture.texture_path = m_path.parent_path() / gltf_image.uri;
                 importer_texture.source_name = gltf_image.name.empty() ? importer_texture.source_name : gltf_image.name;
             }
         }
@@ -1018,7 +1549,7 @@ void GltfImporter::extract_textures()
             }
             // If magFilter is not set, keep default (linear)
 
-            // Convert minification filter (we simplify mipmap modes to basic nearest/linear)
+            // Preserve both within-level filtering and mip selection.
             if (gltf_sampler.minFilter == 9728 || gltf_sampler.minFilter == 9984 || gltf_sampler.minFilter == 9986) {
                 // NEAREST, NEAREST_MIPMAP_NEAREST, NEAREST_MIPMAP_LINEAR
                 importer_texture.min_filter = TextureFilterMode::nearest;
@@ -1027,7 +1558,10 @@ void GltfImporter::extract_textures()
                 // LINEAR, LINEAR_MIPMAP_NEAREST, LINEAR_MIPMAP_LINEAR
                 importer_texture.min_filter = TextureFilterMode::linear;
             }
-            // If minFilter is not set, keep default (linear)
+            importer_texture.use_mipmaps = gltf_sampler.minFilter != 9728 && gltf_sampler.minFilter != 9729;
+            if (gltf_sampler.minFilter == 9984 || gltf_sampler.minFilter == 9985)
+                importer_texture.mip_filter = TextureFilterMode::nearest;
+            // If minFilter is not set, keep the existing trilinear default.
 
             // Convert S (U) wrapping mode
             if (gltf_sampler.wrapS == TINYGLTF_TEXTURE_WRAP_CLAMP_TO_EDGE) { // CLAMP_TO_EDGE
@@ -1077,21 +1611,30 @@ static void read_texture_transform_extension(
     const tinygltf::Value::Object& transform_obj = transform_value.Get<tinygltf::Value::Object>();
 
     // Read offset (default: [0.0, 0.0])
-    read_float2_param(transform_obj, "offset", params, param_name + "_offset", float2(0.0f, 0.0f));
+    read_float2_param(transform_obj, "offset", params, param_name + ":offset", float2(0.0f, 0.0f));
 
     // Read rotation (default: 0.0)
     if (auto rotation = read_float(transform_obj, "rotation")) {
-        params.set(param_name + "_rotation", *rotation);
+        params.set(param_name + ":rotation", *rotation);
     }
 
     // Read scale (default: [1.0, 1.0])
-    read_float2_param(transform_obj, "scale", params, param_name + "_scale", float2(1.0f, 1.0f));
+    read_float2_param(transform_obj, "scale", params, param_name + ":scale", float2(1.0f, 1.0f));
+
+    // Identity transforms need neither MDL promotion nor a transform shader variant.
+    const float2 offset = params.get(param_name + ":offset", float2(0.f));
+    const float rotation = params.get(param_name + ":rotation", 0.f);
+    const float2 scale = params.get(param_name + ":scale", float2(1.f));
+    params.set(
+        param_name + ":has_transform",
+        offset.x != 0.f || offset.y != 0.f || rotation != 0.f || scale.x != 1.f || scale.y != 1.f
+    );
 
     // Read texCoord override (overrides the textureInfo texCoord if supplied)
     auto texcoord_it = transform_obj.find("texCoord");
     if (texcoord_it != transform_obj.end() && texcoord_it->second.IsInt()) {
         int texcoord = texcoord_it->second.Get<int>();
-        params.set(param_name + "_texcoord", texcoord);
+        params.set(param_name + ":texcoord", texcoord);
     }
 }
 
@@ -1107,7 +1650,7 @@ read_texture_info(const tinygltf::TextureInfo& texture_info, Properties& params,
     params.set(param_name, texture_info.index);
 
     // Set the texture coordinate index
-    params.set(param_name + "_texcoord", texture_info.texCoord);
+    params.set(param_name + ":texcoord", texture_info.texCoord);
 
     // Read texture transform extension
     read_texture_transform_extension(texture_info.extensions, params, param_name);
@@ -1125,7 +1668,7 @@ read_texture_info(const tinygltf::NormalTextureInfo& texture_info, Properties& p
     params.set(param_name, texture_info.index);
 
     // Set the texture coordinate index
-    params.set(param_name + "_texcoord", texture_info.texCoord);
+    params.set(param_name + ":texcoord", texture_info.texCoord);
 
     // Read texture transform extension
     read_texture_transform_extension(texture_info.extensions, params, param_name);
@@ -1154,36 +1697,12 @@ read_texture_info(const tinygltf::Value::Object& texture_obj, Properties& params
     if (texcoord_it != texture_obj.end() && texcoord_it->second.IsInt()) {
         texcoord = texcoord_it->second.Get<int>();
     }
-    params.set(param_name + "_texcoord", texcoord);
+    params.set(param_name + ":texcoord", texcoord);
 
     // Read texture transform extension if present
     auto extensions_it = texture_obj.find("extensions");
     if (extensions_it != texture_obj.end() && extensions_it->second.IsObject()) {
-        const tinygltf::Value::Object& extensions_obj = extensions_it->second.Get<tinygltf::Value::Object>();
-
-        // Check for KHR_texture_transform extension
-        auto transform_it = extensions_obj.find("KHR_texture_transform");
-        if (transform_it != extensions_obj.end() && transform_it->second.IsObject()) {
-            const tinygltf::Value::Object& transform_obj = transform_it->second.Get<tinygltf::Value::Object>();
-
-            // Read offset (default: [0.0, 0.0])
-            read_float2_param(transform_obj, "offset", params, param_name + "_offset", float2(0.0f, 0.0f));
-
-            // Read rotation (default: 0.0)
-            if (auto rotation = read_float(transform_obj, "rotation")) {
-                params.set(param_name + "_rotation", *rotation);
-            }
-
-            // Read scale (default: [1.0, 1.0])
-            read_float2_param(transform_obj, "scale", params, param_name + "_scale", float2(1.0f, 1.0f));
-
-            // Read texCoord override (overrides the textureInfo texCoord if supplied)
-            auto texcoord_transform_it = transform_obj.find("texCoord");
-            if (texcoord_transform_it != transform_obj.end() && texcoord_transform_it->second.IsInt()) {
-                int texcoord_override = texcoord_transform_it->second.Get<int>();
-                params.set(param_name + "_texcoord", texcoord_override); // Override existing value
-            }
-        }
+        read_texture_transform_extension(extensions_it->second.Get<tinygltf::Value::Object>(), params, param_name);
     }
 }
 
@@ -1197,7 +1716,29 @@ read_texture_info_param(const tinygltf::Value::Object& parent_obj, Properties& p
     }
 }
 
-void GltfImporter::extract_materials()
+static bool gltf_material_supports_native(const tinygltf::Material& source, const Properties& params)
+{
+    const auto type = params.get<std::string>("_type");
+    if (type != "gltf_pbrMetallicRoughness" && type != "gltf_pbrSpecularGlossiness")
+        return false;
+    for (const auto& [extension, value] : source.extensions) {
+        if (extension == "KHR_materials_emissive_strength" || extension == "KHR_materials_pbrSpecularGlossiness")
+            continue;
+        if (type == "gltf_pbrMetallicRoughness"
+            && (extension == "KHR_materials_ior" || extension == "KHR_materials_specular"
+                || extension == "KHR_materials_transmission" || extension == "KHR_materials_volume"
+                || extension == "KHR_materials_clearcoat" || extension == "KHR_materials_sheen"
+                || extension == "KHR_materials_iridescence" || extension == "KHR_materials_anisotropy"
+                || extension == "KHR_materials_diffuse_transmission"))
+            continue;
+        return false;
+    }
+    // Native MR supports specular strength/color and both workflows support texture
+    // transforms. Presence of an unsupported lobe still requires MDL, even at zero strength.
+    return true;
+}
+
+void GltfImporter::extract_materials(const ImportOptions& import_options)
 {
     const tinygltf::Model& model = *m_model;
 
@@ -1211,11 +1752,44 @@ void GltfImporter::extract_materials()
         ImporterMaterial importer_material;
         importer_material.name
             = gltf_material.name.empty() ? "material_" + std::to_string(mat_idx) : gltf_material.name;
+        importer_material.source_asset_ref = source_asset_ref_for_object(fmt::format("/materials/{}", mat_idx));
         bool has_material_type_extension = false;
+
+        for (const auto& [extension, value] : gltf_material.extensions) {
+            if (extension.starts_with("KHR_materials_") && extension != "KHR_materials_unlit"
+                && extension != "KHR_materials_pbrSpecularGlossiness" && extension != "KHR_materials_ior"
+                && extension != "KHR_materials_emissive_strength" && extension != "KHR_materials_specular"
+                && extension != "KHR_materials_clearcoat" && extension != "KHR_materials_transmission"
+                && extension != "KHR_materials_volume" && extension != "KHR_materials_sheen"
+                && extension != "KHR_materials_iridescence" && extension != "KHR_materials_anisotropy"
+                && extension != "KHR_materials_diffuse_transmission")
+                sgl::log_warn(
+                    "glTF material '{}': extension '{}' is not handled by the material importer; "
+                    "rendering its fallback without that feature.",
+                    importer_material.name,
+                    extension
+                );
+        }
+
+        // KHR_materials_unlit selects a direction-independent material that uses only the
+        // metallic-roughness base color inputs. It takes precedence over the fallback PBR model.
+        auto unlit_ext_it = gltf_material.extensions.find("KHR_materials_unlit");
+        if (unlit_ext_it != gltf_material.extensions.end()) {
+            has_material_type_extension = true;
+            importer_material.params.set("_type", "gltf_unlit");
+            const auto& pbr = gltf_material.pbrMetallicRoughness;
+            read_float4_param(
+                pbr.baseColorFactor,
+                importer_material.params,
+                "baseColorFactor",
+                float4(1.0f, 1.0f, 1.0f, 1.0f)
+            );
+            read_texture_info(pbr.baseColorTexture, importer_material.params, "baseColorTexture");
+        }
 
         // Check for KHR_materials_pbrSpecularGlossiness extension
         auto pbr_sg_ext_it = gltf_material.extensions.find("KHR_materials_pbrSpecularGlossiness");
-        if (pbr_sg_ext_it != gltf_material.extensions.end()) {
+        if (!has_material_type_extension && pbr_sg_ext_it != gltf_material.extensions.end()) {
             const tinygltf::Value& pbr_sg_value = pbr_sg_ext_it->second;
             if (pbr_sg_value.IsObject()) {
                 has_material_type_extension = true;
@@ -1256,12 +1830,157 @@ void GltfImporter::extract_materials()
             importer_material.params.set("roughnessFactor", pbr.roughnessFactor);
             read_texture_info(pbr.baseColorTexture, importer_material.params, "baseColorTexture");
             read_texture_info(pbr.metallicRoughnessTexture, importer_material.params, "metallicRoughnessTexture");
+
+            auto sheen_it = gltf_material.extensions.find("KHR_materials_sheen");
+            if (sheen_it != gltf_material.extensions.end() && sheen_it->second.IsObject()) {
+                importer_material.params.set("hasSheen", true);
+                const auto& obj = sheen_it->second.Get<tinygltf::Value::Object>();
+                read_float3_param(obj, "sheenColorFactor", importer_material.params, "sheenColorFactor", float3(0.f));
+                read_float_param(obj, "sheenRoughnessFactor", importer_material.params, "sheenRoughnessFactor", 0.f);
+                read_texture_info_param(obj, importer_material.params, "sheenColorTexture");
+                read_texture_info_param(obj, importer_material.params, "sheenRoughnessTexture");
+            }
+            auto iridescence_it = gltf_material.extensions.find("KHR_materials_iridescence");
+            if (iridescence_it != gltf_material.extensions.end() && iridescence_it->second.IsObject()) {
+                importer_material.params.set("hasIridescence", true);
+                const auto& obj = iridescence_it->second.Get<tinygltf::Value::Object>();
+                read_float_param(obj, "iridescenceFactor", importer_material.params, "iridescenceFactor", 0.f);
+                read_float_param(obj, "iridescenceIor", importer_material.params, "iridescenceIor", 1.3f);
+                read_float_param(
+                    obj,
+                    "iridescenceThicknessMinimum",
+                    importer_material.params,
+                    "iridescenceThicknessMinimum",
+                    100.f
+                );
+                read_float_param(
+                    obj,
+                    "iridescenceThicknessMaximum",
+                    importer_material.params,
+                    "iridescenceThicknessMaximum",
+                    400.f
+                );
+                read_texture_info_param(obj, importer_material.params, "iridescenceTexture");
+                read_texture_info_param(obj, importer_material.params, "iridescenceThicknessTexture");
+            }
+            if (auto it = gltf_material.extensions.find("KHR_materials_anisotropy");
+                it != gltf_material.extensions.end() && it->second.IsObject()) {
+                importer_material.params.set("hasAnisotropy", true);
+                const auto& obj = it->second.Get<tinygltf::Value::Object>();
+                read_float_param(obj, "anisotropyStrength", importer_material.params, "anisotropyStrength", 0.f);
+                read_float_param(obj, "anisotropyRotation", importer_material.params, "anisotropyRotation", 0.f);
+                read_texture_info_param(obj, importer_material.params, "anisotropyTexture");
+            }
+            if (auto it = gltf_material.extensions.find("KHR_materials_diffuse_transmission");
+                it != gltf_material.extensions.end() && it->second.IsObject()) {
+                importer_material.params.set("hasDiffuseTransmission", true);
+                const auto& obj = it->second.Get<tinygltf::Value::Object>();
+                read_float_param(
+                    obj,
+                    "diffuseTransmissionFactor",
+                    importer_material.params,
+                    "diffuseTransmissionFactor",
+                    0.f
+                );
+                read_float3_param(
+                    obj,
+                    "diffuseTransmissionColorFactor",
+                    importer_material.params,
+                    "diffuseTransmissionColorFactor",
+                    float3(1.f)
+                );
+                read_texture_info_param(obj, importer_material.params, "diffuseTransmissionTexture");
+                read_texture_info_param(obj, importer_material.params, "diffuseTransmissionColorTexture");
+            }
+            auto clearcoat_it = gltf_material.extensions.find("KHR_materials_clearcoat");
+            if (clearcoat_it != gltf_material.extensions.end() && clearcoat_it->second.IsObject()) {
+                const auto& clearcoat = clearcoat_it->second.Get<tinygltf::Value::Object>();
+                importer_material.params.set("hasClearcoat", true);
+                read_float_param(clearcoat, "clearcoatFactor", importer_material.params, "clearcoatFactor", 0.f);
+                read_texture_info_param(clearcoat, importer_material.params, "clearcoatTexture");
+                read_float_param(
+                    clearcoat,
+                    "clearcoatRoughnessFactor",
+                    importer_material.params,
+                    "clearcoatRoughnessFactor",
+                    0.f
+                );
+                read_texture_info_param(clearcoat, importer_material.params, "clearcoatRoughnessTexture");
+                read_texture_info_param(clearcoat, importer_material.params, "clearcoatNormalTexture");
+                auto normal = clearcoat.find("clearcoatNormalTexture");
+                if (normal != clearcoat.end() && normal->second.IsObject()) {
+                    read_float_param(
+                        normal->second.Get<tinygltf::Value::Object>(),
+                        "scale",
+                        importer_material.params,
+                        "clearcoatNormalTexture:strength",
+                        1.f
+                    );
+                }
+            }
+
+            auto specular_it = gltf_material.extensions.find("KHR_materials_specular");
+            if (specular_it != gltf_material.extensions.end() && specular_it->second.IsObject()) {
+                importer_material.params.set("hasSpecular", true);
+                const auto& specular = specular_it->second.Get<tinygltf::Value::Object>();
+                read_float_param(specular, "specularFactor", importer_material.params, "specularFactor", 1.f);
+                read_texture_info_param(specular, importer_material.params, "specularTexture");
+                read_float3_param(
+                    specular,
+                    "specularColorFactor",
+                    importer_material.params,
+                    "specularColorFactor",
+                    float3(1.f)
+                );
+                read_texture_info_param(specular, importer_material.params, "specularColorTexture");
+            }
+
+            auto transmission_it = gltf_material.extensions.find("KHR_materials_transmission");
+            if (transmission_it != gltf_material.extensions.end() && transmission_it->second.IsObject()) {
+                const auto& transmission = transmission_it->second.Get<tinygltf::Value::Object>();
+                importer_material.params.set("hasTransmission", true);
+                read_float_param(
+                    transmission,
+                    "transmissionFactor",
+                    importer_material.params,
+                    "transmissionFactor",
+                    0.f
+                );
+                read_texture_info_param(transmission, importer_material.params, "transmissionTexture");
+            }
+
+            auto ior_it = gltf_material.extensions.find("KHR_materials_ior");
+            if (ior_it != gltf_material.extensions.end() && ior_it->second.IsObject()) {
+                const auto& ior = ior_it->second.Get<tinygltf::Value::Object>();
+                read_float_param(ior, "ior", importer_material.params, "ior", 1.5f);
+            }
+
+            auto volume_it = gltf_material.extensions.find("KHR_materials_volume");
+            if (volume_it != gltf_material.extensions.end() && volume_it->second.IsObject()) {
+                importer_material.params.set("hasVolume", true);
+                const auto& volume = volume_it->second.Get<tinygltf::Value::Object>();
+                read_float_param(volume, "thicknessFactor", importer_material.params, "thicknessFactor", 0.f);
+                read_texture_info_param(volume, importer_material.params, "thicknessTexture");
+                // Absence means infinite attenuation distance (no absorption).
+                if (auto distance = read_float(volume, "attenuationDistance"))
+                    importer_material.params.set("attenuationDistance", *distance);
+                read_float3_param(
+                    volume,
+                    "attenuationColor",
+                    importer_material.params,
+                    "attenuationColor",
+                    float3(1.f)
+                );
+            }
         }
+
+        if (gltf_material.extensions.contains("KHR_materials_transmission"))
+            importer_material.params.set("hasTransmission", true);
 
         // Always read normal map
         read_texture_info(gltf_material.normalTexture, importer_material.params, "normalTexture");
         if (gltf_material.normalTexture.index >= 0) {
-            importer_material.params.set("normalTexture_strength", gltf_material.normalTexture.scale);
+            importer_material.params.set("normalTexture:strength", gltf_material.normalTexture.scale);
         }
 
         // Read emissive, handling emissive strength extension.
@@ -1299,8 +2018,30 @@ void GltfImporter::extract_materials()
             importer_material.params.set("alphaCutoff", 0.5f);
         }
 
+        // Retain the import-time choice with the material, including deferred imports and append.
+        const auto mode = import_options.gltf_material_mode;
+        if (importer_material.params.get<std::string>("_type") != "gltf_unlit") {
+            if (mode == GLTFMaterialMode::standard_material)
+                importer_material.params.set("_gltf_target", "standard_material");
+            else if (mode == GLTFMaterialMode::materialx)
+                importer_material.params.set("_gltf_target", "materialx");
+            else if (mode == GLTFMaterialMode::openpbr)
+                importer_material.params.set("_gltf_target", "openpbr");
+        }
+        if (importer_material.params.get<std::string>("_type") != "gltf_unlit"
+            && (mode == GLTFMaterialMode::mdl
+                || (mode == GLTFMaterialMode::automatic
+                    && !gltf_material_supports_native(gltf_material, importer_material.params))))
+            importer_material.params.set("_gltf_use_mdl", true);
+
         m_scene->materials.push_back(std::move(importer_material));
     }
+}
+
+SourceAssetRef GltfImporter::source_asset_ref_for_object(std::string_view object_path) const
+{
+    static const ustring format("gltf");
+    return SourceAssetRef(format, m_source_asset_path, ustring(object_path));
 }
 
 } // namespace falcor

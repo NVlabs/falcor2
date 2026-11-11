@@ -9,6 +9,7 @@
 #include <sgl/core/fwd.h>
 #include <sgl/core/crypto.h>
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <mutex>
@@ -59,6 +60,12 @@ public:
         uint32_t eviction_target_pct = 60;
         /// Whether to flush file streams after writes (default false for performance).
         bool flush_after_write = false;
+        /// Check eviction on the first successful write, then after this interval in milliseconds or byte budget.
+        /// Checks are per instance and write-driven; zero checks after every successful write.
+        uint32_t eviction_check_interval_ms = 30000;
+        /// Published bytes between eviction checks, including replacements (default 256 MiB).
+        /// Zero checks after every successful write. Capacity may be exceeded between checks.
+        uint64_t eviction_check_bytes = 256ULL * 1024 * 1024;
     };
 
     struct Stats {
@@ -259,7 +266,12 @@ private:
     void remove_payload(const std::filesystem::path& key_dir, const std::filesystem::path& blob_path) noexcept;
 
     void cleanup_temp_files() noexcept;
-    void maybe_evict() noexcept;
+    void maybe_evict(uint64_t published_bytes) noexcept;
+    // Requires both cache locks. Reuses the maintenance scan.
+    void evict_entries(ScanResult& scan);
+
+    std::optional<std::chrono::steady_clock::time_point> m_last_eviction_check;
+    uint64_t m_bytes_since_eviction_check{0};
 
     Options m_options;
     std::filesystem::path m_root_dir;

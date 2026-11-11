@@ -3,6 +3,34 @@
 
 implementing render;
 
+namespace microfacet_refraction {
+/// eta is incident IOR / transmitted IOR; both directions point away from the surface.
+[Differentiable]
+public float3 half_vector(float3 wi, float3 wo, float eta)
+{
+    float3 h = normalize(wo + eta * wi);
+    return h * sign(h.z);
+}
+
+[Differentiable]
+public float jacobian(float wi_dot_h, float wo_dot_h, float eta)
+{
+    float d = wo_dot_h + eta * wi_dot_h;
+    return d * d > 0.0 ? abs(wo_dot_h) / (d * d) : 0.0;
+}
+
+[Differentiable]
+public float transmitted_cosine_squared(float wi_dot_h, float eta)
+{
+    return 1.0 - eta * eta * max(0.0, 1.0 - wi_dot_h * wi_dot_h);
+}
+
+public float3 direction(float3 wi, float3 h, float eta, float cos_theta_t)
+{
+    return (eta * dot(wi, h) - cos_theta_t) * h - eta * wi;
+}
+}
+
 /// Specular reflection using isotropic GGX microfacets and Schlick Fresnel.
 public struct SpecularMicrofacetBRDF : IBSDF, IDifferentiable
 {
@@ -46,7 +74,7 @@ public struct SpecularMicrofacetBRDF : IBSDF, IDifferentiable
         if (wi_dot_h <= 0.0)
             return BSDFEval();
 
-        float D = evalNdfGGX(alpha, h.z);
+        float D = evalNdfGGX(alpha, h);
         float G = evalMaskingSmithGGXCorrelated(alpha, wi.z, wo.z);
         float3 F = eval_fresnel_schlick(albedo, float3(1.0), wi_dot_h);
         float pdf = evalPdfGGX_VNDF(alpha, wi, h) / (4.0 * wi_dot_h);
@@ -166,8 +194,7 @@ public struct SpecularMicrofacetBSDF : IBSDF, IDifferentiable
         if ((is_reflection && !has_reflection) || (!is_reflection && !has_transmission))
             return BSDFEval();
 
-        float3 h = normalize(wo + wi * (is_reflection ? 1.0 : eta));
-        h *= sign(h.z);
+        float3 h = microfacet_refraction::half_vector(wi, wo, is_reflection ? 1.0 : eta);
 
         float wi_dot_h = dot(wi, h);
         float wo_dot_h = dot(wo, h);
@@ -178,7 +205,7 @@ public struct SpecularMicrofacetBSDF : IBSDF, IDifferentiable
         if (!is_reflection && wo_dot_h >= 0.0)
             return BSDFEval();
 
-        float D = evalNdfGGX(alpha, h.z);
+        float D = evalNdfGGX(alpha, h);
         float G = evalMaskingSmithGGXCorrelated(alpha, wi.z, abs(wo.z));
         float F = eval_fresnel_dielectric(eta, wi_dot_h);
         float pdf = evalPdfGGX_VNDF(alpha, wi, h);
@@ -258,7 +285,8 @@ public struct SpecularMicrofacetBSDF : IBSDF, IDifferentiable
         else if (has_transmission && F == 1.0)
             return false;
 
-        sample.wo = is_reflection ? (2.0 * wi_dot_h * h - wi) : ((eta * wi_dot_h - cos_theta_t) * h - eta * wi);
+        sample.wo
+            = is_reflection ? (2.0 * wi_dot_h * h - wi) : microfacet_refraction::direction(wi, h, eta, cos_theta_t);
         if (abs(sample.wo.z) < BSDF_MIN_COS_THETA || ((sample.wo.z > 0.0) != is_reflection))
             return false;
 

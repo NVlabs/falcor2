@@ -15,14 +15,23 @@ void mx_anisotropic_vdf(ClosureData closure_data, float3 absorption, float3 scat
     mx_absorption_vdf(closure_data, absorption, vdf);
 }
 
+[mutating]
 void mx_apply_vdf_transmission(BSDF bsdf, VDF vdf)
 {
+#ifdef MTLX_SCALARIZED_GRAPH_STORAGE
+    if (bsdf.is_bsdf())
+        mx_stack.multiply_bsdf_transmission_scale(bsdf.get_index(), vdf.throughput);
+    else
+        mx_stack.multiply_layer_transmission_scale(bsdf.get_index(), vdf.throughput);
+#else
     if (bsdf.is_bsdf())
         mx_stack.bsdf_transmission_scales[bsdf.get_index()] *= vdf.throughput;
     else
         mx_stack.layer_transmission_scales[bsdf.get_index()] *= vdf.throughput;
+#endif
 }
 
+[mutating]
 void mx_layer_vdf(ClosureData closure_data, BSDF top, VDF base, out BSDF result)
 {
     // TODO(@tdavidovic): Raster treats VDF layering as transmission

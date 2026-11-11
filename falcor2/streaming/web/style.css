@@ -1,0 +1,32 @@
+/* SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. */
+/* SPDX-License-Identifier: Apache-2.0 */
+:root { color-scheme: dark; font-family: system-ui, sans-serif; background: #111315; color: #c4c9ce; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+#viewer { display: flex; width: 100%; height: 100dvh; }
+#sidebar { flex: none; display: flex; flex-direction: column; width: 248px; padding: 8px; overflow: auto; background: #191c20; border-right: 1px solid #2b2f34; }
+#sidebar.collapsed { width: 52px; }
+nav { display: flex; flex-direction: column; gap: 4px; }
+button, .fit-control { position: relative; display: flex; align-items: center; gap: 12px; width: 100%; min-height: 36px; padding: 8px; border: 0; border-radius: 4px; background: transparent; color: inherit; font: inherit; font-size: 13px; text-align: left; white-space: nowrap; cursor: pointer; }
+button:hover, .fit-control:hover { background: #252a30; color: #fff; }
+button:disabled { cursor: default; opacity: .4; }
+svg { flex: none; width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+#sidebar-toggle { margin-bottom: 12px; color: #8b939d; }
+.collapsed #sidebar-toggle svg { transform: rotate(180deg); }
+.collapsed .control-label, .collapsed details, .collapsed footer { display: none; }
+.fit-control input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.fit-control:has(:checked) { color: #bad9c7; background: #25352e; }
+:focus-visible, .fit-control:has(:focus-visible) { outline: 2px solid #9bbcab; outline-offset: -2px; }
+main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.viewport { position: relative; flex: 1; min-height: 0; overflow: auto; background: black; }
+video { display: block; width: 100%; height: 100%; object-fit: contain; }
+.viewport.actual-size video { width: var(--stream-width, 1280px); height: var(--stream-height, 720px); max-width: none; margin: auto; }
+.viewport:fullscreen { width: 100%; height: 100%; overflow: hidden; }
+.viewport:fullscreen video { width: 100%; height: 100%; }
+#text-input { position: absolute; left: 50%; top: 50%; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; pointer-events: none; }
+#message { color: #ffbfa9; padding: 12px; margin: 0; }
+#message:empty { display: none; }
+footer { margin-top: auto; padding: 24px 8px 8px; color: #7e8792; font-size: 11px; line-height: 1.6; }
+details { margin: 24px 8px; border-top: 1px solid #2b2f34; padding-top: 16px; }
+summary { cursor: pointer; font-size: 12px; color: #98a1ac; }
+pre { white-space: pre-wrap; font-size: 11px; font-variant-numeric: tabular-nums; line-height: 1.8; }

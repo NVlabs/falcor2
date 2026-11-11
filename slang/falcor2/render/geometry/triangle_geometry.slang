@@ -8,6 +8,8 @@ public struct TriangleGeometryData
     public StructuredBuffer<TriangleGeometryDesc> descs;
     public StructuredBuffer<PackedTriangleVertex> vertices;
     public StructuredBuffer<uint> indices;
+    public StructuredBuffer<PackedAdditionalAttribute> additional_attributes;
+    public ByteAddressBuffer additional_attribute_data;
 }
 
 public extension Scene
@@ -74,20 +76,349 @@ public struct TriangleHitInfo : IHitInfo
 
     public __init(const PackedHitInfo p)
     {
-        geometry_instance_id = GeometryInstanceID(p.data[1]);
-        primitive_index = p.data[2];
-        barycentrics = float2(asfloat(p.data[3]), asfloat(p.data[4]));
+        geometry_instance_id = p.geometry_instance_id;
+        primitive_index = p.payload[0];
+        barycentrics = float2(asfloat(p.payload[1]), asfloat(p.payload[2]));
     }
 
     public PackedHitInfo pack()
     {
         PackedHitInfo p = {};
-        p.data[0] = uint(geometry_type);
-        p.data[1] = uint(geometry_instance_id);
-        p.data[2] = primitive_index;
-        p.data[3] = asuint(barycentrics.x);
-        p.data[4] = asuint(barycentrics.y);
+        p.geometry_type = geometry_type;
+        p.geometry_instance_id = geometry_instance_id;
+        p.payload[0] = primitive_index;
+        p.payload[1] = asuint(barycentrics.x);
+        p.payload[2] = asuint(barycentrics.y);
         return p;
+    }
+};
+
+public struct TriangleGeomPropAccessor : IGeomPropAccessor
+{
+    public no_diff GeometryInstanceID geometry_instance_id;
+    public no_diff uint additional_attribute_desc_offset;
+    public no_diff uint additional_attribute_mask;
+    public no_diff uint3 local_vertex_indices;
+    public no_diff float3 barycentric_weights;
+
+    public __init(const TriangleHitInfo hit)
+    {
+        geometry_instance_id = hit.geometry_instance_id;
+        const GeometryInstanceDesc geometry_instance = g_scene.get_geometry_instance_desc(geometry_instance_id);
+        const TriangleGeometryInstanceDesc triangle_geometry_instance
+            = reinterpret<TriangleGeometryInstanceDesc>(geometry_instance);
+        additional_attribute_desc_offset
+            = uint(triangle_geometry_instance.header.geometry_id) * ADDITIONAL_ATTRIBUTE_DESC_ROW_SIZE;
+        additional_attribute_mask
+            = g_scene.triangle_geometry.additional_attributes[additional_attribute_desc_offset].byte_offset;
+        const uint index_offset = triangle_geometry_instance.index_offset + hit.primitive_index * 3;
+        local_vertex_indices = uint3(
+            g_scene.triangle_geometry.indices[index_offset],
+            g_scene.triangle_geometry.indices[index_offset + 1],
+            g_scene.triangle_geometry.indices[index_offset + 2]
+        );
+        barycentric_weights
+            = float3(1.f - hit.barycentrics.x - hit.barycentrics.y, hit.barycentrics.x, hit.barycentrics.y);
+    }
+
+    public bool has_attribute(uint id) { return id < 32 && (additional_attribute_mask & (1u << id)) != 0; }
+
+    bool try_get_attribute_desc(
+        uint attribute_id,
+        out PackedAdditionalAttribute attribute,
+        out AdditionalAttributeType type,
+        out uint component_count
+    )
+    {
+        attribute = {};
+        type = AdditionalAttributeType::invalid;
+        component_count = 0;
+        if (attribute_id >= 32)
+            return false;
+
+        const uint attribute_bit = 1u << attribute_id;
+        if ((additional_attribute_mask & attribute_bit) == 0)
+            return false;
+
+        const uint attribute_rank = countbits(additional_attribute_mask & (attribute_bit - 1u));
+        attribute
+            = g_scene.triangle_geometry.additional_attributes[additional_attribute_desc_offset + 1 + attribute_rank];
+        component_count = attribute.format & 0xff;
+        type = AdditionalAttributeType(attribute.format >> 8);
+        return true;
+    }
+
+    uint get_dominant_local_vertex_index()
+    {
+        uint dominant_vertex = 0;
+        float dominant_weight = barycentric_weights.x;
+        if (barycentric_weights.y > dominant_weight) {
+            dominant_vertex = 1;
+            dominant_weight = barycentric_weights.y;
+        }
+        if (barycentric_weights.z > dominant_weight)
+            dominant_vertex = 2;
+        return local_vertex_indices[dominant_vertex];
+    }
+
+    bool try_load_attribute<let N : int>(uint attribute_id, out vector<float, N> value)
+    {
+        value = vector<float, N>(0.f);
+
+        PackedAdditionalAttribute attribute;
+        AdditionalAttributeType type;
+        uint component_count;
+        if (!try_get_attribute_desc(attribute_id, attribute, type, component_count))
+            return false;
+        if (type != AdditionalAttributeType::float16 && type != AdditionalAttributeType::float32)
+            return false;
+
+        // This is a bit ugly and long, but is the most efficient way to load all vertex
+        // values without extra branching.
+        float4 loaded_values[3];
+        [ForceUnroll]
+        for (uint vertex = 0; vertex < 3; ++vertex)
+            loaded_values[vertex] = 0.f;
+
+        if (type == AdditionalAttributeType::float16) {
+            const uint3 addresses = attribute.byte_offset + local_vertex_indices * component_count * sizeof(float16_t);
+            switch (component_count) {
+            case 1:
+                [ForceUnroll] for (uint vertex = 0; vertex < 3; ++vertex) loaded_values[vertex].x = float(
+                    g_scene.triangle_geometry.additional_attribute_data.LoadAligned<float16_t>(addresses[vertex])
+                );
+                break;
+            case 2:
+                [ForceUnroll] for (uint vertex = 0; vertex < 3; ++vertex) loaded_values[vertex].xy = float2(
+                    g_scene.triangle_geometry.additional_attribute_data.LoadAligned<float16_t2>(addresses[vertex])
+                );
+                break;
+            case 3:
+                [ForceUnroll] for (uint vertex = 0; vertex < 3; ++vertex) loaded_values[vertex].xyz = float3(
+                    g_scene.triangle_geometry.additional_attribute_data.LoadAligned<float16_t3>(addresses[vertex])
+                );
+                break;
+            case 4:
+                [ForceUnroll] for (uint vertex = 0; vertex < 3; ++vertex) loaded_values[vertex] = float4(
+                    g_scene.triangle_geometry.additional_attribute_data.LoadAligned<float16_t4>(addresses[vertex])
+                );
+                break;
+            }
+        } else {
+            const uint3 addresses = attribute.byte_offset + local_vertex_indices * component_count * sizeof(float);
+            switch (component_count) {
+            case 1:
+                [ForceUnroll] for (uint vertex = 0; vertex < 3; ++vertex) loaded_values[vertex].x
+                    = g_scene.triangle_geometry.additional_attribute_data.LoadAligned<float>(addresses[vertex]);
+                break;
+            case 2:
+                [ForceUnroll] for (uint vertex = 0; vertex < 3; ++vertex) loaded_values[vertex].xy
+                    = g_scene.triangle_geometry.additional_attribute_data.LoadAligned<float2>(addresses[vertex]);
+                break;
+            case 3:
+                [ForceUnroll] for (uint vertex = 0; vertex < 3; ++vertex) loaded_values[vertex].xyz
+                    = g_scene.triangle_geometry.additional_attribute_data.LoadAligned<float3>(addresses[vertex]);
+                break;
+            case 4:
+                [ForceUnroll] for (uint vertex = 0; vertex < 3; ++vertex) loaded_values[vertex]
+                    = g_scene.triangle_geometry.additional_attribute_data.LoadAligned<float4>(addresses[vertex]);
+                break;
+            }
+        }
+
+        const float4 interpolated_value = barycentric_weights.x * loaded_values[0]
+            + barycentric_weights.y * loaded_values[1] + barycentric_weights.z * loaded_values[2];
+        [ForceUnroll]
+        for (uint component = 0; component < N; ++component)
+            value[component] = interpolated_value[component];
+        return true;
+    }
+
+    bool try_load_int_attribute<let N : int>(uint attribute_id, out vector<int, N> value)
+    {
+        value = vector<int, N>(0);
+        PackedAdditionalAttribute attribute;
+        AdditionalAttributeType type;
+        uint component_count;
+        if (!try_get_attribute_desc(attribute_id, attribute, type, component_count)
+            || type != AdditionalAttributeType::int32)
+            return false;
+
+        const uint address = attribute.byte_offset + get_dominant_local_vertex_index() * component_count * sizeof(int);
+        int4 loaded_value = 0;
+        switch (component_count) {
+        case 1:
+            loaded_value.x = g_scene.triangle_geometry.additional_attribute_data.LoadAligned<int>(address);
+            break;
+        case 2:
+            loaded_value.xy = g_scene.triangle_geometry.additional_attribute_data.LoadAligned<int2>(address);
+            break;
+        case 3:
+            loaded_value.xyz = g_scene.triangle_geometry.additional_attribute_data.LoadAligned<int3>(address);
+            break;
+        case 4:
+            loaded_value = g_scene.triangle_geometry.additional_attribute_data.LoadAligned<int4>(address);
+            break;
+        }
+        [ForceUnroll]
+        for (uint component = 0; component < N; ++component)
+            value[component] = loaded_value[component];
+        return true;
+    }
+
+    uint load_packed_bool_attribute<let ComponentCount : int>(uint address)
+    {
+        const uint aligned_address = address & ~3u;
+        const uint byte_offset = address & 3u;
+        uint value = g_scene.triangle_geometry.additional_attribute_data.LoadAligned<uint>(aligned_address)
+            >> (byte_offset * 8u);
+        if (byte_offset + uint(ComponentCount) > 4u) {
+            value |= g_scene.triangle_geometry.additional_attribute_data.LoadAligned<uint>(aligned_address + 4u)
+                << ((4u - byte_offset) * 8u);
+        }
+        return value;
+    }
+
+    bool try_load_bool_attribute<let N : int>(uint attribute_id, out vector<bool, N> value)
+    {
+        value = vector<bool, N>(false);
+        PackedAdditionalAttribute attribute;
+        AdditionalAttributeType type;
+        uint component_count;
+        if (!try_get_attribute_desc(attribute_id, attribute, type, component_count)
+            || type != AdditionalAttributeType::bool_)
+            return false;
+
+        const uint address = attribute.byte_offset + get_dominant_local_vertex_index() * component_count;
+        bool4 loaded_value = false;
+        switch (component_count) {
+        case 1: {
+            const uint packed_value = load_packed_bool_attribute<1>(address);
+            loaded_value.x = (packed_value & 0xffu) != 0;
+            break;
+        }
+        case 2: {
+            const uint packed_value = load_packed_bool_attribute<2>(address);
+            loaded_value.xy = bool2((packed_value & 0xffu) != 0, (packed_value & 0xff00u) != 0);
+            break;
+        }
+        case 3: {
+            const uint packed_value = load_packed_bool_attribute<3>(address);
+            loaded_value.xyz
+                = bool3((packed_value & 0xffu) != 0, (packed_value & 0xff00u) != 0, (packed_value & 0xff0000u) != 0);
+            break;
+        }
+        case 4: {
+            // Four-byte elements are naturally aligned because the stream starts at a 16-byte boundary.
+            const uint packed_value = g_scene.triangle_geometry.additional_attribute_data.LoadAligned<uint>(address);
+            loaded_value = bool4(
+                (packed_value & 0xffu) != 0,
+                (packed_value & 0xff00u) != 0,
+                (packed_value & 0xff0000u) != 0,
+                (packed_value & 0xff000000u) != 0
+            );
+            break;
+        }
+        }
+        [ForceUnroll]
+        for (uint component = 0; component < N; ++component)
+            value[component] = loaded_value[component];
+        return true;
+    }
+
+    public bool try_get(uint attribute_id, out int value)
+    {
+        value = 0;
+        vector<int, 1> loaded_value;
+        if (!try_load_int_attribute(attribute_id, loaded_value))
+            return false;
+        value = loaded_value.x;
+        return true;
+    }
+
+    public bool try_get(uint attribute_id, out int2 value) { return try_load_int_attribute(attribute_id, value); }
+
+    public bool try_get(uint attribute_id, out int3 value) { return try_load_int_attribute(attribute_id, value); }
+
+    public bool try_get(uint attribute_id, out int4 value) { return try_load_int_attribute(attribute_id, value); }
+
+    public bool try_get(uint attribute_id, out bool value)
+    {
+        value = false;
+        vector<bool, 1> loaded_value;
+        if (!try_load_bool_attribute(attribute_id, loaded_value))
+            return false;
+        value = loaded_value.x;
+        return true;
+    }
+
+    public bool try_get(uint attribute_id, out bool2 value) { return try_load_bool_attribute(attribute_id, value); }
+
+    public bool try_get(uint attribute_id, out bool3 value) { return try_load_bool_attribute(attribute_id, value); }
+
+    public bool try_get(uint attribute_id, out bool4 value) { return try_load_bool_attribute(attribute_id, value); }
+
+    public bool try_get(uint attribute_id, out float value)
+    {
+        value = 0.f;
+        vector<float, 1> loaded_value;
+        if (!try_load_attribute(attribute_id, loaded_value))
+            return false;
+        value = loaded_value.x;
+        return true;
+    }
+
+    public bool try_get(uint attribute_id, out float2 value) { return try_load_attribute(attribute_id, value); }
+
+    public bool try_get(uint attribute_id, out float3 value) { return try_load_attribute(attribute_id, value); }
+
+    public bool try_get(uint attribute_id, out float4 value) { return try_load_attribute(attribute_id, value); }
+
+    public bool try_get_additional_texcoord(uint index, out float2 value)
+    {
+        value = 0.f;
+        return index > 0 && index < 8 && try_get(index, value);
+    }
+
+    public bool try_get_additional_texcoord(uint index, out float3 value)
+    {
+        value = 0.f;
+        return index < 8 && try_get(index, value);
+    }
+
+    public bool try_get_additional_texcoord(uint index, out float4 value)
+    {
+        value = 0.f;
+        return index < 8 && try_get(index, value);
+    }
+
+    public bool try_get_color(uint index, out float4 value)
+    {
+        value = 0.f;
+        if (index != 0)
+            return false;
+
+        PackedAdditionalAttribute attribute;
+        AdditionalAttributeType type;
+        uint component_count;
+        if (!try_get_attribute_desc(GEOMETRY_ATTRIBUTE_ID_COLOR_0, attribute, type, component_count)
+            || (type != AdditionalAttributeType::float16 && type != AdditionalAttributeType::float32)
+            || (component_count != 3 && component_count != 4))
+            return false;
+
+        if (!try_get(GEOMETRY_ATTRIBUTE_ID_COLOR_0, value))
+            return false;
+        if (component_count == 3)
+            value.w = 1.f;
+        return true;
+    }
+
+    public float4x4 get_space_transform(GeomPropSpace to_space, GeomPropSpace from_space)
+    {
+        if (to_space == from_space || (to_space != GeomPropSpace::world && from_space != GeomPropSpace::world))
+            return geomprop_identity4x4();
+        return to_space == GeomPropSpace::world ? g_scene.get_world_from_object(geometry_instance_id)
+                                                : g_scene.get_object_from_world(geometry_instance_id);
     }
 };
 
@@ -125,7 +456,8 @@ public extension Scene
         let tangent_os = normalize(v1.position - v0.position);
 
         let world_from_object = get_world_from_object(geometry_instance.header.transform_id);
-        let inverse_transpose = transpose(float3x3(get_object_from_world(geometry_instance.header.transform_id)));
+        let object_from_world = get_object_from_world(geometry_instance.header.transform_id);
+        let inverse_transpose = transpose(float3x3(object_from_world));
         // All handedness values should be the same for the three vertices of a triangle, so we can just use v0's here.
         let transform_handedness = determinant(float3x3(world_from_object)) < 0.0 ? -1.0 : 1.0;
         let shading_handedness = v0.handedness * transform_handedness;
@@ -134,6 +466,21 @@ public extension Scene
         si.wi_ws = wi_ws;
         si.position_ws = transform_point(world_from_object, pos_os);
         si.normal_ws = normalize(transform_vector(inverse_transpose, normal_os));
+        if (ENABLE_PRECISE_RAY_OFFSETS) {
+            let spawn = compute_precise_ray_spawn(
+                v0.position,
+                v1.position,
+                v2.position,
+                hit.barycentrics,
+                world_from_object,
+                object_from_world
+            );
+            if (spawn.offset > 0.0) {
+                si.position_ws = spawn.position;
+                si.normal_ws = select(is_front_face_cw, -spawn.normal, spawn.normal);
+                si.ray_offset.set(spawn.offset);
+            }
+        }
         si.front_facing = dot(wi_ws, si.normal_ws) >= 0;
         si.uv = uv;
         si.shading_frame_ws = Frame(
@@ -141,6 +488,7 @@ public extension Scene
             normalize(transform_vector(world_from_object, shading_tangent_os)),
             shading_handedness
         );
+        si.set_hit_info(hit);
         return si;
     }
 }

@@ -13,6 +13,8 @@ Entity::~Entity() { }
 
 void Entity::remove()
 {
+    if (!is_valid())
+        return;
     for (Entity* child : m_children) {
         child->remove();
     }
@@ -31,14 +33,13 @@ void Entity::clear_invalid_references()
 
 void Entity::on_add_to_scene()
 {
-    RenderTransformDesc desc = {};
-    desc.world_from_object = world_from_object_matrix();
-    m_render_transform = m_scene->_render_scene()->create_transform(desc);
+    // Render transforms are created lazily when geometry first references the entity.
 }
 
 void Entity::on_remove_from_scene()
 {
-    m_scene->_render_scene()->destroy_transform(m_render_transform);
+    if (m_render_transform)
+        m_scene->_render_scene()->destroy_transform(m_render_transform);
     m_render_transform = {};
 }
 
@@ -125,7 +126,18 @@ Component* Entity::create_component(const std::type_info& type, std::optional<Pr
 
 void Entity::update_transform()
 {
-    m_scene->_render_scene()->update_transform(m_render_transform, world_from_object_matrix());
+    if (m_render_transform)
+        m_scene->_render_scene()->update_transform(m_render_transform, world_from_object_matrix());
+}
+
+RenderTransformHandle Entity::_render_transform()
+{
+    if (!m_render_transform) {
+        RenderTransformDesc desc = {};
+        desc.world_from_object = world_from_object_matrix();
+        m_render_transform = m_scene->_render_scene()->create_transform(desc);
+    }
+    return m_render_transform;
 }
 
 void Entity::mark_dirty(DirtyFlags flags)

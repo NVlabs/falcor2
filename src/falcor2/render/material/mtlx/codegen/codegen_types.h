@@ -7,6 +7,7 @@
 #include "falcor2/core/macros.h"
 #include "falcor2/core/object.h"
 #include "falcor2/core/properties.h"
+#include "falcor2/render/material_aov_registry.h"
 #include "mx_parameters.h"
 
 #include <array>
@@ -15,7 +16,6 @@
 #include <functional>
 #include <map>
 #include <memory>
-#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -48,12 +48,6 @@ struct CodeGenResult {
         float constant{1.f};
     };
 
-    struct GeometryStreamRequest {
-        std::string name;
-        std::string type;
-        uint32_t id{};
-    };
-
     // The name after `module` keyword.
     std::string module_name;
     // The generated source code.
@@ -67,7 +61,7 @@ struct CodeGenResult {
     std::string material_data_name;
     // Conservative target-independent upper bound for the material data struct size. If it is <=
     // `CodeGenDesc::payload_size`, the data is stored inline in MaterialData after MaterialHeader.
-    // Otherwise MaterialData contains a BufferHandle used to obtain the struct from BufferManager.
+    // Otherwise MaterialData contains a BufferOffsetPair into shared material storage.
     // The loaded target module is reflected to verify this bound and obtain the exact buffer stride.
     size_t data_struct_size{};
     // All parameters the material could possibly expose.
@@ -78,15 +72,18 @@ struct CodeGenResult {
     size_t material_instance_byte_size{};
     // True when the generated material needs path-state storage for entry-point volume properties.
     bool has_entry_point_volume_properties = false;
+    // A supported terminal fiber closure. Recomputed
+    // from the analyzed graph before every code-cache lookup, like opacity metadata.
+    bool is_hair = false;
     // Classification of the generated root surface opacity.
     OpacityResult opacity;
+    // Emitted operations need retained hit context, including in additional material outputs.
+    bool uses_geometry_properties = false;
     // Metadata emitted by codegen for diagnostics and reports.
     Properties codegen_metadata;
-    // Geometry streams needed by the generated graph. Entries are stable text descriptors such as
-    // `geomprop:color_0:color4:12` or `geomprop:custom_stream:vector3:77` for diagnostics and reports.
-    std::vector<std::string> required_geometry_streams;
-    // Typed geomprop/primvar requests emitted through GeomPropProvider.
-    std::vector<GeometryStreamRequest> required_geomprop_streams;
+    // Supported material AOV declarations with stable scene IDs.
+    // Populated when a registry is supplied; every entry is emitted.
+    std::vector<AOVDesc> material_aov_outputs;
 };
 
 enum class OptimizeGraphFlags : uint32_t {
@@ -160,20 +157,25 @@ SGL_ENUM_INFO(
 SGL_ENUM_REGISTER(ZeltnerSheenCoefficientMode);
 
 struct CodeGenDesc {
-    using GeomPropIdCallback
-        = std::function<std::optional<uint32_t>(std::string_view geomprop, std::string_view output_type)>;
-
     /// Either the mtlx directly, or a path to it.
     std::variant<std::string, std::filesystem::path> document;
     /// Name of the node to build from. Will try auto-detect if left empty.
     std::string node_name;
+    /// Additional document outputs or selected root NodeDef outputs to retain in the same Graph. Supports '*' patterns;
+    /// the default selects all eligible numeric outputs. Empty disables additional instance outputs.
+    /// The primary root may be a named node/output or an automatically detected material.
+    /// These are explicit code-generation roots and do not imply material ownership.
+    std::vector<std::string> additional_output_names = {"*"};
     /// Optional resolver used to resolve the document and MaterialX search paths.
     ref<AssetResolver> asset_resolver;
 
-    /// When true, use position free layering instead of the standard one.
+    /// Legacy position-free layering request. The structured generator rejects
+    /// this until a layering policy implements it.
     bool positionfree_layering = false;
 
-    /// Optional homogeneous volume properties.
+    /// Legacy entry-point homogeneous volume properties, retained for source
+    /// compatibility. Non-default values are rejected; author VDF and phase
+    /// behavior in the MaterialX graph instead.
     float3 sigma_a = float3(0);
     float3 sigma_s = float3(0);
     /// Phase function: Isotropic, 1 HenyeyGreenstain with a float parameter,
@@ -208,27 +210,29 @@ struct CodeGenDesc {
 
     /// When set to true, all supported unbound parameters of the material are exposed.
     bool make_editable = false;
-    /// Canonicalize generated MaterialX identity for reusable class compilation.
-    /// With no explicit editable parameter names, class compilation exposes all supported unbound parameters.
-    bool class_compilation = false;
-    /// Exact generated names of supported unbound parameters to expose. A non-empty set overrides the
-    /// class-compilation default unless make_editable is true.
+    /// Canonicalize generated MaterialX identity without changing parameter liveness.
+    bool canonicalize_names = false;
+    /// Authored names of supported unbound parameters to expose unless make_editable is true.
+    /// Omit the `inputs:` prefix. Selected-root inputs use bare names (base); other inputs use node_input
+    /// (surface_base). Full authored paths (NG/surface/base) disambiguate names; ambiguous short names throw.
     std::unordered_set<std::string> editable_param_names;
 
-    /// Return true when the parameter with the generated name should be exposed.
     bool is_editable_param(const std::string& name) const
     {
-        return make_editable || editable_param_names.contains(name)
-            || (class_compilation && editable_param_names.empty());
+        return make_editable || editable_param_names.contains(name);
     }
 
     /// Size of the payload we can fit into the MaterialPayload.
     /// If the data does not fit, we use a buffer instead.
     size_t payload_size = 0;
 
-    /// Optional mapping from MaterialX geomprop string/type pairs to stable shader IDs.
-    /// Missing mappings intentionally fall back to the legacy built-in codegen expressions.
-    GeomPropIdCallback geomprop_id_callback;
+    /// Reserve the Scene-owned shader ID for a blind named geometry attribute.
+    std::function<uint32_t(std::string_view)> reserve_geometry_attribute_id;
+
+    /// Optional registry for float1-4 material-authored outputs; must outlive generation.
+    /// Every supported candidate matched by additional_output_names is emitted.
+    /// When supplied, the registry assigns stable IDs to all matched, runtime-supported outputs.
+    MaterialAOVRegistry* material_aov_registry{nullptr};
 };
 
 } // namespace mtlx
