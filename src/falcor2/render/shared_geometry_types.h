@@ -4,6 +4,7 @@
 #pragma once
 
 #include "falcor2/render/shared_scene_types.h"
+#include "falcor2/utils/buffer_handle.h"
 
 #define FALCOR_SHARED_HOST
 #define public

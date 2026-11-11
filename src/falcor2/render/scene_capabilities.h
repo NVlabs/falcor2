@@ -20,8 +20,10 @@ enum class SceneCapabilityFlags : uint32_t {
     material_aovs = 1u << 1,
     /// Evaluate material opacity when accepting or rejecting ray intersections.
     opacity_evaluation = 1u << 2,
+    /// Track interiors when a material can transmit through a non-thin surface.
+    solid_transmission = 1u << 3,
     /// Enable all supported shader capabilities, including AOV support without an output request.
-    all = geometry_properties | material_aovs | opacity_evaluation,
+    all = geometry_properties | material_aovs | opacity_evaluation | solid_transmission,
 };
 FALCOR_ENUM_CLASS_OPERATORS(SceneCapabilityFlags);
 SGL_ENUM_FLAGS_INFO(
@@ -31,6 +33,7 @@ SGL_ENUM_FLAGS_INFO(
         {SceneCapabilityFlags::geometry_properties, "geometry_properties"},
         {SceneCapabilityFlags::material_aovs, "material_aovs"},
         {SceneCapabilityFlags::opacity_evaluation, "opacity_evaluation"},
+        {SceneCapabilityFlags::solid_transmission, "solid_transmission"},
         {SceneCapabilityFlags::all, "all"},
     }
 );

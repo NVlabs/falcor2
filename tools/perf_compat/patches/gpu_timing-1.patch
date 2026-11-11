@@ -1,0 +1,11 @@
+--- a/falcor2/testing/benchmark/gpu_timing.py
++++ b/falcor2/testing/benchmark/gpu_timing.py
+@@ -14,7 +14,7 @@
+     import falcor2 as f2
+     from falcor2.rendergraph import RenderNode
+     from falcor2.rendernodes.pathtracer_pipeline_node import PathTracerPipeline
+-    from slangpy.testing.benchmark import BenchViewMetric
++    from falcor2.testing.benchmark.reporting import BenchViewMetric
+ 
+ 
+ class GPUPhase(NamedTuple):

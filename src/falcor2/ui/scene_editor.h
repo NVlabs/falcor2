@@ -19,6 +19,7 @@
 #include <array>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -100,6 +101,11 @@ public:
     /// The currently selected scene object, or nullptr if no object is selected.
     SceneObject* selected_object() const;
     void set_selected_object(SceneObject* object);
+
+    /// Create and select a scene-owned object, named from its template's label.
+    /// Keys such as "entity", "camera", and "material.StandardMaterial" are case-sensitive; unknown keys throw.
+    /// Camera templates preserve the active camera; scene updates activate the first camera if needed.
+    SceneObject* create_object(std::string_view template_key);
 
     /// Monotonically increasing version counter that changes whenever the selection changes.
     /// Consumers can cache the value and compare to detect changes without consuming state.
@@ -196,12 +202,6 @@ public:
     void add_help_section(HelpSection section) { m_help_sections.push_back(std::move(section)); }
 
 private:
-    enum class CreatePopup {
-        none,
-        geometry,
-        material,
-    };
-
     /// Height of the controls reserved above the viewport image.
     static constexpr float VIEWPORT_HEADER_HEIGHT = 36.f;
     /// Width of the primary tool rail beside the viewport.
@@ -216,6 +216,7 @@ private:
     ref<Entity> m_inspector_return_entity;
     GraphUICallback m_graph_ui_callback;
     EditorCommandRegistry m_commands;
+    EditorMenuItem m_create_menu;
     ref<SceneObject> m_selected_object;
     uint64_t m_selection_version{0};
 
@@ -242,8 +243,6 @@ private:
     bool m_show_graph{true};
     bool m_show_inspector{true};
     bool m_show_transport{true};
-    CreatePopup m_pending_create_popup{CreatePopup::none};
-
     bool m_sort_outliner{true};
     std::array<char, 256> m_outliner_search{};
     bool m_reveal_selection_in_outliner{false};
@@ -264,7 +263,7 @@ private:
     void tool_rail_ui();
     void viewport_header_ui();
     void active_camera_ui();
-    void viewport_display_menu_ui();
+    void create_menu_ui(const EditorMenuItem& menu);
     void graph_ui();
     void outliner_ui();
     void inspector_ui();
@@ -274,7 +273,7 @@ private:
     void geometry_ui(Geometry* geometry);
     void material_ui(Material* material);
     bool inspector_navigation_ui();
-    void select_and_reveal(SceneObject* object);
+    void select_and_reveal(SceneObject* object, bool show_outliner = false, bool clear_filter = false);
     void inspect_referenced_object(SceneObject* object, Entity* return_entity);
     void geometry_instance_ui(GeometryInstance* instance);
     void component_ui(Component* component);
@@ -291,9 +290,6 @@ private:
 
     void reveal_outliner_item(SceneObject* object);
 
-    template<typename T>
-    void add_scene_object_popup(const char* label);
-
     void add_component_popup(const char* label);
 
     template<typename T>
@@ -306,6 +302,8 @@ private:
 
     template<typename T, typename Func>
     void scene_object_ui(SceneObject* object, Func func);
+
+    void scene_object_name_ui(SceneObject* object);
 
     void viewport_gizmo();
 };

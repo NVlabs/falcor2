@@ -32,29 +32,26 @@ public struct MxCompensatedConductorBSDF<
 
     // TODO: Remove the eval()/eval_pdf() overrides below when
     // https://github.com/shader-slang/slang/issues/12814 is fixed.
-    public override
-        float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        return eval_with_pdf(wi, wo, sg, bc).value;
+        return eval_with_pdf(wi, wo, bc).value;
     }
 
     public override float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        EvalPdfFallbackSampleGenerator sg = EvalPdfFallbackSampleGenerator(0u);
-        return eval_with_pdf(wi, wo, sg, bc).pdf;
+        return eval_with_pdf(wi, wo, bc).pdf;
     }
 
-    public BSDFEval
-    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
         MxBsdfSample r = eval_bsdf_sample(retroreflective ? mx_retroreflect(wi) : wi, wo);
         return BSDFEval(r.pdf > 0.0 ? r.weight * r.pdf : float3(0.0), r.pdf);
     }
 
-    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
-        MxBsdfSample r = sample_bsdf_sample(wi, next_float3(sg));
+        MxBsdfSample r = sample_bsdf_sample(wi, float3(input.u_dir, input.u_lobe));
         if (r.pdf <= 0.0)
             return false;
         sample.wo = retroreflective ? mx_retroreflect(r.wo) : r.wo;
@@ -77,8 +74,8 @@ public struct MxCompensatedConductorBSDF<
         return RoughnessInformation(roughness_xy, float3(0.0));
     }
 
-    // Conductor's directional albedo is the BSDL average Fresnel for legacy
-    // and the MaterialX thin-film directional albedo for Airy.
+    // Use the Fresnel policy's F0 estimate without a thin film, or its
+    // MaterialX thin-film directional albedo when a film is present.
     [ForceInline]
     public float3 directional_albedo(const float3 wi)
     {

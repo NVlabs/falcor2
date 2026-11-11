@@ -16,21 +16,17 @@ public struct MXChiangHairMaterialInstance : IMaterialInstance
     public MxChiangHairBSDF bsdf;
     public float3 emissive_radiance = {};
 
-    public BSDFEval eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both, S : ISampleGenerator>(
-        const SurfaceInteraction si,
-        const float3 wo_ws,
-        inout S sg
-    )
+    public BSDFEval
+    eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both>(const SurfaceInteraction si, const float3 wo_ws)
     {
-        return bsdf
-            .eval_with_pdf(shading_frame_ws.to_local(si.wi_ws), shading_frame_ws.to_local(wo_ws), sg, BSDFContext());
+        return bsdf.eval_with_pdf(shading_frame_ws.to_local(si.wi_ws), shading_frame_ws.to_local(wo_ws), BSDFContext());
     }
 
-    public bool sample<S : ISampleGenerator>(const SurfaceInteraction si, inout S sg, out MaterialSample sample)
+    public bool sample(const SurfaceInteraction si, const MaterialSampleInput input, out MaterialSample sample)
     {
         sample = {};
         BSDFSample bsdf_sample;
-        if (!bsdf.sample(shading_frame_ws.to_local(si.wi_ws), bsdf_sample, sg, BSDFContext()))
+        if (!bsdf.sample(shading_frame_ws.to_local(si.wi_ws), input, BSDFContext(), bsdf_sample))
             return false;
         sample.wo_ws = shading_frame_ws.to_global(bsdf_sample.wo);
         sample.pdf = bsdf_sample.pdf;

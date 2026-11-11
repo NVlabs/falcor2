@@ -209,7 +209,12 @@ def render_spheres(
         if case.mode in ("mdl", "materialx"):
             assert isinstance(material, getattr(f2, expected)), case.name
         else:
-            assert material is not None and material.slang_type_name == expected, case.name
+            assert material is not None, case.name
+            actual = material.slang_type_name
+            if expected in ("GLTFMaterial", "GLTFSpecGlossMaterial"):
+                assert actual.startswith(f"{expected}<"), f"{case.name}: {actual}"
+            else:
+                assert actual == expected, f"{case.name}: {actual}"
         if case.bc5:
             # glTF PNG cannot store BC5. Replace only this imported texture with a real GPU BC5 block.
             block = np.array([160, 0, 0, 0, 0, 0, 0, 0, 144, 0, 0, 0, 0, 0, 0, 0], dtype=np.uint8)

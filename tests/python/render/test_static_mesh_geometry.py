@@ -227,7 +227,8 @@ class TestStaticMeshGeometryMutation:
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 class TestStaticMeshGeometryProceduralCreation:
-    """Tests the set_mesh_data NumPy binding for procedural preview geometry."""
+    """Tests for set_mesh_data numpy-array binding used by neuralappearance to
+    author procedural preview geometry (see .plans/materialport.md Phase 1a)."""
 
     def test_set_mesh_data_quad(self, device: spy.Device):
         scene = f2.Scene.create(device)

@@ -17,8 +17,6 @@ namespace falcor {
 
 static constexpr bool COMPUTE_TRANSFORM_INVERSE_TRANSPOSE_ON_CPU = false;
 
-static constexpr size_t MAX_BUFFER_SIZE = 2ull * 1024 * 1024 * 1024;
-
 /// Force the use of procedural LSS geometry, even if hardware support is available.
 /// This is used for testing purposes.
 static constexpr bool FORCE_PROCEDURAL_LSS = false;
@@ -217,28 +215,31 @@ void RenderGeometryAdditionalAttributeStorage::bind(sgl::ShaderCursor cursor) co
 // RenderTriangleGeometry
 // ----------------------------------------------------------------------------
 
-RenderTriangleGeometries::RenderTriangleGeometries(sgl::Device* device)
+RenderTriangleGeometries::RenderTriangleGeometries(BufferHandleTable& handles)
     : m_descs({
           .label = "TriangleGeometryData::descs",
       })
-    , m_vertices({
-          .usage = sgl::BufferUsage::shader_resource | sgl::BufferUsage::unordered_access
-              | sgl::BufferUsage::acceleration_structure_build_input,
-          .label = "TriangleGeometryData::vertices",
-      })
-    , m_indices({
-          .usage = sgl::BufferUsage::shader_resource | sgl::BufferUsage::unordered_access
-              | sgl::BufferUsage::acceleration_structure_build_input,
-          .label = "TriangleGeometryData::indices",
-      })
-    , m_vertex_allocator(static_cast<uint32_t>(MAX_BUFFER_SIZE / sizeof(shared::PackedTriangleVertex)))
-    , m_index_allocator(static_cast<uint32_t>(MAX_BUFFER_SIZE / sizeof(uint32_t)))
+    , m_vertices(
+          handles,
+          {
+              .usage = sgl::BufferUsage::shader_resource | sgl::BufferUsage::unordered_access
+                  | sgl::BufferUsage::acceleration_structure_build_input,
+              .label = "TriangleGeometryData::vertices",
+          }
+      )
+    , m_indices(
+          handles,
+          {
+              .usage = sgl::BufferUsage::shader_resource | sgl::BufferUsage::unordered_access
+                  | sgl::BufferUsage::acceleration_structure_build_input,
+              .label = "TriangleGeometryData::indices",
+          }
+      )
     , m_additional_attributes(
           "TriangleGeometryData::additional_attributes",
           "TriangleGeometryData::additional_attribute_data"
       )
 {
-    FALCOR_UNUSED(device);
 }
 
 RenderTriangleGeometryHandle RenderTriangleGeometries::create(const RenderTriangleGeometryDesc& desc)
@@ -253,24 +254,22 @@ RenderTriangleGeometryHandle RenderTriangleGeometries::create(const RenderTriang
     geometry.index_count = desc.index_count;
 
     // Allocate vertex data.
-    geometry.vertex_allocation = m_vertex_allocator.allocate(desc.vertex_count);
+    geometry.vertex_allocation = m_vertices.allocate(desc.vertex_count);
     FALCOR_CHECK(geometry.vertex_allocation.is_valid(), "Failed to allocate vertex data");
-    geometry.vertex_offset = geometry.vertex_allocation.offset;
-    m_vertices.ensure_size(geometry.vertex_offset + geometry.vertex_count);
-    m_vertices.mark_dirty(geometry.vertex_offset, geometry.vertex_offset + geometry.vertex_count);
+    geometry.vertex_offset = geometry.vertex_allocation.range.offset;
 
     // Allocate index data.
-    geometry.index_allocation = m_index_allocator.allocate(desc.index_count);
+    geometry.index_allocation = m_indices.allocate(desc.index_count);
     FALCOR_CHECK(geometry.index_allocation.is_valid(), "Failed to allocate index data");
-    geometry.index_offset = geometry.index_allocation.offset;
-    m_indices.ensure_size(geometry.index_offset + geometry.index_count);
-    m_indices.mark_dirty(geometry.index_offset, geometry.index_offset + geometry.index_count);
+    geometry.index_offset = geometry.index_allocation.range.offset;
 
     // Allocate descriptor.
     m_descs.ensure_size(handle.index() + 1);
     m_descs[handle.index()] = {
+        .vertex_buffer = m_vertices.buffer_index(geometry.vertex_allocation),
+        .index_buffer = m_indices.buffer_index(geometry.index_allocation),
+
         .vertex_offset = geometry.vertex_offset,
-        .vertex_count = geometry.vertex_count,
         .index_offset = geometry.index_offset,
         .index_count = geometry.index_count,
     };
@@ -287,11 +286,11 @@ void RenderTriangleGeometries::destroy(RenderTriangleGeometryHandle handle)
 
     // Free vertex data.
     if (geometry.vertex_allocation.is_valid())
-        m_vertex_allocator.free(geometry.vertex_allocation);
+        m_vertices.free(geometry.vertex_allocation);
 
     // Free index data.
     if (geometry.index_allocation.is_valid())
-        m_index_allocator.free(geometry.index_allocation);
+        m_indices.free(geometry.index_allocation);
 
     m_additional_attributes.destroy(handle.index(), geometry.additional_attributes);
 
@@ -307,13 +306,19 @@ void RenderTriangleGeometries::update(RenderTriangleGeometryHandle handle, const
     RenderTriangleGeometry& geometry = m_pool[handle];
     // Copy vertex data.
     FALCOR_CHECK_EQ(data.vertices.size(), geometry.vertex_count);
-    std::memcpy(m_vertices.data() + geometry.vertex_offset, data.vertices.data(), data.vertices.size_bytes());
-    m_vertices.mark_dirty(geometry.vertex_offset, geometry.vertex_offset + geometry.vertex_count);
+    std::memcpy(
+        m_vertices.mutable_data(geometry.vertex_allocation).data(),
+        data.vertices.data(),
+        data.vertices.size_bytes()
+    );
 
     // Copy index data.
     FALCOR_CHECK_EQ(data.indices.size(), geometry.index_count);
-    std::memcpy(m_indices.data() + geometry.index_offset, data.indices.data(), data.indices.size_bytes());
-    m_indices.mark_dirty(geometry.index_offset, geometry.index_offset + geometry.index_count);
+    std::memcpy(
+        m_indices.mutable_data(geometry.index_allocation).data(),
+        data.indices.data(),
+        data.indices.size_bytes()
+    );
 
     m_additional_attributes
         .update(handle.index(), geometry.vertex_count, geometry.additional_attributes, data.additional_attributes);
@@ -328,12 +333,15 @@ void RenderTriangleGeometries::write_geometry_instance_desc(
 {
     const RenderTriangleGeometry& geometry = m_pool[handle];
     shared::TriangleGeometryInstanceDesc& triangle_desc = reinterpret_cast<shared::TriangleGeometryInstanceDesc&>(desc);
-    triangle_desc.header.type = shared::GeometryType::triangle;
+    triangle_desc.header.type_and_flags = shared::detail::pack_geometry_instance_type_and_flags(
+        shared::GeometryType::triangle,
+        shared::GeometryInstanceFlags::none
+    );
     triangle_desc.header.geometry_id = shared::GeometryID{handle.index()};
     triangle_desc.vertex_offset = geometry.vertex_offset;
-    triangle_desc.vertex_count = geometry.vertex_count;
+    triangle_desc.vertex_buffer = m_vertices.buffer_index(geometry.vertex_allocation);
+    triangle_desc.index_buffer = m_indices.buffer_index(geometry.index_allocation);
     triangle_desc.index_offset = geometry.index_offset;
-    triangle_desc.index_count = geometry.index_count;
 }
 
 void RenderTriangleGeometries::write_acceleration_structure_build_input(
@@ -343,12 +351,17 @@ void RenderTriangleGeometries::write_acceleration_structure_build_input(
 {
     const RenderTriangleGeometry& geometry = m_pool[handle];
     sgl::AccelerationStructureBuildInputTriangles triangles;
-    triangles.vertex_buffers
-        = {sgl::BufferOffsetPair(m_vertices.buffer(), geometry.vertex_offset * sizeof(shared::PackedTriangleVertex))};
+    triangles.vertex_buffers = {sgl::BufferOffsetPair(
+        m_vertices.buffer(geometry.vertex_allocation.slot_index),
+        geometry.vertex_offset * sizeof(shared::PackedTriangleVertex)
+    )};
     triangles.vertex_format = sgl::Format::rgb32_float;
     triangles.vertex_count = geometry.vertex_count;
     triangles.vertex_stride = sizeof(shared::PackedTriangleVertex);
-    triangles.index_buffer = sgl::BufferOffsetPair(m_indices.buffer(), geometry.index_offset * sizeof(uint32_t));
+    triangles.index_buffer = sgl::BufferOffsetPair(
+        m_indices.buffer(geometry.index_allocation.slot_index),
+        geometry.index_offset * sizeof(uint32_t)
+    );
     triangles.index_format = sgl::IndexFormat::uint32;
     triangles.index_count = geometry.index_count;
     triangles.flags = sgl::AccelerationStructureGeometryFlags::opaque;
@@ -358,8 +371,8 @@ void RenderTriangleGeometries::write_acceleration_structure_build_input(
 void RenderTriangleGeometries::update_buffers(sgl::CommandEncoder* command_encoder)
 {
     m_descs.update_buffer(command_encoder);
-    m_vertices.update_buffer(command_encoder);
-    m_indices.update_buffer(command_encoder);
+    m_vertices.update_buffers(command_encoder);
+    m_indices.update_buffers(command_encoder);
     m_additional_attributes.update_buffers(command_encoder);
 }
 
@@ -367,10 +380,6 @@ void RenderTriangleGeometries::bind(sgl::ShaderCursor cursor) const
 {
     if (m_descs.buffer())
         cursor["descs"] = m_descs.buffer();
-    if (m_vertices.buffer())
-        cursor["vertices"] = m_vertices.buffer();
-    if (m_indices.buffer())
-        cursor["indices"] = m_indices.buffer();
     m_additional_attributes.bind(cursor);
 }
 
@@ -378,22 +387,34 @@ void RenderTriangleGeometries::bind(sgl::ShaderCursor cursor) const
 // RenderLSSGeometry
 // ----------------------------------------------------------------------------
 
-RenderLSSGeometries::RenderLSSGeometries(sgl::Device* device, LSSIntersectionMode intersection_mode)
+RenderLSSGeometries::RenderLSSGeometries(
+    sgl::Device* device,
+    BufferHandleTable& handles,
+    LSSIntersectionMode intersection_mode
+)
     : m_descs({
           .label = "LSSGeometryData::descs",
       })
-    , m_vertices({
-          .usage = sgl::BufferUsage::shader_resource | sgl::BufferUsage::unordered_access
-              | sgl::BufferUsage::acceleration_structure_build_input,
-          .label = "LSSGeometryData::vertices",
-      })
-    , m_indices({
-          .usage = sgl::BufferUsage::shader_resource | sgl::BufferUsage::unordered_access
-              | sgl::BufferUsage::acceleration_structure_build_input,
-          .label = "LSSGeometryData::indices",
-      })
-    , m_vertex_allocator(static_cast<uint32_t>(MAX_BUFFER_SIZE / sizeof(shared::PackedLSSVertex)))
-    , m_index_allocator(static_cast<uint32_t>(MAX_BUFFER_SIZE / sizeof(uint32_t)))
+    , m_vertices(
+          handles,
+          {
+              .usage = sgl::BufferUsage::shader_resource | sgl::BufferUsage::unordered_access
+                  | sgl::BufferUsage::acceleration_structure_build_input,
+              .label = "LSSGeometryData::vertices",
+          }
+      )
+    , m_indices(
+          handles,
+          {
+              // AABB buffers share these element ranges and must fit the same byte limit.
+              .max_buffer_size = intersection_mode == LSSIntersectionMode::procedural
+                  ? (ManagedVectorDesc{}.max_buffer_size / sizeof(rhi::AABB)) * sizeof(uint32_t)
+                  : ManagedVectorDesc{}.max_buffer_size,
+              .usage = sgl::BufferUsage::shader_resource | sgl::BufferUsage::unordered_access
+                  | sgl::BufferUsage::acceleration_structure_build_input,
+              .label = "LSSGeometryData::indices",
+          }
+      )
     , m_additional_attributes("LSSGeometryData::additional_attributes", "LSSGeometryData::additional_attribute_data")
     , m_intersection_mode(intersection_mode)
 {
@@ -416,24 +437,22 @@ RenderLSSGeometryHandle RenderLSSGeometries::create(const RenderLSSGeometryDesc&
     geometry.index_count = desc.index_count;
 
     // Allocate vertex data.
-    geometry.vertex_allocation = m_vertex_allocator.allocate(desc.vertex_count);
+    geometry.vertex_allocation = m_vertices.allocate(desc.vertex_count);
     FALCOR_CHECK(geometry.vertex_allocation.is_valid(), "Failed to allocate vertex data");
-    geometry.vertex_offset = geometry.vertex_allocation.offset;
-    m_vertices.ensure_size(geometry.vertex_offset + geometry.vertex_count);
-    m_vertices.mark_dirty(geometry.vertex_offset, geometry.vertex_offset + geometry.vertex_count);
+    geometry.vertex_offset = geometry.vertex_allocation.range.offset;
 
     // Allocate index data.
-    geometry.index_allocation = m_index_allocator.allocate(desc.index_count);
+    geometry.index_allocation = m_indices.allocate(desc.index_count);
     FALCOR_CHECK(geometry.index_allocation.is_valid(), "Failed to allocate index data");
-    geometry.index_offset = geometry.index_allocation.offset;
-    m_indices.ensure_size(geometry.index_offset + geometry.index_count);
-    m_indices.mark_dirty(geometry.index_offset, geometry.index_offset + geometry.index_count);
+    geometry.index_offset = geometry.index_allocation.range.offset;
 
     // Allocate descriptor.
     m_descs.ensure_size(handle.index() + 1);
     m_descs[handle.index()] = {
+        .vertex_buffer = m_vertices.buffer_index(geometry.vertex_allocation),
+        .index_buffer = m_indices.buffer_index(geometry.index_allocation),
+
         .vertex_offset = geometry.vertex_offset,
-        .vertex_count = geometry.vertex_count,
         .index_offset = geometry.index_offset,
         .index_count = geometry.index_count,
     };
@@ -450,11 +469,11 @@ void RenderLSSGeometries::destroy(RenderLSSGeometryHandle handle)
 
     // Free vertex data.
     if (geometry.vertex_allocation.is_valid())
-        m_vertex_allocator.free(geometry.vertex_allocation);
+        m_vertices.free(geometry.vertex_allocation);
 
     // Free index data.
     if (geometry.index_allocation.is_valid())
-        m_index_allocator.free(geometry.index_allocation);
+        m_indices.free(geometry.index_allocation);
 
     m_additional_attributes.destroy(handle.index(), geometry.additional_attributes);
 
@@ -471,13 +490,19 @@ void RenderLSSGeometries::update(RenderLSSGeometryHandle handle, const RenderLSS
 
     // Copy vertex data.
     FALCOR_CHECK_EQ(data.vertices.size(), geometry.vertex_count);
-    std::memcpy(m_vertices.data() + geometry.vertex_offset, data.vertices.data(), data.vertices.size_bytes());
-    m_vertices.mark_dirty(geometry.vertex_offset, geometry.vertex_offset + geometry.vertex_count);
+    std::memcpy(
+        m_vertices.mutable_data(geometry.vertex_allocation).data(),
+        data.vertices.data(),
+        data.vertices.size_bytes()
+    );
 
     // Copy index data.
     FALCOR_CHECK_EQ(data.indices.size(), geometry.index_count);
-    std::memcpy(m_indices.data() + geometry.index_offset, data.indices.data(), data.indices.size_bytes());
-    m_indices.mark_dirty(geometry.index_offset, geometry.index_offset + geometry.index_count);
+    std::memcpy(
+        m_indices.mutable_data(geometry.index_allocation).data(),
+        data.indices.data(),
+        data.indices.size_bytes()
+    );
 
     m_additional_attributes
         .update(handle.index(), geometry.vertex_count, geometry.additional_attributes, data.additional_attributes);
@@ -492,12 +517,15 @@ void RenderLSSGeometries::write_geometry_instance_desc(
 {
     const RenderLSSGeometry& geometry = m_pool[handle];
     shared::LSSGeometryInstanceDesc& lss_desc = reinterpret_cast<shared::LSSGeometryInstanceDesc&>(desc);
-    lss_desc.header.type = shared::GeometryType::lss;
+    lss_desc.header.type_and_flags = shared::detail::pack_geometry_instance_type_and_flags(
+        shared::GeometryType::lss,
+        shared::GeometryInstanceFlags::none
+    );
     lss_desc.header.geometry_id = shared::GeometryID{handle.index()};
     lss_desc.vertex_offset = geometry.vertex_offset;
-    lss_desc.vertex_count = geometry.vertex_count;
+    lss_desc.vertex_buffer = m_vertices.buffer_index(geometry.vertex_allocation);
+    lss_desc.index_buffer = m_indices.buffer_index(geometry.index_allocation);
     lss_desc.index_offset = geometry.index_offset;
-    lss_desc.index_count = geometry.index_count;
 }
 
 void RenderLSSGeometries::write_acceleration_structure_build_input(
@@ -508,7 +536,10 @@ void RenderLSSGeometries::write_acceleration_structure_build_input(
     const RenderLSSGeometry& geometry = m_pool[handle];
     if (m_intersection_mode == LSSIntersectionMode::procedural) {
         sgl::AccelerationStructureBuildInputProceduralPrimitives procedural;
-        procedural.aabb_buffers = {sgl::BufferOffsetPair(m_aabb_buffer, geometry.index_offset * sizeof(rhi::AABB))};
+        procedural.aabb_buffers = {sgl::BufferOffsetPair(
+            m_aabb_buffers[geometry.index_allocation.slot_index],
+            geometry.index_offset * sizeof(rhi::AABB)
+        )};
         procedural.aabb_stride = sizeof(rhi::AABB);
         procedural.primitive_count = geometry.index_count;
         procedural.flags = sgl::AccelerationStructureGeometryFlags::opaque;
@@ -517,17 +548,22 @@ void RenderLSSGeometries::write_acceleration_structure_build_input(
         sgl::AccelerationStructureBuildInputLinearSweptSpheres lss;
         lss.vertex_count = geometry.vertex_count;
         lss.primitive_count = geometry.index_count;
-        lss.vertex_position_buffers
-            = {sgl::BufferOffsetPair(m_vertices.buffer(), geometry.vertex_offset * sizeof(shared::PackedLSSVertex))};
+        lss.vertex_position_buffers = {sgl::BufferOffsetPair(
+            m_vertices.buffer(geometry.vertex_allocation.slot_index),
+            geometry.vertex_offset * sizeof(shared::PackedLSSVertex)
+        )};
         lss.vertex_position_format = sgl::Format::rgb32_float;
         lss.vertex_position_stride = sizeof(shared::PackedLSSVertex);
         lss.vertex_radius_buffers = {sgl::BufferOffsetPair(
-            m_vertices.buffer(),
+            m_vertices.buffer(geometry.vertex_allocation.slot_index),
             geometry.vertex_offset * sizeof(shared::PackedLSSVertex) + sizeof(float3)
         )};
         lss.vertex_radius_format = sgl::Format::r32_float;
         lss.vertex_radius_stride = sizeof(shared::PackedLSSVertex);
-        lss.index_buffer = sgl::BufferOffsetPair(m_indices.buffer(), geometry.index_offset * sizeof(uint32_t));
+        lss.index_buffer = sgl::BufferOffsetPair(
+            m_indices.buffer(geometry.index_allocation.slot_index),
+            geometry.index_offset * sizeof(uint32_t)
+        );
         lss.index_format = sgl::IndexFormat::uint32;
         lss.index_count = geometry.index_count;
         lss.indexing_mode = sgl::LinearSweptSpheresIndexingMode::successive;
@@ -540,48 +576,76 @@ void RenderLSSGeometries::write_acceleration_structure_build_input(
 void RenderLSSGeometries::update_buffers(sgl::CommandEncoder* command_encoder)
 {
     m_descs.update_buffer(command_encoder);
-    m_vertices.update_buffer(command_encoder);
-    m_indices.update_buffer(command_encoder);
+    m_vertices.update_buffers(command_encoder);
+    m_indices.update_buffers(command_encoder);
     m_additional_attributes.update_buffers(command_encoder);
 
     if (m_intersection_mode == LSSIntersectionMode::procedural && m_pool.is_dirty()) {
-        // Compute total number of segments (indices) across all geometries.
-        uint32_t total_segments = 0;
-        for (const auto& [handle, geometry] : m_pool) {
-            total_segments = std::max(total_segments, geometry.index_offset + geometry.index_count);
-        }
-
-        if (total_segments > 0) {
-            // Ensure AABB buffer is large enough.
-            size_t required_size = total_segments * sizeof(rhi::AABB);
-            bool recompute_all = false;
-            if (!m_aabb_buffer || m_aabb_buffer->size() < required_size) {
-                m_aabb_buffer = command_encoder->device()->create_buffer({
+        // Each index-buffer slot has a matching AABB buffer: index i describes AABB i.
+        // Mirror the uploaded index capacity, including its amortized growth. The index pool's
+        // byte limit accounts for the larger AABB stride, so both buffers stay within the limit.
+        m_aabb_buffers.resize(m_indices.slot_count());
+        std::vector<bool> recompute_all(m_aabb_buffers.size());
+        for (size_t slot = 0; slot < m_aabb_buffers.size(); ++slot) {
+            const size_t segment_capacity = m_indices.buffer(static_cast<uint16_t>(slot))->size() / sizeof(uint32_t);
+            const size_t required_size = segment_capacity * sizeof(rhi::AABB);
+            auto& buffer = m_aabb_buffers[slot];
+            if (!buffer || buffer->size() < required_size) {
+                buffer = command_encoder->device()->create_buffer({
                     .size = required_size,
                     .usage = sgl::BufferUsage::unordered_access | sgl::BufferUsage::acceleration_structure_build_input,
-                    .label = "LSSGeometryData::aabbs",
+                    .label = "LSSGeometryData::aabbs[" + std::to_string(slot) + "]",
                 });
-                recompute_all = true;
+                recompute_all[slot] = true;
             }
+        }
 
-            // Dispatch AABB compute for each dirty geometry (or all geometries if we had to resize the AABB buffer).
-            for (const auto& [handle, geometry] : m_pool) {
-                if (m_pool.is_dirty(handle) || recompute_all) {
-                    m_compute_aabbs_kernel->dispatch(
-                        uint3(geometry.index_count, 1, 1),
-                        [&](sgl::ShaderCursor cursor)
-                        {
-                            cursor = cursor.find_entry_point(0);
-                            cursor["vertices"] = m_vertices.buffer();
-                            cursor["indices"] = m_indices.buffer();
-                            cursor["aabbs"] = m_aabb_buffer;
-                            cursor["vertex_offset"] = geometry.vertex_offset;
-                            cursor["index_offset"] = geometry.index_offset;
-                            cursor["index_count"] = geometry.index_count;
-                        },
-                        command_encoder
-                    );
+        std::vector<bool> aabb_written(m_aabb_buffers.size());
+        m_aabb_work.resize(m_pool.count());
+        size_t work_count = 0;
+        uint32_t width = 0;
+        for (const auto& [handle, geometry] : m_pool) {
+            const uint16_t slot = geometry.index_allocation.slot_index;
+            // Replaced AABB buffers also need the bounds of otherwise clean geometries.
+            if (m_pool.is_dirty(handle) || recompute_all[slot]) {
+                const auto& aabbs = m_aabb_buffers[slot];
+                if (!aabb_written[slot]) {
+                    // Handles hide UAV access from automatic binding transitions and resource retention.
+                    // Input pools already declare shader_resource access in update_buffers() above.
+                    command_encoder->set_buffer_state(aabbs, sgl::ResourceState::unordered_access);
+                    aabb_written[slot] = true;
                 }
+                m_aabb_work[work_count++] = {
+                    .vertex_buffer = to_handle(m_vertices.buffer(geometry.vertex_allocation.slot_index)),
+                    .index_buffer = to_handle(m_indices.buffer(slot)),
+                    .aabb_buffer = to_rw_handle(aabbs),
+                    .vertex_offset = geometry.vertex_offset,
+                    .index_offset = geometry.index_offset,
+                    .index_count = geometry.index_count,
+                };
+                width = std::max(width, geometry.index_count);
+            }
+        }
+        m_aabb_work.resize(work_count);
+        m_aabb_work.update_buffer(command_encoder);
+
+        // 64 threads per group in X, one geometry per row. Split both dimensions
+        // at the portable group limit, retaining offsets into each geometry/work list.
+        constexpr uint32_t MAX_THREADS_X = 65535 * 64;
+        constexpr uint32_t MAX_THREADS_Y = 65535;
+        const uint32_t height = sgl::narrow_cast<uint32_t>(work_count);
+        for (uint32_t y = 0; y < height; y += MAX_THREADS_Y) {
+            for (uint32_t x = 0; x < width; x += MAX_THREADS_X) {
+                m_compute_aabbs_kernel->dispatch(
+                    uint3(std::min(width - x, MAX_THREADS_X), std::min(height - y, MAX_THREADS_Y), 1),
+                    [&](sgl::ShaderCursor cursor)
+                    {
+                        cursor = cursor.find_entry_point(0);
+                        cursor["work"] = m_aabb_work.buffer();
+                        cursor["thread_offset"] = uint2(x, y);
+                    },
+                    command_encoder
+                );
             }
         }
     }
@@ -591,10 +655,6 @@ void RenderLSSGeometries::bind(sgl::ShaderCursor cursor) const
 {
     if (m_descs.buffer())
         cursor["descs"] = m_descs.buffer();
-    if (m_vertices.buffer())
-        cursor["vertices"] = m_vertices.buffer();
-    if (m_indices.buffer())
-        cursor["indices"] = m_indices.buffer();
     m_additional_attributes.bind(cursor);
 }
 
@@ -632,7 +692,10 @@ void RenderAreaLightGeometries::write_geometry_instance_desc(
     shared::GeometryInstanceDesc& desc
 ) const
 {
-    desc.header.type = shared::GeometryType::area_light;
+    desc.header.type_and_flags = shared::detail::pack_geometry_instance_type_and_flags(
+        shared::GeometryType::area_light,
+        shared::GeometryInstanceFlags::none
+    );
     desc.header.geometry_id = shared::GeometryID{handle.index()};
 }
 
@@ -692,7 +755,7 @@ inline void check_shared_types(sgl::SlangModule* module)
     CHECK_STRUCT_END();
 
     CHECK_STRUCT_BEGIN(module, "GeometryInstanceDescHeader", shared::GeometryInstanceDescHeader);
-    CHECK_STRUCT_FIELD(type);
+    CHECK_STRUCT_FIELD(type_and_flags);
     CHECK_STRUCT_FIELD(geometry_id);
     CHECK_STRUCT_FIELD(material_id);
     CHECK_STRUCT_FIELD(transform_id);
@@ -719,7 +782,8 @@ inline void check_shared_types(sgl::SlangModule* module)
 
     CHECK_STRUCT_BEGIN(module, "TriangleGeometryDesc", shared::TriangleGeometryDesc);
     CHECK_STRUCT_FIELD(vertex_offset);
-    CHECK_STRUCT_FIELD(vertex_count);
+    CHECK_STRUCT_FIELD(vertex_buffer);
+    CHECK_STRUCT_FIELD(index_buffer);
     CHECK_STRUCT_FIELD(index_offset);
     CHECK_STRUCT_FIELD(index_count);
     CHECK_STRUCT_END();
@@ -732,9 +796,10 @@ inline void check_shared_types(sgl::SlangModule* module)
     CHECK_STRUCT_BEGIN(module, "TriangleGeometryInstanceDesc", shared::TriangleGeometryInstanceDesc);
     CHECK_STRUCT_FIELD(header);
     CHECK_STRUCT_FIELD(vertex_offset);
-    CHECK_STRUCT_FIELD(vertex_count);
+    CHECK_STRUCT_FIELD(vertex_buffer);
+    CHECK_STRUCT_FIELD(index_buffer);
     CHECK_STRUCT_FIELD(index_offset);
-    CHECK_STRUCT_FIELD(index_count);
+    CHECK_STRUCT_FIELD(reserved);
     CHECK_STRUCT_END();
 
     CHECK_STRUCT_BEGIN(module, "PackedLSSVertex", shared::PackedLSSVertex);
@@ -745,7 +810,8 @@ inline void check_shared_types(sgl::SlangModule* module)
 
     CHECK_STRUCT_BEGIN(module, "LSSGeometryDesc", shared::LSSGeometryDesc);
     CHECK_STRUCT_FIELD(vertex_offset);
-    CHECK_STRUCT_FIELD(vertex_count);
+    CHECK_STRUCT_FIELD(vertex_buffer);
+    CHECK_STRUCT_FIELD(index_buffer);
     CHECK_STRUCT_FIELD(index_offset);
     CHECK_STRUCT_FIELD(index_count);
     CHECK_STRUCT_END();
@@ -753,9 +819,10 @@ inline void check_shared_types(sgl::SlangModule* module)
     CHECK_STRUCT_BEGIN(module, "LSSGeometryInstanceDesc", shared::LSSGeometryInstanceDesc);
     CHECK_STRUCT_FIELD(header);
     CHECK_STRUCT_FIELD(vertex_offset);
-    CHECK_STRUCT_FIELD(vertex_count);
+    CHECK_STRUCT_FIELD(vertex_buffer);
+    CHECK_STRUCT_FIELD(index_buffer);
     CHECK_STRUCT_FIELD(index_offset);
-    CHECK_STRUCT_FIELD(index_count);
+    CHECK_STRUCT_FIELD(reserved);
     CHECK_STRUCT_END();
 
     CHECK_STRUCT_BEGIN(module, "AreaLightGeometryInstanceDesc", shared::AreaLightGeometryInstanceDesc);
@@ -768,9 +835,10 @@ inline void check_shared_types(sgl::SlangModule* module)
 
 RenderScene::RenderScene(sgl::Device* device)
     : m_device(device)
-    , m_triangle_geometries(device)
+    , m_triangle_geometries(m_geometry_buffers)
     , m_lss_geometries(
           device,
+          m_geometry_buffers,
           (FORCE_PROCEDURAL_LSS || !device->has_feature(sgl::Feature::acceleration_structure_linear_swept_spheres))
               ? LSSIntersectionMode::procedural
               : LSSIntersectionMode::hardware
@@ -1110,6 +1178,7 @@ bool RenderScene::update(const HitGroupPolicy& hit_group_policy, bool requires_o
 void RenderScene::bind_to_scene(sgl::ShaderCursor cursor) const
 {
     cursor["tlas"] = m_tlas;
+    cursor["geometry"] = m_geometry_buffers.buffer();
     m_triangle_geometries.bind(cursor["triangle_geometry"]);
     m_lss_geometries.bind(cursor["lss_geometry"]);
     if (m_geometry_instance_descs.buffer())
@@ -1221,6 +1290,7 @@ bool RenderScene::update(UpdateContext& ctx)
     // Update all device-side geometry buffers (vertices, indices, descriptors).
     m_triangle_geometries.update_buffers(ctx.command_encoder());
     m_lss_geometries.update_buffers(ctx.command_encoder());
+    m_geometry_buffers.update_buffer(ctx.command_encoder());
     m_area_light_geometries.update_buffers(ctx.command_encoder());
     // TODO(scene): This is where we might call back to user code to run compute shaders on vertex data (displacement
     // shaders).

@@ -1,0 +1,12 @@
+--- a/tests/python/benchmarks/test_render_benchmarks.py
++++ b/tests/python/benchmarks/test_render_benchmarks.py
+@@ -132,7 +132,8 @@
+     env_entity = scene.create_entity()
+     env_map = env_entity.create_component(f2.EnvMapLight)
+     env_map["env_map_path"] = str(path)
+-    env_map.intensity = intensity
++    # Historical baselines use RGB intensity; newer baselines use a scalar.
++    env_map.intensity = type(env_map.intensity)(intensity)
+ 
+ 
+ @pytest.mark.benchmark

@@ -1,0 +1,11 @@
+--- a/tests/python/benchmarks/test_benchmark_scenes.py
++++ b/tests/python/benchmarks/test_benchmark_scenes.py
+@@ -12,7 +12,7 @@
+ 
+ import pytest
+ import slangpy as spy
+-from slangpy.testing.benchmark import build_metric
++from falcor2.testing.benchmark.reporting import build_metric
+ 
+ import falcor2 as f2
+ from falcor2.rendernodes import PathTracerPipeline

@@ -1,0 +1,45 @@
+--- a/tests/python/conftest.py
++++ b/tests/python/conftest.py
+@@ -15,6 +15,11 @@
+ import falcor2 as f2
+ import falcor2.testing.helpers as helpers
+ from falcor2.testing.image_test_plugin import ImageTestPlugin
++from falcor2.testing.benchmark import (
++    add_benchmark_options,
++    benchmark_image_test,
++    BenchmarkPlugin,
++)
+ from falcor2.testing.shader_test_plugin import SlangTestFile, clear_dispatcher_cache
+ from tools import crashpad
+ 
+@@ -26,6 +31,7 @@
+ 
+ def pytest_addoption(parser: pytest.Parser):
+     """Add command line options for testing."""
++    add_benchmark_options(parser)
+     parser.addoption(
+         "--image-tests-generate",
+         action="store_true",
+@@ -78,6 +84,10 @@
+ 
+ def pytest_configure(config: pytest.Config):
+     """Configure the image test plugin."""
++    if config.getoption("--benchmark-only"):
++        config.option.benchmark = True
++    helpers.BENCHMARK_COMPILATION_REPORTS_ENABLED = bool(config.getoption("--benchmark"))
++    config.pluginmanager.register(BenchmarkPlugin(config), "falcor2_benchmark")
+     helpers.configure_module_and_shader_cache(
+         module_cache_enabled=config.getoption("--module-cache"),
+         shader_cache_enabled=config.getoption("--shader-cache"),
+@@ -217,3 +227,11 @@
+     scene.update()
+     scene.update()
+     return scene
++
++
++# These benchmark assets do not exist in this historical data revision.
++
++collect_ignore = [
++    "benchmarks/internal/test_dpel_materials.py",
++    "benchmarks/test_benchmark_scenes.py",
++]

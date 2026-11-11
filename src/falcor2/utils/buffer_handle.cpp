@@ -8,5 +8,6 @@
 namespace falcor {
 
 FALCOR_STATIC_ONCE(sgl::cursor_utils::register_cursor_writer<BufferHandle>());
+FALCOR_STATIC_ONCE(sgl::cursor_utils::register_cursor_writer<RWBufferHandle>());
 
 } // namespace falcor

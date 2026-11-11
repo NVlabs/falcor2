@@ -23,6 +23,7 @@ END_DISABLE_USD_WARNINGS
 #include <filesystem>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <vector>
 
@@ -81,7 +82,20 @@ public:
     std::string get_name(const pxr::UsdPrim& prim) const { return prim.GetPath().GetString(); }
 
 private:
+    /// Usually only authored is valid and holds the complete local transform.
+    /// For potentially animated transforms with an effective pivot operation,
+    /// pivot and pivot_inverse are also valid: they surround authored with
+    /// T(pivot) and T(-pivot), while authored holds the translation/rotation/scale.
+    struct TransformNodes {
+        int authored;
+        int pivot = -1;
+        int pivot_inverse = -1;
+    };
+
     void traverse_scene(const pxr::UsdPrim& root);
+
+    TransformNodes
+    add_transform_nodes(const float4x4& transform, std::string_view name, int parent, std::optional<float3> pivot);
 
     std::vector<int>& node_idx_stack() { return m_node_idx_stacks.back(); }
     const std::vector<int>& node_idx_stack() const { return m_node_idx_stacks.back(); }
@@ -99,6 +113,13 @@ private:
 
     int push_transform(const float4x4& parent_from_local, std::string_view name, int parent)
     {
+        int node_idx = add_transform(parent_from_local, name, parent);
+        node_idx_stack().push_back(node_idx);
+        return node_idx;
+    }
+
+    int add_transform(const float4x4& parent_from_local, std::string_view name, int parent)
+    {
         ImporterNode node;
         node.name = name;
         node.parent = parent;
@@ -112,7 +133,6 @@ private:
             add_root_node(new_node_idx);
         }
         m_scene->nodes.push_back(std::move(node));
-        node_idx_stack().push_back(new_node_idx);
         return new_node_idx;
     }
 
@@ -180,8 +200,9 @@ private:
     /// Maps Usd prototype prims to their index in the ImporterScene.
     std::map<pxr::UsdPrim, int> m_prototype_to_index;
 
-    /// Maps Usd prim paths to their node index in the ImporterScene (for animation).
-    std::map<pxr::SdfPath, int> m_prim_path_to_node_idx;
+    /// A USD prim can have both an ordinary scene node and a separately imported prototype node.
+    /// Animation targets the authored TRS node and optional pivot helpers.
+    std::map<pxr::SdfPath, std::vector<TransformNodes>> m_prim_path_to_nodes;
 
     struct UsdSceneMutexes {
         std::mutex nodes;

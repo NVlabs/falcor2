@@ -14,8 +14,9 @@ public struct ReconstructionFilterSample
 /// A normalized, nonnegative filter centered at the origin, independent of camera jitter.
 public interface IReconstructionFilter
 {
-    /// Map uniform values in [0, 1)^2 to an offset without pixel-boundary clamping.
+    /// Sample an offset without pixel-boundary clamping.
     /// The caller consumes two random values even for a delta filter.
+    /// @param u Uniform sample in [0, 1)^2.
     ReconstructionFilterSample sample(float2 u);
     /// Evaluate the kernel for splatting approaches such as Mitsuba's reconstruction.
     /// Returns the normalized value per square input pixel; delta filters evaluate to zero.

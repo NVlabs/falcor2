@@ -7,7 +7,7 @@
 
 namespace falcor {
 
-/// Shared source-light conversion for importers. Reuses
+/// Shared source-light conversion for scene import and live Hydra edits. Reuses
 /// a compatible component; otherwise removes previous and creates its replacement.
 /// Set the entity transform first: point power depends on world-space scale.
 Light* update_imported_light(Entity* entity, Light* previous, const ImporterLight& source);

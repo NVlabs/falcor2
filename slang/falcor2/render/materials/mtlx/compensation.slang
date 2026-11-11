@@ -110,7 +110,8 @@ public struct MxTurquinAnalyticMicrofacetCompensation : IMxMicrofacetCompensatio
     [ForceInline]
     public static float3 reflection_scale(float roughness, float cos_theta, float3 fresnel)
     {
-        return turquin_analytic_reflection_scale(abs(cos_theta), roughness, fresnel);
+        // Convert BSDL square-root roughness to the alpha expected by the analytic fit.
+        return turquin_analytic_reflection_scale(abs(cos_theta), roughness * roughness, fresnel);
     }
 };
 

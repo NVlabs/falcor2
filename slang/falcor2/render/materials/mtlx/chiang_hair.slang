@@ -92,6 +92,8 @@ float hair_trimmed_logistic(float x, float s, float a, float b)
     return hair_logistic(x, s) / max(hair_logistic_cdf(b, s) - hair_logistic_cdf(a, s), float.MIN);
 }
 
+/// Samples the logistic distribution with scale s, truncated to [a, b].
+/// @param u Uniform sample in [0, 1).
 float hair_sample_trimmed_logistic(float u, float s, float a, float b)
 {
     float k = hair_logistic_cdf(b, s) - hair_logistic_cdf(a, s);
@@ -213,20 +215,17 @@ public struct MxChiangHairBSDF : ILayerableBSDF
 
     // TODO: Remove the eval()/eval_pdf() overrides below when
     // https://github.com/shader-slang/slang/issues/12814 is fixed.
-    public override
-        float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        return eval_with_pdf(wi, wo, sg, bc).value;
+        return eval_with_pdf(wi, wo, bc).value;
     }
 
     public override float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        EvalPdfFallbackSampleGenerator sg = EvalPdfFallbackSampleGenerator(0u);
-        return eval_with_pdf(wi, wo, sg, bc).pdf;
+        return eval_with_pdf(wi, wo, bc).pdf;
     }
 
-    public BSDFEval
-    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
         float sin_theta_o = wi.x;
         float cos_theta_o = hair_safe_sqrt(1.0 - sin_theta_o * sin_theta_o);
@@ -287,7 +286,7 @@ public struct MxChiangHairBSDF : ILayerableBSDF
         return BSDFEval(value, pdf);
     }
 
-    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
 
@@ -296,17 +295,16 @@ public struct MxChiangHairBSDF : ILayerableBSDF
         if (cos_theta_o <= HAIR_MIN_COS_THETA)
             return false;
 
-        float3 u = next_float3(sg);
         float ap_pdf[HAIR_P_MAX + 1];
         compute_ap_pdf(wi, ap_pdf);
 
         int p = 0;
-        float u_select = u.x;
+        float u_lobe = input.u_lobe;
         bool selection_done = false;
         [unroll]
         for (int i = 0; i < HAIR_P_MAX; ++i) {
-            if (!selection_done && u_select >= ap_pdf[i]) {
-                u_select -= ap_pdf[i];
+            if (!selection_done && u_lobe >= ap_pdf[i]) {
+                u_lobe -= ap_pdf[i];
                 p = i + 1;
             } else {
                 selection_done = true;
@@ -316,11 +314,11 @@ public struct MxChiangHairBSDF : ILayerableBSDF
         // Rounding at the end of the CDF must not select a zero-weight tail.
         while (p > 0 && ap_pdf[p] <= 0.0) {
             --p;
-            u_select = ap_pdf[p];
+            u_lobe = ap_pdf[p];
         }
         // The conditional residual is uniform within the chosen order, so it
         // can also sample its azimuth without a fourth random coordinate.
-        float u_azimuth = clamp(u_select / ap_pdf[p], 0.0, 0x1.fffffep-1);
+        float u_azimuth = clamp(u_lobe / ap_pdf[p], 0.0, 0x1.fffffep-1);
 
         float alpha = hair_alpha();
         float sin_theta_op;
@@ -328,10 +326,10 @@ public struct MxChiangHairBSDF : ILayerableBSDF
         hair_shift_view_theta(alpha, p, sin_theta_o, cos_theta_o, sin_theta_op, cos_theta_op);
 
         float vp = lobe_v(p);
-        float u_m = max(u.y, 1e-5);
+        float u_m = max(input.u_dir.x, 1e-5);
         float cos_theta = 1.0 + vp * log(u_m + (1.0 - u_m) * exp(-2.0 / vp));
         float sin_theta = hair_safe_sqrt(1.0 - cos_theta * cos_theta);
-        float cos_phi = cos(u.z * float.TWO_PI);
+        float cos_phi = cos(input.u_dir.y * float.TWO_PI);
         float sin_theta_i = -cos_theta * sin_theta_op + sin_theta * cos_phi * cos_theta_op;
         float cos_theta_i = hair_safe_sqrt(1.0 - sin_theta_i * sin_theta_i);
 

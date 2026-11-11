@@ -49,6 +49,8 @@ target_sources(falcor2_tests PRIVATE
     native/usd_importer/test_usd_importer.cpp
     native/usd_importer/test_usd_importer_tasks.cpp
     native/utils/test_color.cpp
+    native/utils/test_device_vector.cpp
+    native/utils/test_managed_vector.cpp
     native/utils/test_offset_allocator.cpp
     native/utils/test_packing.cpp
     native/utils/test_transform.cpp

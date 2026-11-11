@@ -29,15 +29,13 @@ public struct DiffuseSpecularBRDF : IBSDF, IDifferentiable
 
 
     [Differentiable]
-    public override
-        float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        return eval_with_pdf(wi, wo, sg, bc).value;
+        return eval_with_pdf(wi, wo, bc).value;
     }
 
     [Differentiable]
-    public BSDFEval
-    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
         if (min(wi.z, wo.z) < MIN_COS_THETA)
             return BSDFEval();
@@ -63,7 +61,7 @@ public struct DiffuseSpecularBRDF : IBSDF, IDifferentiable
     }
 
     [Differentiable]
-    public bool sample<S : ISampleGenerator>(float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
+    public bool sample(float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
 
@@ -74,8 +72,8 @@ public struct DiffuseSpecularBRDF : IBSDF, IDifferentiable
         specular_weight *= norm;
 
         float alpha = roughness * roughness;
-        float u_select = no_diff next_float(sg);
-        float2 u = no_diff next_float2(sg);
+        float u_select = input.u_lobe;
+        float2 u = input.u_dir;
 
         if (u_select < diffuse_weight) {
             sample.wo = square_to_cosine_hemisphere_concentric(u);
@@ -92,7 +90,7 @@ public struct DiffuseSpecularBRDF : IBSDF, IDifferentiable
         if (min(wi.z, sample.wo.z) < MIN_COS_THETA || sample.pdf == 0.0)
             return false;
 
-        sample.weight = eval(wi, sample.wo, sg, bc) / sample.pdf;
+        sample.weight = eval(wi, sample.wo, bc) / sample.pdf;
         return true;
     }
 
@@ -100,8 +98,7 @@ public struct DiffuseSpecularBRDF : IBSDF, IDifferentiable
     [Differentiable]
     public override float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        EvalPdfFallbackSampleGenerator sg = EvalPdfFallbackSampleGenerator(0u);
-        return eval_with_pdf(wi, wo, sg, bc).pdf;
+        return eval_with_pdf(wi, wo, bc).pdf;
     }
 
     // Internal functions
@@ -163,6 +160,8 @@ public struct DiffuseSpecularBRDF : IBSDF, IDifferentiable
         return specular * ab.x + ab.y;
     }
 
+    /// Samples a reflected direction using the GGX distribution of visible normals.
+    /// @param u Uniform sample in [0, 1)^2.
     [Differentiable]
     bool specular_microfacet_sample(const float3 wi, const float alpha, const float2 u, out float3 wo, out float pdf)
     {

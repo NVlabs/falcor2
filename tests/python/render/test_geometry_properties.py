@@ -79,6 +79,8 @@ MATERIALX_GEOMETRY_PROPERTY_DOCUMENT = """<materialx version="1.39" colorspace="
 </materialx>"""
 SHARED_CUSTOM_ATTRIBUTE_NAME = "shared_custom"
 OTHER_CUSTOM_ATTRIBUTE_NAME = "other_custom"
+# Probe shaders read attributes even when the scene's materials do not require them.
+GEOMETRY_PROPERTIES = f2.SceneCapabilities(f2.SceneCapabilityFlags.geometry_properties)
 
 
 def _set_triangle_mesh(
@@ -257,7 +259,9 @@ def _read_additional_attribute(
 def _create_attribute_accessor_probe(device: spy.Device, scene: f2.Scene) -> Any:
     helper = SceneShaderHelper(device)
     source_module = spy.Module.load_from_file(device, "render/test_geometry_properties.slang")
-    module, requirements = helper.prepare(scene, source_module)
+    module, requirements = helper.prepare(
+        scene, source_module, required_capabilities=GEOMETRY_PROPERTIES
+    )
     return (
         module.attribute_accessor_probe.as_func()
         .type_conformances(requirements.type_conformances)
@@ -269,7 +273,9 @@ def _create_attribute_accessor_probe(device: spy.Device, scene: f2.Scene) -> Any
 def _create_lss_attribute_accessor_probe(device: spy.Device, scene: f2.Scene) -> Any:
     helper = SceneShaderHelper(device)
     source_module = spy.Module.load_from_file(device, "render/test_geometry_properties.slang")
-    module, requirements = helper.prepare(scene, source_module)
+    module, requirements = helper.prepare(
+        scene, source_module, required_capabilities=GEOMETRY_PROPERTIES
+    )
     return (
         module.lss_attribute_accessor_probe.as_func()
         .type_conformances(requirements.type_conformances)
@@ -1145,7 +1151,9 @@ def test_imported_usd_additional_geometry_properties(
 
     helper = SceneShaderHelper(device)
     source_module = spy.Module.load_from_file(device, "render/test_geometry_properties.slang")
-    module, requirements = helper.prepare(scene, source_module)
+    module, requirements = helper.prepare(
+        scene, source_module, required_capabilities=GEOMETRY_PROPERTIES
+    )
     texcoord_probe = (
         module.imported_texcoord_probe.as_func()
         .type_conformances(requirements.type_conformances)
@@ -1432,13 +1440,6 @@ def test_standard_family_uv1_alpha_mask_opacity(
 
     helper = SceneShaderHelper(device)
     source_module = spy.Module.load_from_file(device, "render/test_geometry_properties.slang")
-    module, requirements = helper.prepare(scene, source_module)
-    opacity_probe = (
-        module.multi_uv_opacity_probe.as_func()
-        .type_conformances(requirements.type_conformances)
-        .write(helper.bind_scene)
-        .return_type(spy.Tensor)
-    )
     geometry_instance_ids = np.array(
         [int(front_instance.geometry_instance_id)],
         dtype=np.uint32,
@@ -1447,6 +1448,15 @@ def test_standard_family_uv1_alpha_mask_opacity(
     barycentrics = np.array([[0.2, 0.3]], dtype=np.float32)
 
     def evaluate_opacity() -> float:
+        # Material edits can change the scene's type conformances, so use the
+        # requirements for the current scene generation on every evaluation.
+        module, requirements = helper.prepare(scene, source_module)
+        opacity_probe = (
+            module.multi_uv_opacity_probe.as_func()
+            .type_conformances(requirements.type_conformances)
+            .write(helper.bind_scene)
+            .return_type(spy.Tensor)
+        )
         result = opacity_probe(
             spy.Tensor.from_numpy(device, geometry_instance_ids),
             spy.Tensor.from_numpy(device, primitive_indices),

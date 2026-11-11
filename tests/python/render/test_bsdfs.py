@@ -4,6 +4,7 @@
 """Chi-square, eval/sample consistency, and reciprocity tests for BSDF implementations."""
 
 import enum
+from copy import deepcopy
 from dataclasses import dataclass
 import numpy as np
 import slangpy as spy
@@ -763,6 +764,34 @@ def test_gltf_specgloss_sample_pdf(_bsdf_resources: _BSDFResources) -> None:
     assert test.run(weight_tol=float("inf")), test.messages
 
 
+@pytest.mark.parametrize(
+    ("feature_bit", "overrides"),
+    [
+        (1 << 5, {"transmission": 0.5}),
+        (1 << 10, {"iridescence": 1.0, "iridescence_thickness": 450.0}),
+        (1 << 11, {"anisotropy_strength": 0.6}),
+        (1 << 12, {"diffuse_transmission": 0.3}),
+    ],
+)
+def test_gltf_conditional_bsdf_exact_matches_flexible(
+    _bsdf_resources: _BSDFResources,
+    feature_bit: int,
+    overrides: dict[str, Any],
+) -> None:
+    """A single-feature specialization matches the flexible BSDF in value, PDF, and albedo."""
+    # TODO: Re-enable D3D12 after the NVIDIA 617.42 compiler access violation is fixed.
+    if _bsdf_resources.device.desc.type == spy.DeviceType.d3d12:
+        pytest.skip("NVIDIA 617.42: intermittent access violation in nvgpucomp64.dll")
+
+    kernel = _bsdf_resources.module[f"bsdf_tests::test_gltf_exact_flexible<{feature_bit}>"]
+    result = kernel(
+        data={**_GLTF_DATA, "metallic": 0.4, **overrides},
+        wi=WI_30DEG,
+        wo=spy.float3(-0.2, 0.3, 0.9327379),
+    )
+    np.testing.assert_allclose(result, 0.0, atol=2e-6)
+
+
 def test_anisotropic_ggx_ndf_near_normal(_bsdf_resources: _BSDFResources) -> None:
     # h.z can round to one even when h.xy materially changes a narrow NDF.
     xy = np.array([[0, 0], [0, 1e-5], [0, 1e-4], [0, 2e-4], [2e-4, -1e-4], [0.001, 0.002]])
@@ -981,22 +1010,22 @@ def test_mtlx_generalized_schlick_colored_branch_probability(
     reflected = kernel(
         bsdf=bindings(1.0, 1.0),
         wi=WI_NORMAL,
-        random=[0.0, 0.0, p_reflect * 0.5],
+        input={"u_lobe": p_reflect * 0.5, "u_dir": [0.0, 0.0], "aux_seed": 0},
     )
     reflected_only = kernel(
         bsdf=bindings(1.0, 0.0),
         wi=WI_NORMAL,
-        random=[0.0, 0.0, 0.0],
+        input={"u_lobe": 0.0, "u_dir": [0.0, 0.0], "aux_seed": 0},
     )
     transmitted = kernel(
         bsdf=bindings(1.0, 1.0),
         wi=WI_NORMAL,
-        random=[0.0, 0.0, (1.0 + p_reflect) * 0.5],
+        input={"u_lobe": (1.0 + p_reflect) * 0.5, "u_dir": [0.0, 0.0], "aux_seed": 0},
     )
     transmitted_only = kernel(
         bsdf=bindings(0.0, 1.0),
         wi=WI_NORMAL,
-        random=[0.0, 0.0, 0.0],
+        input={"u_lobe": 0.0, "u_dir": [0.0, 0.0], "aux_seed": 0},
     )
 
     for result in (reflected, reflected_only, transmitted, transmitted_only):
@@ -1194,6 +1223,188 @@ def test_pbrt_dielectric_lobe_sampling_hint_eval_sample_consistency(
         global_bindings=_mtlx_lut_bindings,
     )
     assert test.run(), test.messages
+
+
+def _mtlx_hint_bindings(family: str, scatter: str = "RT") -> dict[str, Any]:
+    fresnel = (
+        {"eta": 1.5}
+        if family == "Dielectric"
+        else {"F0": [0.2, 0.5, 0.8], "F90": [1.0] * 3, "exponent": 5.0, "eta": 1.5, "tir_cos": 0.0}
+    )
+    return {
+        "roughness_xy": [0.3, 0.2],
+        "fresnel": fresnel,
+        "reflection_tint": [0.8, 0.6, 0.4] if "R" in scatter else [0.0] * 3,
+        "transmission_tint": [0.4, 0.7, 0.9] if "T" in scatter else [0.0] * 3,
+        "backfacing": False,
+    }
+
+
+@pytest.mark.parametrize("family", ["Dielectric", "GeneralizedSchlick"])
+@pytest.mark.parametrize("compensation", ["", "TurquinAnalyticCompensation", "NoCompensation"])
+@pytest.mark.parametrize("scatter", ["RT", "R", "T"])
+@pytest.mark.parametrize("static_scatter", [False, True])
+@pytest.mark.parametrize(
+    "hint",
+    [BSDFFlags.reflection, BSDFFlags.transmission, BSDFFlags.none, BSDFFlags.all, BSDFFlags.curve],
+)
+def test_mtlx_lobe_sampling_hint(
+    _bsdf_resources: _BSDFResources,
+    _mtlx_lut_bindings: dict[str, Any],
+    family: str,
+    compensation: str,
+    scatter: str,
+    static_scatter: bool,
+    hint: BSDFFlags,
+) -> None:
+    """Hints restrict sampling without changing the physical BSDF or its compensation."""
+    bsdf_type = f"mtlx::Mx{family}{compensation}BSDF"
+    if static_scatter:
+        fresnel_type = "MxDielectricFresnel" if family == "Dielectric" else "MxSchlickFresnel"
+        comp_type = {
+            "": "MxTurquinLutDielectricCompensation",
+            "TurquinAnalyticCompensation": "MxTurquinAnalyticDielectricCompensation",
+            "NoCompensation": "MxNoCompensationDielectricCompensation",
+        }[compensation]
+        bsdf_type = (
+            f"mtlx::MxCompensated{family}BSDF<mtlx::{fresnel_type},"
+            f"mtlx::{comp_type},mtlx::MxScatterStatic{scatter}Mode>"
+        )
+    kernel = (
+        _bsdf_resources.module[f"bsdf_tests::test_mtlx_lobe_sampling_hint<{bsdf_type}>"]
+        .as_func()
+        .set(_mtlx_lut_bindings)
+    )
+    args = {"bsdf": _mtlx_hint_bindings(family, scatter), "wi": WI_NORMAL, "hint": hint}
+    allow_r = "R" in scatter and bool(hint & BSDFFlags.reflection)
+    allow_t = "T" in scatter and bool(hint & BSDFFlags.transmission)
+    # Force both ends of the roulette interval; a hint must override either one.
+    for roulette in [0.0, 0.99]:
+        args["random"] = [0.0, 0.0, roulette]
+        result = kernel(**args, check=0)
+        assert result.x == float(allow_r or allow_t)
+        if allow_r or allow_t:
+            if not allow_t:
+                assert result.y > 0.0
+            if not allow_r:
+                assert result.y < 0.0
+            assert result.z > 0.0
+            assert result.z == pytest.approx(result.w, rel=2e-5)
+            assert np.asarray(kernel(**args, check=1)) == pytest.approx([0.0] * 4, abs=2e-5)
+        else:
+            assert np.asarray(kernel(**args, check=3)) == pytest.approx([0.0] * 4)
+    # Fused evaluation preserves physical values even for forbidden directions.
+    for check in [4, 5]:
+        assert np.asarray(kernel(**args, check=check)) == pytest.approx([0.0] * 4, abs=2e-5)
+    pdfs = kernel(**args, check=2)
+    if not allow_r:
+        assert pdfs.x == 0.0
+    if not allow_t:
+        assert pdfs.y == 0.0
+    if scatter == "RT":
+        # At normal incidence and normal microfacet, branch probability is known independently.
+        p_r = (
+            0.04
+            if family == "Dielectric"
+            else float(np.dot([0.2, 0.5, 0.8], [0.2126, 0.7152, 0.0722]))
+        )
+        if allow_r and not allow_t:
+            assert pdfs.x == pytest.approx(pdfs.z / p_r, rel=2e-5)
+        if allow_t and not allow_r:
+            assert pdfs.y == pytest.approx(pdfs.w / (1.0 - p_r), rel=2e-5)
+
+
+@pytest.mark.parametrize("family", ["Dielectric", "GeneralizedSchlick"])
+@pytest.mark.parametrize("hint", [BSDFFlags.reflection, BSDFFlags.transmission])
+@pytest.mark.parametrize("wi", [WI_30DEG, WI_GRAZING])
+def test_mtlx_lobe_sampling_hint_eval_sample_consistency(
+    _bsdf_resources: _BSDFResources,
+    _mtlx_lut_bindings: dict[str, Any],
+    family: str,
+    hint: BSDFFlags,
+    wi: spy.float3,
+) -> None:
+    test = BSDFEvalSampleConsistencyTest(
+        device=_bsdf_resources.device,
+        module=_bsdf_resources.module,
+        bsdf_type=f"mtlx::Mx{family}BSDF",
+        bsdf_bindings=_mtlx_hint_bindings(family),
+        wi=wi,
+        bc={"sample_lobe_types_hint": hint},
+        sample_count=100000,
+        global_bindings=_mtlx_lut_bindings,
+    )
+    assert test.run(), test.messages
+
+
+@pytest.mark.parametrize("family", ["Dielectric", "GeneralizedSchlick"])
+@pytest.mark.parametrize("hint", [BSDFFlags.reflection, BSDFFlags.transmission, BSDFFlags.curve])
+def test_mtlx_lobe_sampling_hint_total_internal_reflection(
+    _bsdf_resources: _BSDFResources,
+    _mtlx_lut_bindings: dict[str, Any],
+    family: str,
+    hint: BSDFFlags,
+) -> None:
+    bindings = _mtlx_hint_bindings(family)
+    bindings["fresnel"]["eta"] = 1.0 / 1.5
+    if family == "GeneralizedSchlick":
+        bindings["fresnel"]["tir_cos"] = float(np.sqrt(1.0 - (1.0 / 1.5) ** 2))
+    bindings["roughness_xy"] = [0.001, 0.001]
+    bindings["backfacing"] = True
+    kernel = (
+        _bsdf_resources.module[f"bsdf_tests::test_mtlx_lobe_sampling_hint<mtlx::Mx{family}BSDF>"]
+        .as_func()
+        .set(_mtlx_lut_bindings)
+    )
+    args = {"bsdf": bindings, "wi": WI_60DEG, "random": [0.0, 0.0, 0.99], "hint": hint}
+    result = kernel(**args, check=0)
+    assert np.all(np.isfinite(np.asarray(result)))
+    if hint == BSDFFlags.reflection:
+        assert result.x == 1.0 and result.y > 0.0
+        assert result.z == pytest.approx(result.w, rel=2e-5)
+        assert np.asarray(kernel(**args, check=1)) == pytest.approx([0.0] * 4, abs=2e-5)
+    else:
+        assert result.x == 0.0
+        assert np.asarray(kernel(**args, check=3)) == pytest.approx([0.0] * 4)
+
+
+@pytest.mark.parametrize(
+    "bsdf_type,bindings",
+    [
+        pytest.param(name, bindings, id=name)
+        for name, bindings, _, _, _ in BSDF_CONFIGS
+        if name
+        in {
+            "mtlx::MxDielectricAiryBSDF",
+            "mtlx::MxGeneralizedSchlickAiryBSDF",
+            "mtlx::MxGeneralizedSchlickColor82BSDF",
+        }
+    ],
+)
+@pytest.mark.parametrize("hint", [BSDFFlags.glossy_reflection, BSDFFlags.glossy_transmission])
+@pytest.mark.parametrize("retroreflective", [False, True])
+def test_mtlx_lobe_sampling_hint_fresnel_variants(
+    _bsdf_resources: _BSDFResources,
+    _mtlx_lut_bindings: dict[str, Any],
+    bsdf_type: str,
+    bindings: dict[str, Any],
+    hint: BSDFFlags,
+    retroreflective: bool,
+) -> None:
+    bsdf = deepcopy(bindings)
+    bsdf["transmission_tint"] = [0.4, 0.7, 0.9]
+    bsdf["retroreflective"] = retroreflective
+    kernel = (
+        _bsdf_resources.module[f"bsdf_tests::test_mtlx_lobe_sampling_hint<{bsdf_type}>"]
+        .as_func()
+        .set(_mtlx_lut_bindings)
+    )
+    args = {"bsdf": bsdf, "wi": WI_30DEG, "random": [0.0, 0.0, 0.99], "hint": hint}
+    result = kernel(**args, check=0)
+    assert result.x == 1.0
+    assert (result.y > 0.0) == (hint == BSDFFlags.glossy_reflection)
+    assert result.z == pytest.approx(result.w, rel=2e-5)
+    assert np.asarray(kernel(**args, check=1)) == pytest.approx([0.0] * 4, abs=2e-5)
 
 
 # ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@
 #include "falcor2/core/reflection/metadata.h"
 #include "falcor2/core/reflection/property_descriptor.h"
 
+#include <functional>
 #include <type_traits>
 
 namespace falcor::reflection {
@@ -46,7 +47,7 @@ public:
         using ValueType = std::remove_cv_t<std::remove_reference_t<ReturnType>>;
         static_assert(PropertyValueType<ValueType>, "Property type must be serializable to Properties.");
 
-        m_props.set<ValueType>(name, (m_obj.*getter)());
+        m_props.set<ValueType>(name, std::invoke(getter, m_obj));
         return *this;
     }
 
@@ -59,7 +60,7 @@ public:
         using ValueType = std::remove_cv_t<std::remove_reference_t<ReturnType>>;
         static_assert(PropertyValueType<ValueType>, "Property type must be serializable to Properties.");
 
-        m_props.set<ValueType>(name, (m_obj.*getter)());
+        m_props.set<ValueType>(name, std::invoke(getter, m_obj));
         return *this;
     }
 
@@ -117,7 +118,7 @@ public:
         static_assert(PropertyValueType<ValueType>, "Property type must be deserializable from Properties.");
 
         if (m_props.has_property(name)) {
-            (m_obj.*setter)(m_props.get<ValueType>(name));
+            std::invoke(setter, m_obj, m_props.get<ValueType>(name));
 
             // Fire OnChange callback if present.
             if constexpr (detail::has_on_change_v<Extras...>) {

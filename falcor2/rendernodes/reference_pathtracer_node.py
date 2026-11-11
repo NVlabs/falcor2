@@ -68,8 +68,8 @@ class ReferencePathTracerNode(RenderNode):
         self._render_func_key = None
         self._scene = None
         self._scene_requirements: f2.SceneRequirements | None = None
-        self._scene_capability_policy = f2.SceneCapabilityPolicy.all
-        self._scene_capabilities = f2.SceneCapabilities.all()
+        self._scene_capability_policy = f2.SceneCapabilityPolicy.required
+        self._scene_capabilities: f2.SceneCapabilities | None = None
         self._output = None
         self._previous_camera_uniforms: f2.CameraUniforms | None = None
         self._previous_camera_dims: tuple[int, int] | None = None
@@ -88,7 +88,6 @@ class ReferencePathTracerNode(RenderNode):
         self.pixel_filter: f2.ReconstructionFilter = f2.GaussianReconstructionFilter()
         self._enable_nee = True
         self._enable_mis = True
-        self._enable_interior_tracking = True
         self._enable_nested_interiors = False
         self._enable_homogeneous_media = True
         self._enable_russian_roulette = True
@@ -136,7 +135,6 @@ class ReferencePathTracerNode(RenderNode):
         self._constants = {
             "ENABLE_NEE": self._enable_nee,
             "ENABLE_MIS": self._enable_mis,
-            "ENABLE_INTERIOR_TRACKING": self._enable_interior_tracking,
             "ENABLE_NESTED_INTERIORS": self._enable_nested_interiors,
             "ENABLE_HOMOGENEOUS_MEDIA": self._enable_homogeneous_media,
             "ENABLE_RUSSIAN_ROULETTE": self._enable_russian_roulette,
@@ -190,17 +188,24 @@ class ReferencePathTracerNode(RenderNode):
         self._scene_capability_policy = value
 
     @property
-    def scene_capabilities(self) -> f2.SceneCapabilities:
-        """Caller-specified capabilities. Assigning them also selects the specified policy.
+    def scene_capabilities(self) -> f2.SceneCapabilities | None:
+        """Caller-specified capabilities, if any.
 
+        Assigning a mask selects the specified policy; None restores required.
         Rendering rejects selections that omit scene or consumer requirements.
         """
         return self._scene_capabilities
 
     @scene_capabilities.setter
-    def scene_capabilities(self, value: f2.SceneCapabilities) -> None:
+    def scene_capabilities(self, value: f2.SceneCapabilities | None) -> None:
+        if value is not None and not isinstance(value, f2.SceneCapabilities):
+            raise TypeError("scene_capabilities must be SceneCapabilities or None.")
         self._scene_capabilities = value
-        self._scene_capability_policy = f2.SceneCapabilityPolicy.specified
+        self._scene_capability_policy = (
+            f2.SceneCapabilityPolicy.specified
+            if value is not None
+            else f2.SceneCapabilityPolicy.required
+        )
 
     @property
     def capabilities(self) -> f2.SceneCapabilities | None:
@@ -278,21 +283,11 @@ class ReferencePathTracerNode(RenderNode):
         self._enable_mis = value
         self.constants_changed()
 
-    @reflected_property(ui_label="Interior tracking", ui_group="Media")
-    def enable_interior_tracking(self) -> bool:
-        """Whether closed-surface interiors are tracked for solid dielectric transmission."""
-        return self._enable_interior_tracking
-
-    @enable_interior_tracking.setter
-    def enable_interior_tracking(self, value: bool) -> None:
-        """Enable or disable closed-surface interior tracking."""
-        self._enable_interior_tracking = value
-        self.constants_changed()
-
     @reflected_property(
         ui_label="Nested interiors",
         ui_group="Media",
-        ui_enable_if=lambda path_tracer: path_tracer.enable_interior_tracking,
+        ui_enable_if=lambda path_tracer: path_tracer.capabilities is None
+        or path_tracer.capabilities.has(f2.SceneCapabilityFlags.solid_transmission),
     )
     def enable_nested_interiors(self) -> bool:
         """Whether priority-based interfaces between nested interiors are handled."""
@@ -307,7 +302,8 @@ class ReferencePathTracerNode(RenderNode):
     @reflected_property(
         ui_label="Homogeneous media",
         ui_group="Media",
-        ui_enable_if=lambda path_tracer: path_tracer.enable_interior_tracking,
+        ui_enable_if=lambda path_tracer: path_tracer.capabilities is None
+        or path_tracer.capabilities.has(f2.SceneCapabilityFlags.solid_transmission),
     )
     def enable_homogeneous_media(self) -> bool:
         """Whether homogeneous absorption and scattering are handled."""

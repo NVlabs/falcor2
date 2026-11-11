@@ -1,6 +1,21 @@
 
 add_library(falcor2 SHARED)
 
+if(FALCOR_ENABLE_HYDRAIPC)
+    target_sources(falcor2 PRIVATE
+        hydra/controller.cpp
+        hydra/controller.h
+        hydra/scene_reconciler.cpp
+        hydra/scene_reconciler.h
+        hydra/scene_resources.cpp
+        hydra/scene_resources.h
+        hydra/scene_mesh.cpp
+        hydra/scene_mesh.h
+        hydra/scene_materialx.cpp
+        hydra/scene_materialx.h
+    )
+    target_link_libraries(falcor2 PRIVATE hydraipc_transport)
+endif()
 
 target_sources(falcor2 PRIVATE
     falcor2.cpp
@@ -79,6 +94,8 @@ target_sources(falcor2 PRIVATE
     ui/scene_editor_outliner.h
     ui/scene_interaction_controller.cpp
     ui/scene_interaction_controller.h
+    ui/scene_object_templates.cpp
+    ui/scene_object_templates.h
     ui/scene_picker.cpp
     ui/scene_picker.h
     ui/selection_overlay.cpp
@@ -203,8 +220,10 @@ target_sources(falcor2 PRIVATE
     utils/buffer_offset_pair.h
     utils/buffer_suballocator.cpp
     utils/buffer_suballocator.h
+    utils/device_vector.h
     utils/fnv_hash.h
     utils/indexed_vector.h
+    utils/managed_buffer_pool.h
     utils/managed_vector.h
     utils/offset_allocator.cpp
     utils/offset_allocator.h
@@ -319,10 +338,14 @@ target_sources(falcor2 PRIVATE
     render/material/emission_only_material.cpp
     render/material/emission_only_material.h
     render/material/material_texture_utils.h
+    render/material/gltf_context.cpp
+    render/material/gltf_context.h
     render/material/gltf_material.cpp
     render/material/gltf_material.h
+    render/material/gltf_specialization.h
     render/material/gltf_specgloss_material.cpp
     render/material/gltf_specgloss_material.h
+    render/material/gltf_texture_binding.h
     render/material/gltf_texture_transform.h
     render/material/shared_gltf_texture_selectors.h
     render/material/standard_material.cpp
@@ -371,7 +394,7 @@ target_include_directories(falcor2 PUBLIC ../../slang)
 target_link_libraries(falcor2 PUBLIC sgl)
 target_link_libraries(falcor2 PRIVATE falcor2_ui_data)
 if(WIN32)
-    target_link_libraries(falcor2 PRIVATE Dbghelp)
+    target_link_libraries(falcor2 PRIVATE Dbghelp Gdi32)
 endif()
 
 if(FALCOR_ENABLE_NGX)
@@ -501,12 +524,12 @@ target_compile_definitions(falcor2 PRIVATE
     _SILENCE_CXX17_ITERATOR_BASE_CLASS_DEPRECATION_WARNING  # MSVC C4996: TBB uses deprecated std::iterator base class
 )
 
-
 file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${FALCOR_BUILD_TYPE}/include/falcor2/core/config.h CONTENT
 "#pragma once
 
 #define FALCOR_BUILD_TYPE \"${FALCOR_BUILD_TYPE}\"
-${FALCOR_OPTIONAL_CONFIG_DEFINITIONS}#define FALCOR_ENABLE_NGX $<BOOL:${FALCOR_ENABLE_NGX}>
+#define FALCOR_ENABLE_HYDRAIPC $<BOOL:${FALCOR_ENABLE_HYDRAIPC}>
+#define FALCOR_ENABLE_NGX $<BOOL:${FALCOR_ENABLE_NGX}>
 #define FALCOR_ENABLE_STREAMING $<BOOL:${FALCOR_ENABLE_STREAMING}>
 
 "

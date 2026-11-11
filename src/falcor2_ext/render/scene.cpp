@@ -230,6 +230,8 @@ FALCOR_PY_EXPORT(render_scene)
 
     nb::sgl_enum_flags<SceneCapabilityFlags>(m, "SceneCapabilityFlags");
     nb::sgl_enum<SceneCapabilityPolicy>(m, "SceneCapabilityPolicy", D(SceneCapabilityPolicy));
+    nb::sgl_enum<GLTFSpecializationMode>(m, "GLTFSpecializationMode", D(GLTFSpecializationMode));
+    nb::sgl_enum_flags<GLTFFeatureFlags>(m, "GLTFFeatureFlags", D(GLTFFeatureFlags));
     nb::class_<SceneCapabilities>(m, "SceneCapabilities", D(SceneCapabilities))
         .def(nb::init<SceneCapabilityFlags>(), "flags"_a = SceneCapabilityFlags::none)
         .DEF_RO(SceneCapabilities, flags)
@@ -457,9 +459,30 @@ FALCOR_PY_EXPORT(render_scene)
         .def("has_output", &MaterialAOVRegistry::has_output, "name"_a, D(MaterialAOVRegistry, has_output));
 
     nb::class_<SceneConfig>(m, "SceneConfig", D(SceneConfig))
-        .def(nb::init<UVOrigin, uint32_t>(), "uv_origin"_a = UVOrigin::upper_left, "max_mip_count"_a = 0)
+        .def(
+            nb::new_(
+                [](UVOrigin uv_origin,
+                   uint32_t max_mip_count,
+                   GLTFSpecializationMode gltf_specialization_mode,
+                   GLTFFeatureFlags gltf_allowed_features)
+                {
+                    constexpr auto ALL_FEATURES = static_cast<uint32_t>(GLTFFeatureFlags::all);
+                    FALCOR_CHECK(
+                        (static_cast<uint32_t>(gltf_allowed_features) & ~ALL_FEATURES) == 0,
+                        "gltf_allowed_features contains unsupported bits"
+                    );
+                    return SceneConfig{uv_origin, max_mip_count, gltf_specialization_mode, gltf_allowed_features};
+                }
+            ),
+            "uv_origin"_a = UVOrigin::upper_left,
+            "max_mip_count"_a = 0,
+            "gltf_specialization_mode"_a = GLTFSpecializationMode::balanced,
+            "gltf_allowed_features"_a = GLTFFeatureFlags::all
+        )
         .DEF_RO(SceneConfig, uv_origin)
-        .DEF_RO(SceneConfig, max_mip_count);
+        .DEF_RO(SceneConfig, max_mip_count)
+        .DEF_RO(SceneConfig, gltf_specialization_mode)
+        .DEF_RO(SceneConfig, gltf_allowed_features);
 
     nb::class_<Scene, Object>(m, "Scene", D(Scene))
         .def_static("create", &Scene::create, "device"_a, "config"_a = SceneConfig(), D(Scene, create))
@@ -601,8 +624,8 @@ FALCOR_PY_EXPORT(render_scene)
             "resolve_requirements",
             &Scene::resolve_requirements,
             "request"_a = SceneRenderRequest{},
-            "policy"_a = SceneCapabilityPolicy::all,
-            "specified_capabilities"_a = SceneCapabilities::all(),
+            "policy"_a = SceneCapabilityPolicy::required,
+            "specified_capabilities"_a.none() = nb::none(),
             D(Scene, resolve_requirements)
         )
         .def_prop_ro("requirements_generation", &Scene::requirements_generation, D(Scene, requirements_generation))
@@ -715,6 +738,7 @@ FALCOR_PY_EXPORT(render_scene)
         .DEF_RO(CameraUniforms, image_w)
         .DEF_RO(CameraUniforms, aperture_radius)
         .DEF_RO(CameraUniforms, focus_distance)
+        .DEF_RO(CameraUniforms, exposure_scale)
         .def(nb::self == nb::self)
         .def(nb::self != nb::self);
 

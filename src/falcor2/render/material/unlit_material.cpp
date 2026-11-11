@@ -63,7 +63,7 @@ Material::OpacityDesc UnlitMaterial::opacity_desc() const
 SceneCapabilities UnlitMaterial::required_capabilities() const
 {
     bool uses_geometry_properties = m_use_vertex_color || m_base_color_texture_texcoord != 0;
-    return material_capabilities(uses_geometry_properties);
+    return material_capabilities(uses_geometry_properties, false);
 }
 
 template<typename CursorT>

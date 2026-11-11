@@ -252,7 +252,6 @@ def _render_mean(
     camera: f2.Camera,
     *,
     iterations: int = 1,
-    enable_interior_tracking: bool = True,
     enable_homogeneous_media: bool = True,
     enable_nested_interiors: bool = False,
     enable_nee: bool = False,
@@ -271,7 +270,6 @@ def _render_mean(
     if light_sampler is not None:
         node.light_sampler = light_sampler
     node.output_spec = f2.ContainerSpec.texture2d(spy.Format.rgba32_float)
-    node.enable_interior_tracking = enable_interior_tracking
     node.enable_homogeneous_media = enable_homogeneous_media
     node.enable_nested_interiors = enable_nested_interiors
     node.enable_nee = enable_nee
@@ -408,7 +406,6 @@ def test_pathtracer_materialx_transmissive_exit_backface(
         device,
         scene,
         _make_quad_camera(scene, width=1, height=1),
-        enable_interior_tracking=True,
         max_depth=3,
     )
 
@@ -2035,19 +2032,16 @@ def test_pathtracer_delta_reflection_environment_with_nee_without_mis(
 def test_pathtracer_settings_change(device_type: spy.DeviceType, device: spy.Device) -> None:
     """Changing constants and settings updates their respective dictionaries."""
     pt = ReferencePathTracerNode.create(device)
-    assert pt.enable_interior_tracking is True
+    assert pt.capabilities is None
     assert pt.enable_homogeneous_media is True
     assert pt.enable_nested_interiors is False
     assert pt.enable_russian_roulette is True
-    assert pt._constants["ENABLE_INTERIOR_TRACKING"] is True
     assert pt._constants["ENABLE_HOMOGENEOUS_MEDIA"] is True
     assert pt._constants["ENABLE_NESTED_INTERIORS"] is False
     assert pt._constants["ENABLE_RUSSIAN_ROULETTE"] is True
-    pt.enable_interior_tracking = False
     pt.enable_homogeneous_media = False
     pt.enable_nested_interiors = True
     pt.enable_russian_roulette = False
-    assert pt._constants["ENABLE_INTERIOR_TRACKING"] is False
     assert pt._constants["ENABLE_HOMOGENEOUS_MEDIA"] is False
     assert pt._constants["ENABLE_NESTED_INTERIORS"] is True
     assert pt._constants["ENABLE_RUSSIAN_ROULETTE"] is False
@@ -2258,7 +2252,7 @@ def _make_capability_renderer(
     device: spy.Device, policy: f2.SceneCapabilityPolicy = f2.SceneCapabilityPolicy.all
 ) -> ReferencePathTracerNode:
     node = ReferencePathTracerNode.create(device)
-    assert node.scene_capability_policy == f2.SceneCapabilityPolicy.all
+    assert node.scene_capability_policy == f2.SceneCapabilityPolicy.required
     node.scene_capability_policy = policy
     node.max_depth = 1
     node.visibility_ray_mode = VisibilityRayMode.trace_ray
@@ -2271,6 +2265,41 @@ def _render_capability_scene(
 ) -> np.ndarray:
     image, _ = node(scene, camera, iteration=0)
     return image.to_numpy()[..., :3]
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_pathtracer_default_capabilities_drive_interior_tracking(device: spy.Device) -> None:
+    scene, material, _, camera = _make_capability_scene(device, spy.float3(1, 0, 0))
+    node = ReferencePathTracerNode.create(device)
+    node.max_depth = 1
+    node.pixel_filter = f2.BoxReconstructionFilter(width=0)
+    assert node.scene_capability_policy == f2.SceneCapabilityPolicy.required
+    assert node.scene_capabilities is None
+
+    _render_capability_scene(node, scene, camera)
+    assert not node.capabilities.has(f2.SceneCapabilityFlags.solid_transmission)
+
+    node.scene_capability_policy = f2.SceneCapabilityPolicy.all
+    _render_capability_scene(node, scene, camera)
+    assert node.capabilities.has(f2.SceneCapabilityFlags.solid_transmission)
+
+    node.scene_capability_policy = f2.SceneCapabilityPolicy.required
+    _render_capability_scene(node, scene, camera)
+    assert not node.capabilities.has(f2.SceneCapabilityFlags.solid_transmission)
+
+    material.specular_transmission_factor = 1.0
+    scene.update()
+    _render_capability_scene(node, scene, camera)
+    assert node.capabilities.has(f2.SceneCapabilityFlags.solid_transmission)
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_pathtracer_specified_policy_requires_explicit_capabilities(device: spy.Device) -> None:
+    scene, _, _, _ = _make_capability_scene(device, spy.float3(1, 0, 0))
+    node = ReferencePathTracerNode.create(device)
+    node.scene_capability_policy = f2.SceneCapabilityPolicy.specified
+    with pytest.raises((ValueError, RuntimeError), match="requires specified_capabilities"):
+        node._get_module(scene)
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
@@ -2423,6 +2452,7 @@ def test_pathtracer_resolves_only_after_invalidation(
     material = scene.create_material(f2.StandardMaterial)
     scene.update()
     node = ReferencePathTracerNode.create(device)
+    node.scene_capability_policy = f2.SceneCapabilityPolicy.all
     calls = 0
     resolve = f2.Scene.resolve_requirements
 
@@ -2469,7 +2499,8 @@ def test_pathtracer_resolves_only_after_invalidation(
     other.create_material(f2.StandardMaterial)
     other.update()
     assert node._get_module(other) is module
-    assert node._scene_requirements is other.requirements
+    assert node._scene_shader._scene is other
+    assert node._scene_requirements.capabilities == f2.SceneCapabilities.all()
     assert calls == 7
     assert node._get_module(other) is module
     assert calls == 7

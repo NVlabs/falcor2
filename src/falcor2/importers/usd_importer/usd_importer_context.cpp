@@ -232,9 +232,10 @@ struct DecomposedTransform {
     float3 translation;
     quatf rotation;
     float3 scale;
+    float3 pivot = float3(0.f);
 };
 
-/// Extract TRS from a UsdGeomXformable at a given time code.
+/// Extract TRS and pivot from a UsdGeomXformable at a given time code.
 /// Prefers UsdGeomXformCommonAPI for direct TRS extraction without lossy matrix decomposition.
 /// Falls back to full matrix decomposition for prims with non-common xform ops.
 DecomposedTransform get_xform_at_time(
@@ -256,6 +257,7 @@ DecomposedTransform get_xform_at_time(
             float3(static_cast<float>(trans[0]), static_cast<float>(trans[1]), static_cast<float>(trans[2])),
             euler_to_quat(rot, rot_order),
             to_falcor(scl),
+            to_falcor(pivot),
         };
     }
 
@@ -270,6 +272,21 @@ DecomposedTransform get_xform_at_time(
         transform.rotation(),
         transform.scale(),
     };
+}
+
+/// Potentially animated common transforms need helpers for an effective pivot, even if its value is zero.
+std::optional<float3> get_initial_pivot(const pxr::UsdGeomXformable& prim)
+{
+    if (!prim.GetPrim().GetAttribute(pxr::TfToken("xformOp:translate:pivot")))
+        return std::nullopt;
+    // Static local transforms already include the pivot in their full matrix.
+    if (!prim.TransformMightBeTimeVarying())
+        return std::nullopt;
+    const pxr::UsdGeomXformCommonAPI xform_api(prim);
+    // OpNone retrieves effective common ops without authoring or reordering them.
+    if (!xform_api || !xform_api.CreateXformOps(pxr::UsdGeomXformCommonAPI::OpNone).pivotOp)
+        return std::nullopt;
+    return get_xform_at_time(xform_api, prim, pxr::UsdTimeCode::EarliestTime()).pivot;
 }
 
 bool has_unreal_exporter_provenance(const pxr::UsdStageRefPtr& stage)
@@ -305,6 +322,34 @@ UsdImporterContext::UsdImporterContext(
     m_scene = make_ref<ImporterScene>();
 }
 
+UsdImporterContext::TransformNodes UsdImporterContext::add_transform_nodes(
+    const float4x4& transform,
+    std::string_view name,
+    int parent,
+    std::optional<float3> pivot
+)
+{
+    if (!pivot)
+        return {.authored = add_transform(transform, name, parent)};
+
+    auto helper_name = [&](std::string_view suffix)
+    {
+        const std::string base = std::string(name) + std::string(suffix);
+        std::string candidate = base;
+        for (int i = 1; m_usd_stage->GetPrimAtPath(pxr::SdfPath(candidate)); ++i)
+            candidate = base + "_" + std::to_string(i);
+        return candidate;
+    };
+    const float4x4 pivot_transform = sgl::math::matrix_from_translation(*pivot);
+    const float4x4 inverse_pivot_transform = sgl::math::matrix_from_translation(-*pivot);
+    TransformNodes nodes;
+    nodes.pivot = add_transform(pivot_transform, helper_name("_pivot"), parent);
+    // T(p) * authored * T(-p) must reproduce the full initial matrix, including light sanitization.
+    nodes.authored = add_transform(mul(inverse_pivot_transform, mul(transform, pivot_transform)), name, nodes.pivot);
+    nodes.pivot_inverse = add_transform(inverse_pivot_transform, helper_name("_pivot_inverse"), nodes.authored);
+    return nodes;
+}
+
 int UsdImporterContext::push_transform(const pxr::UsdGeomXformable& prim)
 {
     bool resets = false;
@@ -313,11 +358,15 @@ int UsdImporterContext::push_transform(const pxr::UsdGeomXformable& prim)
 
     const pxr::UsdPrim usd_prim = prim.GetPrim();
     const float4x4 transform = sanitize_planar_light_transform(usd_prim, to_falcor(usd_transform));
-    const int node_idx = push_transform(transform, get_name(usd_prim), resets ? root_node_idx() : current_node_idx());
-    m_scene->nodes[node_idx].source_asset_ref = source_asset_ref_for_prim(usd_prim);
-    // Track prim path -> node index for animation extraction.
-    m_prim_path_to_node_idx[usd_prim.GetPath()] = node_idx;
-    return node_idx;
+    const int parent = resets ? root_node_idx() : current_node_idx();
+    const TransformNodes nodes = add_transform_nodes(transform, get_name(usd_prim), parent, get_initial_pivot(prim));
+    m_scene->nodes[nodes.authored].source_asset_ref = source_asset_ref_for_prim(usd_prim);
+    // Retain every imported copy so they share the prim's animation channels.
+    m_prim_path_to_nodes[usd_prim.GetPath()].push_back(nodes);
+    // One traversal frame per USD prim; payload and children inherit the whole chain.
+    const int payload_node = nodes.pivot_inverse >= 0 ? nodes.pivot_inverse : nodes.authored;
+    node_idx_stack().push_back(payload_node);
+    return payload_node;
 }
 
 int UsdImporterContext::resolve_material(const pxr::UsdShadeMaterialBindingAPI& binding_api, std::string_view mesh_name)
@@ -493,6 +542,8 @@ void UsdImporterContext::traverse_scene(const pxr::UsdPrim& root)
             } else if (prim.IsA<UsdGeomPointInstancer>()) {
                 if (is_renderable_prim())
                     add_point_instancer(prim, node_idx);
+                // Follow USD imaging: descendants are populated only through prototype extraction.
+                it.PruneChildren();
             } else if (prim.IsA<UsdGeomMesh>()) {
                 if (is_renderable_prim())
                     add_mesh(prim, node_idx);
@@ -626,11 +677,13 @@ void UsdImporterContext::add_point_instancer(pxr::UsdPrim prim, int node_idx)
     /// No need to create animation keyframes
     // Compute 4x4 transforms for each instance at the earliest time sample.
     // The prototype xform is included in its definition, so we exclude it in the computed instance xforms.
+    // Keep original array indices aligned with prototype indices and generated node names.
     if (!instancer.ComputeInstanceTransformsAtTime(
             &static_xforms,
             UsdTimeCode::EarliestTime(),
             UsdTimeCode::EarliestTime(),
-            UsdGeomPointInstancer::ProtoXformInclusion::ExcludeProtoXform
+            UsdGeomPointInstancer::ProtoXformInclusion::ExcludeProtoXform,
+            UsdGeomPointInstancer::MaskApplication::IgnoreMask
         )) {
         sgl::log_error("Error occurred computing point instancer transforms for '{}'. Ignoring prim.", name);
         return;
@@ -645,11 +698,25 @@ void UsdImporterContext::add_point_instancer(pxr::UsdPrim prim, int node_idx)
         return;
     }
 
+    const auto mask = instancer.ComputeMaskAtTime(UsdTimeCode::EarliestTime());
+    if (!mask.empty() && mask.size() != prototype_usd_indices.size()) {
+        sgl::log_error(
+            "Point instancer '{}' has {} prototype indices but {} mask entries. Ignoring prim.",
+            name,
+            prototype_usd_indices.size(),
+            mask.size()
+        );
+        return;
+    }
+
     const SourceAssetRef source_asset_ref = source_asset_ref_for_prim(prim);
     std::scoped_lock l(m_scene_mutexes.nodes);
     FALCOR_ASSERT(node_idx >= 0 && node_idx < static_cast<int>(m_scene->nodes.size()));
 
     for (size_t i = 0; i < prototype_usd_indices.size(); ++i) {
+        if (!mask.empty() && !mask[i])
+            continue;
+
         int prototype_index = prototype_indices[prototype_usd_indices[i]];
 
         if (prototype_index < 0)
@@ -660,6 +727,7 @@ void UsdImporterContext::add_point_instancer(pxr::UsdPrim prim, int node_idx)
             ImporterNode{
                 .name = fmt::format("{}_{}", name, i),
                 .source_asset_ref = source_asset_ref,
+                .transform = to_falcor(static_xforms[i]),
                 .prototype_index = prototype_index,
                 .parent = node_idx,
             }
@@ -873,7 +941,8 @@ void UsdImporterContext::extract_camera(pxr::UsdPrim prim, int node_idx)
 {
     using namespace pxr;
 
-    GfCamera usd_camera = UsdGeomCamera(prim).GetCamera(0.f);
+    const UsdGeomCamera camera_schema(prim);
+    GfCamera usd_camera = camera_schema.GetCamera(0.f);
 
     ImporterCamera result;
     result.name = prim.GetName().GetString();
@@ -885,6 +954,7 @@ void UsdImporterContext::extract_camera(pxr::UsdPrim prim, int node_idx)
     // Focal length, per the USD spec, is supposed to be specified in tenths of a USD world unit.
     // However, it seems to always be specified in mm in OV assets.
     result.focal_length = usd_camera.GetFocalLength();
+    camera_schema.GetExposureAttr().Get(&result.exposure, UsdTimeCode::EarliestTime());
     const float usd_fstop = usd_camera.GetFStop();
     if (usd_fstop > 0.f)
         result.fstop = usd_fstop;
@@ -964,7 +1034,7 @@ void UsdImporterContext::add_asset_to_scene(const std::filesystem::path& path)
 
 void UsdImporterContext::extract_animations()
 {
-    if (m_prim_path_to_node_idx.empty())
+    if (m_prim_path_to_nodes.empty())
         return;
 
     double time_codes_per_second = m_usd_stage->GetTimeCodesPerSecond();
@@ -976,7 +1046,7 @@ void UsdImporterContext::extract_animations()
         : AnimationInterpolationMode::linear;
     bool has_animation = false;
 
-    for (const auto& [prim_path, node_idx] : m_prim_path_to_node_idx) {
+    for (const auto& [prim_path, node_chains] : m_prim_path_to_nodes) {
         pxr::UsdPrim prim = m_usd_stage->GetPrimAtPath(prim_path);
         if (!prim.IsValid())
             continue;
@@ -1009,11 +1079,14 @@ void UsdImporterContext::extract_animations()
         std::vector<float> translations(keyframe_count * 3);
         std::vector<float> rotations(keyframe_count * 4);
         std::vector<float> scales(keyframe_count * 3);
+        // Every copy of this prim has the same effective transform operations.
+        const bool has_pivot = node_chains.front().pivot >= 0;
+        std::vector<float> pivots(has_pivot ? keyframe_count * 3 : 0);
 
         for (size_t i = 0; i < keyframe_count; ++i) {
             times[i] = static_cast<float>(time_samples[i] / time_codes_per_second);
 
-            auto [translation, rotation, scale]
+            auto [translation, rotation, scale, pivot]
                 = get_xform_at_time(xform_api, xformable, pxr::UsdTimeCode(time_samples[i]));
 
             translations[i * 3 + 0] = translation.x;
@@ -1029,6 +1102,11 @@ void UsdImporterContext::extract_animations()
             scales[i * 3 + 0] = scale.x;
             scales[i * 3 + 1] = scale.y;
             scales[i * 3 + 2] = scale.z;
+            if (has_pivot) {
+                pivots[i * 3 + 0] = pivot.x;
+                pivots[i * 3 + 1] = pivot.y;
+                pivots[i * 3 + 2] = pivot.z;
+            }
         }
 
         // Check if translation is animated (not all same).
@@ -1064,15 +1142,15 @@ void UsdImporterContext::extract_animations()
             }
         }
 
-        ImporterNode& node = m_scene->nodes[node_idx];
-
         if (has_translation_anim) {
             ImporterAnimationChannel channel;
             channel.value_type = AnimationValueType::float3;
             channel.interpolation_mode = interpolation;
             channel.times = times;
             channel.values = std::move(translations);
-            node.animation_translation = static_cast<int>(m_scene->animation.channels.size());
+            for (const auto& nodes : node_chains)
+                m_scene->nodes[nodes.authored].animation_translation
+                    = static_cast<int>(m_scene->animation.channels.size());
             m_scene->animation.channels.push_back(std::move(channel));
         }
 
@@ -1082,7 +1160,9 @@ void UsdImporterContext::extract_animations()
             channel.interpolation_mode = interpolation;
             channel.times = times;
             channel.values = std::move(rotations);
-            node.animation_rotation = static_cast<int>(m_scene->animation.channels.size());
+            for (const auto& nodes : node_chains)
+                m_scene->nodes[nodes.authored].animation_rotation
+                    = static_cast<int>(m_scene->animation.channels.size());
             m_scene->animation.channels.push_back(std::move(channel));
         }
 
@@ -1092,7 +1172,33 @@ void UsdImporterContext::extract_animations()
             channel.interpolation_mode = interpolation;
             channel.times = times;
             channel.values = std::move(scales);
-            node.animation_scale = static_cast<int>(m_scene->animation.channels.size());
+            for (const auto& nodes : node_chains)
+                m_scene->nodes[nodes.authored].animation_scale = static_cast<int>(m_scene->animation.channels.size());
+            m_scene->animation.channels.push_back(std::move(channel));
+        }
+
+        bool has_pivot_anim = false;
+        for (size_t i = 3; i < pivots.size(); ++i) {
+            if (pivots[i] != pivots[i % 3]) {
+                has_pivot_anim = true;
+                break;
+            }
+        }
+        if (has_pivot_anim) {
+            ImporterAnimationChannel channel;
+            channel.value_type = AnimationValueType::float3;
+            channel.interpolation_mode = interpolation;
+            channel.times = times;
+            channel.values = std::move(pivots);
+            for (const auto& nodes : node_chains)
+                m_scene->nodes[nodes.pivot].animation_translation
+                    = static_cast<int>(m_scene->animation.channels.size());
+            m_scene->animation.channels.push_back(channel);
+            for (float& value : channel.values)
+                value = -value;
+            for (const auto& nodes : node_chains)
+                m_scene->nodes[nodes.pivot_inverse].animation_translation
+                    = static_cast<int>(m_scene->animation.channels.size());
             m_scene->animation.channels.push_back(std::move(channel));
         }
     }

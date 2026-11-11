@@ -1,0 +1,28 @@
+--- a/tests/python/benchmarks/test_benchmark_scenes.py
++++ b/tests/python/benchmarks/test_benchmark_scenes.py
+@@ -12,7 +12,7 @@
+ 
+ import pytest
+ import slangpy as spy
+-from slangpy.testing.benchmark import build_metric
++from falcor2.testing.benchmark.reporting import build_metric
+ 
+ import falcor2 as f2
+ from falcor2.rendernodes import PathTracerPipeline
+@@ -58,12 +58,12 @@
+ 
+     # Explicit profiler selection prevents a previously-created editor or
+     # profiler from instrumenting the ordinary timing pass.
+-    profiler = spy.Profiler()
+-    profiler.enabled = False
+-    with profiler:
++    from contextlib import nullcontext
++
++    with nullcontext():
+         device = helpers.get_device(device_type, use_cache=False)
+         cursor = _compilation_cursor(device)
+-        scene = f2.Scene.load(device, str(path))
++        scene = f2.load_scene(device, str(path))
+         scene.update()
+         device.wait()
+         camera = scene.active_camera

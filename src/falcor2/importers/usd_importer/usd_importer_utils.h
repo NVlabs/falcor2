@@ -140,13 +140,7 @@ inline float4x4 to_falcor(const pxr::GfMatrix4d& m)
 
 inline pxr::TfToken get_purpose(const pxr::UsdGeomImageable& prim)
 {
-    using namespace pxr;
-    TfToken purpose = UsdGeomTokens->default_;
-    UsdAttribute purposeAttr = prim.GetPurposeAttr();
-    if (purposeAttr) {
-        purposeAttr.Get(&purpose);
-    }
-    return purpose;
+    return prim.ComputePurpose();
 }
 
 inline bool is_renderable(const pxr::UsdGeomImageable& geomImageable)
@@ -306,15 +300,15 @@ get_uv_primvar(const pxr::UsdGeomGprim& prim, std::span<const std::string> fallb
         return std::find(fallback_exclusions.begin(), fallback_exclusions.end(), name) != fallback_exclusions.end();
     };
 
-    UsdGeomPrimvar uv_primvar = primvars_API.GetPrimvar(TfToken("primvars:st"));
+    UsdGeomPrimvar uv_primvar = primvars_API.FindPrimvarWithInheritance(TfToken("primvars:st"));
     if (has_uv_primvar_value(uv_primvar))
         return uv_primvar;
 
-    uv_primvar = primvars_API.GetPrimvar(TfToken("primvars:st_0"));
+    uv_primvar = primvars_API.FindPrimvarWithInheritance(TfToken("primvars:st_0"));
     if (has_uv_primvar_value(uv_primvar))
         return uv_primvar;
 
-    std::vector<UsdGeomPrimvar> all_primvars = primvars_API.GetPrimvars();
+    std::vector<UsdGeomPrimvar> all_primvars = primvars_API.FindPrimvarsWithInheritance();
     for (auto& it : all_primvars) {
         if (has_uv_primvar_value(it) && !is_excluded(it))
             return it;

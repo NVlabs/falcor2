@@ -1,0 +1,315 @@
+{
+  "last": "11216c9612e76c7c1c35d412fd99fff2cc99507a",
+  "base": "9c0b94a4f321cdae8c4ba09aef55a3c874349b06",
+  "files": [
+    "falcor2/testing/benchmark/__init__.py",
+    "falcor2/testing/benchmark/fixtures.py",
+    "falcor2/testing/benchmark/gpu_timing.py",
+    "falcor2/testing/benchmark/plugin.py",
+    "falcor2/testing/benchmark/reporting/__init__.py",
+    "falcor2/testing/benchmark/reporting/benchview.py",
+    "falcor2/testing/benchmark/reporting/gpu_clock_control.py",
+    "falcor2/testing/benchmark/reporting/utils.py",
+    "tests/python/benchmarks/__init__.py",
+    "tests/python/benchmarks/internal/__init__.py",
+    "tests/python/benchmarks/internal/test_dpel_materials.images.json",
+    "tests/python/benchmarks/internal/test_dpel_materials.py",
+    "tests/python/benchmarks/test_benchmark_scenes.py",
+    "tests/python/benchmarks/test_render_benchmarks.images.json",
+    "tests/python/benchmarks/test_render_benchmarks.py",
+    "tools/build_slang.py",
+    "tools/ci.py",
+    "tools/ci_submodules.py",
+    "tools/process_tree.py",
+    "tools/system_telemetry.py"
+  ],
+  "common_patches": [
+    "plugin-1.patch",
+    "__init__-1.patch"
+  ],
+  "ranges": [
+    {
+      "first": "f0aea4e4834aac51dec71a6b26d19cde5a75339e",
+      "patches": [
+        "fixtures-1.patch",
+        "gpu_timing-1.patch",
+        "helpers-3.patch",
+        "test_benchmark_scenes-1.patch",
+        "test_render_benchmarks-4.patch",
+        "conftest-6.patch",
+        "ci-3.patch",
+        "__init__-2.patch",
+        "compilation_report-1.patch"
+      ]
+    },
+    {
+      "first": "3996083e2977b0b216060999c16cc8cc2649a1c2",
+      "patches": [
+        "fixtures-1.patch",
+        "gpu_timing-1.patch",
+        "helpers-3.patch",
+        "test_benchmark_scenes-1.patch",
+        "test_render_benchmarks-4.patch",
+        "conftest-6.patch",
+        "ci-4.patch"
+      ]
+    },
+    {
+      "first": "8b24a1085d990faeb239c89c3adfe7e092b18b2b",
+      "patches": [
+        "fixtures-1.patch",
+        "gpu_timing-1.patch",
+        "helpers-3.patch",
+        "test_benchmark_scenes-1.patch",
+        "test_render_benchmarks-4.patch",
+        "conftest-7.patch",
+        "ci-4.patch"
+      ]
+    },
+    {
+      "first": "73af903ee63d608190e2fec606104cbdb7ea8e82",
+      "patches": [
+        "fixtures-1.patch",
+        "gpu_timing-1.patch",
+        "helpers-4.patch",
+        "test_benchmark_scenes-1.patch",
+        "test_render_benchmarks-4.patch",
+        "conftest-8.patch",
+        "ci-4.patch"
+      ]
+    },
+    {
+      "first": "a88b905c5a3bc497f87776189a5ca9b33c3e8106",
+      "patches": [
+        "fixtures-1.patch",
+        "gpu_timing-1.patch",
+        "helpers-4.patch",
+        "test_benchmark_scenes-1.patch",
+        "test_render_benchmarks-4.patch",
+        "conftest-9.patch",
+        "ci-4.patch"
+      ]
+    },
+    {
+      "first": "ef1397a3201137577f3b6dc45a939603cecd43fc",
+      "patches": [
+        "fixtures-1.patch",
+        "gpu_timing-1.patch",
+        "helpers-5.patch",
+        "test_benchmark_scenes-1.patch",
+        "test_render_benchmarks-4.patch",
+        "conftest-9.patch",
+        "ci-4.patch"
+      ]
+    },
+    {
+      "first": "6c86cf73d6ee17999a92c6b7decc145fd65ec2b3",
+      "patches": [
+        "fixtures-1.patch",
+        "gpu_timing-1.patch",
+        "helpers-1.patch",
+        "test_benchmark_scenes-1.patch",
+        "test_render_benchmarks-4.patch",
+        "conftest-10.patch",
+        "ci-4.patch"
+      ]
+    },
+    {
+      "first": "6f5b9304be59f5de2ac8e7afa9d01faa6b948e9d",
+      "patches": [
+        "fixtures-1.patch",
+        "gpu_timing-1.patch",
+        "helpers-1.patch",
+        "test_benchmark_scenes-1.patch",
+        "test_render_benchmarks-4.patch",
+        "conftest-1.patch",
+        "ci-1.patch"
+      ]
+    },
+    {
+      "first": "43536fea3a005d719d0181bc73f8bc5c88b85fd9",
+      "patches": [
+        "fixtures-1.patch",
+        "gpu_timing-1.patch",
+        "helpers-1.patch",
+        "test_benchmark_scenes-1.patch",
+        "test_render_benchmarks-1.patch",
+        "conftest-1.patch",
+        "ci-1.patch"
+      ]
+    },
+    {
+      "first": "38776e819b8c25633b502d1ad4fa225386ca90d1",
+      "patches": [
+        "fixtures-1.patch",
+        "gpu_timing-1.patch",
+        "helpers-1.patch",
+        "test_benchmark_scenes-2.patch",
+        "test_render_benchmarks-1.patch",
+        "conftest-1.patch",
+        "ci-1.patch"
+      ]
+    },
+    {
+      "first": "aafa0fe5f2c716abd6bea1e8986d3596c0a68f23",
+      "patches": [
+        "fixtures-1.patch",
+        "gpu_timing-2.patch",
+        "helpers-1.patch",
+        "test_benchmark_scenes-2.patch",
+        "test_render_benchmarks-2.patch",
+        "conftest-1.patch",
+        "ci-1.patch"
+      ]
+    },
+    {
+      "first": "57f8b7444ce007a336601b3bb550d9e4d30f90a7",
+      "patches": [
+        "fixtures-1.patch",
+        "gpu_timing-2.patch",
+        "helpers-1.patch",
+        "test_benchmark_scenes-3.patch",
+        "test_render_benchmarks-3.patch",
+        "conftest-1.patch",
+        "ci-1.patch"
+      ]
+    },
+    {
+      "first": "60b1b7a670380e75d96de05a759e31a11dfbe1e1",
+      "patches": [
+        "fixtures-1.patch",
+        "gpu_timing-1.patch",
+        "helpers-1.patch",
+        "test_benchmark_scenes-3.patch",
+        "test_render_benchmarks-3.patch",
+        "conftest-1.patch",
+        "ci-1.patch"
+      ],
+      "omit": [
+        "tools/ci_submodules.py"
+      ]
+    },
+    {
+      "first": "785698137cfd6506e3afd64e528528bf85b8c952",
+      "patches": [
+        "fixtures-2.patch",
+        "gpu_timing-1.patch",
+        "helpers-1.patch",
+        "test_benchmark_scenes-3.patch",
+        "test_render_benchmarks-3.patch",
+        "conftest-1.patch",
+        "ci-1.patch"
+      ],
+      "omit": [
+        "tools/ci_submodules.py"
+      ]
+    },
+    {
+      "first": "d73b50e24d3b9a95bcd6a4e55a0266792d724458",
+      "patches": [
+        "fixtures-2.patch",
+        "gpu_timing-1.patch",
+        "helpers-2.patch",
+        "test_benchmark_scenes-3.patch",
+        "test_render_benchmarks-3.patch",
+        "conftest-2.patch",
+        "ci-1.patch"
+      ],
+      "omit": [
+        "tools/ci_submodules.py"
+      ]
+    },
+    {
+      "first": "4003c42bf700620a5430ee6970902ed9f51279bb",
+      "patches": [
+        "fixtures-2.patch",
+        "gpu_timing-1.patch",
+        "test_benchmark_scenes-3.patch",
+        "test_render_benchmarks-3.patch",
+        "conftest-3.patch",
+        "ci-1.patch"
+      ],
+      "omit": [
+        "tools/ci_submodules.py",
+        "tools/system_telemetry.py"
+      ]
+    },
+    {
+      "first": "37e23a04295356bd9123623774ab8924f69130ef",
+      "patches": [
+        "fixtures-2.patch",
+        "gpu_timing-1.patch",
+        "test_benchmark_scenes-3.patch",
+        "test_render_benchmarks-3.patch",
+        "conftest-4.patch",
+        "ci-2.patch"
+      ],
+      "omit": [
+        "tools/ci_submodules.py",
+        "tools/system_telemetry.py"
+      ]
+    },
+    {
+      "first": "c0636df9d0729ab7700478919b78258374988f01",
+      "patches": [
+        "fixtures-2.patch",
+        "gpu_timing-1.patch",
+        "test_benchmark_scenes-3.patch",
+        "test_render_benchmarks-3.patch",
+        "conftest-5.patch",
+        "ci-2.patch"
+      ],
+      "omit": [
+        "tools/ci_submodules.py",
+        "tools/process_tree.py",
+        "tools/system_telemetry.py"
+      ]
+    },
+    {
+      "first": "173bcc976c7c4354fa6751a6d6ceae55a71dba09",
+      "patches": [
+        "fixtures-2.patch",
+        "gpu_timing-1.patch",
+        "test_benchmark_scenes-3.patch",
+        "test_render_benchmarks-3.patch",
+        "ci-2.patch"
+      ],
+      "omit": [
+        "falcor2/testing/benchmark/__init__.py",
+        "tests/python/benchmarks/__init__.py",
+        "tests/python/benchmarks/internal/__init__.py",
+        "tests/python/benchmarks/internal/test_dpel_materials.images.json",
+        "tests/python/benchmarks/test_render_benchmarks.images.json",
+        "tools/ci_submodules.py",
+        "tools/process_tree.py",
+        "tools/system_telemetry.py"
+      ]
+    },
+    {
+      "first": "60cec27f2230663e02593ae615bc18d1584c6bc1",
+      "patches": [
+        "fixtures-2.patch",
+        "gpu_timing-1.patch",
+        "test_benchmark_scenes-3.patch",
+        "test_render_benchmarks-3.patch",
+        "ci-2.patch"
+      ],
+      "omit": [
+        "falcor2/testing/benchmark/__init__.py",
+        "tests/python/benchmarks/__init__.py",
+        "tests/python/benchmarks/internal/__init__.py",
+        "tests/python/benchmarks/internal/test_dpel_materials.images.json",
+        "tests/python/benchmarks/internal/test_dpel_materials.py",
+        "tests/python/benchmarks/test_render_benchmarks.images.json",
+        "tools/build_slang.py",
+        "tools/ci_submodules.py",
+        "tools/process_tree.py",
+        "tools/system_telemetry.py"
+      ]
+    },
+    {
+      "first": "9c0b94a4f321cdae8c4ba09aef55a3c874349b06",
+      "patches": null
+    }
+  ]
+}

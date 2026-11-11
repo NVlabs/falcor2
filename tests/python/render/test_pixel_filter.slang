@@ -3,6 +3,7 @@
 
 import falcor2.render;
 
+/// @param u Uniform sample in [0, 1)^2 for sampling the filter offset.
 public float2x3 sample_filter(IReconstructionFilter pixel_filter, float2 u, float2 offset)
 {
     let sample = pixel_filter.sample(u);

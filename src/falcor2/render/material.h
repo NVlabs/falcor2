@@ -124,7 +124,7 @@ public:
 
     /// Returns the capabilities required by this material after its last update.
     /// Includes all generated material outputs and may conservatively include unused capabilities.
-    /// The default implementation reports opacity requirements.
+    /// The default implementation reports opacity and conservatively requires solid transmission.
     /// Materials that access geometry properties must declare that requirement.
     virtual SceneCapabilities required_capabilities() const { return material_capabilities(false); }
 
@@ -153,14 +153,18 @@ public:
     }
 
 protected:
-    /// Combines geometry-property requirements with the material's opacity requirements.
-    SceneCapabilities material_capabilities(bool uses_geometry_properties) const
+    /// Combines geometry-property, opacity, and solid-transmission requirements.
+    /// Unknown material types conservatively require solid transmission.
+    SceneCapabilities
+    material_capabilities(bool uses_geometry_properties, bool requires_solid_transmission = true) const
     {
         SceneCapabilities result;
         if (uses_geometry_properties)
             result.flags |= SceneCapabilityFlags::geometry_properties;
         if (is_set(opacity_desc().flags, shared::OpacityFlags::enabled))
             result.flags |= SceneCapabilityFlags::opacity_evaluation;
+        if (requires_solid_transmission)
+            result.flags |= SceneCapabilityFlags::solid_transmission;
         return result;
     }
 

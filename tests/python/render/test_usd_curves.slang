@@ -31,9 +31,10 @@ CurveUVProbe read_curve_hit(LSSHitInfo hit)
     const LSSGeometryInstanceDesc instance
         = reinterpret<LSSGeometryInstanceDesc>(g_scene.get_geometry_instance_desc(hit.geometry_instance_id));
     const uint index
-        = g_scene.lss_geometry.indices[instance.index_offset + hit.primitive_index] + instance.vertex_offset;
-    result.uv0 = g_scene.get_lss_vertex(index).texcoord;
-    result.uv1 = g_scene.get_lss_vertex(index + 1).texcoord;
+        = g_scene.geometry[instance.index_buffer].as_buffer<uint>()[instance.index_offset + hit.primitive_index]
+        + instance.vertex_offset;
+    result.uv0 = g_scene.get_lss_vertex(instance.vertex_buffer, index).texcoord;
+    result.uv1 = g_scene.get_lss_vertex(instance.vertex_buffer, index + 1).texcoord;
     const PackedAdditionalAttribute header
         = g_scene.lss_geometry
               .additional_attributes[uint(instance.header.geometry_id) * ADDITIONAL_ATTRIBUTE_DESC_ROW_SIZE];

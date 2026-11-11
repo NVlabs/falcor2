@@ -687,8 +687,7 @@ struct ${NAME}_Instance : IMaterialInstance
     }
 
     BSDFEval eval_with_pdf<
-        let Hints : BSDFEvalHints = BSDFEvalHints::both,
-        S : ISampleGenerator>(const SurfaceInteraction si, const float3 wo, inout S sg)
+        let Hints : BSDFEvalHints = BSDFEvalHints::both>(const SurfaceInteraction si, const float3 wo)
     {
         if (Hints == BSDFEvalHints::none)
             return BSDFEval();
@@ -732,14 +731,14 @@ struct ${NAME}_Instance : IMaterialInstance
         return result;
     }
 
-    bool sample<S : ISampleGenerator>(const SurfaceInteraction si, inout S sg, out MaterialSample sample)
+    bool sample(const SurfaceInteraction si, const MaterialSampleInput input, out MaterialSample sample)
     {
         var state = this.state;
         ${NAME}_ns::Bsdf_sample_data sample_data = {};
         sample_data.ior1 = ior1;          // IOR current medium
         sample_data.ior2 = ior2;          // IOR other side
         sample_data.k1 = si.wi_ws;      // outgoing direction
-        sample_data.xi = next_float4(sg); // pseudo-random sample numbers
+        sample_data.xi = float4(input.u_dir, input.u_lobe, input.aux_seed_as_float()); // pseudo-random sample numbers
 
         ${NAME}_ns::gMDLMaterialData = data;
         ${NAME}_ns::surface_scattering_sample(sample_data, state);

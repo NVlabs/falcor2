@@ -11,14 +11,12 @@
 #define FALCOR_SHARED_CONSTANT static constexpr
 #define FALCOR_SHARED_PUBLIC_CONSTANT static constexpr
 #define FALCOR_SHARED_INLINE_FUNCTION inline
-#define FALCOR_SHARED_INOUT_ARRAY_PARAM(type, name, count) type(&name) [count]
-#define FALCOR_SHARED_CONST_ARRAY_PARAM(type, name, count) const type(&name) [count]
+#define FALCOR_SHARED_INOUT_PARAM(type, name) type& name
 #else
 #define FALCOR_SHARED_METHOD_CONST
 #define FALCOR_SHARED_MUTATING [mutating]
 #define FALCOR_SHARED_CONSTANT static const
 #define FALCOR_SHARED_PUBLIC_CONSTANT public static const
 #define FALCOR_SHARED_INLINE_FUNCTION public static
-#define FALCOR_SHARED_INOUT_ARRAY_PARAM(type, name, count) inout type name[count]
-#define FALCOR_SHARED_CONST_ARRAY_PARAM(type, name, count) const type name[count]
+#define FALCOR_SHARED_INOUT_PARAM(type, name) inout type name
 #endif
