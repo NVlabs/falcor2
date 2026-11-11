@@ -9,8 +9,11 @@ public struct LSSHitMaterialInstance : IMaterialInstance
 {
     public float3 emission;
 
-    public BSDFEval
-    eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both>(const SurfaceInteraction si, const float3 wo_ws)
+    public BSDFEval eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both>(
+        const SurfaceInteraction si,
+        const float3 wo_ws,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
         return {};
     }

@@ -239,7 +239,11 @@ std::optional<CurveGeometry> convert_usd_curves(
         const auto time = sample_times[sample];
         VtVec3fArray usd_points;
         const bool has_points = curves.GetPointsAttr().Get(&usd_points, time);
-        FALCOR_CHECK(!oriented || has_points, "Ribbon '{}' is missing points", input.name);
+        FALCOR_CHECK(
+            (!oriented && !options.import_curve_motion) || has_points,
+            "Curve '{}' is missing points",
+            input.name
+        );
         FALCOR_CHECK(!point_count || *point_count == usd_points.size(), "Curve '{}' changes point count", input.name);
         point_count = usd_points.size();
         auto usd_normals = sample == 0 ? std::move(first_normals) : normals_source.read<GfVec3f>(time);
@@ -306,6 +310,7 @@ std::optional<CurveGeometry> convert_usd_curves(
             }
         }
         result.motion_times = times.motion_times;
+        result.motion_sample_indices = times.motion_sample_indices;
         result.motion_interpolation_mode = times.interpolation;
         if constexpr (ribbon) {
             if (result.position_stream().valid()) {

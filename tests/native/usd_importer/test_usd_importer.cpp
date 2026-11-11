@@ -11,6 +11,8 @@
 #include "falcor2/importers/usd_importer/usd_importer.h"
 #include "falcor2/importers/usd_importer/usd_importer_utils.h"
 #include "falcor2/core/object.h"
+#include "falcor2/render/animation.h"
+#include "falcor2/render/transform.h"
 
 BEGIN_DISABLE_USD_WARNINGS
 #include <pxr/base/gf/matrix3d.h>
@@ -21,6 +23,7 @@ BEGIN_DISABLE_USD_WARNINGS
 #include <pxr/usd/sdf/assetPath.h>
 #include <pxr/usd/sdf/layer.h>
 #include <pxr/usd/usd/stage.h>
+#include <pxr/usd/usd/references.h>
 #include <pxr/usd/usdGeom/basisCurves.h>
 #include <pxr/usd/usdGeom/mesh.h>
 #include <pxr/usd/usdGeom/xformCommonAPI.h>
@@ -3618,6 +3621,169 @@ static int find_node_index(const ref<ImporterScene>& scene, const std::string& n
             return static_cast<int>(i);
     }
     return -1;
+}
+
+TEST_CASE("UsdImporter - Independent TRS channels preserve composed interpolation")
+{
+    using namespace pxr;
+    auto source = UsdStage::CreateInMemory();
+    REQUIRE(source->GetRootLayer()->ImportFromString(R"usd(#usda 1.0
+def Xform "TRS" {
+    double3 xformOp:translate.timeSamples = {0: (0,1,2), 12: (3,4,5), 48: (8,9,10)}
+    quatf xformOp:orient.timeSamples = {0: (1,0,0,0), 48: (0,0,0,1)}
+    float3 xformOp:scale.timeSamples = {0: (1,2,3), 36: (2,4,6), 48: (3,6,9)}
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+}
+)usd"));
+    auto stage = source;
+    bool direct = true;
+    int components = 7;
+    double offset = 0;
+    double time_scale = 1;
+    SUBCASE("linear") { }
+    SUBCASE("no operations")
+    {
+        components = 0;
+    }
+    SUBCASE("translation only")
+    {
+        components = 1;
+    }
+    SUBCASE("orientation only")
+    {
+        components = 2;
+    }
+    SUBCASE("translation and orientation")
+    {
+        components = 3;
+    }
+    SUBCASE("scale only")
+    {
+        components = 4;
+    }
+    SUBCASE("translation and scale")
+    {
+        components = 5;
+    }
+    SUBCASE("orientation and scale")
+    {
+        components = 6;
+    }
+    SUBCASE("held subset")
+    {
+        components = 3;
+        stage->SetInterpolationType(UsdInterpolationTypeHeld);
+    }
+    SUBCASE("held")
+    {
+        stage->SetInterpolationType(UsdInterpolationTypeHeld);
+    }
+    SUBCASE("composed reference with time offset and scale")
+    {
+        stage = UsdStage::CreateInMemory();
+        offset = 6;
+        time_scale = 2;
+        SUBCASE("full stack") { }
+        SUBCASE("subset")
+        {
+            components = 6;
+        }
+        REQUIRE(stage->DefinePrim(SdfPath("/TRS"))
+                    .GetReferences()
+                    .AddReference(
+                        source->GetRootLayer()->GetIdentifier(),
+                        SdfPath("/TRS"),
+                        SdfLayerOffset(offset, time_scale)
+                    ));
+    }
+    SUBCASE("repeated translation retains decomposition fallback")
+    {
+        direct = false;
+        UsdGeomXformable xform(stage->GetPrimAtPath(SdfPath("/TRS")));
+        bool resets = false;
+        const auto ops = xform.GetOrderedXformOps(&resets);
+        auto extra = xform.AddTranslateOp(UsdGeomXformOp::PrecisionDouble, TfToken("extra"));
+        REQUIRE(extra.Set(GfVec3d(1, 2, 3), UsdTimeCode(0)));
+        REQUIRE(extra.Set(GfVec3d(4, 5, 6), UsdTimeCode(48)));
+        REQUIRE(xform.SetXformOpOrder({ops[0], extra, ops[1], ops[2]}));
+    }
+    SUBCASE("inverse translation retains decomposition fallback")
+    {
+        direct = false;
+        UsdGeomXformable xform(stage->GetPrimAtPath(SdfPath("/TRS")));
+        bool resets = false;
+        const auto ops = xform.GetOrderedXformOps(&resets);
+        auto inverse = xform.AddTranslateOp(UsdGeomXformOp::PrecisionDouble, TfToken(), true);
+        REQUIRE(xform.SetXformOpOrder({inverse, ops[1], ops[2]}));
+    }
+    SUBCASE("reordered held operations retain decomposition fallback")
+    {
+        direct = false;
+        stage->SetInterpolationType(UsdInterpolationTypeHeld);
+        UsdGeomXformable xform(stage->GetPrimAtPath(SdfPath("/TRS")));
+        bool resets = false;
+        const auto ops = xform.GetOrderedXformOps(&resets);
+        REQUIRE(xform.SetXformOpOrder({ops[2], ops[0], ops[1]}));
+    }
+    SUBCASE("reflected scale retains decomposition fallback")
+    {
+        direct = false;
+        auto scale = stage->GetPrimAtPath(SdfPath("/TRS")).GetAttribute(TfToken("xformOp:scale"));
+        REQUIRE(scale.Set(GfVec3f(-1, 2, 3), UsdTimeCode(0)));
+        REQUIRE(scale.Set(GfVec3f(-2, 4, 6), UsdTimeCode(36)));
+        REQUIRE(scale.Set(GfVec3f(-3, 6, 9), UsdTimeCode(48)));
+    }
+
+    UsdGeomXformable xform(stage->GetPrimAtPath(SdfPath("/TRS")));
+    if (components != 7) {
+        bool resets = false;
+        const auto ops = xform.GetOrderedXformOps(&resets);
+        std::vector<UsdGeomXformOp> selected_ops;
+        for (int component = 0; component < 3; ++component)
+            if (components & (1 << component))
+                selected_ops.push_back(ops[component]);
+        REQUIRE(xform.SetXformOpOrder(selected_ops));
+    }
+    auto scene = UsdImporter().import_stage(*stage);
+    const auto* node = find_node(scene, "/TRS");
+    REQUIRE(node);
+    const std::array indices = {node->animation_translation, node->animation_rotation, node->animation_scale};
+    std::array<ref<AnimationChannel>, 3> channels;
+    for (size_t i = 0; i < indices.size(); ++i) {
+        if (!(components & (1 << i))) {
+            CHECK_EQ(indices[i], -1);
+            continue;
+        }
+        REQUIRE_GE(indices[i], 0);
+        const auto& imported = scene->animation.channels[indices[i]];
+        channels[i] = make_ref<AnimationChannel>();
+        channels[i]->set_value_type(imported.value_type);
+        channels[i]->set_interpolation_mode(imported.interpolation_mode);
+        channels[i]->set_times(imported.times);
+        channels[i]->set_values(imported.values);
+    }
+    if (direct)
+        for (size_t i = 0; i < channels.size(); ++i)
+            if (channels[i])
+                CHECK_EQ(channels[i]->keyframe_count(), i == 1 ? 2 : 3);
+    for (double source_time : {-2., 0., 3., 12., 18., 24., 36., 42., 48., 60.}) {
+        const double time = offset + source_time * time_scale;
+        const float seconds = static_cast<float>(time / stage->GetTimeCodesPerSecond());
+        Transform actual(node->transform);
+        if (channels[0])
+            actual.set_translation(channels[0]->evaluate_float3(seconds));
+        if (channels[1])
+            actual.set_rotation(channels[1]->evaluate_quatf(seconds));
+        if (channels[2])
+            actual.set_scale(channels[2]->evaluate_float3(seconds));
+        GfMatrix4d expected;
+        bool resets = false;
+        REQUIRE(xform.GetLocalTransformation(&expected, &resets, UsdTimeCode(time)));
+        for (int r = 0; r < 4; ++r) {
+            for (int c = 0; c < 4; ++c)
+                CHECK(actual.matrix()[r][c] == doctest::Approx(expected[c][r]).epsilon(2e-5));
+        }
+    }
 }
 
 TEST_CASE("UsdImporter - Linear Translation Animation")

@@ -349,8 +349,15 @@ def test_gltf_scene_unlit_material_mapping(
 
     device = helpers.get_device(device_type)
     scene = f2.Scene.load(device, scene_path)
-    scene.update()
     material = scene.materials.find("Unlit")
+
+    if image_source == "embedded":
+        assert material.base_color_texture_bytes.data == image.getvalue()
+        assert material.base_color_texture is None
+    else:
+        assert material.base_color_texture_bytes is None
+
+    scene.update()
 
     assert isinstance(material, f2.UnlitMaterial)
     assert material.slang_type_name == "UnlitMaterial"
@@ -361,9 +368,10 @@ def test_gltf_scene_unlit_material_mapping(
     assert material.double_sided is True
     assert material.enable_backface_culling is True
     if image_source == "embedded":
-        assert material.base_color_texture is not None
-        assert material.base_color_texture.format == spy.Format.rgba8_unorm_srgb
+        assert material.base_color_texture is None
+        assert material.base_color_texture_bytes.data == image.getvalue()
         assert material.base_color_texture_path == Path()
+        assert scene.texture_manager.stats.regular_texture_count == 1
     else:
         assert material.base_color_texture_path == tmp_path / "white.png"
     assert material.base_color_texture_texcoord == 1

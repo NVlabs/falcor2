@@ -309,8 +309,7 @@ def test_gltf_material_uv_transform(device: spy.Device) -> None:
     words = (
         payload_word("feature_mask"),
         payload_word("transform_mask"),
-        payload_word("extra_data", "buffer", "data"),
-        payload_word("extra_data", "offset"),
+        payload_word("extra_data"),
     )
     probe = (
         module.transform_probe.as_func()

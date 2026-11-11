@@ -45,7 +45,7 @@ nb::ndarray<nb::numpy, T> make_numpy_copy(size_t value_count, std::initializer_l
 #define FALCOR_DICT_TO_DESC_END() SGL_DICT_TO_DESC_END()
 
 #define FALCOR_PY_DECLARE(name) extern void falcor2_python_export_##name(nb::module_& m)
-#define FALCOR_PY_EXPORT(name) void falcor2_python_export_##name([[maybe_unused]] ::nb::module_& m)
+#define FALCOR_PY_EXPORT(name) NB_NOINLINE void falcor2_python_export_##name([[maybe_unused]] ::nb::module_& m)
 #define FALCOR_PY_IMPORT(name) falcor2_python_export_##name(m)
 
 #undef D

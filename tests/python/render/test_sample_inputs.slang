@@ -10,7 +10,15 @@ import falcor2.utils;
 public struct InputObserverBSDF : IBSDF
 {
     public float tag;
-    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc) { return BSDFEval(); }
+    public BSDFEval eval_with_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
+    {
+        return BSDFEval();
+    }
     public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};

@@ -57,6 +57,7 @@ class PathTracerPipeline(RenderNode):
         self._last_camera_uniforms = None
         self._pending_reset = False
         self._spp = 1
+        self._samples_per_dispatch = 1
         self._accumulation_mode = AccumulationMode.normal
         self._last_dlss_key: tuple[int, int, int, int, Any] | None = None
         self._last_enable_dlss_rr = self.enable_dlss_rr
@@ -91,7 +92,25 @@ class PathTracerPipeline(RenderNode):
 
     @spp.setter
     def spp(self, value: int):
+        if value < 1:
+            raise ValueError("spp must be positive.")
         self._spp = value
+
+    @property
+    def samples_per_dispatch(self) -> int:
+        """Equal-size sample batches for normal accumulation.
+
+        The accumulator sanitizes and clamps each batch mean.
+        """
+        return self._samples_per_dispatch
+
+    @samples_per_dispatch.setter
+    def samples_per_dispatch(self, value: int) -> None:
+        if value < 1:
+            raise ValueError("samples_per_dispatch must be positive.")
+        if value != self._samples_per_dispatch:
+            self._samples_per_dispatch = value
+            self.request_reset()
 
     @property
     def output_spec(self) -> ContainerSpec:
@@ -283,16 +302,18 @@ class PathTracerPipeline(RenderNode):
         self,
         scene: f2.Scene,
         camera: f2.Camera,
+        sample_count: int = 1,
         cmd: spy.CommandEncoder | None = None,
     ) -> tuple[Any, dict[str, Any | None]]:
-        """Render one raw sample for the frame prepared by :meth:`_exec`."""
+        """Render a raw sample or batch mean for the prepared frame."""
         image, guides = self.path_tracer(
             scene,
             camera,
             iteration=self._iteration,
+            sample_count=sample_count,
             cmd=cmd,
         )
-        self._iteration += 1
+        self._iteration += sample_count
 
         return image, guides
 
@@ -300,12 +321,14 @@ class PathTracerPipeline(RenderNode):
         self,
         scene: f2.Scene,
         camera: f2.Camera,
+        sample_count: int = 1,
         cmd: spy.CommandEncoder | None = None,
     ) -> tuple[Any, dict[str, Any | None]]:
         """Render and standard-accumulate one path-tracer iteration."""
         image, guides = self._render_raw_iteration(
             scene,
             camera,
+            sample_count=sample_count,
             cmd=cmd,
         )
         return self.accumulator(image, cmd=cmd), guides
@@ -403,6 +426,13 @@ class PathTracerPipeline(RenderNode):
         if camera is None:
             return None
 
+        # Batched samples per dispatch only makes sense with normal summed accumulation
+        if self.samples_per_dispatch > 1:
+            if self.enable_dlss_rr or self.accumulation_mode != AccumulationMode.normal:
+                raise ValueError("Sample batching requires normal accumulation without DLSS.")
+            if self.spp % self.samples_per_dispatch:
+                raise ValueError("spp must be divisible by samples_per_dispatch.")
+
         # Per-frame mode clears once here so all SPP iterations rendered below
         # contribute to the same frame-local count.
         if not self.accumulate_nan_count:
@@ -462,15 +492,11 @@ class PathTracerPipeline(RenderNode):
                     cmd=cmd,
                 )
             elif self._accumulation_mode == AccumulationMode.normal:
-                image, guides = self._render_iteration(
-                    scene,
-                    camera,
-                    cmd=cmd,
-                )
-                for _ in range(1, self.spp):
+                for _ in range(self.spp // self.samples_per_dispatch):
                     image, guides = self._render_iteration(
                         scene,
                         camera,
+                        sample_count=self.samples_per_dispatch,
                         cmd=cmd,
                     )
             else:

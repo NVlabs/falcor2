@@ -382,6 +382,7 @@ private:
         const std::string object_name = texture.property_prefix;
         const std::string sampler_name = object_name + "_sampler";
         const std::string path_name = object_name + "_path";
+        const std::string bytes_name = object_name + "_bytes";
         const std::string texcoord_name = object_name + "_texcoord";
 
         r.def_prop_rw(
@@ -424,6 +425,20 @@ private:
                 material.mark_texture_resource_dirty(emission);
             },
             texture.path_doc,
+            reflection::UIFlags::advanced
+        );
+        r.def_prop_rw(
+            bytes_name.c_str(),
+            [slot](const GLTFSpecGlossMaterial& material)
+            {
+                return material.texture_binding(slot).bytes;
+            },
+            [slot, emission](GLTFSpecGlossMaterial& material, const ref<Blob>& value)
+            {
+                material.texture_binding(slot).bytes = value;
+                material.mark_texture_resource_dirty(emission);
+            },
+            "Encoded texture bytes.",
             reflection::UIFlags::advanced
         );
         r.def_prop_rw(

@@ -2,9 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "scene.h"
-#include "falcor2/render/material/mtlx/codegen/codegen_cache.h"
-
-#include "falcor2/render/geometry/geometry_attribute_registry.h"
+#include "geometry/dynamic_mesh_geometry.h"
+#include "geometry/dynamic_curve_geometry.h"
 
 #include "falcor2/render/texture_manager.h"
 #include "falcor2/render/scene_globals.h"
@@ -16,6 +15,9 @@
 #include "falcor2/render/component/geometry_instance.h"
 #include "falcor2/render/component/transform_animation.h"
 #include "falcor2/render/geometry/static_mesh_geometry.h"
+#include "falcor2/render/geometry/geometry_attribute_registry.h"
+#include "falcor2/render/material/mtlx/codegen/codegen_cache.h"
+#include "falcor2/utils/camera_framing.h"
 
 #include <sgl/device/device.h>
 #include <sgl/device/command.h>
@@ -24,6 +26,9 @@
 #include <sgl/device/shader_cursor.h>
 #include <sgl/core/crypto.h>
 #include <sgl/core/timer.h>
+
+#include <algorithm>
+#include <cmath>
 
 namespace falcor {
 
@@ -106,6 +111,18 @@ Scene::Scene(ref<sgl::Device> device, const SceneConfig& config)
     requirements->lss_intersection_mode = m_render_scene->lss_intersection_mode();
     m_requirements = std::move(requirements);
     m_requirements_generation = next_generation_id();
+
+    // Create built-in free camera entity and component.
+    Entity* entity = create_entity();
+    entity->set_name("free_camera");
+    Camera* camera = entity->create_component<Camera>();
+    camera->set_name("free_camera");
+    Transform transform;
+    transform.set_translation(float3(0.f, 0.f, 5.f));
+    entity->set_transform(transform);
+    camera->set_focus_distance(5.f);
+    m_free_camera = ref(camera);
+    m_active_camera = m_free_camera;
 }
 
 Scene::~Scene() { }
@@ -292,28 +309,79 @@ void Scene::run_garbage_collect()
 
 Camera* Scene::active_camera() const
 {
-    if (m_active_camera && m_active_camera->is_valid())
-        return m_active_camera;
-    return nullptr;
+    return m_active_camera->is_valid() ? m_active_camera.get() : m_free_camera.get();
 }
 
 void Scene::set_active_camera(Camera* camera)
 {
     if (camera) {
-        FALCOR_CHECK(camera->scene() == this, "Camera does not belong to this scene.");
+        FALCOR_CHECK(camera->is_valid() && camera->scene() == this, "Camera must be live in this scene.");
         m_active_camera = ref(camera);
     } else {
-        m_active_camera = nullptr;
+        m_active_camera = m_free_camera;
+    }
+    m_initial_camera_selection_pending = false;
+}
+
+void Scene::frame_free_camera(float aspect, float2 default_depth_range)
+{
+    Camera* camera = m_free_camera;
+    std::vector<AABB> bounds;
+    for (const Component* component : components()) {
+        const auto* instance = component->as<const GeometryInstance>();
+        if (!instance || !instance->is_valid())
+            continue;
+        const Geometry* geometry = instance->geometry();
+        if (geometry && geometry->is_valid() && geometry->local_aabb().is_valid())
+            bounds.push_back(geometry->local_aabb().transform(instance->entity()->world_from_object_matrix()));
+    }
+    const auto framing = detail::frame_camera(bounds, camera->fov_y(), aspect, default_depth_range);
+    camera->entity()->set_transform(Transform(framing.world_from_camera));
+    camera->set_focus_distance(framing.focus_distance);
+    camera->set_depth_range(framing.depth_range);
+}
+
+Camera* Scene::activate_free_camera_from(const Camera* source)
+{
+    FALCOR_CHECK(source && source->is_valid() && source->scene() == this, "Camera must be live in this scene.");
+    Camera* camera = m_free_camera;
+    camera->entity()->set_transform(Transform(source->entity()->world_from_object_matrix()));
+    camera->set_focal_length(source->focal_length());
+    camera->set_sensor_height(source->sensor_height());
+    camera->set_fstop(source->fstop());
+    camera->set_exposure(source->exposure());
+    camera->set_enable_depth_of_field(source->enable_depth_of_field());
+    camera->set_focus_distance(source->focus_distance());
+    camera->set_depth_range(source->depth_range());
+    camera->set_width(source->width());
+    camera->set_height(source->height());
+    set_active_camera(camera);
+    return camera;
+}
+
+void Scene::select_initial_camera()
+{
+    if (!m_initial_camera_selection_pending)
+        return;
+    for (Component* component : components()) {
+        if (component->is_valid() && component != m_free_camera.get()) {
+            if (Camera* camera = component->as<Camera>()) {
+                set_active_camera(camera);
+                break;
+            }
+        }
     }
 }
 
-std::vector<SceneObject*> Scene::find_objects_by_source_asset_ref(const SourceAssetRef& source_asset_ref) const
+std::vector<SceneObject*>
+Scene::find_objects_by_source_asset_ref(const SourceAssetRef& source_asset_ref, bool include_builtins) const
 {
     std::vector<SceneObject*> result;
     auto collect = [&](const auto& collection)
     {
         for (const auto& object : collection.objects()) {
-            if (object->is_valid() && object->source_asset_ref() && *object->source_asset_ref() == source_asset_ref)
+            if (object->is_valid() && (include_builtins || !object->is_builtin()) && object->source_asset_ref()
+                && *object->source_asset_ref() == source_asset_ref)
                 result.push_back(object.get());
         }
     };
@@ -330,6 +398,30 @@ void Scene::set_time(double time)
     m_time = time;
 }
 
+void Scene::update_geometry_animation_cache() const
+{
+    if (!m_geometry_animation_cache_dirty)
+        return;
+
+    m_geometry_animation_range = {};
+    m_has_geometry_animation = false;
+    for (const auto& component : m_component_collection.objects()) {
+        if (!component->is_valid() || !component->entity() || !component->entity()->is_valid())
+            continue;
+        const auto* instance = component->as<GeometryInstance>();
+        if (!instance || !instance->geometry() || !instance->geometry()->is_valid())
+            continue;
+        if (const auto* mesh = instance->geometry()->as<DynamicMeshGeometry>()) {
+            m_geometry_animation_range.expand(mesh->animation_range());
+            m_has_geometry_animation |= mesh->has_animation();
+        } else if (const auto* curve = instance->geometry()->as<DynamicCurveGeometry>()) {
+            m_geometry_animation_range.expand(curve->animation_range());
+            m_has_geometry_animation |= curve->has_animation();
+        }
+    }
+    m_geometry_animation_cache_dirty = false;
+}
+
 AnimationTimeRange Scene::animation_range() const
 {
     AnimationTimeRange range;
@@ -337,6 +429,8 @@ AnimationTimeRange Scene::animation_range() const
         if (anim->is_valid())
             range.expand(anim->key_range());
     }
+    update_geometry_animation_cache();
+    range.expand(m_geometry_animation_range);
     return range;
 }
 
@@ -356,7 +450,8 @@ bool Scene::has_animation() const
             }
         }
     }
-    return false;
+    update_geometry_animation_cache();
+    return m_has_geometry_animation;
 }
 
 SceneUpdateFlags Scene::update()
@@ -384,17 +479,8 @@ SceneUpdateFlags Scene::_update(SceneUpdateContext& ctx)
     }
 #endif
 
-    // Auto-set active camera if none is set and a camera component was added.
-    if (!m_active_camera && m_component_collection.has_dirty(Component::DirtyFlags::added)) {
-        for (Component* component : m_component_collection.objects()) {
-            if (component->is_valid()) {
-                if (Camera* camera = component->as<Camera>()) {
-                    m_active_camera = ref(camera);
-                    break;
-                }
-            }
-        }
-    }
+    if (m_component_collection.has_dirty(Component::DirtyFlags::added))
+        select_initial_camera();
 
 
     // Call SceneObject::on_add_to_scene on all added objects.
@@ -540,8 +626,11 @@ SceneUpdateFlags Scene::_update(SceneUpdateContext& ctx)
 
     // Acceleration structures follow material requirements, independently of shader capability selection.
     const bool requires_opacity_evaluation = m_required_capabilities.has(SceneCapabilityFlags::opacity_evaluation);
-    if (m_render_scene->update(m_hit_group_policy, requires_opacity_evaluation))
+    if (m_render_scene->update(m_hit_group_policy, requires_opacity_evaluation, m_time))
         update_flags |= SceneUpdateFlags::render_state;
+
+    if (m_geometry_collection.has_dirty(Geometry::DirtyFlags::deformation))
+        update_flags |= SceneUpdateFlags::geometry;
 
     // Update emissive geometry system.
     // TODO(scene): Providing info if materials updated would benefit speed of the rebuild checks.
@@ -736,11 +825,14 @@ void Scene::_mark_animation_dirty(Animation* animation, Animation::DirtyFlags fl
 void Scene::_mark_geometry_removed(Geometry* geometry)
 {
     m_geometry_collection.mark_remove(geometry);
+    m_geometry_animation_cache_dirty = true;
 }
 
 void Scene::_mark_geometry_dirty(Geometry* geometry, Geometry::DirtyFlags flags)
 {
     m_geometry_collection.mark_dirty(geometry, flags);
+    if (is_set(flags, Geometry::DirtyFlags::render_state))
+        m_geometry_animation_cache_dirty = true;
 }
 
 void Scene::_mark_animation_removed(Animation* animation)
@@ -761,11 +853,16 @@ void Scene::_mark_entity_dirty(Entity* entity, Entity::DirtyFlags flags)
 void Scene::_mark_component_removed(Component* component)
 {
     m_component_collection.mark_remove(component);
+    if (!m_geometry_animation_cache_dirty && component->as<GeometryInstance>())
+        m_geometry_animation_cache_dirty = true;
 }
 
 void Scene::_mark_component_dirty(Component* component, Component::DirtyFlags flags)
 {
     m_component_collection.mark_dirty(component, flags);
+    if (!m_geometry_animation_cache_dirty && is_set(flags, Component::DirtyFlags::render_state)
+        && component->as<GeometryInstance>())
+        m_geometry_animation_cache_dirty = true;
 }
 
 void Scene::_handle_removed_objects()
@@ -781,16 +878,8 @@ void Scene::_handle_removed_objects()
         return;
 
     // Auto-replace active camera if it was removed.
-    if (m_active_camera && !m_active_camera->is_valid()) {
-        m_active_camera = nullptr;
-        for (Component* component : m_component_collection.objects()) {
-            if (component->is_valid()) {
-                if (Camera* camera = component->as<Camera>()) {
-                    m_active_camera = ref(camera);
-                    break;
-                }
-            }
-        }
+    if (!m_active_camera->is_valid()) {
+        m_active_camera = m_free_camera;
     }
 
     for (Material* material : m_material_collection.objects())

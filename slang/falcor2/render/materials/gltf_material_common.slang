@@ -160,7 +160,7 @@ public float2 transform_uv_sparse<let Transforms : uint, let SlotBit : uint>(
     float2 uv,
     uint feature_mask,
     uint transform_mask,
-    BufferOffsetPair extra_data
+    BufferPtr extra_data
 )
 {
     if ((Transforms & SlotBit) != 0u) {
@@ -179,7 +179,7 @@ public float2 resolve_texcoord_sparse<let Transforms : uint, let NonzeroTexcoord
     GLTFTextureInfo info,
     uint feature_mask,
     uint transform_mask,
-    BufferOffsetPair extra_data
+    BufferPtr extra_data
 )
 {
     uint selector = 0u;
@@ -200,7 +200,7 @@ public float4 sample_texture_sparse<
     GLTFTextureInfo info,
     uint feature_mask,
     uint transform_mask,
-    BufferOffsetPair extra_data,
+    BufferPtr extra_data,
     float4 fallback
 )
 {
@@ -233,7 +233,7 @@ public Frame shading_frame_sparse<
     float normal_scale,
     uint feature_mask,
     uint transform_mask,
-    BufferOffsetPair extra_data
+    BufferPtr extra_data
 )
 {
     Frame frame = si.shading_frame_ws;
@@ -268,8 +268,7 @@ public float clearcoat_weight(float factor, float cosine)
     return saturate(factor) * (0.04 + 0.96 * pow(1.0 - saturate(abs(cosine)), 5.0));
 }
 
-public float2
-transform_uv(float2 uv, uint binding, uint transform_mask, BufferOffsetPair transform_data, uint byte_offset = 0)
+public float2 transform_uv(float2 uv, uint binding, uint transform_mask, BufferPtr transform_data, uint byte_offset = 0)
 {
     const uint bit = 1u << binding;
     if ((transform_mask & bit) == 0)
@@ -286,7 +285,7 @@ float2 resolve_texcoord(
     uint texcoord,
     uint binding,
     uint transform_mask,
-    BufferOffsetPair transform_data,
+    BufferPtr transform_data,
     uint byte_offset = 0
 )
 {
@@ -308,7 +307,7 @@ Frame shading_frame<LodSampler : ILodSampler>(
     float normal_scale,
     uint normal_texcoord,
     uint transform_mask,
-    BufferOffsetPair transform_data,
+    BufferPtr transform_data,
     uint byte_offset = 0,
     uint normal_binding = 2,
     bool normal_map_encoded = false
@@ -341,7 +340,7 @@ float opacity<LodSampler : ILodSampler>(
     uint texcoord,
     bool use_vertex_color,
     uint transform_mask,
-    BufferOffsetPair transform_data,
+    BufferPtr transform_data,
     uint byte_offset = 0
 )
 {
@@ -361,7 +360,7 @@ float3 emission<LodSampler : ILodSampler>(
     float3 factor,
     uint texcoord,
     uint transform_mask,
-    BufferOffsetPair transform_data,
+    BufferPtr transform_data,
     uint byte_offset = 0
 )
 {

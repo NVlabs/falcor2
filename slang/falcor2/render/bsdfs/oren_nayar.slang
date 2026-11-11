@@ -21,7 +21,12 @@ public struct OrenNayarBRDF : IBSDF
     }
 
 
-    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
         if (min(wi.z, wo.z) < BSDF_MIN_COS_THETA)
             return BSDFEval();

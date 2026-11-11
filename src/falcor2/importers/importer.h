@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -63,14 +64,18 @@ struct ImportOptions {
     /// Oriented ribbons store these as mesh samples; this option also controls their import.
     bool import_curve_motion = false;
 
+    /// Retain USD linear-blend skin bindings and joint animation for explicit ImporterScene::bake_pose() calls.
+    /// bake_poses also enables this import. Runtime skinning is not enabled.
+    bool usd_import_skinning = false;
+
     /// Attempt to detect, report and fix invalid geometry.
     bool repair_broken_geometry = true;
     /// Default for per-mesh normal and tangent recomputation after asset import.
     bool recompute_normals = false;
-    /// Bake skeleton poses into static geometry. USD scenes with skinning are frozen at frame zero,
-    /// with refinement zero on skinned meshes. glTF uses the authored default pose. Disabled by default.
-    /// With import_mesh_motion, USD instead bakes at mesh sample times and preserves scene animation;
-    /// meshes without samples use frame zero. This mode does not support blend shapes or instanced skinning.
+    /// Bake imported skin bindings into static geometry. USD evaluates imported animation at zero seconds;
+    /// glTF uses the stored pose. Ordinary node transforms and animation remain unchanged.
+    /// Skinned USD meshes retain their control cage. Combined mesh motion and skinning, blend shapes,
+    /// dual-quaternion skinning and instanced USD skinning are unsupported.
     bool bake_poses = false;
     /// Default mesh refinement level, in [0, 256]. Zero selects the control cage; positive N uses N+1 edge segments.
     int mesh_refinement_level = 0;
@@ -196,7 +201,11 @@ FALCOR_API ref<BlobCache> importer_cache();
 namespace detail {
 
 /// Apply generic import options to imported CPU-side scene data.
-void apply_import_options(ImporterScene& scene, const ImportOptions& options);
+void apply_import_options(
+    ImporterScene& scene,
+    const ImportOptions& options,
+    std::optional<double> bake_time_seconds = {}
+);
 
 } // namespace detail
 

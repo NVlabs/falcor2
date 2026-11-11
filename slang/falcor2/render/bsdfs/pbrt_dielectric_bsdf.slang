@@ -17,7 +17,12 @@ public struct PBRTDielectricBSDF : IBSDF
     }
 
 
-    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
         const float rel_eta = bc.ior_t / bc.ior_i;
         const float rel_eta_inverse = 1.0 / rel_eta;
@@ -48,7 +53,7 @@ public struct PBRTDielectricBSDF : IBSDF
         return BSDFEval(value, pdf);
     }
 
-    public bool sample(float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
 

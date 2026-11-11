@@ -75,6 +75,18 @@ def save_state(path, state):
     path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
 
 
+def apply_benchmark_backport(target, env):
+    """Restore the Python reporting helpers bundled with historical baselines."""
+    patch = target / "tools/slangpy-benchmark-backport.patch"
+    if not patch.is_file():
+        return
+    slangpy = target / "external/slangpy"
+    # Use the baseline's patch, without replacing its native dependency pins.
+    # Fail before build/measurement if it does not match the pinned checkout.
+    run(["git", "apply", "--check", str(patch)], slangpy, env)
+    run(["git", "apply", str(patch)], slangpy, env)
+
+
 def checkout(args, env):
     if args.state_file.exists():
         raise RuntimeError(f"State already exists: {args.state_file}; choose a fresh --run-dir")
@@ -111,6 +123,8 @@ def checkout(args, env):
     if harness:
         env["CI_PERF_HARNESS_COMMIT"] = harness
     run([sys.executable, str(ROOT / "tools/ci_submodules.py")], target, env)
+    if args.project == "falcor2-slang" and args.falcor_ref:
+        apply_benchmark_backport(target, env)
     if selected and selected["patches"] is not None:
         apply_instrumentation(target, profiles, selected)
         harness = run(["git", "rev-parse", "HEAD"], ROOT, env, capture=True)

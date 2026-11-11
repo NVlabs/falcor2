@@ -165,8 +165,8 @@ def load_scene(
     return f2.Scene.load(device, path, import_options)
 
 
-def save_image(tensor: spy.Tensor, path: Union[str, PathLike[str]]) -> None:
-    """Save a tensor as an image file."""
+def save_image(tensor: spy.Tensor | spy.Texture, path: Union[str, PathLike[str]]) -> None:
+    """Save a linear tensor or texture, encoding non-HDR formats as sRGB."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -194,6 +194,6 @@ def save_image(tensor: spy.Tensor, path: Union[str, PathLike[str]]) -> None:
         raise ValueError(f"Unsupported tensor shape: {data.shape}")
 
     bitmap = spy.Bitmap(data=data, pixel_format=pixel_format, srgb_gamma=False)
-    if path.suffix not in (".exr", ".hdr"):
+    if path.suffix.lower() not in (".exr", ".hdr"):
         bitmap = bitmap.convert(component_type=spy.Bitmap.ComponentType.uint8, srgb_gamma=True)
     bitmap.write(path)

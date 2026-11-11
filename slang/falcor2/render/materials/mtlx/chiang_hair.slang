@@ -215,17 +215,32 @@ public struct MxChiangHairBSDF : ILayerableBSDF
 
     // TODO: Remove the eval()/eval_pdf() overrides below when
     // https://github.com/shader-slang/slang/issues/12814 is fixed.
-    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
+    public override float3 eval(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
-        return eval_with_pdf(wi, wo, bc).value;
+        return eval_with_pdf(wi, wo, bc, component).value;
     }
 
-    public override float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+    public override float eval_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
-        return eval_with_pdf(wi, wo, bc).pdf;
+        return eval_with_pdf(wi, wo, bc, component).pdf;
     }
 
-    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
         float sin_theta_o = wi.x;
         float cos_theta_o = hair_safe_sqrt(1.0 - sin_theta_o * sin_theta_o);

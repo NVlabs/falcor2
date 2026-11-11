@@ -103,17 +103,35 @@ public struct MxNullBSDF : ILayerableBSDF
 
     // TODO: Remove the eval()/eval_pdf() overrides below when
     // https://github.com/shader-slang/slang/issues/12814 is fixed.
-    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
+    public override float3 eval(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
-        return eval_with_pdf(wi, wo, bc).value;
+        return eval_with_pdf(wi, wo, bc, component).value;
     }
 
-    public override float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+    public override float eval_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
-        return eval_with_pdf(wi, wo, bc).pdf;
+        return eval_with_pdf(wi, wo, bc, component).pdf;
     }
 
-    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc) { return BSDFEval(); }
+    public BSDFEval eval_with_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
+    {
+        return BSDFEval();
+    }
     public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
@@ -145,17 +163,35 @@ public struct MxSimpleBTDF : ILayerableBSDF
 
     // TODO: Remove the eval()/eval_pdf() overrides below when
     // https://github.com/shader-slang/slang/issues/12814 is fixed.
-    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
+    public override float3 eval(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
-        return eval_with_pdf(wi, wo, bc).value;
+        return eval_with_pdf(wi, wo, bc, component).value;
     }
 
-    public override float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+    public override float eval_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
-        return eval_with_pdf(wi, wo, bc).pdf;
+        return eval_with_pdf(wi, wo, bc, component).pdf;
     }
 
-    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc) { return BSDFEval(); }
+    public BSDFEval eval_with_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
+    {
+        return BSDFEval();
+    }
     public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
@@ -198,19 +234,35 @@ public struct MxLayerableBSDF<Inner : IBSDF> : ILayerableBSDF
     public float3 layer_opacity(const float3 wi) { return saturate(float3(1.0) - inner.eval_albedo(wi).transmission); }
     // TODO: Remove the eval()/eval_pdf() overrides below when
     // https://github.com/shader-slang/slang/issues/12814 is fixed.
-    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
+    public override float3 eval(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
-        return eval_with_pdf(wi, wo, bc).value;
+        return eval_with_pdf(wi, wo, bc, component).value;
     }
 
-    public override float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+    public override float eval_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
-        return eval_with_pdf(wi, wo, bc).pdf;
+        return eval_with_pdf(wi, wo, bc, component).pdf;
     }
 
-    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+
+    public BSDFEval eval_with_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
-        return inner.eval_with_pdf(wi, wo, bc);
+        return inner.eval_with_pdf(wi, wo, bc, component);
     }
     public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
@@ -265,21 +317,37 @@ public struct MxWeightedBSDF<Inner : ILayerableBSDF> : ILayerableBSDF
     }
     // TODO: Remove the eval()/eval_pdf() overrides below when
     // https://github.com/shader-slang/slang/issues/12814 is fixed.
-    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
+    public override float3 eval(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
-        return eval_with_pdf(wi, wo, bc).value;
+        return eval_with_pdf(wi, wo, bc, component).value;
     }
 
-    public override float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+    public override float eval_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
-        return eval_with_pdf(wi, wo, bc).pdf;
+        return eval_with_pdf(wi, wo, bc, component).pdf;
     }
 
-    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+
+    public BSDFEval eval_with_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
         if (scalar_weight() <= 0.0)
             return BSDFEval();
-        BSDFEval result = inner.eval_with_pdf(wi, wo, bc);
+        BSDFEval result = inner.eval_with_pdf(wi, wo, bc, component);
         result.value *= weight;
         return result;
     }
@@ -376,23 +444,37 @@ public struct MxFramedWeightedBSDF<Inner : ILayerableBSDF, let BSDF_INDEX : int 
     }
     // TODO: Remove the eval()/eval_pdf() overrides below when
     // https://github.com/shader-slang/slang/issues/12814 is fixed.
-    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
+    public override float3 eval(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
-        return eval_with_pdf(wi, wo, bc).value;
+        return eval_with_pdf(wi, wo, bc, component).value;
     }
 
-    public override float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+    public override float eval_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
-        return eval_with_pdf(wi, wo, bc).pdf;
+        return eval_with_pdf(wi, wo, bc, component).pdf;
     }
 
-    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+
+    public BSDFEval eval_with_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
         if (scalar_weight() <= 0.0)
             return BSDFEval();
-        float3 local_wi = frame.to_local(wi);
-        float3 local_wo = frame.to_local(wo);
-        BSDFEval result = inner.eval_with_pdf(local_wi, local_wo, bc);
+        BSDFEval result = inner.eval_with_pdf(frame.to_local(wi), frame.to_local(wo), bc, component);
         result.value *= weight;
         return result;
     }
@@ -468,17 +550,32 @@ public struct MxLayerBSDF<Top : ILayerableBSDF, Base : ILayerableBSDF> : ILayera
     }
     // TODO: Remove the eval()/eval_pdf() overrides below when
     // https://github.com/shader-slang/slang/issues/12814 is fixed.
-    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
+    public override float3 eval(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
-        return eval_with_pdf(wi, wo, bc).value;
+        return eval_with_pdf(wi, wo, bc, component).value;
     }
 
-    public override float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+    public override float eval_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
-        return eval_with_pdf(wi, wo, bc).pdf;
+        return eval_with_pdf(wi, wo, bc, component).pdf;
     }
 
-    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
         BSDFEval top_result = top.eval_with_pdf(wi, wo, bc);
         BSDFEval base_result = base.eval_with_pdf(wi, wo, bc);
@@ -512,6 +609,7 @@ public struct MxLayerBSDF<Top : ILayerableBSDF, Base : ILayerableBSDF> : ILayera
         if (sample.pdf <= 0.0)
             return false;
         sample.weight = eval_result.value / sample.pdf;
+        sample.component = BSDFComponent::full_response;
         return true;
     }
     public AlbedoContributions eval_albedo(const float3 wi)
@@ -576,17 +674,32 @@ public struct MxMixBSDF<FG : ILayerableBSDF, BG : ILayerableBSDF> : ILayerableBS
     }
     // TODO: Remove the eval()/eval_pdf() overrides below when
     // https://github.com/shader-slang/slang/issues/12814 is fixed.
-    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
+    public override float3 eval(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
-        return eval_with_pdf(wi, wo, bc).value;
+        return eval_with_pdf(wi, wo, bc, component).value;
     }
 
-    public override float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+    public override float eval_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
-        return eval_with_pdf(wi, wo, bc).pdf;
+        return eval_with_pdf(wi, wo, bc, component).pdf;
     }
 
-    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
         BSDFEval bg_result = bg.eval_with_pdf(wi, wo, bc);
         BSDFEval fg_result = fg.eval_with_pdf(wi, wo, bc);
@@ -621,6 +734,7 @@ public struct MxMixBSDF<FG : ILayerableBSDF, BG : ILayerableBSDF> : ILayerableBS
         if (sample.pdf <= 0.0)
             return false;
         sample.weight = eval_result.value / sample.pdf;
+        sample.component = BSDFComponent::full_response;
         return true;
     }
     public AlbedoContributions eval_albedo(const float3 wi)
@@ -687,17 +801,32 @@ public struct MxAddBSDF<In1 : ILayerableBSDF, In2 : ILayerableBSDF> : ILayerable
     public float3 layer_opacity(const float3 wi) { return saturate(in1.layer_opacity(wi) + in2.layer_opacity(wi)); }
     // TODO: Remove the eval()/eval_pdf() overrides below when
     // https://github.com/shader-slang/slang/issues/12814 is fixed.
-    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
+    public override float3 eval(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
-        return eval_with_pdf(wi, wo, bc).value;
+        return eval_with_pdf(wi, wo, bc, component).value;
     }
 
-    public override float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+    public override float eval_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
-        return eval_with_pdf(wi, wo, bc).pdf;
+        return eval_with_pdf(wi, wo, bc, component).pdf;
     }
 
-    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
         BSDFEval result1 = in1.eval_with_pdf(wi, wo, bc);
         BSDFEval result2 = in2.eval_with_pdf(wi, wo, bc);
@@ -727,6 +856,7 @@ public struct MxAddBSDF<In1 : ILayerableBSDF, In2 : ILayerableBSDF> : ILayerable
         if (sample.pdf <= 0.0)
             return false;
         sample.weight = eval_result.value / sample.pdf;
+        sample.component = BSDFComponent::full_response;
         return true;
     }
     public AlbedoContributions eval_albedo(const float3 wi)

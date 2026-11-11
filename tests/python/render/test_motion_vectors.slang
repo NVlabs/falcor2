@@ -7,7 +7,7 @@ import falcor2.utils;
 StructuredBuffer<GeometryInstanceDesc> instance_descs;
 StructuredBuffer<float4x4> current_inverse;
 StructuredBuffer<float4x4> previous_world;
-StructuredBuffer<BufferHandle> geometry;
+StructuredBuffer<BufferPtr> geometry;
 
 public float3 previous_position(bool curve, uint primitive, float2 parameters, float3 position_ws)
 {

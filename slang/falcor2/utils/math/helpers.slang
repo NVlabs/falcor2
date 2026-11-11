@@ -24,6 +24,14 @@ public T squared_norm<T : __BuiltinFloatingPointType, int N>(vector<T, N> x)
     return dot(x, x);
 }
 
+/// Normalize value if its squared length exceeds epsilon; otherwise return fallback unchanged.
+/// @param epsilon Threshold on squared length.
+public float3 normalize_or(float3 value, float3 fallback, float epsilon = 1.0e-20)
+{
+    float length_squared = dot(value, value);
+    return length_squared > epsilon ? value * rsqrt(length_squared) : fallback;
+}
+
 /// Returns the square root of the input value, or 0 if the input is negative.
 [Differentiable]
 public T safe_sqrt<T : __BuiltinFloatingPointType>(T x)

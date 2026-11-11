@@ -9,12 +9,15 @@ store test results, and manage image test data.
 """
 
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
 import shutil
+import time
 from typing import Any, Dict, List, Optional, Union
 import urllib.parse
+import urllib.error
 import urllib.request
 import numpy as np
 from botocore.exceptions import PartialCredentialsError
@@ -212,7 +215,13 @@ class ImageTest:
         # Load the reference image for comparison
         reference_path = self.references_dir / f"{reference_hash}.exr"
         if not reference_path.exists():
-            self.plugin.download_reference(reference_hash)
+            download_error = self.plugin.download_reference(reference_hash)
+            if download_error is not None and not reference_path.exists():
+                return ImageComparison(
+                    status="failed",
+                    reference_hash=reference_hash,
+                    message=download_error,
+                )
         if not reference_path.exists():
             return ImageComparison(
                 status="failed",
@@ -571,8 +580,8 @@ class ImageTestPlugin:
                     warnings.warn(f"Failed to save image test metadata to {json_file}: {e}")
         self._close_client()
 
-    def download_reference(self, reference: str) -> None:
-        """Download a specific reference image from the public object-store endpoint."""
+    def download_reference(self, reference: str) -> Optional[str]:
+        """Download a reference with bounded transient retries; return an error on failure."""
         refs_dir = helpers.PROJECT_ROOT / ".imagetests" / "references"
         refs_dir.mkdir(exist_ok=True, parents=True)
         ref_path = refs_dir / f"{reference}.exr"
@@ -580,14 +589,36 @@ class ImageTestPlugin:
             encoded_reference = urllib.parse.quote(reference, safe="")
             url = f"{PUBLIC_BUCKET_URL}/references/{encoded_reference}.exr"
             temporary_path = ref_path.with_suffix(f".{os.getpid()}.tmp")
-            try:
-                with urllib.request.urlopen(url, timeout=60) as response:
-                    with open(temporary_path, "wb") as output:
-                        shutil.copyfileobj(response, output)
-                temporary_path.replace(ref_path)
-            except Exception as e:
-                temporary_path.unlink(missing_ok=True)
-                warnings.warn(f"Failed to download {ref_path} from public storage: {e}")
+            max_attempts = 5
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    with urllib.request.urlopen(url, timeout=60) as response:
+                        with open(temporary_path, "wb") as output:
+                            shutil.copyfileobj(response, output)
+                    temporary_path.replace(ref_path)
+                    return None
+                except Exception as e:
+                    temporary_path.unlink(missing_ok=True)
+                    if isinstance(e, urllib.error.HTTPError):
+                        retryable = e.code in (408, 429) or 500 <= e.code < 600
+                    else:
+                        # Proxy CONNECT failures are wrapped in URLError, rather than HTTPError.
+                        retryable = isinstance(
+                            e,
+                            (
+                                urllib.error.URLError,
+                                TimeoutError,
+                                ConnectionError,
+                                http.client.IncompleteRead,
+                            ),
+                        )
+                    if retryable and attempt < max_attempts:
+                        time.sleep(2**attempt)
+                        continue
+                    message = f"Failed to download reference {url} after {attempt} attempt(s): {e}"
+                    warnings.warn(message)
+                    return message
+        return None
 
     def upload_reference(self, reference: str) -> None:
         """Upload a specific reference image to S3."""

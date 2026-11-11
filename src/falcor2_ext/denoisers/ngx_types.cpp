@@ -10,15 +10,12 @@
 namespace nb = nanobind;
 using namespace nb::literals;
 
-FALCOR_PY_EXPORT(denoisers_ngx_types)
+namespace {
+
+NB_NOINLINE void bind_ngx_info(nb::module_& ngx_module)
 {
     using namespace falcor;
     using namespace falcor::ngx;
-
-    nb::module_ ngx_module = nb::module_::import_("falcor2.ngx");
-
-    nb::sgl_enum<QualityMode>(ngx_module, "QualityMode", D(ngx, QualityMode));
-    nb::sgl_enum<Result>(ngx_module, "Result", D(ngx, Result));
 
     nb::class_<NGXInfo>(ngx_module, "NGXInfo", D(ngx, NGXInfo))
         .def(nb::init<>())
@@ -111,6 +108,12 @@ FALCOR_PY_EXPORT(denoisers_ngx_types)
             &NGXInfo::required_vulkan_device_extensions,
             D(ngx, NGXInfo, required_vulkan_device_extensions)
         );
+}
+
+NB_NOINLINE void bind_dlssd_optimal_settings(nb::module_& ngx_module)
+{
+    using namespace falcor;
+    using namespace falcor::ngx;
 
     nb::class_<DLSSDOptimalSettings>(ngx_module, "DLSSDOptimalSettings", D(ngx, DLSSDOptimalSettings))
         .def(nb::init<>())
@@ -137,6 +140,12 @@ FALCOR_PY_EXPORT(denoisers_ngx_types)
             D(ngx, DLSSDOptimalSettings, min_render_height)
         )
         .def_rw("sharpness", &DLSSDOptimalSettings::sharpness, D(ngx, DLSSDOptimalSettings, sharpness));
+}
+
+NB_NOINLINE void bind_dlss_optimal_settings(nb::module_& ngx_module)
+{
+    using namespace falcor;
+    using namespace falcor::ngx;
 
     nb::class_<DLSSOptimalSettings>(ngx_module, "DLSSOptimalSettings", D(ngx, DLSSOptimalSettings))
         .def(nb::init<>())
@@ -163,6 +172,12 @@ FALCOR_PY_EXPORT(denoisers_ngx_types)
             D(ngx, DLSSOptimalSettings, min_render_height)
         )
         .def_rw("sharpness", &DLSSOptimalSettings::sharpness, D(ngx, DLSSOptimalSettings, sharpness));
+}
+
+NB_NOINLINE void bind_dlssrr_feature_desc(nb::module_& ngx_module)
+{
+    using namespace falcor;
+    using namespace falcor::ngx;
 
     nb::class_<DLSSRRFeatureDesc>(ngx_module, "DLSSRRFeatureDesc", D(ngx, DLSSRRFeatureDesc))
         .def(nb::init<>())
@@ -171,6 +186,12 @@ FALCOR_PY_EXPORT(denoisers_ngx_types)
         .def_rw("render_height", &DLSSRRFeatureDesc::render_height, D(ngx, DLSSRRFeatureDesc, render_height))
         .def_rw("target_width", &DLSSRRFeatureDesc::target_width, D(ngx, DLSSRRFeatureDesc, target_width))
         .def_rw("target_height", &DLSSRRFeatureDesc::target_height, D(ngx, DLSSRRFeatureDesc, target_height));
+}
+
+NB_NOINLINE void bind_dlssrr_evaluate_desc(nb::module_& ngx_module)
+{
+    using namespace falcor;
+    using namespace falcor::ngx;
 
     nb::class_<DLSSRREvaluateDesc>(ngx_module, "DLSSRREvaluateDesc", D(ngx, DLSSRREvaluateDesc))
         .def(nb::init<>())
@@ -214,6 +235,12 @@ FALCOR_PY_EXPORT(denoisers_ngx_types)
             &DLSSRREvaluateDesc::frame_time_delta_ms,
             D(ngx, DLSSRREvaluateDesc, frame_time_delta_ms)
         );
+}
+
+NB_NOINLINE void bind_dlsssr_feature_desc(nb::module_& ngx_module)
+{
+    using namespace falcor;
+    using namespace falcor::ngx;
 
     nb::class_<DLSSSRFeatureDesc>(ngx_module, "DLSSSRFeatureDesc", D(ngx, DLSSSRFeatureDesc))
         .def(nb::init<>())
@@ -236,6 +263,12 @@ FALCOR_PY_EXPORT(denoisers_ngx_types)
             D(ngx, DLSSSRFeatureDesc, enable_output_subrects)
         )
         .def_rw("sharpness", &DLSSSRFeatureDesc::sharpness, D(ngx, DLSSSRFeatureDesc, sharpness));
+}
+
+NB_NOINLINE void bind_dlsssr_evaluate_desc(nb::module_& ngx_module)
+{
+    using namespace falcor;
+    using namespace falcor::ngx;
 
     nb::class_<DLSSSREvaluateDesc>(ngx_module, "DLSSSREvaluateDesc", D(ngx, DLSSSREvaluateDesc))
         .def(nb::init<>())
@@ -269,6 +302,12 @@ FALCOR_PY_EXPORT(denoisers_ngx_types)
         )
         .def_rw("pre_exposure", &DLSSSREvaluateDesc::pre_exposure, D(ngx, DLSSSREvaluateDesc, pre_exposure))
         .def_rw("exposure_scale", &DLSSSREvaluateDesc::exposure_scale, D(ngx, DLSSSREvaluateDesc, exposure_scale));
+}
+
+NB_NOINLINE void bind_dlssg_feature_desc(nb::module_& ngx_module)
+{
+    using namespace falcor;
+    using namespace falcor::ngx;
 
     nb::class_<DLSSGFeatureDesc>(ngx_module, "DLSSGFeatureDesc", D(ngx, DLSSGFeatureDesc))
         .def(nb::init<>())
@@ -277,6 +316,12 @@ FALCOR_PY_EXPORT(denoisers_ngx_types)
         .def_rw("render_width", &DLSSGFeatureDesc::render_width, D(ngx, DLSSGFeatureDesc, render_width))
         .def_rw("render_height", &DLSSGFeatureDesc::render_height, D(ngx, DLSSGFeatureDesc, render_height))
         .def_rw("backbuffer_format", &DLSSGFeatureDesc::backbuffer_format, D(ngx, DLSSGFeatureDesc, backbuffer_format));
+}
+
+NB_NOINLINE void bind_dlssg_camera_desc(nb::module_& ngx_module)
+{
+    using namespace falcor;
+    using namespace falcor::ngx;
 
     nb::class_<DLSSGCameraDesc>(ngx_module, "DLSSGCameraDesc", D(ngx, DLSSGCameraDesc))
         .def(nb::init<>())
@@ -352,6 +397,12 @@ FALCOR_PY_EXPORT(denoisers_ngx_types)
         )
         .def_rw("multi_frame_count", &DLSSGCameraDesc::multi_frame_count, D(ngx, DLSSGCameraDesc, multi_frame_count))
         .def_rw("multi_frame_index", &DLSSGCameraDesc::multi_frame_index, D(ngx, DLSSGCameraDesc, multi_frame_index));
+}
+
+NB_NOINLINE void bind_dlssg_evaluate_desc(nb::module_& ngx_module)
+{
+    using namespace falcor;
+    using namespace falcor::ngx;
 
     nb::class_<DLSSGEvaluateDesc>(ngx_module, "DLSSGEvaluateDesc", D(ngx, DLSSGEvaluateDesc))
         .def(nb::init<>())
@@ -364,4 +415,26 @@ FALCOR_PY_EXPORT(denoisers_ngx_types)
             D(ngx, DLSSGEvaluateDesc, output_interpolated_frame)
         )
         .def_rw("camera", &DLSSGEvaluateDesc::camera, D(ngx, DLSSGEvaluateDesc, camera));
+}
+
+} // namespace
+
+FALCOR_PY_EXPORT(denoisers_ngx_types)
+{
+    using namespace falcor::ngx;
+
+    nb::module_ ngx_module = nb::module_::import_("falcor2.ngx");
+
+    nb::sgl_enum<QualityMode>(ngx_module, "QualityMode", D(ngx, QualityMode));
+    nb::sgl_enum<Result>(ngx_module, "Result", D(ngx, Result));
+    bind_ngx_info(ngx_module);
+    bind_dlssd_optimal_settings(ngx_module);
+    bind_dlss_optimal_settings(ngx_module);
+    bind_dlssrr_feature_desc(ngx_module);
+    bind_dlssrr_evaluate_desc(ngx_module);
+    bind_dlsssr_feature_desc(ngx_module);
+    bind_dlsssr_evaluate_desc(ngx_module);
+    bind_dlssg_feature_desc(ngx_module);
+    bind_dlssg_camera_desc(ngx_module);
+    bind_dlssg_evaluate_desc(ngx_module);
 }

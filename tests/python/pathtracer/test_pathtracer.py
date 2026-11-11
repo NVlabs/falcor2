@@ -2615,7 +2615,7 @@ def test_pathtracer_non_dlss_guides_with_geometry(
             }
         ),
     )
-    _add_quad(scene, z=0.0, normal_z=-1.0, material=material)
+    _add_quad(scene, z=0.25, normal_z=-1.0, material=material)
     scene.update()
 
     node = ReferencePathTracerNode.create(device)
@@ -2624,6 +2624,8 @@ def test_pathtracer_non_dlss_guides_with_geometry(
         "metallic": f2.ContainerSpec.auto(),
         "emission": f2.ContainerSpec.auto(),
         "geometry_id": f2.ContainerSpec.auto(),
+        "world_position": f2.ContainerSpec.auto(),
+        "geometric_normals": f2.ContainerSpec.auto(),
     }
     cam = _make_quad_camera(scene, width=16, height=12)
 
@@ -2633,18 +2635,31 @@ def test_pathtracer_non_dlss_guides_with_geometry(
     assert isinstance(guides["metallic"], spy.Texture)
     assert isinstance(guides["emission"], spy.Texture)
     assert isinstance(guides["geometry_id"], spy.Texture)
+    assert isinstance(guides["world_position"], spy.Texture)
+    assert isinstance(guides["geometric_normals"], spy.Texture)
     for name, value in guides.items():
-        if name not in {"material_color", "metallic", "emission", "geometry_id"}:
+        if name not in {
+            "material_color",
+            "metallic",
+            "emission",
+            "geometry_id",
+            "world_position",
+            "geometric_normals",
+        }:
             assert value is None
 
     material_color = guides["material_color"].to_numpy()
     metallic = guides["metallic"].to_numpy()
     emission = guides["emission"].to_numpy()
     geometry_id = guides["geometry_id"].to_numpy()
+    world_position = guides["world_position"].to_numpy()
+    geometric_normals = guides["geometric_normals"].to_numpy()
     assert material_color.shape == (12, 16, 4)
     assert metallic.shape == (12, 16)
     assert emission.shape == (12, 16, 4)
     assert geometry_id.shape == (12, 16, 4)
+    assert world_position.shape == (12, 16, 4)
+    assert geometric_normals.shape == (12, 16, 4)
     assert np.isfinite(material_color).all()
     assert np.isfinite(emission).all()
     np.testing.assert_allclose(
@@ -2658,6 +2673,32 @@ def test_pathtracer_non_dlss_guides_with_geometry(
     assert valid_geometry.any()
     assert valid_geometry[6, 8]
     assert (geometry_id[..., 0][valid_geometry] == int(f2.GeometryType.triangle)).all()
+    np.testing.assert_allclose(world_position[..., 3], valid_geometry.astype(np.float32))
+    np.testing.assert_allclose(world_position[..., 2][valid_geometry], 0.25, atol=1e-5)
+    np.testing.assert_allclose(world_position[~valid_geometry], 0.0)
+    assert np.allclose(geometric_normals[valid_geometry, :3], (0.0, 0.0, -1.0), atol=1e-3)
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_pathtracer_unlit_geometry_guides(device: spy.Device) -> None:
+    scene = f2.Scene.create(device)
+    material = scene.create_material(
+        f2.UnlitMaterial, f2.Properties({"base_color_factor": spy.float3(1.0)})
+    )
+    _add_quad(scene, z=0.0, normal_z=-1.0, material=material)
+    scene.update()
+
+    node = ReferencePathTracerNode.create(device)
+    node.guide_output_specs = {
+        "world_position": f2.ContainerSpec.auto(),
+        "geometric_normals": f2.ContainerSpec.auto(),
+    }
+    _, guides = node(scene, _make_quad_camera(scene), iteration=0)
+
+    assert guides["world_position"].to_numpy()[4, 4, 3] == 1.0
+    np.testing.assert_allclose(
+        guides["geometric_normals"].to_numpy()[4, 4], (0.0, 0.0, -1.0, 0.0), atol=1e-3
+    )
 
 
 @pytest.mark.nightly
@@ -2791,6 +2832,8 @@ def test_pathtracer_dlss_rr_guides_with_geometry(
         "material_color",
         "specular_albedo",
         "normals",
+        "geometric_normals",
+        "world_position",
         "roughness",
         "metallic",
         "depth",
@@ -2810,6 +2853,8 @@ def test_pathtracer_dlss_rr_guides_with_geometry(
         data = texture.to_numpy()
         assert np.isfinite(data).all()
     assert guides["emission"] is None
+    assert guides["geometric_normals"] is None
+    assert guides["world_position"] is None
     assert guides["geometry_id"] is None
     assert guides["hardware_depth"] is None
     assert guides["nan_count"] is None

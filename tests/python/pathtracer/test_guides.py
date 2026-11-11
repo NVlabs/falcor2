@@ -17,6 +17,8 @@ EXPECTED_GUIDE_OUTPUT_VALUE_TYPES = {
     "material_color": "vector<float,4>",
     "specular_albedo": "vector<float,4>",
     "normals": "vector<float,4>",
+    "geometric_normals": "vector<float,4>",
+    "world_position": "vector<float,4>",
     "roughness": "float",
     "metallic": "float",
     "depth": "float",
@@ -33,6 +35,8 @@ EXPECTED_GUIDE_OUTPUT_FORMATS = {
     "material_color": spy.Format.rgba16_float,
     "specular_albedo": spy.Format.rgba16_float,
     "normals": spy.Format.rgba16_float,
+    "geometric_normals": spy.Format.rgba16_float,
+    "world_position": spy.Format.rgba32_float,
     "roughness": spy.Format.r16_float,
     "metallic": spy.Format.r16_float,
     "depth": spy.Format.r32_float,
@@ -49,6 +53,8 @@ EXPECTED_GUIDE_OUTPUT_CLEAR_VALUES = {
     "material_color": (0.0, 0.0, 0.0, 1.0),
     "specular_albedo": (0.0, 0.0, 0.0, 1.0),
     "normals": (0.0, 0.0, 1.0, 0.0),
+    "geometric_normals": (0.0, 0.0, 1.0, 0.0),
+    "world_position": (0.0, 0.0, 0.0, 0.0),
     "roughness": (1.0, 0.0, 0.0, 0.0),
     "metallic": (0.0, 0.0, 0.0, 0.0),
     "depth": (0.0, 0.0, 0.0, 0.0),
@@ -211,11 +217,14 @@ def test_write_guide_prelude_matches_enabled_guides(
 
     prelude = OutputPrelude.create(linked_module, WRITE_GUIDE_INTERFACE).generate(write_guide)
 
-    assert "public RWTexture2D<float> depth;" in prelude
-    assert "public RWTexture2D<vector<float,2>> motion_vectors;" in prelude
-    assert "public RWTexture2D<vector<float,4>> diffuse_albedo;" not in prelude
-    assert "__g_falcor_OutputBlockIWriteGuide.depth[coord] = value;" in prelude
-    assert "__g_falcor_OutputBlockIWriteGuide.motion_vectors[coord] = value;" in prelude
+    assert "public RWTexture2D<float> __g_falcor_OutputBlockIWriteGuide_depth;" in prelude
+    assert (
+        "public RWTexture2D<vector<float,2>> __g_falcor_OutputBlockIWriteGuide_motion_vectors;"
+        in prelude
+    )
+    assert "__g_falcor_OutputBlockIWriteGuide_diffuse_albedo;" not in prelude
+    assert "__g_falcor_OutputBlockIWriteGuide_depth[coord] = value;" in prelude
+    assert "__g_falcor_OutputBlockIWriteGuide_motion_vectors[coord] = value;" in prelude
     assert (
         "__g_falcor_OutputBlockIWriteGuide_nan_count[coord] = "
         "__g_falcor_OutputBlockIWriteGuide_nan_count[coord] + value;" in prelude

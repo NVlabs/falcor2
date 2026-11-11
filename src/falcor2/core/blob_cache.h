@@ -252,7 +252,7 @@ private:
     std::filesystem::path get_temp_path(const Key& key, std::string_view sub_data_name) const;
 
     bool validate_sub_data_name(std::string_view sub_data_name, std::error_code& ec) const noexcept;
-    ScanResult scan_entries(std::error_code& ec) const noexcept;
+    ScanResult scan_entries(std::error_code& ec, bool clean_temp_files = false) const noexcept;
     bool entry_has_payload(const std::filesystem::path& key_dir) const noexcept;
 
     bool prepare_key_dir(const std::filesystem::path& key_dir, std::error_code& ec) noexcept;
@@ -265,7 +265,6 @@ private:
     void touch_key_dir(const std::filesystem::path& key_dir) noexcept;
     void remove_payload(const std::filesystem::path& key_dir, const std::filesystem::path& blob_path) noexcept;
 
-    void cleanup_temp_files() noexcept;
     void maybe_evict(uint64_t published_bytes) noexcept;
     // Requires both cache locks. Reuses the maintenance scan.
     void evict_entries(ScanResult& scan);

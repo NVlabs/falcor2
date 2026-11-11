@@ -29,6 +29,15 @@ struct FALCOR_API SceneConfig {
 
     /// Hard feature cap for native glTF materials.
     GLTFFeatureFlags gltf_allowed_features{GLTFFeatureFlags::all};
+
+    /// Minimum compile-time feature support for native glTF materials. Matching texture slots are included.
+    GLTFFeatureFlags gltf_core_features{GLTFFeatureFlags::none};
+
+    /// Include texture-transform support for every core texture slot.
+    bool gltf_core_texture_transforms{false};
+
+    /// Include nonzero texture-coordinate selection for every core texture slot.
+    bool gltf_core_alternate_uvs{false};
 };
 
 } // namespace falcor

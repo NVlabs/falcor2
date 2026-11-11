@@ -4,6 +4,7 @@
 #pragma once
 
 #include "falcor2/render/shared_geometry_types.h"
+#include "falcor2/render/geometry/geometry_updater.h"
 #include "falcor2/render/ray_tracing_policy.h"
 
 #include "falcor2/core/object.h"
@@ -23,6 +24,7 @@
 #include <vector>
 #include <utility>
 #include <memory>
+#include <type_traits>
 #include <optional>
 
 #include <cstdint>
@@ -48,6 +50,9 @@ enum class RenderObjectType {
     geometry_instance,
     transform,
 };
+
+class DynamicMeshGeometry;
+class DynamicCurveGeometry;
 
 class RenderHandle;
 
@@ -317,9 +322,18 @@ using RenderTransformHandle = RenderObjectHandle<RenderTransform, RenderObjectTy
 // RenderTriangleGeometry
 // ----------------------------------------------------------------------------
 
+enum class RenderGeometryDirtyFlags : uint8_t {
+    none = 0,
+    refit = 1 << 0,   ///< BLAS needs at least a refit; a rebuild is also valid.
+    rebuild = 1 << 1, ///< BLAS requires a full build; takes priority over refit.
+};
+FALCOR_ENUM_CLASS_OPERATORS(RenderGeometryDirtyFlags);
+
 struct RenderTriangleGeometryDesc {
     uint32_t vertex_count;
     uint32_t index_count;
+    /// Geometry vertex data may change during rendering; excludes instance transforms.
+    bool is_dynamic{false};
 };
 
 static constexpr uint32_t MAX_ADDITIONAL_GEOMETRY_ATTRIBUTES = 32;
@@ -372,6 +386,7 @@ private:
 };
 
 struct RenderTriangleGeometry {
+    bool is_dynamic{false};
     uint32_t vertex_count;
     uint32_t vertex_offset;
     uint32_t index_count;
@@ -390,9 +405,12 @@ struct RenderTriangleGeometryData {
 };
 
 struct RenderTriangleGeometries {
-    RenderObjectPool<RenderTriangleGeometry, RenderTriangleGeometryHandle> m_pool;
+    RenderObjectPool<RenderTriangleGeometry, RenderTriangleGeometryHandle, RenderGeometryDirtyFlags> m_pool;
     ManagedVector<shared::TriangleGeometryDesc> m_descs;
     ManagedBufferPool<shared::PackedTriangleVertex> m_vertices;
+    ManagedBufferPool<shared::PackedTriangleVertex> m_dynamic_vertices;
+    GeometryUpdaterRegistry m_geometry_updaters;
+    bool m_initialize_deformation = false;
     ManagedBufferPool<uint32_t> m_indices;
     RenderGeometryAdditionalAttributeStorage m_additional_attributes;
 
@@ -400,7 +418,8 @@ struct RenderTriangleGeometries {
 
     RenderTriangleGeometryHandle create(const RenderTriangleGeometryDesc& desc);
     void destroy(RenderTriangleGeometryHandle handle);
-    void update(RenderTriangleGeometryHandle handle, const RenderTriangleGeometryData& data);
+    void
+    update(RenderTriangleGeometryHandle handle, const RenderTriangleGeometryData& data, RenderGeometryDirtyFlags flags);
 
     void write_geometry_instance_desc(RenderTriangleGeometryHandle handle, shared::GeometryInstanceDesc& desc) const;
     void write_acceleration_structure_build_input(
@@ -408,7 +427,18 @@ struct RenderTriangleGeometries {
         sgl::AccelerationStructureBuildInput& build_input
     ) const;
 
-    void update_buffers(sgl::CommandEncoder* command_encoder);
+    void update_buffers(sgl::CommandEncoder* command_encoder, double time = 0);
+
+    auto& vertex_pool(const RenderTriangleGeometry& geometry)
+    {
+        return geometry.is_dynamic ? m_dynamic_vertices : m_vertices;
+    }
+
+    const auto& vertex_pool(const RenderTriangleGeometry& geometry) const
+    {
+        return geometry.is_dynamic ? m_dynamic_vertices : m_vertices;
+    }
+
     void bind(sgl::ShaderCursor cursor) const;
 
     uint32_t additional_attribute_geometry_count() const { return m_additional_attributes.geometry_count(); }
@@ -422,9 +452,12 @@ struct RenderTriangleGeometries {
 struct RenderLSSGeometryDesc {
     uint32_t vertex_count;
     uint32_t index_count;
+    /// Geometry vertex data may change during rendering; excludes instance transforms.
+    bool is_dynamic{false};
 };
 
 struct RenderLSSGeometry {
+    bool is_dynamic{false};
     uint32_t vertex_count;
     uint32_t vertex_offset;
     uint32_t index_count;
@@ -443,9 +476,12 @@ struct RenderLSSGeometryData {
 };
 
 struct RenderLSSGeometries {
-    RenderObjectPool<RenderLSSGeometry, RenderLSSGeometryHandle> m_pool;
+    RenderObjectPool<RenderLSSGeometry, RenderLSSGeometryHandle, RenderGeometryDirtyFlags> m_pool;
     ManagedVector<shared::LSSGeometryDesc> m_descs;
     ManagedBufferPool<shared::PackedLSSVertex> m_vertices;
+    ManagedBufferPool<shared::PackedLSSVertex> m_dynamic_vertices;
+    GeometryUpdaterRegistry m_geometry_updaters;
+    bool m_initialize_deformation = false;
     ManagedBufferPool<uint32_t> m_indices;
     RenderGeometryAdditionalAttributeStorage m_additional_attributes;
 
@@ -461,7 +497,7 @@ struct RenderLSSGeometries {
 
     RenderLSSGeometryHandle create(const RenderLSSGeometryDesc& desc);
     void destroy(RenderLSSGeometryHandle handle);
-    void update(RenderLSSGeometryHandle handle, const RenderLSSGeometryData& data);
+    void update(RenderLSSGeometryHandle handle, const RenderLSSGeometryData& data, RenderGeometryDirtyFlags flags);
 
     void write_geometry_instance_desc(RenderLSSGeometryHandle handle, shared::GeometryInstanceDesc& desc) const;
     void write_acceleration_structure_build_input(
@@ -469,7 +505,18 @@ struct RenderLSSGeometries {
         sgl::AccelerationStructureBuildInput& build_input
     ) const;
 
-    void update_buffers(sgl::CommandEncoder* command_encoder);
+    void update_buffers(sgl::CommandEncoder* command_encoder, double time = 0);
+
+    auto& vertex_pool(const RenderLSSGeometry& geometry)
+    {
+        return geometry.is_dynamic ? m_dynamic_vertices : m_vertices;
+    }
+
+    const auto& vertex_pool(const RenderLSSGeometry& geometry) const
+    {
+        return geometry.is_dynamic ? m_dynamic_vertices : m_vertices;
+    }
+
     void bind(sgl::ShaderCursor cursor) const;
 
     uint32_t additional_attribute_geometry_count() const { return m_additional_attributes.geometry_count(); }
@@ -603,19 +650,65 @@ public:
 
     static ref<RenderScene> create(sgl::Device* device) { return make_ref<RenderScene>(device); }
 
+    /// Lazily create one updater of this concrete type in its output geometry collection.
+    template<typename Updater>
+    Updater& get_or_create_geometry_updater()
+    {
+        if constexpr (std::is_same_v<typename Updater::VertexType, shared::PackedTriangleVertex>)
+            return m_triangle_geometries.m_geometry_updaters.get_or_create<Updater>();
+        else {
+            static_assert(std::is_same_v<typename Updater::VertexType, shared::PackedLSSVertex>);
+            return m_lss_geometries.m_geometry_updaters.get_or_create<Updater>();
+        }
+    }
+
     // RenderTriangleGeometry
 
     RenderTriangleGeometryHandle create_triangle_geometry(const RenderTriangleGeometryDesc& desc);
     void destroy_triangle_geometry(RenderTriangleGeometryHandle handle);
     const RenderTriangleGeometry& get_triangle_geometry(RenderTriangleGeometryHandle handle) const;
-    void update_triangle_geometry(RenderTriangleGeometryHandle handle, const RenderTriangleGeometryData& data);
+
+    const ref<sgl::Buffer>& triangle_vertex_buffer(RenderTriangleGeometryHandle handle, uint16_t member) const
+    {
+        const auto& geometry = get_triangle_geometry(handle);
+        return m_triangle_geometries.vertex_pool(geometry).buffer(geometry.vertex_allocation.slot_index, member);
+    }
+
+    /// Request refit after vertex changes that preserve indices and primitive activity; does not upload data.
+    void mark_triangle_geometry_deformed(RenderTriangleGeometryHandle handle)
+    {
+        m_triangle_geometries.m_pool.mark_dirty(handle, RenderGeometryDirtyFlags::refit);
+    }
+    /// Request refit only when indices and primitive activity are unchanged; otherwise request rebuild.
+    void update_triangle_geometry(
+        RenderTriangleGeometryHandle handle,
+        const RenderTriangleGeometryData& data,
+        RenderGeometryDirtyFlags flags = RenderGeometryDirtyFlags::rebuild
+    );
 
     // RenderLSSGeometry
 
     RenderLSSGeometryHandle create_lss_geometry(const RenderLSSGeometryDesc& desc);
     void destroy_lss_geometry(RenderLSSGeometryHandle handle);
     const RenderLSSGeometry& get_lss_geometry(RenderLSSGeometryHandle handle) const;
-    void update_lss_geometry(RenderLSSGeometryHandle handle, const RenderLSSGeometryData& data);
+
+    const ref<sgl::Buffer>& lss_vertex_buffer(RenderLSSGeometryHandle handle, uint16_t member) const
+    {
+        const auto& geometry = get_lss_geometry(handle);
+        return m_lss_geometries.vertex_pool(geometry).buffer(geometry.vertex_allocation.slot_index, member);
+    }
+
+    /// Request refit after vertex changes that preserve indices and primitive activity; does not upload data.
+    void mark_lss_geometry_deformed(RenderLSSGeometryHandle handle)
+    {
+        m_lss_geometries.m_pool.mark_dirty(handle, RenderGeometryDirtyFlags::refit);
+    }
+    /// Request refit only when indices and primitive activity are unchanged; otherwise request rebuild.
+    void update_lss_geometry(
+        RenderLSSGeometryHandle handle,
+        const RenderLSSGeometryData& data,
+        RenderGeometryDirtyFlags flags = RenderGeometryDirtyFlags::rebuild
+    );
 
     // RenderAreaLightGeometry
 
@@ -649,7 +742,7 @@ public:
     const RenderTransform& get_transform(RenderTransformHandle handle) const;
     void update_transform(RenderTransformHandle handle, const float4x4& world_from_object);
 
-    bool update(const HitGroupPolicy& hit_group_policy, bool requires_opacity_evaluation);
+    bool update(const HitGroupPolicy& hit_group_policy, bool requires_opacity_evaluation, double time = 0);
     void bind_to_scene(sgl::ShaderCursor cursor) const;
 
     bool has_triangle_geometry() const { return m_triangle_geometries.m_pool.count() > 0; }
@@ -697,7 +790,7 @@ private:
     RenderLSSGeometries m_lss_geometries;
     RenderAreaLightGeometries m_area_light_geometries;
 
-    RenderObjectPool<RenderGeometryGroup, RenderGeometryGroupHandle> m_geometry_group_pool;
+    RenderObjectPool<RenderGeometryGroup, RenderGeometryGroupHandle, RenderGeometryDirtyFlags> m_geometry_group_pool;
     RenderGeometryInstancePool m_geometry_instance_pool;
     RenderObjectPool<RenderTransform, RenderTransformHandle, RenderTransformDirtyFlags> m_transform_pool;
 

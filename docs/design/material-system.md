@@ -1,8 +1,8 @@
 ---
 status: draft
 audience: Falcor2 contributors and coding agents
-last_verified: 2026-09-14
-verified_against: "8ff113d9e6ce1cb55ab67c3b141930fdf55cc598"
+last_verified: 2026-11-06
+verified_against: "2ac1506f0384e5691c17a0c98cef21f1a9663f66"
 ---
 
 (falcor2-design-material-system)=
@@ -63,6 +63,36 @@ returned `IMaterialInstance` provides the per-surface scattering operations used
 generic scene and traversal code dispatch materials without knowing whether their implementation was shipped or
 generated.
 
+### Component layout identity
+
+An `IMaterialInstance` may return a selected scattering contribution in `MaterialSample.component` while retaining
+the marginal PDF for MIS. The [BSDF contract](bsdf-contract.md#contribution-identity-and-sample-weights) defines the
+value and joint-density semantics. Sample-weight reconstruction is guaranteed only under the renderer's
+`MATERIAL_SAMPLE_WEIGHT_POLICY = MaterialSampleWeightPolicy::eval_consistent` specialization; the default `native`
+policy permits native continuation estimators. This is independent of `SceneConfig` and individual material
+properties, so one scene can serve renderers with different weight requirements.
+
+`get_component_layout_id()` provides a separate compatibility identity for
+interpreting those component indices across instances. Zero denotes full-response sampling. Equal nonzero layout
+IDs guarantee the same slot meanings, including inactive slots, without implying equal material values or sampling
+probabilities.
+
+| Material instance | Layout ID | Component slots |
+| --- | --- | --- |
+| Standard, including StandardSpecGloss | `0x80000001` | Diffuse reflection, diffuse transmission, specular reflection, specular reflection/transmission |
+| Native glTF SpecGloss | `0x80000002` | Diffuse reflection, specular reflection |
+| Full-response material adapters | `0` | `BSDFComponent::full_response` |
+
+Native layouts use the high bit to keep their tags disjoint from generated IDs. MaterialX `bsdf_mix` and
+`closure_tree` use full response.
+Different layout IDs do not establish component compatibility, even if individual slot numbers happen to match.
+
+Layout IDs are scene-local and tied to the synchronized type-conformance table. Adding or removing a material type
+can renumber generated IDs. Reuse history must therefore be invalidated when that table changes; comparing IDs
+across scenes or table rebuilds is insufficient. Even with a compatible layout, callers reevaluate the component's
+value, joint density, and roughness classification at the new interaction. Layout compatibility alone does not
+establish evaluation-consistent sample weights or make path reconnection valid.
+
 ### Textures and shared resources
 
 `TextureManager` converts file textures, existing SGL textures, and samplers into reference-counted
@@ -119,6 +149,17 @@ still select what an individual material uses. Before collecting material type c
 - `GLTFSpecializationMode.all` uses every allowed feature and its texture, transform, and texcoord capabilities.
   Adding another material of an existing workflow does not change its type.
 
+`SceneConfig.gltf_core_features` supplies a minimum compile mask after the mode selects a material's mask.
+The matching texture slots are included for each workflow; texture transforms and nonzero texcoord selection
+remain driven by the materials unless `gltf_core_texture_transforms` or `gltf_core_alternate_uvs` is enabled.
+These options add transform and nonzero texcoord support to each core texture slot. Their defaults are `false`;
+the core feature default is `none`, so existing specialization behavior is unchanged.
+For example, `normal | emission | multiscatter` produces a metallic-roughness core mask of `<11,15,0,0>`
+and a specular-glossiness core mask of `<3,15,0,0>` (which does not support multiscatter).
+Adding `specular` and enabling both texture options broadens those masks to `<27,63,63,63>` and `<3,15,15,15>`.
+The core must be a subset of `gltf_allowed_features`. It changes shader support, not the features a material
+actually uses or the scene capabilities those features require.
+
 `SceneConfig.gltf_allowed_features` is a hard cap on native glTF feature use. It intersects each material's
 `feature_mask_filter` before runtime masks and extra records are derived. Disabled features retain their authored
 properties and normal resource-loading behavior, but contribute no runtime feature, texture capability, or extra
@@ -133,8 +174,15 @@ config = f2.SceneConfig(
     gltf_allowed_features=(
         f2.GLTFFeatureFlags.all
         & ~f2.GLTFFeatureFlags.anisotropy
-        & ~f2.GLTFFeatureFlags.multiscatter
     ),
+    gltf_core_features=(
+        f2.GLTFFeatureFlags.normal
+        | f2.GLTFFeatureFlags.emission
+        | f2.GLTFFeatureFlags.multiscatter
+        | f2.GLTFFeatureFlags.specular
+    ),
+    gltf_core_texture_transforms=True,
+    gltf_core_alternate_uvs=True,
 )
 ```
 

@@ -48,7 +48,7 @@ def test_motion_vectors(device_type: spy.DeviceType) -> None:
     resources = {
         "geometry": buffer(
             np.array(
-                [f2.to_handle(resource).data for resource in geometry_buffers], dtype=np.uint64
+                [f2.to_buffer_ptr(resource).data for resource in geometry_buffers], dtype=np.uint64
             ),
             8,
         ),

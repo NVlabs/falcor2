@@ -19,6 +19,8 @@ public:
     enum class DirtyFlags : uint32_t {
         none = 0,
         render_state = (1u << 0),
+        /// Vertex data changed without replacing render state or topology.
+        deformation = (1u << 1),
         // Shared SceneObject::DirtyFlags
         resources = (1u << 29),
         added = (1u << 30),
@@ -52,9 +54,6 @@ protected:
 
     /// Local-space axis-aligned bounding box.
     AABB m_local_aabb;
-
-    /// List of geometry instances referencing this geometry.
-    std::vector<GeometryInstance*> m_geometry_instances;
 
     /// Render geometry group representing this geometry.
     RenderGeometryGroupHandle m_render_geometry_group;

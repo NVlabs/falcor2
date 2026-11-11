@@ -136,6 +136,7 @@ float3 adjust_shading_normal_impl(
         was_adjusted = true;
         return normalize(sign_N * (view_dir + normalize(R - Ns * a / b)));
     }
+
     return shading_normal;
 }
 

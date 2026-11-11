@@ -3,12 +3,14 @@
 
 Falcor2 documentation explains the toolkit for contributors, researchers, and coding agents. The design section is
 the durable starting point for understanding how the current system is divided and how its parts cooperate. The
-contributor guides define coding conventions and how architectural explanations are verified and maintained.
+contributor guides define coding conventions, documentation writing, and how architectural explanations are
+verified and maintained.
 
 ## Start here
 
 - [Falcor2 design documentation](design/index.md)
 - [Coding style](contributing/coding-style.md)
+- [Writing technical documentation for humans and agents](contributing/documentation-writing.md)
 - [Writing and maintaining design documents](contributing/design-documents.md)
 - [API reference](api/index.md)
 - [Streaming](streaming.md)
@@ -23,6 +25,7 @@ contributor guides define coding conventions and how architectural explanations 
 
 design/index.md
 contributing/coding-style.md
+contributing/documentation-writing.md
 contributing/design-documents.md
 api/index.md
 contributing/building-documentation.md

@@ -280,6 +280,11 @@ void CameraController::cancel_interaction()
     m_shift_down = false;
     m_ctrl_down = false;
     m_alt_down = false;
+    reset_inertia();
+}
+
+void CameraController::reset_inertia()
+{
     m_orbit_velocity = float2(0.f);
     m_look_velocity = float2(0.f);
     m_scroll_velocity = 0.f;

@@ -56,12 +56,12 @@ public struct LSSGeometryDesc
     public uint index_count;   ///< Index count; non-indexed geometry is not supported.
 };
 
-/// One row of the LSS bounds dispatch. Resolve handles after buffer allocation/growth.
+/// One row of the LSS bounds dispatch. Resolve pointers after buffer allocation/growth.
 public struct LSSAABBWork
 {
-    public BufferHandle vertex_buffer;
-    public BufferHandle index_buffer;
-    public RWBufferHandle aabb_buffer;
+    public BufferPtr vertex_buffer;
+    public BufferPtr index_buffer;
+    public RWBufferPtr aabb_buffer;
     public uint vertex_offset;
     public uint index_offset;
     public uint index_count;

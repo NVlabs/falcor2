@@ -150,6 +150,13 @@ public:
                 reflection::on_change(&GLTFMaterial::mark_dirty_resources)
             )
             .def_prop_rw(
+                "anisotropy_texture_bytes",
+                GLTF_BINDING_FIELD(m_anisotropy, texture, bytes),
+                "Encoded texture bytes.",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&GLTFMaterial::mark_dirty_resources)
+            )
+            .def_prop_rw(
                 "anisotropy_texture_texcoord",
                 GLTF_TEXCOORD(m_anisotropy, texture, anisotropy_texture_texcoord, true, false),
                 "Texture-coordinate set.",
@@ -200,6 +207,13 @@ public:
                 reflection::on_change(&GLTFMaterial::mark_dirty_resources)
             )
             .def_prop_rw(
+                "diffuse_transmission_texture_bytes",
+                GLTF_BINDING_FIELD(m_diffuse_transmission, texture, bytes),
+                "Encoded texture bytes.",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&GLTFMaterial::mark_dirty_resources)
+            )
+            .def_prop_rw(
                 "diffuse_transmission_texture_texcoord",
                 GLTF_TEXCOORD(m_diffuse_transmission, texture, diffuse_transmission_texture_texcoord, true, false),
                 "Texture-coordinate set.",
@@ -246,6 +260,13 @@ public:
                 "diffuse_transmission_color_texture_path",
                 GLTF_BINDING_FIELD(m_diffuse_transmission, color_texture, path),
                 "sRGB color texture path.",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&GLTFMaterial::mark_dirty_resources)
+            )
+            .def_prop_rw(
+                "diffuse_transmission_color_texture_bytes",
+                GLTF_BINDING_FIELD(m_diffuse_transmission, color_texture, bytes),
+                "Encoded texture bytes.",
                 reflection::UIFlags::advanced,
                 reflection::on_change(&GLTFMaterial::mark_dirty_resources)
             )
@@ -334,6 +355,13 @@ public:
                 reflection::on_change(&GLTFMaterial::mark_dirty_resources)
             )
             .def_prop_rw(
+                "sheen_color_texture_bytes",
+                GLTF_BINDING_FIELD(m_sheen, color_texture, bytes),
+                "Encoded texture bytes.",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&GLTFMaterial::mark_dirty_resources)
+            )
+            .def_prop_rw(
                 "sheen_color_texture_texcoord",
                 GLTF_TEXCOORD(m_sheen, color_texture, sheen_color_texture_texcoord, true, false),
                 "Texture-coordinate set.",
@@ -380,6 +408,13 @@ public:
                 "sheen_roughness_texture_path",
                 GLTF_BINDING_FIELD(m_sheen, roughness_texture, path),
                 "Linear alpha sheen roughness texture path.",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&GLTFMaterial::mark_dirty_resources)
+            )
+            .def_prop_rw(
+                "sheen_roughness_texture_bytes",
+                GLTF_BINDING_FIELD(m_sheen, roughness_texture, bytes),
+                "Encoded texture bytes.",
                 reflection::UIFlags::advanced,
                 reflection::on_change(&GLTFMaterial::mark_dirty_resources)
             )
@@ -434,6 +469,13 @@ public:
                 reflection::on_change(&GLTFMaterial::mark_dirty_resources)
             )
             .def_prop_rw(
+                "iridescence_texture_bytes",
+                GLTF_BINDING_FIELD(m_iridescence, texture, bytes),
+                "Encoded texture bytes.",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&GLTFMaterial::mark_dirty_resources)
+            )
+            .def_prop_rw(
                 "iridescence_texture_texcoord",
                 GLTF_TEXCOORD(m_iridescence, texture, iridescence_texture_texcoord, true, false),
                 "Texture-coordinate set.",
@@ -480,6 +522,13 @@ public:
                 "iridescence_thickness_texture_path",
                 GLTF_BINDING_FIELD(m_iridescence, thickness_texture, path),
                 "Linear green iridescence thickness texture path.",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&GLTFMaterial::mark_dirty_resources)
+            )
+            .def_prop_rw(
+                "iridescence_thickness_texture_bytes",
+                GLTF_BINDING_FIELD(m_iridescence, thickness_texture, bytes),
+                "Encoded texture bytes.",
                 reflection::UIFlags::advanced,
                 reflection::on_change(&GLTFMaterial::mark_dirty_resources)
             )
@@ -576,6 +625,13 @@ public:
                 reflection::on_change(&GLTFMaterial::mark_dirty_resources)
             )
             .def_prop_rw(
+                "clearcoat_texture_bytes",
+                GLTF_BINDING_FIELD(m_clearcoat, texture, bytes),
+                "Encoded texture bytes.",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&GLTFMaterial::mark_dirty_resources)
+            )
+            .def_prop_rw(
                 "clearcoat_texture_texcoord",
                 GLTF_TEXCOORD(m_clearcoat, texture, clearcoat_texture_texcoord, true, false),
                 "Texture-coordinate set.",
@@ -626,6 +682,13 @@ public:
                 reflection::on_change(&GLTFMaterial::mark_dirty_resources)
             )
             .def_prop_rw(
+                "clearcoat_roughness_texture_bytes",
+                GLTF_BINDING_FIELD(m_clearcoat, roughness_texture, bytes),
+                "Encoded texture bytes.",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&GLTFMaterial::mark_dirty_resources)
+            )
+            .def_prop_rw(
                 "clearcoat_roughness_texture_texcoord",
                 GLTF_TEXCOORD(m_clearcoat, roughness_texture, clearcoat_roughness_texture_texcoord, true, false),
                 "Texture-coordinate set.",
@@ -672,6 +735,13 @@ public:
                 "clearcoat_normal_texture_path",
                 GLTF_BINDING_FIELD(m_clearcoat, normal_texture, path),
                 "Tangent-space clearcoat normal texture path.",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&GLTFMaterial::mark_dirty_resources)
+            )
+            .def_prop_rw(
+                "clearcoat_normal_texture_bytes",
+                GLTF_BINDING_FIELD(m_clearcoat, normal_texture, bytes),
+                "Encoded texture bytes.",
                 reflection::UIFlags::advanced,
                 reflection::on_change(&GLTFMaterial::mark_dirty_resources)
             )
@@ -749,6 +819,13 @@ public:
                 reflection::on_change(&GLTFMaterial::mark_dirty_resources)
             )
             .def_prop_rw(
+                "transmission_texture_bytes",
+                GLTF_BINDING_FIELD(m_transmission, texture, bytes),
+                "Encoded texture bytes.",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&GLTFMaterial::mark_dirty_resources)
+            )
+            .def_prop_rw(
                 "transmission_texture_texcoord",
                 GLTF_TEXCOORD(m_transmission, texture, transmission_texture_texcoord, true, false),
                 "Texture-coordinate set.",
@@ -799,6 +876,13 @@ public:
                 reflection::on_change(&GLTFMaterial::mark_dirty_resources)
             )
             .def_prop_rw(
+                "specular_texture_bytes",
+                GLTF_BINDING_FIELD(m_specular, texture, bytes),
+                "Encoded texture bytes.",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&GLTFMaterial::mark_dirty_resources)
+            )
+            .def_prop_rw(
                 "specular_texture_texcoord",
                 GLTF_TEXCOORD(m_specular, texture, specular_texture_texcoord, true, false),
                 "Texture-coordinate set.",
@@ -845,6 +929,13 @@ public:
                 "specular_color_texture_path",
                 GLTF_BINDING_FIELD(m_specular, color_texture, path),
                 "sRGB specular color texture path.",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&GLTFMaterial::mark_dirty_resources)
+            )
+            .def_prop_rw(
+                "specular_color_texture_bytes",
+                GLTF_BINDING_FIELD(m_specular, color_texture, bytes),
+                "Encoded texture bytes.",
                 reflection::UIFlags::advanced,
                 reflection::on_change(&GLTFMaterial::mark_dirty_resources)
             )
@@ -1030,6 +1121,13 @@ public:
                 reflection::on_change(&GLTFMaterial::mark_dirty_resources)
             )
             .def_prop_rw(
+                "base_color_texture_bytes",
+                GLTF_BINDING_FIELD(m_core, base_color, bytes),
+                "Encoded texture bytes.",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&GLTFMaterial::mark_dirty_resources)
+            )
+            .def_prop_rw(
                 "base_color_texture_texcoord",
                 GLTF_TEXCOORD(m_core, base_color, base_color_texture_texcoord, false, false),
                 "Texture-coordinate set used by the base color texture.",
@@ -1064,6 +1162,13 @@ public:
                 "metallic_roughness_texture_path",
                 GLTF_BINDING_FIELD(m_core, metallic_roughness, path),
                 "Metallic-roughness texture path",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&GLTFMaterial::mark_dirty_resources)
+            )
+            .def_prop_rw(
+                "metallic_roughness_texture_bytes",
+                GLTF_BINDING_FIELD(m_core, metallic_roughness, bytes),
+                "Encoded texture bytes.",
                 reflection::UIFlags::advanced,
                 reflection::on_change(&GLTFMaterial::mark_dirty_resources)
             )
@@ -1113,6 +1218,13 @@ public:
                 reflection::on_change(&GLTFMaterial::mark_dirty_resources)
             )
             .def_prop_rw(
+                "normal_texture_bytes",
+                GLTF_BINDING_FIELD(m_core, normal, bytes),
+                "Encoded texture bytes.",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&GLTFMaterial::mark_dirty_resources)
+            )
+            .def_prop_rw(
                 "normal_texture_texcoord",
                 GLTF_TEXCOORD(m_core, normal, normal_texture_texcoord, false, false),
                 "Texture-coordinate set used by the normal texture.",
@@ -1145,6 +1257,13 @@ public:
                 "emissive_texture_path",
                 GLTF_BINDING_FIELD(m_core, emissive, path),
                 "Emissive texture path",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&GLTFMaterial::mark_dirty_emission_resources)
+            )
+            .def_prop_rw(
+                "emissive_texture_bytes",
+                GLTF_BINDING_FIELD(m_core, emissive, bytes),
+                "Encoded texture bytes.",
                 reflection::UIFlags::advanced,
                 reflection::on_change(&GLTFMaterial::mark_dirty_emission_resources)
             )

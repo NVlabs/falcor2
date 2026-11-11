@@ -1,8 +1,8 @@
 ---
 status: current
 audience: Falcor2 contributors and coding agents
-last_verified: 2026-09-14
-verified_against: "3c40a55d4725fc793996e58ac149edfe19257a48"
+last_verified: 2026-11-06
+verified_against: "2ac1506f0384e5691c17a0c98cef21f1a9663f66"
 ---
 
 (falcor2-design-materialx-integration)=
@@ -238,6 +238,13 @@ The same default-first rule applies to examples, disposable proofs, and performa
 question explicitly targets another backend. Reports must name the layering mode and GPU API independently.
 
 ### Generated code and runtime contracts
+
+Scattering follows the [component contract](bsdf-contract.md#contribution-identity-and-sample-weights).
+
+The `bsdf_mix` and `closure_tree` material boundaries expose full continuous response
+with layout zero. Internally, weighting and orthonormal frame wrappers forward child component selectors, while
+layer, mix, and add composition collapses continuous samples to full response. These strategies satisfy the same
+public contract without requiring every backend to use the same estimator.
 
 Generated source is the unit of shader identity. The source hash is applied after postprocessing, and all options
 that affect emitted code participate in that source. Name canonicalization improves reuse only for structurally

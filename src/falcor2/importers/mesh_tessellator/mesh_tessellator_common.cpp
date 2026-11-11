@@ -3,6 +3,7 @@
 
 #include "mesh_tessellator_internal.h"
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 
@@ -44,10 +45,10 @@ void check_stream_layout(
 {
     FALCOR_CHECK(stream.component_count() > 0, "Mesh tessellator stream has zero components");
     FALCOR_CHECK(
-        stream.values.size() % stream.component_count() == 0,
-        "Mesh tessellator stream has {} scalars, which is not divisible by its {} components",
+        stream.values.size() % stream.element_size() == 0,
+        "Mesh tessellator stream has {} bytes, which is not divisible by its {}-byte element size",
         stream.values.size(),
-        stream.component_count()
+        stream.element_size()
     );
 
     const size_t element_count
@@ -95,8 +96,16 @@ size_t OutputStreams::add(ImporterMeshDefaultAttribute attribute, const MeshAttr
             );
         }
     }
-    m_streams.push_back({.attribute = attribute, .scalar_offset = m_scalar_stride, .input = input});
-    m_scalar_stride += attribute.components;
+    // Match ImporterMesh's scalar alignment, including padding at the end of each vertex.
+    if (attribute.type == sgl::DataType::void_)
+        attribute.type = sgl::DataType::float32;
+    const size_t alignment = data_type_size(attribute.type);
+    const size_t previous_end = m_streams.empty() ? 0 : m_streams.back().byte_offset + m_streams.back().element_size();
+    const size_t offset = (previous_end + alignment - 1) / alignment * alignment;
+    m_streams.push_back({.attribute = attribute, .byte_offset = offset, .input = input});
+    m_alignment = std::max(m_alignment, alignment);
+    const size_t end = offset + attribute.components * alignment;
+    m_byte_stride = (end + m_alignment - 1) / m_alignment * m_alignment;
     return m_streams.size() - 1;
 }
 
@@ -104,7 +113,7 @@ void OutputStreams::resize_vertices(size_t count)
 {
     FALCOR_CHECK(count >= m_vertex_count, "Subdivision output vertex count cannot shrink");
     m_vertex_count = count;
-    m_values.resize(m_vertex_count * m_scalar_stride);
+    m_values.resize(m_vertex_count * m_byte_stride);
 }
 
 void OutputStreams::write(ImporterMesh& result) const
@@ -125,17 +134,14 @@ void OutputStreams::write(ImporterMesh& result) const
             buffer_index = attribute->buffer;
         FALCOR_CHECK(attribute->buffer == buffer_index, "Output subdivision streams use different buffers");
         FALCOR_CHECK(
-            attribute->offset == stream.scalar_offset * sizeof(float),
+            attribute->offset == stream.byte_offset,
             "Output subdivision stream layout does not match ImporterMesh"
         );
     }
 
     ImporterVertexBuffer& buffer = result.buffers()[buffer_index];
-    FALCOR_CHECK(
-        buffer.stride == m_scalar_stride * sizeof(float),
-        "Output subdivision vertex stride does not match ImporterMesh"
-    );
-    std::memcpy(buffer.data.data(), m_values.data(), m_values.size() * sizeof(float));
+    FALCOR_CHECK(buffer.stride == m_byte_stride, "Output subdivision vertex stride does not match ImporterMesh");
+    std::memcpy(buffer.data.data(), m_values.data(), m_values.size());
 }
 
 void add_output_attribute(std::vector<ImporterMeshDefaultAttribute>& attributes, ImporterMeshDefaultAttribute attribute)
@@ -159,7 +165,8 @@ OutputBinding bind_output(ImporterMesh& result, ImporterMeshDefaultAttribute att
 {
     const ImporterMeshAttribute* output = result.find_attribute(attribute);
     FALCOR_CHECK(output, "Failed to create output triangulation stream");
-    FALCOR_CHECK(output->type == sgl::DataType::float32, "Output triangulation stream is not float32");
+    const auto type = attribute.type == sgl::DataType::void_ ? sgl::DataType::float32 : attribute.type;
+    FALCOR_CHECK(output->type == type, "Output triangulation stream has an unexpected scalar type");
     FALCOR_CHECK(
         output->num_components == attribute.components,
         "Output triangulation stream has {} components instead of {}",
@@ -173,7 +180,6 @@ OutputBinding bind_output(ImporterMesh& result, ImporterMeshDefaultAttribute att
     return {
         .data = reinterpret_cast<std::byte*>(data),
         .byte_stride = byte_stride,
-        .component_count = output->num_components,
     };
 }
 
@@ -240,7 +246,7 @@ collect_streams(const TessellatorInputMesh& input, MeshAttributeStream& default_
         static constexpr std::array<float, 2> default_uv_values{0.f, 0.f};
         default_uv.attribute = {ImporterSemantic::tex_coord, 0, 2};
         default_uv.interpolation = MeshInterpolation::constant;
-        default_uv.values = default_uv_values;
+        default_uv.values = std::as_bytes(std::span(default_uv_values));
         streams.push_back(&default_uv);
     }
     return streams;

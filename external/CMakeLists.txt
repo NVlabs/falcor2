@@ -5,6 +5,7 @@ set(SGL_BUILD_STANDALONE OFF) # Use the image libraries already supplied by Falc
 
 add_subdirectory(slangpy EXCLUDE_FROM_ALL)
 
+
 # -----------------------------------------------------------------------------
 # MDL SDK
 # -----------------------------------------------------------------------------
@@ -87,7 +88,7 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/omni_pbr/LICENSE"
 # -----------------------------------------------------------------------------
 
 set(FALCOR_DLSS_DLL_VERSION "310.9.1" CACHE STRING "NVIDIA DLSS DLL version")
-set(FALCOR_DLSS_LOCAL_SDK_DIR "" CACHE PATH "Optional local NVIDIA DLSS SDK path. Leave empty to fetch from GitHub releases.")
+set(FALCOR_DLSS_LOCAL_SDK_DIR "$ENV{FALCOR_DLSS_LOCAL_SDK_DIR}" CACHE PATH "Optional local NVIDIA DLSS SDK path. Leave empty to fetch from GitHub releases.")
 
 if(FALCOR_ENABLE_NGX)
     if(FALCOR_DLSS_LOCAL_SDK_DIR)

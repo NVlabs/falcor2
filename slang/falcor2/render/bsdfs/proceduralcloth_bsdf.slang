@@ -77,7 +77,12 @@ public struct ProceduralClothBSDF : IBSDF
     }
 
 
-    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, BSDFContext bc)
+    public BSDFEval eval_with_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
         float2 closest_hit;
         bool hit_top;
@@ -168,9 +173,9 @@ public struct ProceduralClothBSDF : IBSDF
             float4 selection_probability
                 = get_selection_probability(fresnel, avg(attenuation_f), avg(attenuation_b), avg(diffuse));
             contribution_pdf += pdf_r(theta_ifiber, theta_ofiber, phi_ifiber, phi_ofiber) * selection_probability[0];
-            contribution_pdf += pdf_d() * selection_probability[2];
+            contribution_pdf += pdf_d() * selection_probability[3];
             contribution_pdf += pdf_b(theta_ifiber, theta_ofiber, phi_ifiber, phi_ofiber, sqrt(roughness_yarn_bm2))
-                * selection_probability[3];
+                * selection_probability[2];
             contribution_pdf /= max(abs(sqrt(1.f - cos_wo_tfiber * cos_wo_tfiber)), C_MIN_ANGLE);
 
             if (hit_top) {
@@ -276,10 +281,10 @@ public struct ProceduralClothBSDF : IBSDF
                     float contribution_pdf_bottom = 0.f;
                     contribution_pdf_bottom
                         += pdf_r(theta_ifiber, theta_ofiber, phi_ifiber, phi_ofiber) * selection_probability[0];
-                    contribution_pdf_bottom += pdf_d() * selection_probability[2];
+                    contribution_pdf_bottom += pdf_d() * selection_probability[3];
                     contribution_pdf_bottom
                         += pdf_b(theta_ifiber, theta_ofiber, phi_ifiber, phi_ofiber, sqrt(roughness_yarn_bm2))
-                        * selection_probability[3];
+                        * selection_probability[2];
                     contribution_pdf_bottom /= max(abs(sqrt(1.f - cos_wo_tfiber * cos_wo_tfiber)), C_MIN_ANGLE);
                     contribution_pdf_bottom += pdf_f(
                                                    theta_iply,
@@ -408,7 +413,12 @@ public struct ProceduralClothBSDF : IBSDF
             }
         }
 
-        sample.pdf = eval_pdf(wi, sample.wo, bc);
+        // Fiber-path choices are latent rather than a finite contribution partition.
+        const BSDFEval evaluated = eval_with_pdf(wi, sample.wo, bc);
+        sample.pdf = evaluated.pdf;
+        if (sample.pdf <= 0.0)
+            return false;
+        sample.weight = evaluated.value / sample.pdf;
         sample.flags = (sample.wo.z >= 0.f ? BSDFFlags::glossy_reflection : BSDFFlags::glossy_transmission);
 
         return true;
@@ -933,7 +943,9 @@ public struct ProceduralClothBSDF : IBSDF
     {
         const float m_b = eval_gaussian(theta_o + theta_i, avg(roughness_yarn_bm));
         const float n_b = abs(phi_regularized(phi_o + phi_i + float.PI)) < float.PI * 0.5 ? 1.f / float.PI : 0.f;
-        return m_b * n_b;
+        const float normalization
+            = integrate_gaussian(-float.PI * 0.5 - theta_i, float.PI * 0.5 - theta_i, avg(roughness_yarn_bm));
+        return m_b * n_b / normalization;
     }
 
     /// *************************************************************************************************************

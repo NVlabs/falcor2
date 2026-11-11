@@ -16,18 +16,23 @@ inline bool is_normal_map_encoded(const TextureHandle& normal_map)
     return texture && sgl::get_format_info(texture->format()).channel_count < 3;
 }
 
-// Explicit resources take precedence over paths. Keep deferred loading and
+// Explicit resources take precedence over encoded bytes and paths. Keep deferred loading and
 // empty-binding reset identical for all surface-material frontends.
 inline TextureHandle load_material_texture(
     TextureManager* manager,
     const ref<sgl::Texture>& texture,
     const ref<sgl::Sampler>& sampler,
+    const ref<Blob>& texture_bytes,
     const std::filesystem::path& path,
     TextureLoadFlags flags
 )
 {
     if (texture)
         return manager->register_texture({.texture = texture, .sampler = sampler});
+    if (texture_bytes)
+        return manager->load_texture(
+            {.texture_bytes = texture_bytes, .sampler = sampler, .flags = flags, .load_deferred = true}
+        );
     if (!path.empty())
         return manager->load_texture({.path = path, .sampler = sampler, .flags = flags, .load_deferred = true});
     return {};

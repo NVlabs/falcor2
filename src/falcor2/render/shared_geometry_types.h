@@ -4,7 +4,7 @@
 #pragma once
 
 #include "falcor2/render/shared_scene_types.h"
-#include "falcor2/utils/buffer_handle.h"
+#include "falcor2/utils/buffer_ptr.h"
 
 #define FALCOR_SHARED_HOST
 #define public
@@ -16,6 +16,7 @@ using namespace sgl::math;
 #include "falcor2/render/geometry/area_light_geometry_types.slang"
 #include "falcor2/render/geometry/triangle_geometry_types.slang"
 #include "falcor2/render/geometry/lss_geometry_types.slang"
+#include "falcor2/render/geometry/geometry_animation_types.slang"
 
 } // namespace falcor::shared
 

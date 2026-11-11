@@ -1,14 +1,16 @@
 # Acquire only when the fbx feature is selected. Every archive and static library
 # is pinned so local overrides and downloaded SDKs use the same binaries.
 if(VCPKG_TARGET_IS_WINDOWS)
-    set(sdk_variant vs2022)
-    set(sdk_filename fbx2020311_fbxsdk_vs2022_win.exe)
-    set(sdk_archive_hash 60ed2d3656073bd7258fde6f33d9ef606f4d8c606f36e590abf6c221ae4ae7cbb40e25f219854dd27a60fb37f8d69668d61406f807dbd46d7fc441d1a4d20e04)
+    # The VS2019 SDK binaries also link with VS2022 17.9. Autodesk's VS2022
+    # binaries require newer STL helpers absent from that toolset.
+    set(sdk_variant vs2019)
+    set(sdk_filename fbx2020311_fbxsdk_vs2019_win.exe)
+    set(sdk_archive_hash 7366de2210c5a3b29cc89a34f23f040b5b65926da0e8775045176171a4bcf99843fa81fa9eab9804d3e355550b8e90d878cd4a338a211e3e11b81e099a790e4e)
     set(sdk_library_dir lib/x64)
     set(sdk_library_name libfbxsdk-md.lib)
     set(sdk_license_name License.rtf)
-    set(sdk_release_hash b879bc9283f65bc7225159c3c25818eed62cc63ddd6cb94d50518283e90b3f2b02af3ec8621a959e00cf5921010115ecf62f703cf866d72c8d35030dd1371c1a)
-    set(sdk_debug_hash e0c4a04715065a7480a2b8862b900772a7eb8cafb131db50c593bdd2c31223a2d01acc914a26592a4e524742587f46195560fd7332d4ac8617d30042075bd7ab)
+    set(sdk_release_hash da2acd2994ecfd122652c9397935476f8722f21c6da48fff5fddb80433c67c2f6af5121698e30b22e852f77b0d3ce75b92fdfae0ca2ab8f302daf94d8e825555)
+    set(sdk_debug_hash 2494078d4dc36dd26c8bdc3dd662c9c9018a068f0d9b779f460918382ec6be9e9417070a2fce9769e4f0001bced62f92ef666f23ac0a04ace31fc858da631b9c)
 elseif(VCPKG_TARGET_IS_LINUX)
     set(sdk_variant gcc)
     set(sdk_filename fbx2020311_fbxsdk_gcc_linux.tar.gz)

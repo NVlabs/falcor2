@@ -12,12 +12,16 @@
 #include "sgl/core/thread.h"
 
 BEGIN_DISABLE_USD_WARNINGS
+#include <pxr/usd/ar/resolverContextBinder.h>
+#include <pxr/usd/ar/resolverScopedCache.h>
 #include <pxr/usd/usd/prim.h>
 
 #include <pxr/usd/usdShade/materialBindingAPI.h>
 
 #include <pxr/usd/usdGeom/xform.h>
 #include <pxr/usd/usdGeom/metrics.h>
+#include <pxr/usd/usdSkel/skeletonQuery.h>
+#include <pxr/usd/usdSkel/skinningQuery.h>
 END_DISABLE_USD_WARNINGS
 
 #include <filesystem>
@@ -25,6 +29,7 @@ END_DISABLE_USD_WARNINGS
 #include <mutex>
 #include <optional>
 #include <set>
+#include <utility>
 #include <vector>
 
 namespace falcor {
@@ -67,6 +72,7 @@ public:
 
     void run(const pxr::UsdPrim& root)
     {
+        prepare_skinning(root);
         run_traversal_and_wait(
             m_task_group,
             [&]
@@ -75,6 +81,7 @@ public:
             }
         );
         extract_animations();
+        extract_skinning();
     }
 
     ref<ImporterScene> get_scene() { return m_scene; }
@@ -166,14 +173,33 @@ private:
     /// Extract animation data from USD time samples and populate ImporterAnimation.
     void extract_animations();
 
+    void prepare_skinning(const pxr::UsdPrim& root);
+    ImporterSkin import_skeleton(const pxr::UsdSkelSkeletonQuery& query);
+    void extract_skinning();
+
+    struct SkinBinding {
+        pxr::UsdSkelSkinningQuery mesh;
+        pxr::UsdSkelSkeletonQuery skeleton;
+    };
+
     /// Run or enqeue tasks, depending on whether we do parallism.
     template<typename F>
     void process_task(F&& task, bool run_immediate)
     {
-        if (run_immediate || !m_parallel_adds)
+        // Resolver bindings are thread-local. A pool worker must use this import's context,
+        // including when the waiting caller helps execute work from another import.
+        auto bound_task = [context = m_resolver_context, cache = &m_resolver_cache, task = std::forward<F>(task)]
+        {
+            pxr::ArResolverContextBinder binder(context);
+            // Cache scopes are also thread-local. Share package mappings and resolutions
+            // with this import rather than reopening USDZ archives for every asset query.
+            pxr::ArResolverScopedCache cache_scope(cache);
             task();
+        };
+        if (run_immediate || !m_parallel_adds)
+            bound_task();
         else
-            m_task_group.do_async(task);
+            m_task_group.do_async(std::move(bound_task));
     }
 
     /// Add a texture to the scene and return its index
@@ -188,6 +214,9 @@ private:
 
 private:
     pxr::UsdStageRefPtr m_usd_stage;
+    const pxr::ArResolverContext m_resolver_context;
+    // Construct and destroy on the importing thread; run() drains all children first.
+    pxr::ArResolverScopedCache m_resolver_cache;
     const ustring m_source_asset_path;
     /// Representative paths resolved once, before asynchronous extraction starts.
     const std::map<pxr::SdfPath, pxr::SdfPath> m_prototype_source_paths;
@@ -203,6 +232,9 @@ private:
     /// A USD prim can have both an ordinary scene node and a separately imported prototype node.
     /// Animation targets the authored TRS node and optional pivot helpers.
     std::map<pxr::SdfPath, std::vector<TransformNodes>> m_prim_path_to_nodes;
+
+    // Populated before parallel extraction; queries and their source stage remain immutable during import.
+    std::map<pxr::SdfPath, SkinBinding> m_skin_bindings;
 
     struct UsdSceneMutexes {
         std::mutex nodes;
@@ -221,7 +253,7 @@ private:
     std::set<std::filesystem::path> m_asset_paths;
     bool m_enable_virtual_sphere_shrinking = false;
     bool m_parallel_adds = false;
-    sgl::thread::TaskGroup m_task_group;
+    USDTaskGroup m_task_group;
 };
 
 } // namespace usd_importer

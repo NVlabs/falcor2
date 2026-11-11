@@ -108,6 +108,7 @@ private:
         AttributeValue value;
         ref<sgl::Texture> texture;
         ref<sgl::Sampler> texture_sampler;
+        ref<Blob> texture_bytes;
         std::filesystem::path texture_path;
         uint32_t texture_channel{0};
         uint32_t texture_texcoord{0};
@@ -194,6 +195,7 @@ private:
 
     ref<sgl::Texture> m_opacity_texture;
     ref<sgl::Sampler> m_opacity_texture_sampler;
+    ref<Blob> m_opacity_texture_bytes;
     std::filesystem::path m_opacity_texture_path;
     uint32_t m_opacity_texture_channel{3};
     uint32_t m_opacity_texture_texcoord{0};
@@ -202,6 +204,7 @@ private:
     TextureHandle m_opacity_texture_handle;
     ref<sgl::Texture> m_normal_texture;
     ref<sgl::Sampler> m_normal_texture_sampler;
+    ref<Blob> m_normal_texture_bytes;
     std::filesystem::path m_normal_texture_path;
     float m_normal_texture_scale{1.f};
     uint32_t m_normal_texture_texcoord{0};

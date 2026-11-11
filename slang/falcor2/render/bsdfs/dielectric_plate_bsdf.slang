@@ -26,7 +26,12 @@ public struct DielectricPlateBSDF : IBSDF
     }
 
 
-    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
         if (D.is_singular() || eta == 1.0 || min(wi.z, abs(wo.z)) < BSDF_MIN_COS_THETA)
             return BSDFEval();
@@ -58,7 +63,7 @@ public struct DielectricPlateBSDF : IBSDF
         return BSDFEval(value, pdf);
     }
 
-    public bool sample(float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
 
