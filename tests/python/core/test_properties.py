@@ -635,6 +635,21 @@ def test_get_object():
         p.get_object("str_val")
 
 
+def test_clear_object():
+    from falcor2 import AssetResolver
+
+    p = Properties()
+    resolver = AssetResolver()
+    p["resolver"] = resolver
+    p["resolver"] = None
+    assert "resolver" in p
+    assert p.type("resolver") == PropertyType.object
+    assert p["resolver"] is None
+    assert p.get_object("resolver") is None
+    p["resolver"] = resolver
+    assert p["resolver"] is resolver
+
+
 # =============================================================================
 # Enum typed getter
 # =============================================================================

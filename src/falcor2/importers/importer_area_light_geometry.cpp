@@ -9,6 +9,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -31,7 +32,7 @@ struct MeshVertex {
 };
 
 ImporterMesh
-make_mesh(std::string name, std::string material_name, std::vector<MeshVertex> vertices, std::vector<uint3> indices)
+make_mesh(std::string name, int material_index, std::vector<MeshVertex> vertices, std::vector<uint3> indices)
 {
     ImporterMesh mesh;
     mesh.name = std::move(name);
@@ -61,14 +62,14 @@ make_mesh(std::string name, std::string material_name, std::vector<MeshVertex> v
         ImporterMesh::Subgeometry{
             .name = mesh.name,
             .indices = std::move(indices),
-            .material_name = std::move(material_name),
+            .material_index = material_index,
         }
     );
     mesh.calculate_local_aabb();
     return mesh;
 }
 
-ImporterMesh make_rect_mesh(const ImporterLight& light, std::string mesh_name, std::string material_name)
+ImporterMesh make_rect_mesh(const ImporterLight& light, std::string mesh_name, int material_index)
 {
     const float half_width = 0.5f * light.width;
     const float half_height = 0.5f * light.height;
@@ -78,10 +79,10 @@ ImporterMesh make_rect_mesh(const ImporterLight& light, std::string mesh_name, s
         {{half_width, half_height, 0.f}, {0.f, 0.f, -1.f}, {1.f, 0.f, 0.f}, -1.f, {1.f, 1.f}},
         {{-half_width, half_height, 0.f}, {0.f, 0.f, -1.f}, {1.f, 0.f, 0.f}, -1.f, {0.f, 1.f}},
     };
-    return make_mesh(std::move(mesh_name), std::move(material_name), std::move(vertices), {{0, 2, 1}, {0, 3, 2}});
+    return make_mesh(std::move(mesh_name), material_index, std::move(vertices), {{0, 2, 1}, {0, 3, 2}});
 }
 
-ImporterMesh make_disk_mesh(const ImporterLight& light, std::string mesh_name, std::string material_name)
+ImporterMesh make_disk_mesh(const ImporterLight& light, std::string mesh_name, int material_index)
 {
     std::vector<MeshVertex> vertices;
     vertices.reserve(DISK_SEGMENT_COUNT + 1);
@@ -105,10 +106,10 @@ ImporterMesh make_disk_mesh(const ImporterLight& light, std::string mesh_name, s
         const uint32_t next = (i + 1) % DISK_SEGMENT_COUNT;
         indices.push_back({0, next + 1, i + 1});
     }
-    return make_mesh(std::move(mesh_name), std::move(material_name), std::move(vertices), std::move(indices));
+    return make_mesh(std::move(mesh_name), material_index, std::move(vertices), std::move(indices));
 }
 
-ImporterMesh make_sphere_mesh(const ImporterLight& light, std::string mesh_name, std::string material_name)
+ImporterMesh make_sphere_mesh(const ImporterLight& light, std::string mesh_name, int material_index)
 {
     const uint32_t ring_count = SPHERE_LATITUDE_SEGMENT_COUNT - 1;
     std::vector<MeshVertex> vertices;
@@ -167,31 +168,60 @@ ImporterMesh make_sphere_mesh(const ImporterLight& light, std::string mesh_name,
         });
     }
 
-    return make_mesh(std::move(mesh_name), std::move(material_name), std::move(vertices), std::move(indices));
+    return make_mesh(std::move(mesh_name), material_index, std::move(vertices), std::move(indices));
 }
 
-bool geometry_requested(const ImporterLight& light, const ImportOptions& options)
+bool geometry_requested(const ImporterLight& light)
 {
-    bool force_type = false;
+    const bool requested = light.properties.get<bool>("convert_to_mesh");
     switch (light.type) {
     case ImporterLight::Type::rectangular:
-        force_type = options.force_rectangle_lights_to_geometry;
-        break;
     case ImporterLight::Type::disk:
-        force_type = options.force_disk_lights_to_geometry;
-        break;
+        return requested;
     case ImporterLight::Type::sphere:
-        force_type = options.force_sphere_lights_to_geometry;
-        break;
+        return requested && !light.treat_as_point;
     default:
         return false;
     }
-    return light.geometry_visible || force_type;
 }
 
-ImporterMaterial make_emissive_material(const ImporterLight& light, std::string name)
+float mesh_world_surface_area(const ImporterMesh& mesh, const float4x4& world_from_mesh)
 {
-    const float3 emissive_radiance = light.intensity * std::exp2(light.exposure);
+    const auto positions = mesh.position_stream();
+    float surface_area = 0.f;
+    for (const ImporterMesh::Subgeometry& subgeometry : mesh.subgeometries) {
+        for (const uint3& triangle : subgeometry.indices) {
+            const float3 p0 = mul(world_from_mesh, float4(positions[triangle.x], 1.f)).xyz();
+            const float3 p1 = mul(world_from_mesh, float4(positions[triangle.y], 1.f)).xyz();
+            const float3 p2 = mul(world_from_mesh, float4(positions[triangle.z], 1.f)).xyz();
+            surface_area += 0.5f * length(cross(p1 - p0, p2 - p0));
+        }
+    }
+    return surface_area;
+}
+
+std::vector<float4x4> collect_light_world_transforms(const ImporterScene& scene)
+{
+    std::vector<float4x4> result(scene.lights.size(), float4x4::identity());
+    std::function<void(int, const float4x4&)> visit = [&](int node_index, const float4x4& world_from_parent)
+    {
+        const ImporterNode& node = scene.nodes[node_index];
+        const float4x4 world_from_node = mul(world_from_parent, node.transform);
+        if (node.light_index >= 0 && static_cast<size_t>(node.light_index) < scene.lights.size())
+            result[node.light_index] = world_from_node;
+        for (int child_index : node.children)
+            visit(child_index, world_from_node);
+    };
+    for (int root_index : scene.root_nodes)
+        visit(root_index, float4x4::identity());
+    return result;
+}
+
+ImporterMaterial make_emissive_material(const ImporterLight& light, float size_factor, std::string name)
+{
+    float3 emissive_radiance = light.color * light.intensity * std::exp2(light.exposure);
+    if (light.normalize && size_factor > 0.f && sgl::math::isfinite(size_factor))
+        emissive_radiance /= size_factor;
     const float emission_luminance
         = 0.2126f * emissive_radiance.x + 0.7152f * emissive_radiance.y + 0.0722f * emissive_radiance.z;
     const float3 emission_color = emission_luminance > 0.f ? emissive_radiance / emission_luminance : float3(1.f);
@@ -217,10 +247,11 @@ void convert_area_lights_to_geometry(ImporterScene& scene, const ImportOptions& 
     std::vector<int> retained_light_indices(scene.lights.size(), -1);
     std::vector<ImporterLight> retained_lights;
     retained_lights.reserve(scene.lights.size());
+    const std::vector<float4x4> light_world_transforms = collect_light_world_transforms(scene);
 
     for (size_t light_index = 0; light_index < scene.lights.size(); ++light_index) {
-        const ImporterLight& light = scene.lights[light_index];
-        const bool selected = geometry_requested(light, options);
+        ImporterLight& light = scene.lights[light_index];
+        const bool selected = geometry_requested(light);
         if (!selected || light.enable_shaping) {
             if (selected && light.enable_shaping) {
                 sgl::log_warn(
@@ -230,28 +261,31 @@ void convert_area_lights_to_geometry(ImporterScene& scene, const ImportOptions& 
                 );
             }
             retained_light_indices[light_index] = static_cast<int>(retained_lights.size());
-            retained_lights.push_back(light);
+            retained_lights.push_back(std::move(light));
             continue;
         }
 
         const std::string generated_base = light.name + ".__emissive_geometry_" + std::to_string(light_index);
         const std::string material_name = generated_base + "_material";
-        scene.materials.push_back(make_emissive_material(light, material_name));
+        const int material_index = static_cast<int>(scene.materials.size());
 
         ImporterMesh mesh;
         switch (light.type) {
         case ImporterLight::Type::rectangular:
-            mesh = make_rect_mesh(light, generated_base, material_name);
+            mesh = make_rect_mesh(light, generated_base, material_index);
             break;
         case ImporterLight::Type::disk:
-            mesh = make_disk_mesh(light, generated_base, material_name);
+            mesh = make_disk_mesh(light, generated_base, material_index);
             break;
         case ImporterLight::Type::sphere:
-            mesh = make_sphere_mesh(light, generated_base, material_name);
+            mesh = make_sphere_mesh(light, generated_base, material_index);
             break;
         default:
             break;
         }
+        mesh.properties = ImporterMesh::make_properties(options);
+        const float size_factor = mesh_world_surface_area(mesh, light_world_transforms[light_index]);
+        scene.materials.push_back(make_emissive_material(light, size_factor, material_name));
         replacement_mesh_indices[light_index] = static_cast<int>(scene.meshes.size());
         scene.meshes.push_back(std::move(mesh));
     }

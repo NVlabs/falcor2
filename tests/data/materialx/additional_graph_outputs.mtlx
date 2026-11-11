@@ -1,0 +1,40 @@
+<?xml version="1.0"?>
+<materialx version="1.39" colorspace="lin_rec709">
+  <nodedef name="ND_stormtrooper_dust_surface" node="stormtrooper_dust_surface" nodegroup="pbr">
+    <output name="dust_mask_output" type="float" />
+    <output name="out" type="surfaceshader" />
+    <output name="metallicity_output" type="float" />
+  </nodedef>
+  <nodegraph name="NG_stormtrooper_dust_surface" nodedef="ND_stormtrooper_dust_surface">
+    <constant name="dust_mask" type="float">
+      <input name="value" type="float" value="0.35" />
+    </constant>
+    <constant name="metallicity" type="float">
+      <input name="value" type="float" value="0.8" />
+    </constant>
+    <oren_nayar_diffuse_bsdf name="dust_diffuse" type="BSDF">
+      <input name="weight" type="float" nodename="dust_mask" />
+      <input name="color" type="color3" value="0.6, 0.5, 0.4" />
+      <input name="roughness" type="float" value="0.8" />
+    </oren_nayar_diffuse_bsdf>
+    <surface name="dust_surface" type="surfaceshader">
+      <input name="bsdf" type="BSDF" nodename="dust_diffuse" />
+    </surface>
+    <output name="dust_mask_output" type="float" nodename="dust_mask" />
+    <output name="out" type="surfaceshader" nodename="dust_surface" />
+    <output name="metallicity_output" type="float" nodename="metallicity" />
+  </nodegraph>
+  <stormtrooper_dust_surface
+    name="stormtrooper_dust_surface"
+    type="multioutput"
+    nodedef="ND_stormtrooper_dust_surface"
+  />
+  <surfacematerial name="stormtrooper_dust_material" type="material">
+    <input
+      name="surfaceshader"
+      type="surfaceshader"
+      nodename="stormtrooper_dust_surface"
+      output="out"
+    />
+  </surfacematerial>
+</materialx>

@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from types import ModuleType
 
@@ -66,12 +67,14 @@ def _load_scene_module(module_name: str) -> ModuleType:
     return module
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", [spy.DeviceType.d3d12])
 @pytest.mark.parametrize("config", NORMALMAP_SCENES, ids=[config.id for config in NORMALMAP_SCENES])
 def test_blender_sun_normalmap_scene(
     device_type: spy.DeviceType,
     config: NormalMapSceneConfig,
     image_test: ImageTest,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     if device_type not in helpers.DEFAULT_DEVICE_TYPES:
         pytest.skip(f"{device_type} is not available in this test environment")
@@ -80,11 +83,20 @@ def test_blender_sun_normalmap_scene(
     scene_path = getattr(scene_module, "SCENE_PATH", None)
     if scene_path is not None and not Path(scene_path).exists():
         pytest.skip(f"Normal map scene asset is not available: {scene_path}")
-    scene, camera, metadata = scene_module.create_scene(device, width=WIDTH, height=HEIGHT)
+    with monkeypatch.context() as patch:
+        if config.id.startswith("glb_"):
+            # The asset's normal-map helper and image references target StandardMaterial.
+            import_options = f2.ImportOptions()
+            import_options.gltf_material_mode = f2.GLTFMaterialMode.standard_material
+            patch.setattr(
+                f2, "import_scene", partial(f2.import_scene, import_options=import_options)
+            )
+        scene, camera, metadata = scene_module.create_scene(device, width=WIDTH, height=HEIGHT)
     assert metadata["label"] == config.id
 
     pipeline = PathTracerPipeline.create(device)
     pipeline.spp = SPP
+    pipeline.path_tracer.pixel_filter = f2.BoxReconstructionFilter(width=1)
     pipeline.tone_map = True
     pipeline.tonemapper.auto_exposure = False
     pipeline.path_tracer.enable_nee = True

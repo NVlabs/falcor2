@@ -4,6 +4,7 @@
 #pragma once
 
 #include "falcor2/render/component.h"
+#include "falcor2/render/scene_types.h"
 #include "falcor2/render/texture_manager.h"
 #include "falcor2/render/shared_scene_types.h"
 
@@ -44,9 +45,21 @@ public:
     bool active() const { return m_active; }
     void set_active(bool active);
 
+    /// Light color in the rendering color space.
+    float3 color() const { return m_color; }
+    void set_color(float3 color);
+
+    /// Scalar light intensity.
+    float intensity() const { return m_intensity; }
+    void set_intensity(float intensity);
+
     /// Light exposure value in exposure stops.
     float exposure() const { return m_exposure; }
     void set_exposure(float exposure);
+
+    /// Whether emission is divided by the light's world-space size factor.
+    bool normalize() const { return m_normalize; }
+    void set_normalize(bool normalize);
 
     /// Whether the color temperature multiplier is enabled.
     bool enable_color_temperature() const { return m_enable_color_temperature; }
@@ -55,6 +68,10 @@ public:
     /// Color temperature in Kelvin.
     float color_temperature() const { return m_color_temperature; }
     void set_color_temperature(float color_temperature);
+
+    /// Whether finite area-light geometry is visible, opaque, and shadow-casting.
+    bool geometry_visible() const { return m_geometry_visible; }
+    void set_geometry_visible(bool visible);
 
     /// Slang type name of the struct representing this light type.
     /// Specifies the type used for write_to_cursor().
@@ -98,12 +115,38 @@ public:
                 reflection::ui_label("Active")
             )
             .def_prop_rw(
+                "color",
+                &Light::color,
+                &Light::set_color,
+                "Light color in the rendering color space.",
+                reflection::default_value(float3(1.f)),
+                reflection::ui_label("Color"),
+                reflection::UIFlags::display_as_color
+            )
+            .def_prop_rw(
+                "intensity",
+                &Light::intensity,
+                &Light::set_intensity,
+                "Scalar light intensity.",
+                reflection::default_value(1.f),
+                reflection::value_range_positive(),
+                reflection::ui_label("Intensity")
+            )
+            .def_prop_rw(
                 "exposure",
                 &Light::exposure,
                 &Light::set_exposure,
                 "Exposure value in stops.",
                 reflection::default_value(0.f),
                 reflection::ui_label("Exposure")
+            )
+            .def_prop_rw(
+                "normalize",
+                &Light::normalize,
+                &Light::set_normalize,
+                "Divide emission by the light's world-space size factor.",
+                reflection::default_value(false),
+                reflection::ui_label("Normalize")
             )
             .def_prop_rw(
                 "enable_color_temperature",
@@ -121,6 +164,14 @@ public:
                 reflection::default_value(6500.f),
                 reflection::value_range(MIN_COLOR_TEMPERATURE, MAX_COLOR_TEMPERATURE),
                 reflection::ui_label("Color Temperature")
+            )
+            .def_prop_rw(
+                "geometry_visible",
+                &Light::geometry_visible,
+                &Light::set_geometry_visible,
+                "Whether finite area-light geometry is visible, opaque, and shadow-casting.",
+                reflection::default_value(false),
+                reflection::ui_label("Geometry Visible")
             );
     }
 
@@ -128,12 +179,17 @@ protected:
     static constexpr float MIN_LIGHT_ANGLE = 0.f;
     static constexpr float MAX_LIGHT_ANGLE = 180.f;
 
-    float3 apply_color_temperature_and_exposure(float3 value) const;
+    float3 evaluate_emission(float size_factor = 1.f) const;
 
     bool m_active{true};
+    float3 m_color{1.f};
+    float m_intensity{1.f};
     float m_exposure{0.f};
+    bool m_normalize{false};
     bool m_enable_color_temperature{false};
     float m_color_temperature{6500.f};
+    bool m_geometry_visible{false};
+
     std::string m_slang_type_name;
     shared::LightType m_light_type{0};
     shared::LightFlags m_light_flags{shared::LightFlags::none};
@@ -148,32 +204,16 @@ public:
     ConstantLight();
     ~ConstantLight() override;
 
-    float3 radiance() const { return m_radiance; }
-    void set_radiance(float3 radiance);
-
     // Light interface
 
-    /// Reflect this class.
     template<reflection::ClassReflector R>
-    static void reflect(R& r)
+    static void reflect(R&)
     {
-        r //
-            .def_prop_rw(
-                "radiance",
-                &ConstantLight::radiance,
-                &ConstantLight::set_radiance,
-                "Constant radiance.",
-                reflection::default_value(float3(1.f)),
-                reflection::ui_label("Radiance"),
-                reflection::UIFlags::display_as_color
-            );
     }
 
 private:
     template<typename CursorT>
     void write_to_cursor_impl(CursorT cursor) const;
-
-    float3 m_radiance{1.f};
 };
 
 class FALCOR_API DistantLight : public Light {
@@ -183,9 +223,6 @@ class FALCOR_API DistantLight : public Light {
 public:
     DistantLight();
     ~DistantLight() override;
-
-    float3 radiance() const { return m_radiance; }
-    void set_radiance(float3 radiance);
 
     float cutoff_angle() const { return m_cutoff_angle; }
     void set_cutoff_angle(float cutoff_angle);
@@ -197,15 +234,6 @@ public:
     static void reflect(R& r)
     {
         r //
-            .def_prop_rw(
-                "radiance",
-                &DistantLight::radiance,
-                &DistantLight::set_radiance,
-                "Radiance.",
-                reflection::default_value(float3(1.f)),
-                reflection::ui_label("Radiance"),
-                reflection::UIFlags::display_as_color
-            )
             .def_prop_rw(
                 "cutoff_angle",
                 &DistantLight::cutoff_angle,
@@ -221,7 +249,6 @@ private:
     template<typename CursorT>
     void write_to_cursor_impl(CursorT cursor) const;
 
-    float3 m_radiance{1.f};
     float m_cutoff_angle{1.f};
 };
 
@@ -237,8 +264,9 @@ public:
     void set_env_map_path(const std::filesystem::path& env_map_path);
     void set_env_map_texture(ref<sgl::Texture> env_map_texture);
 
-    float3 intensity() const { return m_intensity; }
-    void set_intensity(float3 intensity);
+    /// Alignment of the environment map's top pole in the owning entity's local space.
+    EnvMapPoleAxis pole_axis() const { return m_pole_axis; }
+    void set_pole_axis(EnvMapPoleAxis pole_axis);
 
     // SceneObject interface
 
@@ -260,13 +288,12 @@ public:
                 "Environment map file path."
             )
             .def_prop_rw(
-                "intensity",
-                &EnvMapLight::intensity,
-                &EnvMapLight::set_intensity,
-                "Environment map intensity.",
-                reflection::default_value(float3(1.f)),
-                reflection::ui_label("Intensity"),
-                reflection::UIFlags::display_as_color
+                "pole_axis",
+                &EnvMapLight::pole_axis,
+                &EnvMapLight::set_pole_axis,
+                "Environment map pole axis in the owning entity's local space.",
+                reflection::default_value(EnvMapPoleAxis::y),
+                reflection::ui_label("Pole Axis")
             );
     }
 
@@ -275,9 +302,9 @@ private:
     void write_to_cursor_impl(CursorT cursor) const;
 
     std::filesystem::path m_env_map_path;
-    ref<sgl::Texture> m_env_map_texture;
-    float3 m_intensity{1.f};
+    EnvMapPoleAxis m_pole_axis{EnvMapPoleAxis::y};
 
+    ref<sgl::Texture> m_env_map_texture;
     TextureHandle m_env_map_texture_handle;
     bool m_env_map_loaded{false};
 
@@ -405,9 +432,6 @@ public:
     PointLight();
     ~PointLight() override;
 
-    float3 intensity() const { return m_intensity; }
-    void set_intensity(float3 intensity);
-
     FALCOR_LIGHT_SHAPING_MIXIN(m_shaping)
 
     // Light interface
@@ -416,17 +440,6 @@ public:
     template<reflection::ClassReflector R>
     static void reflect(R& r)
     {
-        r //
-            .def_prop_rw(
-                "intensity",
-                &PointLight::intensity,
-                &PointLight::set_intensity,
-                "Light intensity.",
-                reflection::default_value(float3(1.f)),
-                reflection::ui_label("Intensity"),
-                reflection::UIFlags::display_as_color
-            );
-
         LightShaping::reflect<PointLight>(r);
     }
 
@@ -434,7 +447,6 @@ private:
     template<typename CursorT>
     void write_to_cursor_impl(CursorT cursor) const;
 
-    float3 m_intensity{1.f};
     LightShaping m_shaping;
 };
 
@@ -446,9 +458,6 @@ public:
     SphereLight();
     ~SphereLight() override;
 
-    float3 radiance() const { return m_radiance; }
-    void set_radiance(float3 radiance);
-
     float radius() const { return m_radius; }
     void set_radius(float radius);
 
@@ -456,6 +465,9 @@ public:
     void set_enable_virtual_sphere_shrinking(bool enable);
 
     FALCOR_LIGHT_SHAPING_MIXIN(m_shaping)
+
+    /// World-space radius using the transform's volume-equivalent uniform scale.
+    float world_radius() const;
 
     // Light interface
 
@@ -465,20 +477,11 @@ public:
     {
         r //
             .def_prop_rw(
-                "radiance",
-                &SphereLight::radiance,
-                &SphereLight::set_radiance,
-                "Radiance.",
-                reflection::default_value(float3(1.f)),
-                reflection::ui_label("Radiance"),
-                reflection::UIFlags::display_as_color
-            )
-            .def_prop_rw(
                 "radius",
                 &SphereLight::radius,
                 &SphereLight::set_radius,
                 "Local-space radius.",
-                reflection::default_value(1.f),
+                reflection::default_value(0.5f),
                 reflection::value_range_positive(),
                 reflection::ui_label("Radius")
             )
@@ -498,9 +501,73 @@ private:
     template<typename CursorT>
     void write_to_cursor_impl(CursorT cursor) const;
 
-    float3 m_radiance{1.f};
-    float m_radius{1.f};
+    float m_radius{0.5f};
     bool m_enable_virtual_sphere_shrinking{false};
+    LightShaping m_shaping;
+};
+
+/// World-space circular approximation used to sample and trace a cylinder light.
+struct CylinderLightWorldGeometry {
+    float3 center_ws;
+    float3 axis_ws;
+    float3 radius_u_ws;
+    float3 radius_v_ws;
+    float half_length_ws;
+    float radius_ws;
+};
+
+/// Finite cylinder light that emits from its open lateral surface.
+class FALCOR_API CylinderLight : public Light {
+    FALCOR_SCENE_OBJECT(CylinderLight, Light)
+    FALCOR_WRITE_TO_CURSOR_OVERRIDES();
+
+public:
+    CylinderLight();
+    ~CylinderLight() override;
+
+    float radius() const { return m_radius; }
+    void set_radius(float radius);
+
+    float length() const { return m_length; }
+    void set_length(float length);
+
+    FALCOR_LIGHT_SHAPING_MIXIN(m_shaping)
+
+    CylinderLightWorldGeometry world_geometry() const;
+
+    /// Reflect this class.
+    template<reflection::ClassReflector R>
+    static void reflect(R& r)
+    {
+        r //
+            .def_prop_rw(
+                "radius",
+                &CylinderLight::radius,
+                &CylinderLight::set_radius,
+                "Local-space radius.",
+                reflection::default_value(0.5f),
+                reflection::value_range_positive(),
+                reflection::ui_label("Radius")
+            )
+            .def_prop_rw(
+                "length",
+                &CylinderLight::length,
+                &CylinderLight::set_length,
+                "Local-space length along the X axis.",
+                reflection::default_value(1.f),
+                reflection::value_range_positive(),
+                reflection::ui_label("Length")
+            );
+
+        LightShaping::reflect<CylinderLight>(r);
+    }
+
+private:
+    template<typename CursorT>
+    void write_to_cursor_impl(CursorT cursor) const;
+
+    float m_radius{0.5f};
+    float m_length{1.f};
     LightShaping m_shaping;
 };
 
@@ -511,9 +578,6 @@ class FALCOR_API DiskLight : public Light {
 public:
     DiskLight();
     ~DiskLight() override;
-
-    float3 radiance() const { return m_radiance; }
-    void set_radiance(float3 radiance);
 
     float radius() const { return m_radius; }
     void set_radius(float radius);
@@ -528,20 +592,11 @@ public:
     {
         r //
             .def_prop_rw(
-                "radiance",
-                &DiskLight::radiance,
-                &DiskLight::set_radiance,
-                "Radiance.",
-                reflection::default_value(float3(1.f)),
-                reflection::ui_label("Radiance"),
-                reflection::UIFlags::display_as_color
-            )
-            .def_prop_rw(
                 "radius",
                 &DiskLight::radius,
                 &DiskLight::set_radius,
                 "Local-space radius.",
-                reflection::default_value(1.f),
+                reflection::default_value(0.5f),
                 reflection::value_range_positive(),
                 reflection::ui_label("Radius")
             );
@@ -553,8 +608,7 @@ private:
     template<typename CursorT>
     void write_to_cursor_impl(CursorT cursor) const;
 
-    float3 m_radiance{1.f};
-    float m_radius{1.f};
+    float m_radius{0.5f};
     LightShaping m_shaping;
 };
 
@@ -565,9 +619,6 @@ class FALCOR_API RectLight : public Light {
 public:
     RectLight();
     ~RectLight() override;
-
-    float3 radiance() const { return m_radiance; }
-    void set_radiance(float3 radiance);
 
     float width() const { return m_width; }
     void set_width(float width);
@@ -584,15 +635,6 @@ public:
     static void reflect(R& r)
     {
         r //
-            .def_prop_rw(
-                "radiance",
-                &RectLight::radiance,
-                &RectLight::set_radiance,
-                "Radiance.",
-                reflection::default_value(float3(1.f)),
-                reflection::ui_label("Radiance"),
-                reflection::UIFlags::display_as_color
-            )
             .def_prop_rw(
                 "width",
                 &RectLight::width,
@@ -619,7 +661,6 @@ private:
     template<typename CursorT>
     void write_to_cursor_impl(CursorT cursor) const;
 
-    float3 m_radiance{1.f};
     float m_width{1.f};
     float m_height{1.f};
     LightShaping m_shaping;

@@ -3,6 +3,8 @@
 
 #include "animation.h"
 
+#include "falcor2/render/scene.h"
+
 #include <sgl/math/quaternion_math.h>
 #include <sgl/math/vector_math.h>
 
@@ -15,9 +17,52 @@ namespace falcor {
 // AnimationChannel
 // ----------------------------------------------------------------------------
 
+void AnimationChannel::set_value_type(AnimationValueType value_type)
+{
+    m_value_type = value_type;
+    notify_changed();
+}
+
+void AnimationChannel::set_interpolation_mode(AnimationInterpolationMode interpolation_mode)
+{
+    m_interpolation_mode = interpolation_mode;
+    notify_changed();
+}
+
+void AnimationChannel::set_times(std::vector<float> times)
+{
+    m_times = std::move(times);
+    m_accessor = {};
+    notify_changed();
+}
+
+void AnimationChannel::set_values(std::vector<float> values)
+{
+    m_values = std::move(values);
+    notify_changed();
+}
+
+void AnimationChannel::set_in_tangents(std::vector<float> in_tangents)
+{
+    m_in_tangents = std::move(in_tangents);
+    notify_changed();
+}
+
+void AnimationChannel::set_out_tangents(std::vector<float> out_tangents)
+{
+    m_out_tangents = std::move(out_tangents);
+    notify_changed();
+}
+
+void AnimationChannel::notify_changed()
+{
+    if (m_animation)
+        m_animation->mark_dirty_data();
+}
+
 size_t AnimationChannel::components_per_value() const
 {
-    switch (value_type) {
+    switch (m_value_type) {
     case AnimationValueType::float_:
         return 1;
     case AnimationValueType::float3:
@@ -30,12 +75,12 @@ size_t AnimationChannel::components_per_value() const
 
 size_t AnimationChannel::keyframe_count() const
 {
-    return times.size();
+    return m_times.size();
 }
 
 size_t AnimationChannel::find_keyframe_index(float t, Accessor& accessor) const
 {
-    const size_t count = times.size();
+    const size_t count = m_times.size();
     if (count <= 1)
         return 0;
 
@@ -43,13 +88,13 @@ size_t AnimationChannel::find_keyframe_index(float t, Accessor& accessor) const
 
     // Probe cached index first (common case: sequential playback).
     if (accessor.last_index <= max_idx) {
-        if (t >= times[accessor.last_index]) {
+        if (t >= m_times[accessor.last_index]) {
             // Check if still in the same segment.
-            if (accessor.last_index == max_idx || t < times[accessor.last_index + 1])
+            if (accessor.last_index == max_idx || t < m_times[accessor.last_index + 1])
                 return accessor.last_index;
             // Check next segment (sequential advance).
-            if (accessor.last_index + 1 <= max_idx && t >= times[accessor.last_index + 1]
-                && (accessor.last_index + 1 == max_idx || t < times[accessor.last_index + 2])) {
+            if (accessor.last_index + 1 <= max_idx && t >= m_times[accessor.last_index + 1]
+                && (accessor.last_index + 1 == max_idx || t < m_times[accessor.last_index + 2])) {
                 accessor.last_index = accessor.last_index + 1;
                 return accessor.last_index;
             }
@@ -57,13 +102,13 @@ size_t AnimationChannel::find_keyframe_index(float t, Accessor& accessor) const
     }
 
     // Fallback: binary search.
-    auto it = std::upper_bound(times.begin(), times.end(), t);
-    if (it == times.begin()) {
+    auto it = std::upper_bound(m_times.begin(), m_times.end(), t);
+    if (it == m_times.begin()) {
         accessor.last_index = 0;
-    } else if (it == times.end()) {
+    } else if (it == m_times.end()) {
         accessor.last_index = max_idx;
     } else {
-        accessor.last_index = static_cast<size_t>(it - times.begin()) - 1;
+        accessor.last_index = static_cast<size_t>(it - m_times.begin()) - 1;
     }
     return accessor.last_index;
 }
@@ -113,26 +158,26 @@ void AnimationChannel::evaluate_impl(float t, float* out, Accessor& accessor) co
         return;
 
     // Clamp to range.
-    if (count == 1 || t <= times.front()) {
+    if (count == 1 || t <= m_times.front()) {
         for (size_t i = 0; i < N; ++i)
-            out[i] = values[i];
+            out[i] = m_values[i];
         return;
     }
-    if (t >= times.back()) {
+    if (t >= m_times.back()) {
         const size_t last = (count - 1) * N;
         for (size_t i = 0; i < N; ++i)
-            out[i] = values[last + i];
+            out[i] = m_values[last + i];
         return;
     }
 
     const size_t idx = find_keyframe_index(t, accessor);
-    const float t0 = times[idx];
-    const float t1 = times[idx + 1];
+    const float t0 = m_times[idx];
+    const float t1 = m_times[idx + 1];
     const float dt = t1 - t0;
     const float alpha = (dt > 0.f) ? (t - t0) / dt : 0.f;
 
-    const float* v0 = &values[idx * N];
-    const float* v1 = &values[(idx + 1) * N];
+    const float* v0 = &m_values[idx * N];
+    const float* v1 = &m_values[(idx + 1) * N];
 
     // For quaternions, hemisphere-align v1 relative to v0 for all interpolation modes.
     [[maybe_unused]] quatf q1a;
@@ -141,7 +186,7 @@ void AnimationChannel::evaluate_impl(float t, float* out, Accessor& accessor) co
     // Pointer to the (possibly aligned) second keyframe value.
     const float* w1 = IsQuat ? &q1a.x : v1;
 
-    switch (interpolation_mode) {
+    switch (m_interpolation_mode) {
     case AnimationInterpolationMode::step:
         for (size_t i = 0; i < N; ++i)
             out[i] = v0[i];
@@ -163,8 +208,8 @@ void AnimationChannel::evaluate_impl(float t, float* out, Accessor& accessor) co
             for (size_t i = 0; i < N; ++i)
                 m0[i] = w1[i] - v0[i];
         } else {
-            const float dt_span = times[idx + 1] - times[idx - 1];
-            const float* v_prev = &values[(idx - 1) * N];
+            const float dt_span = m_times[idx + 1] - m_times[idx - 1];
+            const float* v_prev = &m_values[(idx - 1) * N];
             if constexpr (IsQuat) {
                 quatf q_prev = align_quat(as_quat(v0), as_quat(v_prev));
                 for (size_t i = 0; i < N; ++i)
@@ -179,8 +224,8 @@ void AnimationChannel::evaluate_impl(float t, float* out, Accessor& accessor) co
             for (size_t i = 0; i < N; ++i)
                 m1[i] = w1[i] - v0[i];
         } else {
-            const float dt_span = times[idx + 2] - times[idx];
-            const float* v_next = &values[(idx + 2) * N];
+            const float dt_span = m_times[idx + 2] - m_times[idx];
+            const float* v_next = &m_values[(idx + 2) * N];
             if constexpr (IsQuat) {
                 quatf q_next = align_quat(as_quat(v0), as_quat(v_next));
                 for (size_t i = 0; i < N; ++i)
@@ -198,8 +243,8 @@ void AnimationChannel::evaluate_impl(float t, float* out, Accessor& accessor) co
     }
 
     case AnimationInterpolationMode::cubic_spline: {
-        const float* out_tan_0 = &out_tangents[idx * N];
-        const float* in_tan_1 = &in_tangents[(idx + 1) * N];
+        const float* out_tan_0 = &m_out_tangents[idx * N];
+        const float* in_tan_1 = &m_in_tangents[(idx + 1) * N];
 
         float m0[N], m1[N];
         for (size_t i = 0; i < N; ++i) {
@@ -226,7 +271,7 @@ template void AnimationChannel::evaluate_impl<4, true>(float t, float* out, Acce
 
 float AnimationChannel::evaluate_float(float t, Accessor* accessor) const
 {
-    FALCOR_CHECK(value_type == AnimationValueType::float_, "Channel value type is not float");
+    FALCOR_CHECK(m_value_type == AnimationValueType::float_, "Channel value type is not float");
     float value = 0.f;
     evaluate_impl<1, false>(t, &value, accessor ? *accessor : m_accessor);
     return value;
@@ -234,7 +279,7 @@ float AnimationChannel::evaluate_float(float t, Accessor* accessor) const
 
 float3 AnimationChannel::evaluate_float3(float t, Accessor* accessor) const
 {
-    FALCOR_CHECK(value_type == AnimationValueType::float3, "Channel value type is not float3");
+    FALCOR_CHECK(m_value_type == AnimationValueType::float3, "Channel value type is not float3");
     float3 value = {};
     evaluate_impl<3, false>(t, &value.x, accessor ? *accessor : m_accessor);
     return value;
@@ -242,7 +287,7 @@ float3 AnimationChannel::evaluate_float3(float t, Accessor* accessor) const
 
 quatf AnimationChannel::evaluate_quatf(float t, Accessor* accessor) const
 {
-    FALCOR_CHECK(value_type == AnimationValueType::quatf, "Channel value type is not quatf");
+    FALCOR_CHECK(m_value_type == AnimationValueType::quatf, "Channel value type is not quatf");
     quatf value = {};
     evaluate_impl<4, true>(t, &value.x, accessor ? *accessor : m_accessor);
     return value;
@@ -252,14 +297,53 @@ quatf AnimationChannel::evaluate_quatf(float t, Accessor* accessor) const
 // Animation
 // ----------------------------------------------------------------------------
 
-float Animation::duration() const
+void Animation::remove()
 {
-    float max_time = 0.f;
+    if (!is_valid())
+        return;
+    SceneObject::remove();
+    if (scene())
+        scene()->_mark_animation_removed(this);
+}
+
+Animation::~Animation()
+{
+    for (const auto& channel : m_channels)
+        channel->m_animation = nullptr;
+}
+
+void Animation::set_channels(std::vector<ref<AnimationChannel>> channels)
+{
     for (const auto& channel : channels) {
-        if (!channel.times.empty())
-            max_time = std::max(max_time, channel.times.back());
+        FALCOR_CHECK(channel, "Animation channel must not be null");
+        FALCOR_CHECK(
+            !channel->m_animation || channel->m_animation == this,
+            "Animation channel already belongs to another Animation"
+        );
     }
-    return max_time;
+
+    for (const auto& channel : m_channels)
+        channel->m_animation = nullptr;
+    m_channels = std::move(channels);
+    for (const auto& channel : m_channels)
+        channel->m_animation = this;
+    mark_dirty_data();
+}
+
+void Animation::mark_dirty_data()
+{
+    if (m_scene)
+        m_scene->_mark_animation_dirty(this, DirtyFlags::data);
+}
+
+AnimationTimeRange Animation::key_range() const
+{
+    AnimationTimeRange range;
+    for (const auto& channel : m_channels) {
+        if (!channel->times().empty())
+            range.expand({channel->times().front(), channel->times().back()});
+    }
+    return range;
 }
 
 FALCOR_SCENE_REGISTER_CLASS(Animation, Animation);

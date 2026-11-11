@@ -24,9 +24,11 @@ that the samples follow the claimed distribution.
 """
 
 import math
+from collections.abc import Callable
+from typing import Any, Optional
+
 import numpy as np
 import slangpy as spy
-from typing import Optional, Any
 
 
 def rlgamma(a: float, x: float) -> float:
@@ -203,7 +205,8 @@ class ChiSquareTest:
         ires: int = 4,
         sample_count: int = 1000000,
         target_bindings: Optional[dict[str, Any]] = None,
-        global_bindings: Optional[dict[str, Any]] = None,
+        global_bindings: Optional[dict[str, Any] | Callable[[Any], None]] = None,
+        type_conformances: Optional[list[Any]] = None,
     ):
         """
         Initialize a chi-square test.
@@ -216,7 +219,8 @@ class ChiSquareTest:
             ires: Integration resolution per bin for PDF tabulation.
             sample_count: Total number of samples to draw for the histogram.
             target_bindings: Optional dictionary of bindings to pass to the target type.
-            global_bindings: Optional module global resource bindings.
+            global_bindings: Optional module global resource bindings or cursor callback.
+            type_conformances: Optional dynamic-dispatch type conformances.
         """
         super().__init__()
 
@@ -228,6 +232,7 @@ class ChiSquareTest:
         self.target = target
         self.target_bindings = target_bindings if target_bindings else {}
         self.global_bindings = global_bindings
+        self.type_conformances = type_conformances
         self.sample_count = sample_count
         self.res = res
         self.ires = ires
@@ -239,6 +244,18 @@ class ChiSquareTest:
         self.messages: str = f"{self.target}:\n"
         self.fail = False
 
+    def _bind_globals(self, function: Any) -> Any:
+        if self.global_bindings is None and self.type_conformances is None:
+            return function
+        function = function.as_func()
+        if self.type_conformances is not None:
+            function = function.type_conformances(self.type_conformances)
+        if self.global_bindings is None:
+            return function
+        if callable(self.global_bindings):
+            return function.write(self.global_bindings)
+        return function.set(self.global_bindings)
+
     def tabulate_histogram(self):
         """
         Build a histogram by drawing samples from the target distribution.
@@ -249,8 +266,7 @@ class ChiSquareTest:
         outside_count = spy.Tensor.zeros(self.device, (1,), dtype="uint")
         # Populate histogram.
         tabulate_histogram = self.module[f"chi2::tabulate_histogram<{self.target}>"]
-        if self.global_bindings is not None:
-            tabulate_histogram = tabulate_histogram.as_func().set(self.global_bindings)
+        tabulate_histogram = self._bind_globals(tabulate_histogram)
         thread_count = (
             self.sample_count + ChiSquareTest.SAMPLES_PER_THREAD - 1
         ) // ChiSquareTest.SAMPLES_PER_THREAD
@@ -289,8 +305,7 @@ class ChiSquareTest:
         """
         pdf = spy.Tensor.zeros(self.device, (self.res.y, self.res.x), dtype=float)
         tabulate_pdf = self.module[f"chi2::tabulate_pdf<{self.target}>"]
-        if self.global_bindings is not None:
-            tabulate_pdf = tabulate_pdf.as_func().set(self.global_bindings)
+        tabulate_pdf = self._bind_globals(tabulate_pdf)
         tabulate_pdf(
             tid=spy.grid((self.res.y, self.res.x)),
             res=self.res,

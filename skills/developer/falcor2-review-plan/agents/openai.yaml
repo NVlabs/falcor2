@@ -1,0 +1,4 @@
+interface:
+  display_name: "Falcor2 Review Plan"
+  short_description: "Review a plan with specialist sub-agents"
+  default_prompt: "Use $falcor2-review-plan to review this plan with specialist sub-agents and provide actionable feedback."

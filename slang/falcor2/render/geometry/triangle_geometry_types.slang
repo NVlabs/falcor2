@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include "falcor2/shared_types_compat.slangh"
+
 #ifndef FALCOR_SHARED_HOST
 implementing render;
 #endif
@@ -20,53 +22,45 @@ public struct TriangleVertex
 public struct PackedTriangleVertex
 {
     // Versioning for future compatibility.
-    public static constexpr uint VERSION = 2;
+    public FALCOR_SHARED_CONSTANT uint VERSION = 2;
 
     public float position[3];
     public uint normal_and_tangent[3];
     public float uv[2];
 };
 
-#ifdef FALCOR_SHARED_HOST
-#define NT_PARAM(name) uint(&name) [3]
-#define NT_CONST_PARAM(name) const uint(&name) [3]
-#else
-#define NT_PARAM(name) inout uint name[3]
-#define NT_CONST_PARAM(name) const uint name[3]
-#endif
-
 namespace detail {
-static float3 unpack_vertex_normal(NT_CONST_PARAM(normal_and_tangent))
+static float3 unpack_vertex_normal(FALCOR_SHARED_CONST_ARRAY_PARAM(uint, normal_and_tangent, 3))
 {
     return f16tof32(
         uint3(normal_and_tangent[0] & 0xffff, (normal_and_tangent[0] >> 16) & 0xffff, normal_and_tangent[1] & 0xffff)
     );
 }
 
-static float unpack_vertex_handedness(NT_CONST_PARAM(normal_and_tangent))
+static float unpack_vertex_handedness(FALCOR_SHARED_CONST_ARRAY_PARAM(uint, normal_and_tangent, 3))
 {
     return f16tof32((normal_and_tangent[1] >> 16) & 0xffff);
 }
 
-static float3 unpack_vertex_tangent(NT_CONST_PARAM(normal_and_tangent))
+static float3 unpack_vertex_tangent(FALCOR_SHARED_CONST_ARRAY_PARAM(uint, normal_and_tangent, 3))
 {
     return unpack_normal_oct_snorm2x16(normal_and_tangent[2]);
 }
 
-static void pack_vertex_normal(NT_PARAM(normal_and_tangent), float3 normal)
+static void pack_vertex_normal(FALCOR_SHARED_INOUT_ARRAY_PARAM(uint, normal_and_tangent, 3), float3 normal)
 {
     uint3 packed_normal = f32tof16(normal);
     normal_and_tangent[0] = (packed_normal.x & 0xffff) | ((packed_normal.y & 0xffff) << 16);
     normal_and_tangent[1] = (normal_and_tangent[1] & 0xffff0000) | (packed_normal.z & 0xffff);
 }
 
-static void pack_vertex_handedness(NT_PARAM(normal_and_tangent), float handedness)
+static void pack_vertex_handedness(FALCOR_SHARED_INOUT_ARRAY_PARAM(uint, normal_and_tangent, 3), float handedness)
 {
     uint packed_handedness = f32tof16(handedness);
     normal_and_tangent[1] = (normal_and_tangent[1] & 0x0000ffff) | ((packed_handedness & 0xffff) << 16);
 }
 
-static void pack_vertex_tangent(NT_PARAM(normal_and_tangent), float3 tangent)
+static void pack_vertex_tangent(FALCOR_SHARED_INOUT_ARRAY_PARAM(uint, normal_and_tangent, 3), float3 tangent)
 {
     normal_and_tangent[2] = pack_normal_oct_snorm2x16(tangent);
 }
@@ -99,9 +93,6 @@ static TriangleVertex unpack_triangle_vertex(const PackedTriangleVertex pv)
 }
 } // namespace detail
 
-#undef NT_CONST_PARAM
-#undef NT_PARAM
-
 public struct TriangleGeometryDesc
 {
     public uint vertex_offset; ///< Offset into vertex buffer.
@@ -109,6 +100,25 @@ public struct TriangleGeometryDesc
     public uint index_offset;  ///< Offset into index buffer, or zero if non-indexed.
     public uint index_count;   ///< Index count, or zero if non-indexed.
 };
+
+// Note: until we're certain of types to support for custom streams,
+// keeping this as a separate enum to the SGL DataType / Format.
+public enum class AdditionalAttributeType : uint {
+    invalid = 0,
+    bool_ = 1,   ///< Boolean value stored as a normalized 8-bit unsigned integer.
+    int32 = 2,   ///< Signed 32-bit integer.
+    float16 = 3, ///< IEEE 16-bit floating-point value.
+    float32 = 4, ///< IEEE 32-bit floating-point value.
+};
+
+public struct PackedAdditionalAttribute
+{
+    public uint byte_offset;
+    public uint format;
+};
+
+public static const uint MAX_ADDITIONAL_GEOMETRY_ATTRIBUTES = 32;
+public static const uint ADDITIONAL_ATTRIBUTE_DESC_ROW_SIZE = MAX_ADDITIONAL_GEOMETRY_ATTRIBUTES + 1;
 
 public struct TriangleGeometryInstanceDesc
 {
@@ -118,3 +128,5 @@ public struct TriangleGeometryInstanceDesc
     public uint index_offset;  ///< Offset into index buffer, or zero if non-indexed.
     public uint index_count;   ///< Index count, or zero if non-indexed.
 };
+
+#include "falcor2/shared_types_compat_undef.slangh"

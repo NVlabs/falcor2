@@ -1,0 +1,179 @@
+--- a/src/tbb/CMakeLists.txt
++++ b/src/tbb/CMakeLists.txt
+@@ -50,7 +50,6 @@
+ 
+ if (WIN32)
+     target_sources(tbb PRIVATE tbb.rc)
+-    set_target_properties(tbb PROPERTIES OUTPUT_NAME "tbb${TBB_BINARY_VERSION}")
+ endif()
+ 
+ # TODO: Add statistics.cpp
+@@ -136,33 +135,15 @@
+         MACOSX_FRAMEWORK_SHORT_VERSION_STRING ${TBB_BINARY_VERSION})
+ endif()
+ 
++set_target_properties(tbb PROPERTIES OUTPUT_NAME falcor2_tbb_2021_13)
++target_compile_definitions(tbb INTERFACE __TBB_NO_IMPLICIT_LINKAGE=1 __TBBMALLOC_NO_IMPLICIT_LINKAGE=1)
++
+ tbb_install_target(tbb)
+ 
+ if (TBB_INSTALL)
+-    if (MSVC)
+-        # Create a copy of target linker file (tbb<ver>[_debug].lib) with legacy name (tbb[_debug].lib)
+-        # to support previous user experience for linkage.
+-        install(FILES
+-                $<TARGET_LINKER_FILE:tbb>
+-                DESTINATION lib
+-                CONFIGURATIONS RelWithDebInfo Release MinSizeRel
+-                RENAME tbb.lib
+-                COMPONENT devel
+-        )
+-
+-        install(FILES
+-                $<TARGET_LINKER_FILE:tbb>
+-                DESTINATION lib
+-                CONFIGURATIONS Debug
+-                RENAME tbb_debug.lib
+-                COMPONENT devel
+-        )
+-    endif()
+-
+-    set(_tbb_pc_lib_name tbb)
+-
+-    if (WIN32)
+-        set(_tbb_pc_lib_name ${_tbb_pc_lib_name}${TBB_BINARY_VERSION})
++    set(_tbb_pc_lib_name falcor2_tbb_2021_13)
++    if (CMAKE_BUILD_TYPE STREQUAL "Debug")
++        string(APPEND _tbb_pc_lib_name "${CMAKE_DEBUG_POSTFIX}")
+     endif()
+ 
+     if (CMAKE_SIZEOF_VOID_P EQUAL 8)
+--- a/src/tbbmalloc/CMakeLists.txt
++++ b/src/tbbmalloc/CMakeLists.txt
+@@ -120,4 +120,7 @@
+     )
+ endif()
+ 
++set_target_properties(tbbmalloc PROPERTIES OUTPUT_NAME falcor2_tbbmalloc_2021_13)
++target_compile_definitions(tbbmalloc INTERFACE __TBB_NO_IMPLICIT_LINKAGE=1 __TBBMALLOC_NO_IMPLICIT_LINKAGE=1)
++
+ tbb_install_target(tbbmalloc)
+--- a/src/tbb/allocator.cpp
++++ b/src/tbb/allocator.cpp
+@@ -116,13 +116,13 @@
+ 
+ // MALLOCLIB_NAME is the name of the oneTBB memory allocator library.
+ #if _WIN32||_WIN64
+-#define MALLOCLIB_NAME "tbbmalloc" DEBUG_SUFFIX ".dll"
++#define MALLOCLIB_NAME "falcor2_tbbmalloc_2021_13" DEBUG_SUFFIX ".dll"
+ #elif __APPLE__
+-#define MALLOCLIB_NAME "libtbbmalloc" DEBUG_SUFFIX ".2.dylib"
++#define MALLOCLIB_NAME "libfalcor2_tbbmalloc_2021_13" DEBUG_SUFFIX ".2.dylib"
+ #elif __FreeBSD__ || __NetBSD__ || __OpenBSD__ || __sun || _AIX || __ANDROID__
+-#define MALLOCLIB_NAME "libtbbmalloc" DEBUG_SUFFIX ".so"
++#define MALLOCLIB_NAME "libfalcor2_tbbmalloc_2021_13" DEBUG_SUFFIX ".so"
+ #elif __unix__  // Note that order of these #elif's is important!
+-#define MALLOCLIB_NAME "libtbbmalloc" DEBUG_SUFFIX ".so.2"
++#define MALLOCLIB_NAME "libfalcor2_tbbmalloc_2021_13" DEBUG_SUFFIX ".so.2"
+ #else
+ #error Unknown OS
+ #endif
+@@ -133,7 +133,7 @@
+     If that allocator is not found, it links to malloc and free. */
+ void initialize_handler_pointers() {
+     __TBB_ASSERT(allocate_handler == &initialize_allocate_handler, nullptr);
+-    bool success = dynamic_link(MALLOCLIB_NAME, MallocLinkTable, 4);
++    bool success = dynamic_link(MALLOCLIB_NAME, MallocLinkTable, 4, nullptr, DYNAMIC_LINK_LOAD);
+     if(!success) {
+         // If unsuccessful, set the handlers to the default routines.
+         // This must be done now, and not before FillDynamicLinks runs, because if other
+--- a/src/tbb/governor.cpp
++++ b/src/tbb/governor.cpp
+@@ -410,10 +410,10 @@
+ #define LIBRARY_PREFIX "lib"
+ #endif /* __unix__ */
+ 
+-#define TBBBIND_NAME LIBRARY_PREFIX "tbbbind" DEBUG_SUFFIX LIBRARY_EXTENSION
+-#define TBBBIND_2_0_NAME LIBRARY_PREFIX "tbbbind_2_0" DEBUG_SUFFIX LIBRARY_EXTENSION
++#define TBBBIND_NAME LIBRARY_PREFIX "falcor2_tbbbind_2021_13" DEBUG_SUFFIX LIBRARY_EXTENSION
++#define TBBBIND_2_0_NAME LIBRARY_PREFIX "falcor2_tbbbind_2_0_2021_13" DEBUG_SUFFIX LIBRARY_EXTENSION
+ 
+-#define TBBBIND_2_5_NAME LIBRARY_PREFIX "tbbbind_2_5" DEBUG_SUFFIX LIBRARY_EXTENSION
++#define TBBBIND_2_5_NAME LIBRARY_PREFIX "falcor2_tbbbind_2_5_2021_13" DEBUG_SUFFIX LIBRARY_EXTENSION
+ #endif /* _WIN32 || _WIN64 || __unix__ */
+ 
+ // Representation of system hardware topology information on the TBB side.
+--- a/src/tbbbind/CMakeLists.txt
++++ b/src/tbbbind/CMakeLists.txt
+@@ -53,6 +53,7 @@
+     # Avoid use of target_link_libraries here as it changes /DEF option to \DEF on Windows.
+     set_target_properties(${TBBBIND_NAME} PROPERTIES
+         DEFINE_SYMBOL ""
++        OUTPUT_NAME "falcor2_${TBBBIND_NAME}_2021_13"
+         VERSION ${TBBBIND_BINARY_VERSION}.${TBB_BINARY_MINOR_VERSION}
+         SOVERSION ${TBBBIND_BINARY_VERSION}
+     )
+--- a/src/tbbmalloc/tbbmalloc.cpp
++++ b/src/tbbmalloc/tbbmalloc.cpp
+@@ -40,13 +40,13 @@
+ 
+ // MALLOCLIB_NAME is the name of the oneTBB memory allocator library.
+ #if _WIN32||_WIN64
+-#define MALLOCLIB_NAME "tbbmalloc" DEBUG_SUFFIX ".dll"
++#define MALLOCLIB_NAME "falcor2_tbbmalloc_2021_13" DEBUG_SUFFIX ".dll"
+ #elif __APPLE__
+-#define MALLOCLIB_NAME "libtbbmalloc" DEBUG_SUFFIX ".2.dylib"
++#define MALLOCLIB_NAME "libfalcor2_tbbmalloc_2021_13" DEBUG_SUFFIX ".2.dylib"
+ #elif __FreeBSD__ || __NetBSD__ || __OpenBSD__ || __sun || _AIX || __ANDROID__
+-#define MALLOCLIB_NAME "libtbbmalloc" DEBUG_SUFFIX ".so"
++#define MALLOCLIB_NAME "libfalcor2_tbbmalloc_2021_13" DEBUG_SUFFIX ".so"
+ #elif __unix__
+-#define MALLOCLIB_NAME "libtbbmalloc" DEBUG_SUFFIX  __TBB_STRING(.so.2)
++#define MALLOCLIB_NAME "libfalcor2_tbbmalloc_2021_13" DEBUG_SUFFIX  __TBB_STRING(.so.2)
+ #else
+ #error Unknown OS
+ #endif
+--- a/src/tbb/def/lin32-tbb.def
++++ b/src/tbb/def/lin32-tbb.def
+@@ -14,7 +14,7 @@
+     limitations under the License.
+ */
+ 
+-{
++FALCOR2_TBB_2021_13 {
+ global:
+ 
+ /* Assertions (assert.cpp) */
+--- a/src/tbb/def/lin64-tbb.def
++++ b/src/tbb/def/lin64-tbb.def
+@@ -14,7 +14,7 @@
+     limitations under the License.
+ */
+ 
+-{
++FALCOR2_TBB_2021_13 {
+ global:
+ 
+ /* Assertions (assert.cpp) */
+--- a/src/tbbmalloc/def/lin32-tbbmalloc.def
++++ b/src/tbbmalloc/def/lin32-tbbmalloc.def
+@@ -14,7 +14,7 @@
+     limitations under the License.
+ */
+ 
+-{
++FALCOR2_TBB_2021_13 {
+ global:
+ 
+ scalable_calloc;
+--- a/src/tbbmalloc/def/lin64-tbbmalloc.def
++++ b/src/tbbmalloc/def/lin64-tbbmalloc.def
+@@ -14,7 +14,7 @@
+     limitations under the License.
+ */
+ 
+-{
++FALCOR2_TBB_2021_13 {
+ global:
+ 
+ scalable_calloc;

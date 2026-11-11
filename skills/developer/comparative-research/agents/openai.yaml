@@ -1,0 +1,4 @@
+interface:
+  display_name: "Comparative Research"
+  short_description: "Delegate research and compare traceable findings"
+  default_prompt: "Use $comparative-research to investigate this question across the listed sources and synthesize a comparison with verified evidence and explicit gaps."

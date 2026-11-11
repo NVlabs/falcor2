@@ -8,8 +8,8 @@ import falcor2.utils;
 
 namespace mtlx {
 
-public static constexpr float OSLE_DIELECTRIC_IOR_MIN = 1.001;
-public static constexpr float OSLE_DIELECTRIC_IOR_MAX = 5.0;
+public static const float OSLE_DIELECTRIC_IOR_MIN = 1.001;
+public static const float OSLE_DIELECTRIC_IOR_MAX = 5.0;
 
 public float clamp_dielectric_ior(float ior)
 {
@@ -61,21 +61,36 @@ public struct MxBranchChoice
 {
     public bool first = false;
     public float pdf = 0.0;
+    public float inv_pdf = 0.0;
 
     public __init() { }
-    public __init(bool first, float pdf)
+    public __init(bool first, float pdf, float inv_pdf)
     {
         this.first = first;
         this.pdf = pdf;
+        this.inv_pdf = inv_pdf;
     }
 }
 
-public MxBranchChoice mx_choose_branch<S : ISampleGenerator>(inout S sg, float p_first)
+public MxBranchChoice mx_choose_branch(inout float selector, float p_first)
 {
+    // Follow MDL's decide_sampling_and_update_random_number(): reuse the selected
+    // probability's reciprocal for remapping and weighting, leave deterministic
+    // choices unchanged, and apply saturate_below_one() to the second branch.
+    // https://github.com/NVIDIA/MDL-SDK/blob/1b9592c1b086b691b44d1a30eee4827d1ff55b8c/src/mdl/jit/libbsdf/libbsdf_internal.h#L1345
     p_first = clamp(p_first, 0.0, 1.0);
-    bool first = next_float(sg) < p_first;
+    if (p_first <= 0.0)
+        return MxBranchChoice(false, 1.0, 1.0);
+    if (p_first >= 1.0)
+        return MxBranchChoice(true, 1.0, 1.0);
+    bool first = selector < p_first;
     float choice_pdf = first ? p_first : 1.0 - p_first;
-    return MxBranchChoice(first, choice_pdf);
+    float inv_pdf = 1.0 / choice_pdf;
+    if (first)
+        selector *= inv_pdf;
+    else
+        selector = clamp((selector - p_first) * inv_pdf, 0.0, 0x1.fffffep-1);
+    return MxBranchChoice(first, choice_pdf, inv_pdf);
 }
 
 /// Reconstruct a partition at boundaries that provide only scattering albedo.
@@ -311,6 +326,19 @@ public struct MxWeightedBSDF<Inner : ILayerableBSDF> : ILayerableBSDF
         sample.weight *= weight;
         return true;
     }
+    public override bool sample_with_selector<
+        S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc, float selector)
+    {
+        sample = {};
+
+        if (scalar_weight() <= 0.0)
+            return false;
+        bool valid = inner.sample_with_selector(wi, sample, sg, bc, selector);
+        if (!valid)
+            return false;
+        sample.weight *= weight;
+        return true;
+    }
     public AlbedoContributions eval_albedo(const float3 wi)
     {
         if (scalar_weight() <= 0.0)
@@ -334,7 +362,9 @@ public struct MxWeightedBSDF<Inner : ILayerableBSDF> : ILayerableBSDF
     private float scalar_weight() { return clamp(mx_hmax(weight), 0.0, 1.0); }
 }
 
-public struct MxFramedWeightedBSDF<Inner : ILayerableBSDF> : ILayerableBSDF
+// BSDF_INDEX is a compile-time diagnostic row, not runtime BSDF state. The
+// negative default keeps callers that still provide a traversal map compatible.
+public struct MxFramedWeightedBSDF<Inner : ILayerableBSDF, let BSDF_INDEX : int = -1> : ILayerableBSDF
 {
     public Inner inner = {};
     public float3 weight = float3(1.0);
@@ -428,6 +458,23 @@ public struct MxFramedWeightedBSDF<Inner : ILayerableBSDF> : ILayerableBSDF
         sample.weight *= weight;
         return true;
     }
+    public override bool sample_with_selector<
+        S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc, float selector)
+    {
+        sample = {};
+
+        if (scalar_weight() <= 0.0)
+            return false;
+        const float3 local_wi = frame.to_local(wi);
+        BSDFSample local_sample;
+        bool valid = inner.sample_with_selector(local_wi, local_sample, sg, bc, selector);
+        if (!valid)
+            return false;
+        sample = local_sample;
+        sample.wo = frame.to_global(local_sample.wo);
+        sample.weight *= weight;
+        return true;
+    }
     public AlbedoContributions eval_albedo(const float3 wi)
     {
         if (scalar_weight() <= 0.0)
@@ -508,18 +555,26 @@ public struct MxLayerBSDF<Top : ILayerableBSDF, Base : ILayerableBSDF> : ILayera
     }
     public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
+        float selector = next_float(sg);
+        return sample_with_selector(wi, sample, sg, bc, selector);
+    }
+    public override bool sample_with_selector<
+        S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc, float selector)
+    {
         sample = {};
 
         float p_top = top_sample_probability(wi);
-        MxBranchChoice choice = mx_choose_branch(sg, p_top);
+        MxBranchChoice choice = mx_choose_branch(selector, p_top);
         if (choice.pdf <= 0.0)
             return false;
-        bool valid = choice.first ? top.sample(wi, sample, sg, bc) : base.sample(wi, sample, sg, bc);
+        bool valid = choice.first ? top.sample_with_selector(wi, sample, sg, bc, selector)
+                                  : base.sample_with_selector(wi, sample, sg, bc, selector);
         if (!valid)
             return false;
         if (sample.has_flag(BSDFFlags::delta)) {
             sample.pdf = choice.pdf * sample.pdf;
-            sample.weight = choice.first ? sample.weight / choice.pdf : base_scale(wi) * sample.weight / choice.pdf;
+            sample.weight
+                = choice.first ? sample.weight * choice.inv_pdf : base_scale(wi) * sample.weight * choice.inv_pdf;
             return true;
         }
         const BSDFEval eval_result = eval_with_pdf(wi, sample.wo, sg, bc);
@@ -616,20 +671,27 @@ public struct MxMixBSDF<FG : ILayerableBSDF, BG : ILayerableBSDF> : ILayerableBS
     }
     public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
+        float selector = next_float(sg);
+        return sample_with_selector(wi, sample, sg, bc, selector);
+    }
+    public override bool sample_with_selector<
+        S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc, float selector)
+    {
         sample = {};
 
         // OSL closure mix(a, b, amount) flattens into a*(1-amount) first,
         // followed by b*amount. Keep that CDF order so the OSL-style replay
         // remaps rx by subtracting the background interval before foreground.
-        MxBranchChoice choice = mx_choose_branch(sg, bg_sample_probability(wi));
+        MxBranchChoice choice = mx_choose_branch(selector, bg_sample_probability(wi));
         if (choice.pdf <= 0.0)
             return false;
-        bool valid = choice.first ? bg.sample(wi, sample, sg, bc) : fg.sample(wi, sample, sg, bc);
+        bool valid = choice.first ? bg.sample_with_selector(wi, sample, sg, bc, selector)
+                                  : fg.sample_with_selector(wi, sample, sg, bc, selector);
         if (!valid)
             return false;
         if (sample.has_flag(BSDFFlags::delta)) {
             sample.pdf = choice.pdf * sample.pdf;
-            sample.weight = (choice.first ? float3(1.0) - mix_value : mix_value) * sample.weight / choice.pdf;
+            sample.weight = (choice.first ? float3(1.0) - mix_value : mix_value) * sample.weight * choice.inv_pdf;
             return true;
         }
         const BSDFEval eval_result = eval_with_pdf(wi, sample.wo, sg, bc);
@@ -725,18 +787,25 @@ public struct MxAddBSDF<In1 : ILayerableBSDF, In2 : ILayerableBSDF> : ILayerable
     }
     public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
     {
+        float selector = next_float(sg);
+        return sample_with_selector(wi, sample, sg, bc, selector);
+    }
+    public override bool sample_with_selector<
+        S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc, float selector)
+    {
         sample = {};
 
         float p = p_in1(wi);
-        MxBranchChoice choice = mx_choose_branch(sg, p);
+        MxBranchChoice choice = mx_choose_branch(selector, p);
         if (choice.pdf <= 0.0)
             return false;
-        bool valid = choice.first ? in1.sample(wi, sample, sg, bc) : in2.sample(wi, sample, sg, bc);
+        bool valid = choice.first ? in1.sample_with_selector(wi, sample, sg, bc, selector)
+                                  : in2.sample_with_selector(wi, sample, sg, bc, selector);
         if (!valid)
             return false;
         if (sample.has_flag(BSDFFlags::delta)) {
             sample.pdf = choice.pdf * sample.pdf;
-            sample.weight = sample.weight / choice.pdf;
+            sample.weight *= choice.inv_pdf;
             return true;
         }
         const BSDFEval eval_result = eval_with_pdf(wi, sample.wo, sg, bc);

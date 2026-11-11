@@ -9,25 +9,37 @@ import os
 import sys
 import platform
 import argparse
+import json
+import queue
 from pathlib import Path
 import shutil
 import subprocess
-from collections.abc import Sequence
-from typing import Any, Optional, Union
+import signal
+import threading
+import time
+from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import partial
+from typing import Any, Optional, TextIO, Union
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 import tools.build as bt
 import tools.build_slang as bts
 from tools import crashpad
+from tools.process_tree import ProcessTree
 from tools.system_telemetry import DEFAULT_SYSTEM_TELEMETRY_OUTPUT_PATH
 from tools.system_telemetry import SystemTelemetrySampler
 
 Command = Union[str, Sequence[str]]
+REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
+PIP_WHEEL_ROOT = REPOSITORY_ROOT / ".tmp" / "pip-wheels"
+_OUTPUT_LOCK = threading.Lock()
+_COMBINED_TELEMETRY_PATH = Path("reports/system-telemetry-combined.json")
 
 
 class CommandError(RuntimeError):
     def __init__(self, command: str, returncode: int, output: str):
-        super().__init__(f'Error running "{command}"')
+        super().__init__(f'Error running "{command}" (exit code {returncode})')
         self.command = command
         self.returncode = returncode
         self.output = output
@@ -48,9 +60,11 @@ INFO_ENV_VARS = (
     "CI_JOB_URL",
     "CI_MODULE_AND_SHADER_CACHE_DIR",
     "CI_MODULE_CACHE",
+    "CI_NIGHTLY",
     "CI_OS",
     "CI_PIPELINE_ID",
     "CI_PLATFORM",
+    "CI_PARALLEL_TEST_PHASES",
     "CI_PROJECT_DIR",
     "CI_PROJECT_PATH",
     "CI_PROJECT_URL",
@@ -62,6 +76,7 @@ INFO_ENV_VARS = (
     "CI_SHADER_CACHE",
     "CI_USE_CUSTOM_SLANG",
     "CI_FORCE_IMAGE_TEST_REPORT",
+    "CI_INSTALL_OPENH264",
     "CONDA_DEFAULT_ENV",
     "CONDA_ENVS_DIRS",
     "CUDA_HOME",
@@ -151,12 +166,148 @@ def get_default_compiler():
         raise NameError(f"Unsupported OS: {get_os()}")
 
 
+def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
+    try:
+        import psutil
+    except ImportError:
+        # Setup itself can be interrupted before it has installed psutil.
+        process.kill()
+        process.wait()
+        return
+
+    try:
+        root = psutil.Process(process.pid)
+        descendants = root.children(recursive=True)
+    except psutil.NoSuchProcess:
+        process.wait()
+        return
+    processes = [*reversed(descendants), root]
+    for child in processes:
+        try:
+            child.terminate()
+        except psutil.NoSuchProcess:
+            pass
+    _, alive = psutil.wait_procs(processes, timeout=5)
+    for child in alive:
+        try:
+            child.kill()
+        except psutil.NoSuchProcess:
+            pass
+    _, alive = psutil.wait_procs(alive, timeout=5)
+    process.wait(timeout=5)
+    if alive:
+        raise RuntimeError(f"Test processes did not exit: {[child.pid for child in alive]}")
+
+
+class _TestProcesses:
+    """Prevent new commands from starting while an interrupted test run is cleaned up."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._processes: dict[subprocess.Popen[str], ProcessTree] = {}
+        self._cancelled = False
+
+    def start(self, command: Command, **kwargs: Any) -> subprocess.Popen[str]:
+        with self._lock:
+            if self._cancelled:
+                raise RuntimeError("Test run was cancelled")
+            tree = ProcessTree(command, **kwargs)
+            self._processes[tree.process] = tree
+            return tree.process
+
+    def finish(self, process: subprocess.Popen[str]) -> None:
+        with self._lock:
+            tree = self._processes.pop(process, None)
+            if tree is not None:
+                # Give Crashpad and other helpers a bounded opportunity to finish naturally.
+                tree.close(grace=1)
+
+    def cancel(self) -> None:
+        with self._lock:
+            self._cancelled = True
+            errors: list[Exception] = []
+            for tree in self._processes.values():
+                try:
+                    tree.close()
+                except Exception as exc:
+                    errors.append(exc)
+            self._processes.clear()
+            if errors:
+                raise RuntimeError(f"Cannot clean up test processes: {errors}")
+
+
+def _write_command_output(text: str, prefix: str, log: TextIO | None) -> None:
+    with _OUTPUT_LOCK:
+        if log is not None:
+            log.write(text)
+            log.flush()
+        sys.stdout.write(f"[{prefix}] {text}" if prefix else text)
+        sys.stdout.flush()
+
+
+def _read_managed_output(
+    process: subprocess.Popen[str],
+    process_group: _TestProcesses,
+    prefix: str,
+    log: TextIO | None,
+) -> str:
+    """Drain output while checking parent exit independently of inherited pipe handles."""
+    assert process.stdout is not None
+    events: queue.Queue[str | BaseException | None] = queue.Queue()
+
+    def read() -> None:
+        try:
+            assert process.stdout is not None
+            for line in iter(process.stdout.readline, ""):
+                events.put(line)
+        except BaseException as exc:
+            events.put(exc)
+        finally:
+            events.put(None)
+
+    reader = threading.Thread(target=read, name="ci-test-output", daemon=True)
+    reader.start()
+    output: list[str] = []
+    eof = False
+    finished = False
+    try:
+        while not eof or process.poll() is None:
+            if not finished and process.poll() is not None:
+                process_group.finish(process)
+                finished = True
+            try:
+                event = events.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if isinstance(event, BaseException):
+                raise event
+            if event is None:
+                eof = True
+            else:
+                _write_command_output(event, prefix, log)
+                output.append(event)
+        if not finished:
+            process_group.finish(process)
+        return "".join(output)
+    except BaseException:
+        process_group.cancel()
+        raise
+    finally:
+        reader.join(timeout=5)
+        if reader.is_alive():
+            raise RuntimeError("Test output pipe remained open after process-tree cleanup")
+        process.stdout.close()
+
+
 def run_command(
     command: Command,
     shell: bool = True,
     env: Optional[dict[str, str]] = None,
     fix_paths: bool = True,
     system_telemetry_path: Path | None = None,
+    output_prefix: str = "",
+    log: TextIO | None = None,
+    process_group: _TestProcesses | None = None,
 ) -> str:
     if fix_paths and get_os() == "windows":
         if isinstance(command, str):
@@ -170,18 +321,23 @@ def run_command(
         new_env = os.environ.copy()
         new_env.update(env)
         env = new_env
-    print(f'Running "{display_command}" ...')
-    sys.stdout.flush()
+    _write_command_output(f'Running "{display_command}" ...\n', output_prefix, log)
 
-    process = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        universal_newlines=True,
-        shell=shell,
-        env=env,
-    )
+    start = process_group.start if process_group is not None else subprocess.Popen
+    try:
+        process = start(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            universal_newlines=True,
+            shell=shell,
+            env=env,
+        )
+    except Exception:
+        if process_group is not None:
+            process_group.cancel()
+        raise
     assert process.stdout is not None
     system_sampler: SystemTelemetrySampler | None = None
     if system_telemetry_path is not None:
@@ -189,28 +345,41 @@ def run_command(
             system_sampler = SystemTelemetrySampler(process.pid)
             system_sampler.start()
         except Exception as exc:
-            print(f"WARNING: Cannot start system telemetry: {exc}")
+            _write_command_output(
+                f"WARNING: Cannot start system telemetry: {exc}\n", output_prefix, log
+            )
             system_sampler = None
 
     out = ""
     try:
-        while True:
-            nextline = process.stdout.readline()
-            if nextline == "" and process.poll() is not None:
-                break
-            sys.stdout.write(nextline)
-            sys.stdout.flush()
-            out += nextline
-
-        process.communicate()
+        if process_group is not None:
+            out = _read_managed_output(process, process_group, output_prefix, log)
+        else:
+            while True:
+                nextline = process.stdout.readline()
+                if nextline == "" and process.poll() is not None:
+                    break
+                _write_command_output(nextline, output_prefix, log)
+                out += nextline
+            process.communicate()
+    except BaseException:
+        if process_group is not None:
+            process_group.cancel()
+        else:
+            _terminate_process_tree(process)
+        raise
     finally:
+        if process_group is not None:
+            process_group.finish(process)
         if system_sampler is not None:
             try:
                 system_sampler.stop()
                 assert system_telemetry_path is not None
                 system_sampler.write(system_telemetry_path)
             except Exception as exc:
-                print(f"WARNING: Cannot write system telemetry: {exc}")
+                _write_command_output(
+                    f"WARNING: Cannot write system telemetry: {exc}\n", output_prefix, log
+                )
     if process.returncode != 0:
         raise CommandError(display_command, process.returncode, out)
 
@@ -273,6 +442,54 @@ def setup(args: Any):
         )
         print("-----------------------------------------------------")
 
+    elif args.slang_version:
+        # Only Git metadata is needed: CMake downloads the published compiler package.
+        bts.clone_slang(args.slang_repository, f"v{args.slang_version}", checkout=False)
+    _write_benchmark_provenance(args)
+
+
+def _write_benchmark_provenance(args: Any) -> None:
+    """Record selected revisions during preparation, before measurement loses networking."""
+
+    def git(root: Path, *arguments: str) -> str:
+        return subprocess.check_output(["git", "-C", str(root), *arguments], text=True).strip()
+
+    path = REPOSITORY_ROOT / "reports/benchmark-provenance.json"
+    path.unlink(missing_ok=True)
+    harness = os.environ.get("CI_PERF_HARNESS_COMMIT")
+    if not (harness or args.use_custom_slang or args.slang_version):
+        return
+    falcor = git(REPOSITORY_ROOT, "rev-parse", "HEAD")
+    compiler = None
+    if args.use_custom_slang or args.slang_version:
+        compiler = {
+            "id": git(bts.CUSTOM_SLANG_SOURCE_DIR, "rev-parse", "FETCH_HEAD^{commit}"),
+            "time": git(
+                bts.CUSTOM_SLANG_SOURCE_DIR, "show", "-s", "--format=%cI", "FETCH_HEAD^{commit}"
+            ),
+            "branch": (
+                "master"
+                if args.slang_version or args.slang_branch == "master"
+                else "(detached head)"
+            ),
+            "falcor_commit": falcor,
+        }
+        if args.slang_version:
+            compiler["release"] = {"label": f"v{args.slang_version}"}
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "falcor_commit": falcor,
+                "harness_commit": harness or falcor,
+                "compiler": compiler,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
 
 def configure(args: Any):
     cmake_extra_args: list[str] = []
@@ -283,6 +500,12 @@ def configure(args: Any):
             f"-DSGL_LOCAL_SLANG_DIR={bts.CUSTOM_SLANG_SOURCE_DIR}",
             f"-DSGL_LOCAL_SLANG_BUILD_DIR=build/{args.slang_config}",
         ]
+    else:
+        cmake_extra_args.append("-DSGL_LOCAL_SLANG=OFF")
+        if args.slang_version:
+            cmake_extra_args.append(f"-DSGL_SLANG_VERSION={args.slang_version}")
+        else:
+            cmake_extra_args.append("-USGL_SLANG_VERSION")
 
     if "crashpad" in args.flags:
         cmake_extra_args += [
@@ -296,6 +519,85 @@ def build(args: Any):
     bt.build(args.preset, args.config)
 
 
+def build_wheels(args: Any) -> None:
+    wheel_root = PIP_WHEEL_ROOT.resolve()
+    if wheel_root.exists():
+        shutil.rmtree(wheel_root)
+
+    for project_root in (REPOSITORY_ROOT, REPOSITORY_ROOT / "external" / "slangpy"):
+        for pattern in ("lib.*", "bdist.*"):
+            for staging_dir in (project_root / "build").glob(pattern):
+                shutil.rmtree(staging_dir)
+
+    wheelhouse = wheel_root / "wheelhouse"
+    build_dependency = wheel_root / "build-dependency"
+    wheelhouse.mkdir(parents=True)
+
+    build_command = [
+        sys.executable,
+        "-m",
+        "build",
+        "--wheel",
+        "--no-isolation",
+        "--outdir",
+        str(wheelhouse),
+    ]
+    build_env: dict[str, str] = {}
+    if os.name == "nt":
+        build_env = {key.upper(): value for key, value in bt.get_build_env().items()}
+        build_env["DISTUTILS_USE_SDK"] = "1"
+        scripts_dir = Path(sys.executable).parent / "Scripts"
+        build_env["PATH"] = os.pathsep.join((str(scripts_dir), build_env["PATH"]))
+    run_command(
+        [*build_command, str(REPOSITORY_ROOT / "external" / "slangpy")],
+        shell=False,
+        fix_paths=False,
+        env={
+            **build_env,
+            "BUILD_RELEASE_WHEEL": "1",
+            "SLANGPY_VERSION_SUFFIX": args.version_suffix,
+        },
+    )
+
+    slangpy_wheels = list(wheelhouse.glob("slangpy-*.whl"))
+    if len(slangpy_wheels) != 1:
+        raise RuntimeError(f"Expected one SlangPy wheel, found {len(slangpy_wheels)}")
+    run_command(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--no-index",
+            "--no-deps",
+            "--target",
+            str(build_dependency),
+            str(slangpy_wheels[0]),
+        ],
+        shell=False,
+        fix_paths=False,
+    )
+
+    python_path = str(build_dependency)
+    if inherited_python_path := os.environ.get("PYTHONPATH"):
+        python_path = os.pathsep.join((python_path, inherited_python_path))
+    run_command(
+        [*build_command, str(REPOSITORY_ROOT)],
+        shell=False,
+        fix_paths=False,
+        env={
+            **build_env,
+            "BUILD_RELEASE_WHEEL": "1",
+            "FALCOR2_VERSION_SUFFIX": args.version_suffix,
+            "PYTHONPATH": python_path,
+        },
+    )
+
+    falcor2_wheels = list(wheelhouse.glob("falcor2-*.whl"))
+    if len(falcor2_wheels) != 1:
+        raise RuntimeError(f"Expected one Falcor2 wheel, found {len(falcor2_wheels)}")
+
+
 def cpp_test_command(args: Any) -> list[str]:
     command = [
         f"{args.bin_dir}/falcor2_tests",
@@ -305,6 +607,8 @@ def cpp_test_command(args: Any) -> list[str]:
     ]
     if args.module_and_shader_cache_dir is not None:
         command.append(f"-module-and-shader-cache-dir={args.module_and_shader_cache_dir}")
+    if bool(getattr(args, "nightly", False)):
+        command.append("-nightly")
     return command
 
 
@@ -317,6 +621,7 @@ def python_test_command(args: Any) -> list[str]:
         "-n",
         str(workers),
         f"--maxprocesses={workers}",
+        "--dist=worksteal",
         "--junit-xml=reports/pytest-junit.xml",
         "--telemetry",
         "--telemetry-output=reports/test-telemetry.json",
@@ -328,21 +633,65 @@ def python_test_command(args: Any) -> list[str]:
     ]
     if args.module_and_shader_cache_dir is not None:
         command.append(f"--module-and-shader-cache-dir={args.module_and_shader_cache_dir}")
+    if bool(getattr(args, "nightly", False)):
+        command.append("--nightly")
     return command
 
 
-def unit_test_cpp(args: Any):
+def benchmark_command(args: Any) -> list[str]:
+    """Run the shared suite without inheriting unit-test cache or worker settings."""
+    pytest_args = args.pytest_args
+    if pytest_args[:1] == ["--"]:
+        pytest_args = pytest_args[1:]
+    return [
+        sys.executable,
+        "-m",
+        "pytest",
+        "tests/python/benchmarks",
+        *pytest_args,
+        "--all",
+        "--benchmark-only",
+        "-n0",
+        "--no-module-cache",
+        "--no-shader-cache",
+    ]
+
+
+def benchmark(args: Any) -> None:
+    run_command(
+        benchmark_command(args),
+        shell=False,
+        fix_paths=False,
+        env={
+            "PYTEST_ADDOPTS": "",
+            "PYTHONPATH": os.pathsep.join(
+                [str(REPOSITORY_ROOT), str(REPOSITORY_ROOT / "external/slangpy")]
+            ),
+            "CUDA_CACHE_DISABLE": "1",
+            "OPTIX_CACHE_MAXSIZE": "0",
+            "__GL_SHADER_DISK_CACHE": "0",
+        },
+    )
+
+
+def unit_test_cpp(
+    args: Any,
+    *,
+    command_runner: Callable[..., str] | None = None,
+    report_crashes: bool = True,
+) -> None:
+    run = command_runner or run_command
     if "crashpad" in args.flags:
         crashpad.setup("native")
 
     error: Optional[CommandError] = None
     try:
-        out = run_command(cpp_test_command(args), shell=False)
+        out = run(cpp_test_command(args), shell=False)
     except CommandError as exc:
         out = exc.output
         error = exc
     finally:
-        if "crashpad" in args.flags:
+        if report_crashes and "crashpad" in args.flags:
             crashpad.report("native")
 
     # doctest outputs both regular output and junit xml report on stdout
@@ -369,10 +718,24 @@ def typing_check_python(args: Any):
     run_command(f"pyright")
 
 
-def unit_test_python(args: Any):
+def unit_test_python(
+    args: Any,
+    *,
+    command_runner: Callable[..., str] | None = None,
+    report_crashes: bool = True,
+) -> None:
+    run = command_runner or run_command
     os.makedirs("reports", exist_ok=True)
     DEFAULT_SYSTEM_TELEMETRY_OUTPUT_PATH.unlink(missing_ok=True)
     Path("reports/test-telemetry.json").unlink(missing_ok=True)
+    # Require a working codec so CI exercises encoding instead of skipping it.
+    if args.install_openh264:
+        for command in ("install", "check"):
+            run(
+                [sys.executable, "-m", "falcor2.streaming.openh264", command],
+                shell=False,
+                fix_paths=False,
+            )
     if "crashpad" in args.flags:
         crashpad.setup("python")
 
@@ -390,7 +753,7 @@ def unit_test_python(args: Any):
 
     error: Optional[CommandError] = None
     try:
-        run_command(
+        run(
             python_test_command(args),
             shell=False,
             env=test_env or None,
@@ -399,7 +762,7 @@ def unit_test_python(args: Any):
     except CommandError as exc:
         error = exc
     finally:
-        if "crashpad" in args.flags:
+        if report_crashes and "crashpad" in args.flags:
             crashpad.report("python")
 
     report_error: Optional[CommandError] = None
@@ -419,7 +782,7 @@ def unit_test_python(args: Any):
             if not args.force_image_test_report:
                 report_command.append("--skip-if-no-failures")
         try:
-            run_command(report_command, shell=False)
+            run(report_command, shell=False)
         except CommandError as exc:
             report_error = exc
             print(f"Image test report generation failed: {exc}")
@@ -428,6 +791,133 @@ def unit_test_python(args: Any):
         raise error
     if report_error is not None:
         raise report_error
+
+
+def _run_test_phase(
+    kind: str,
+    phase: Callable[..., None],
+    args: Any,
+    processes: _TestProcesses,
+) -> None:
+    with Path(f"reports/{kind}-tests.log").open("w", encoding="utf-8") as log:
+        phase(
+            args,
+            command_runner=partial(
+                run_command, output_prefix=kind, log=log, process_group=processes
+            ),
+            report_crashes=False,
+        )
+
+
+def _interrupt_tests(signum: int, frame: Any) -> None:
+    raise KeyboardInterrupt(f"Test run interrupted by signal {signum}")
+
+
+def unit_test(args: Any) -> None:
+    """Run both test phases, retaining diagnostics even when either phase fails."""
+    Path("reports").mkdir(exist_ok=True)
+    _COMBINED_TELEMETRY_PATH.unlink(missing_ok=True)
+    summary_path = Path("reports/test-phases.json")
+    summary_path.unlink(missing_ok=True)
+    for report in ("doctest-junit.xml", "pytest-junit.xml"):
+        (Path("reports") / report).unlink(missing_ok=True)
+    processes = _TestProcesses()
+    phases = {"native": unit_test_cpp, "python": unit_test_python}
+    errors: dict[str, Exception] = {}
+    durations: dict[str, float] = {}
+    started_at = time.monotonic()
+
+    def run_phase(kind: str, phase: Callable[..., None]) -> None:
+        started = time.monotonic()
+        try:
+            _run_test_phase(kind, phase, args, processes)
+        finally:
+            durations[kind] = time.monotonic() - started
+
+    parallel = bool(getattr(args, "parallel_test_phases", False))
+    print(f"Running native and Python test phases {'in parallel' if parallel else 'serially'}.")
+    print(
+        "Combined telemetry covers this driver and both phase process trees. "
+        "system-telemetry.json process metrics remain scoped to pytest; "
+        "host and GPU metrics are system-wide."
+    )
+    sampler: SystemTelemetrySampler | None = None
+    try:
+        sampler = SystemTelemetrySampler(os.getpid())
+        sampler.start()
+    except Exception as exc:
+        print(f"WARNING: Cannot start combined system telemetry: {exc}")
+        sampler = None
+
+    previous_sigterm = signal.signal(signal.SIGTERM, _interrupt_tests)
+    executor: ThreadPoolExecutor | None = None
+    try:
+        if parallel:
+            executor = ThreadPoolExecutor(max_workers=2)
+            futures = {
+                executor.submit(run_phase, kind, phase): kind for kind, phase in phases.items()
+            }
+            for future in as_completed(futures):
+                kind = futures[future]
+                try:
+                    future.result()
+                except Exception as exc:
+                    errors[kind] = exc
+        else:
+            for kind, phase in phases.items():
+                try:
+                    run_phase(kind, phase)
+                except Exception as exc:
+                    errors[kind] = exc
+    except BaseException:
+        processes.cancel()
+        raise
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=True)
+        signal.signal(signal.SIGTERM, previous_sigterm)
+        if sampler is not None:
+            try:
+                sampler.stop()
+                sampler.write(_COMBINED_TELEMETRY_PATH)
+            except Exception as exc:
+                print(f"WARNING: Cannot write combined system telemetry: {exc}")
+        # The shared rust-minidump installer must not be used by concurrent reporters.
+        if "crashpad" in args.flags:
+            for kind in phases:
+                try:
+                    crashpad.report(kind)
+                except Exception as exc:
+                    errors[f"{kind} crash report"] = exc
+                    print(f"Crash report generation failed ({kind}): {exc}")
+
+    elapsed = time.monotonic() - started_at
+    summary = {
+        "parallel": parallel,
+        "duration_seconds": elapsed,
+        "success": not errors,
+        "phases": {
+            kind: {
+                "duration_seconds": durations[kind],
+                "success": kind not in errors,
+                "returncode": (
+                    errors[kind].returncode
+                    if isinstance(errors.get(kind), CommandError)
+                    else (None if kind in errors else 0)
+                ),
+            }
+            for kind in phases
+        },
+        "errors": {kind: str(exc) for kind, exc in errors.items()},
+    }
+    summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    for kind in phases:
+        status = f"FAILED ({errors[kind]})" if kind in errors else "PASSED"
+        print(f"{kind}: {status} in {durations[kind]:.2f}s; log: reports/{kind}-tests.log")
+    print(f"Combined test phases: {elapsed:.2f}s; summary: {summary_path}")
+    if errors:
+        error_summary = "; ".join(f"{kind}: {exc}" for kind, exc in errors.items())
+        raise RuntimeError(f"Unit test phases failed: {error_summary}")
 
 
 # def coverage_report(args: Any):
@@ -473,6 +963,18 @@ def create_parser() -> argparse.ArgumentParser:
         help="Number of parallel pytest workers",
     )
     parser.add_argument(
+        "--nightly",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Run the nightly test tier, including slow tests",
+    )
+    parser.add_argument(
+        "--parallel-test-phases",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Overlap native and Python phases in unit-test (default: serial)",
+    )
+    parser.add_argument(
         "--use-custom-slang",
         action="store_true",
         default=None,
@@ -497,10 +999,20 @@ def create_parser() -> argparse.ArgumentParser:
         help="Custom slang config, only valid when --use-custom-slang is set.",
     )
     parser.add_argument(
+        "--slang-version",
+        help="Published Slang version (for example 2026.19); defaults to CI_SLANG_VERSION",
+    )
+    parser.add_argument(
         "--force-image-test-report",
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Generate and upload the image test report even when all image tests pass",
+    )
+    parser.add_argument(
+        "--install-openh264",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Install and check OpenH264 before Python tests (default: enabled)",
     )
 
     commands = parser.add_subparsers(dest="command", required=True, help="sub-command help")
@@ -513,7 +1025,17 @@ def create_parser() -> argparse.ArgumentParser:
 
     parser_build = commands.add_parser("build", help="run cmake build")
 
+    parser_build_wheels = commands.add_parser(
+        "build-wheels", help="build one paired SlangPy and Falcor2 wheel"
+    )
+    parser_build_wheels.add_argument(
+        "--version-suffix",
+        required=True,
+        help="PEP 440 suffix appended to each project's checked-in version",
+    )
+
     parser_test_cpp = commands.add_parser("unit-test-cpp", help="run unit tests (c++)")
+    commands.add_parser("unit-test", help="run native and Python unit tests")
 
     parser_update_slangpy = commands.add_parser(
         "update-slangpy", help="update slangpy submodule to top-of-tree"
@@ -524,6 +1046,15 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     parser_test_python = commands.add_parser("unit-test-python", help="run unit tests (python)")
+
+    parser_benchmark = commands.add_parser(
+        "benchmark", help="run Python benchmarks in the current prepared checkout"
+    )
+    parser_benchmark.add_argument(
+        "pytest_args",
+        nargs=argparse.REMAINDER,
+        help="pytest options after --; benchmarks always use one process and no application disk caches",
+    )
 
     # parser_coverage_report = commands.add_parser("coverage-report", help="generate coverage report")
 
@@ -551,11 +1082,15 @@ def main(argv: Optional[Sequence[str]] = None):
         ("module_and_shader_cache_dir", "CI_MODULE_AND_SHADER_CACHE_DIR", None),
         ("device_cache_policy", "CI_DEVICE_CACHE_POLICY", "file"),
         ("pytest_workers", "CI_PYTEST_WORKERS", 4),
+        ("nightly", "CI_NIGHTLY", False),
+        ("parallel_test_phases", "CI_PARALLEL_TEST_PHASES", False),
         ("use_custom_slang", "CI_USE_CUSTOM_SLANG", False),
         ("slang_repository", "CI_SLANG_REPOSITORY", "https://github.com/shader-slang/slang.git"),
         ("slang_branch", "CI_SLANG_BRANCH", "master"),
         ("slang_config", "CI_SLANG_CONFIG", "Release"),
+        ("slang_version", "CI_SLANG_VERSION", None),
         ("force_image_test_report", "CI_FORCE_IMAGE_TEST_REPORT", False),
+        ("install_openh264", "CI_INSTALL_OPENH264", True),
     ]
 
     for var, env_var, default_value in VARS:
@@ -564,11 +1099,18 @@ def main(argv: Optional[Sequence[str]] = None):
 
     # Convert boolean environment variable values to bool.
     args["use_custom_slang"] = parse_bool(args["use_custom_slang"], "CI_USE_CUSTOM_SLANG")
+    if args["slang_version"] and args["use_custom_slang"]:
+        parser.error("--slang-version and --use-custom-slang are mutually exclusive")
     args["module_cache"] = parse_bool(args["module_cache"], "CI_MODULE_CACHE")
     args["shader_cache"] = parse_bool(args["shader_cache"], "CI_SHADER_CACHE")
+    args["nightly"] = parse_bool(args["nightly"], "CI_NIGHTLY")
+    args["parallel_test_phases"] = parse_bool(
+        args["parallel_test_phases"], "CI_PARALLEL_TEST_PHASES"
+    )
     args["force_image_test_report"] = parse_bool(
         args["force_image_test_report"], "CI_FORCE_IMAGE_TEST_REPORT"
     )
+    args["install_openh264"] = parse_bool(args["install_openh264"], "CI_INSTALL_OPENH264")
     cache_dir = args["module_and_shader_cache_dir"]
     if isinstance(cache_dir, str) and not cache_dir.strip():
         args["module_and_shader_cache_dir"] = None
@@ -611,10 +1153,13 @@ def main(argv: Optional[Sequence[str]] = None):
         "setup": setup,
         "configure": configure,
         "build": build,
+        "build-wheels": build_wheels,
         "unit-test-cpp": unit_test_cpp,
+        "unit-test": unit_test,
         "update-slangpy": update_slangpy,
         "typing-check-python": typing_check_python,
         "unit-test-python": unit_test_python,
+        "benchmark": benchmark,
         # "coverage-report": coverage_report,
     }[args.command](args)
 

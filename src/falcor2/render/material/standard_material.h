@@ -5,9 +5,11 @@
 
 #include "falcor2/render/material.h"
 #include "falcor2/render/texture_manager.h"
+#include "falcor2/render/scene_types.h"
+
+#include <sgl/device/sampler.h>
 
 #include "falcor2/core/types.h"
-#include "falcor2/render/material_types.h"
 
 namespace falcor {
 
@@ -34,6 +36,8 @@ public:
     virtual shared::MaterialFlags flags() const override;
 
     virtual OpacityDesc opacity_desc() const override;
+
+    virtual SceneCapabilities required_capabilities() const override;
 
     /// Reflect this class.
     template<reflection::ClassReflector R>
@@ -64,9 +68,23 @@ public:
                 reflection::on_change(&StandardMaterial::mark_dirty_properties)
             )
             .def_rw(
+                "use_vertex_color",
+                &StandardMaterial::m_use_vertex_color,
+                "Multiply base color and opacity by COLOR_0 when available.",
+                reflection::default_value(false),
+                reflection::on_change(&StandardMaterial::mark_dirty_properties)
+            )
+            .def_rw(
                 "base_color_texture",
                 &StandardMaterial::m_base_color_texture,
                 "Base color texture (takes precedence over path)",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&StandardMaterial::mark_dirty_resources)
+            )
+            .def_rw(
+                "base_color_texture_sampler",
+                &StandardMaterial::m_base_color_texture_sampler,
+                "Texture sampler (null uses the scene default)",
                 reflection::UIFlags::advanced,
                 reflection::on_change(&StandardMaterial::mark_dirty_resources)
             )
@@ -76,6 +94,15 @@ public:
                 "Base color texture path",
                 reflection::UIFlags::advanced,
                 reflection::on_change(&StandardMaterial::mark_dirty_resources)
+            )
+            .def_prop_rw(
+                "base_color_texture_texcoord",
+                &StandardMaterial::base_color_texture_texcoord,
+                &StandardMaterial::set_base_color_texture_texcoord,
+                "Texture-coordinate set used by the base color texture.",
+                reflection::default_value(0u),
+                reflection::value_range(0u, 7u),
+                reflection::UIFlags::advanced
             )
             .def_rw(
                 "base_color_factor",
@@ -94,11 +121,27 @@ public:
                 reflection::on_change(&StandardMaterial::mark_dirty_resources)
             )
             .def_rw(
+                "metallic_roughness_texture_sampler",
+                &StandardMaterial::m_metallic_roughness_texture_sampler,
+                "Texture sampler (null uses the scene default)",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&StandardMaterial::mark_dirty_resources)
+            )
+            .def_rw(
                 "metallic_roughness_texture_path",
                 &StandardMaterial::m_metallic_roughness_texture_path,
                 "Metallic-roughness texture path",
                 reflection::UIFlags::advanced,
                 reflection::on_change(&StandardMaterial::mark_dirty_resources)
+            )
+            .def_prop_rw(
+                "metallic_roughness_texture_texcoord",
+                &StandardMaterial::metallic_roughness_texture_texcoord,
+                &StandardMaterial::set_metallic_roughness_texture_texcoord,
+                "Texture-coordinate set used by the metallic-roughness texture.",
+                reflection::default_value(0u),
+                reflection::value_range(0u, 7u),
+                reflection::UIFlags::advanced
             )
             .def_rw(
                 "metallic_factor",
@@ -124,11 +167,27 @@ public:
                 reflection::on_change(&StandardMaterial::mark_dirty_resources)
             )
             .def_rw(
+                "normal_texture_sampler",
+                &StandardMaterial::m_normal_texture_sampler,
+                "Texture sampler (null uses the scene default)",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&StandardMaterial::mark_dirty_resources)
+            )
+            .def_rw(
                 "normal_texture_path",
                 &StandardMaterial::m_normal_texture_path,
                 "Normal texture path",
                 reflection::UIFlags::advanced,
                 reflection::on_change(&StandardMaterial::mark_dirty_resources)
+            )
+            .def_prop_rw(
+                "normal_texture_texcoord",
+                &StandardMaterial::normal_texture_texcoord,
+                &StandardMaterial::set_normal_texture_texcoord,
+                "Texture-coordinate set used by the normal texture.",
+                reflection::default_value(0u),
+                reflection::value_range(0u, 7u),
+                reflection::UIFlags::advanced
             )
             .def_rw(
                 "normal_texture_scale",
@@ -142,14 +201,30 @@ public:
                 &StandardMaterial::m_emissive_texture,
                 "Emissive texture (takes precedence over path)",
                 reflection::UIFlags::advanced,
-                reflection::on_change(&StandardMaterial::mark_dirty_resources)
+                reflection::on_change(&StandardMaterial::mark_dirty_emission_resources)
+            )
+            .def_rw(
+                "emissive_texture_sampler",
+                &StandardMaterial::m_emissive_texture_sampler,
+                "Texture sampler (null uses the scene default)",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&StandardMaterial::mark_dirty_emission_resources)
             )
             .def_rw(
                 "emissive_texture_path",
                 &StandardMaterial::m_emissive_texture_path,
                 "Emissive texture path",
                 reflection::UIFlags::advanced,
-                reflection::on_change(&StandardMaterial::mark_dirty_resources)
+                reflection::on_change(&StandardMaterial::mark_dirty_emission_resources)
+            )
+            .def_prop_rw(
+                "emissive_texture_texcoord",
+                &StandardMaterial::emissive_texture_texcoord,
+                &StandardMaterial::set_emissive_texture_texcoord,
+                "Texture-coordinate set used by the emissive texture.",
+                reflection::default_value(0u),
+                reflection::value_range(0u, 7u),
+                reflection::UIFlags::advanced
             )
             .def_rw(
                 "emissive_factor",
@@ -158,7 +233,7 @@ public:
                 reflection::default_value(float3(0.f)),
                 reflection::value_range_positive(),
                 reflection::UIFlags::display_as_color,
-                reflection::on_change(&StandardMaterial::mark_dirty_properties)
+                reflection::on_change(&StandardMaterial::mark_dirty_emission_properties)
             )
             .def_rw(
                 "transmission_texture",
@@ -168,11 +243,27 @@ public:
                 reflection::on_change(&StandardMaterial::mark_dirty_resources)
             )
             .def_rw(
+                "transmission_texture_sampler",
+                &StandardMaterial::m_transmission_texture_sampler,
+                "Texture sampler (null uses the scene default)",
+                reflection::UIFlags::advanced,
+                reflection::on_change(&StandardMaterial::mark_dirty_resources)
+            )
+            .def_rw(
                 "transmission_texture_path",
                 &StandardMaterial::m_transmission_texture_path,
                 "Transmission texture path",
                 reflection::UIFlags::advanced,
                 reflection::on_change(&StandardMaterial::mark_dirty_resources)
+            )
+            .def_prop_rw(
+                "transmission_texture_texcoord",
+                &StandardMaterial::transmission_texture_texcoord,
+                &StandardMaterial::set_transmission_texture_texcoord,
+                "Texture-coordinate set used by the transmission texture.",
+                reflection::default_value(0u),
+                reflection::value_range(0u, 7u),
+                reflection::UIFlags::advanced
             )
             .def_rw(
                 "ior",
@@ -207,6 +298,7 @@ public:
                 reflection::value_range_unit(),
                 reflection::on_change(&StandardMaterial::mark_dirty_properties)
             )
+
             .def_rw(
                 "double_sided",
                 &StandardMaterial::m_double_sided,
@@ -264,8 +356,43 @@ public:
     }
 
 private:
-    void mark_dirty_resources() { mark_dirty(DirtyFlags::resources); }
-    void mark_dirty_properties() { mark_dirty(DirtyFlags::properties); }
+    void set_texture_texcoord(uint32_t& destination, uint32_t value, const char* property_name)
+    {
+        FALCOR_CHECK(value < 8, "{} must be in the range [0, 7], got {}.", property_name, value);
+        if (destination != value) {
+            destination = value;
+            mark_dirty_properties();
+        }
+    }
+
+    uint32_t base_color_texture_texcoord() const { return m_base_color_texture_texcoord; }
+    void set_base_color_texture_texcoord(uint32_t value)
+    {
+        set_texture_texcoord(m_base_color_texture_texcoord, value, "base_color_texture_texcoord");
+    }
+    uint32_t metallic_roughness_texture_texcoord() const { return m_metallic_roughness_texture_texcoord; }
+    void set_metallic_roughness_texture_texcoord(uint32_t value)
+    {
+        set_texture_texcoord(m_metallic_roughness_texture_texcoord, value, "metallic_roughness_texture_texcoord");
+    }
+    uint32_t normal_texture_texcoord() const { return m_normal_texture_texcoord; }
+    void set_normal_texture_texcoord(uint32_t value)
+    {
+        set_texture_texcoord(m_normal_texture_texcoord, value, "normal_texture_texcoord");
+    }
+    uint32_t emissive_texture_texcoord() const { return m_emissive_texture_texcoord; }
+    void set_emissive_texture_texcoord(uint32_t value)
+    {
+        if (m_emissive_texture_texcoord != value) {
+            set_texture_texcoord(m_emissive_texture_texcoord, value, "emissive_texture_texcoord");
+            mark_dirty_emission_properties();
+        }
+    }
+    uint32_t transmission_texture_texcoord() const { return m_transmission_texture_texcoord; }
+    void set_transmission_texture_texcoord(uint32_t value)
+    {
+        set_texture_texcoord(m_transmission_texture_texcoord, value, "transmission_texture_texcoord");
+    }
 
     template<typename CursorT>
     void write_to_cursor_impl(CursorT cursor) const;
@@ -274,20 +401,26 @@ private:
     AlphaMode m_alpha_mode{AlphaMode::opaque};
     float m_alpha_factor{1.f};
     float m_alpha_cutoff{0.5f};
+    bool m_use_vertex_color{false};
     ref<sgl::Texture> m_base_color_texture;
+    ref<sgl::Sampler> m_base_color_texture_sampler;
     std::filesystem::path m_base_color_texture_path;
     float16_t3 m_base_color_factor{1.f, 1.f, 1.f};
     ref<sgl::Texture> m_metallic_roughness_texture;
+    ref<sgl::Sampler> m_metallic_roughness_texture_sampler;
     std::filesystem::path m_metallic_roughness_texture_path;
     float16_t m_metallic_factor{0.f};
     float16_t m_roughness_factor{1.f};
     ref<sgl::Texture> m_normal_texture;
+    ref<sgl::Sampler> m_normal_texture_sampler;
     std::filesystem::path m_normal_texture_path;
     float16_t m_normal_texture_scale{1.f};
     ref<sgl::Texture> m_emissive_texture;
+    ref<sgl::Sampler> m_emissive_texture_sampler;
     std::filesystem::path m_emissive_texture_path;
     float3 m_emissive_factor{0.f, 0.f, 0.f};
     ref<sgl::Texture> m_transmission_texture;
+    ref<sgl::Sampler> m_transmission_texture_sampler;
     std::filesystem::path m_transmission_texture_path;
     float16_t m_ior{1.5f};
     float16_t3 m_transmission_factor{1.f, 1.f, 1.f};
@@ -300,6 +433,11 @@ private:
     float m_volume_anisotropy{0.f};
     uint m_metallic_texture_channel{0};
     uint m_roughness_texture_channel{1};
+    uint32_t m_base_color_texture_texcoord{0};
+    uint32_t m_metallic_roughness_texture_texcoord{0};
+    uint32_t m_normal_texture_texcoord{0};
+    uint32_t m_emissive_texture_texcoord{0};
+    uint32_t m_transmission_texture_texcoord{0};
 
     TextureHandle m_base_color_texture_handle;
     TextureHandle m_normal_texture_handle;

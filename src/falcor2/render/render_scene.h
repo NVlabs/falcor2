@@ -4,21 +4,25 @@
 #pragma once
 
 #include "falcor2/render/shared_geometry_types.h"
-#include "falcor2/render/hit_group_policy.h"
+#include "falcor2/render/ray_tracing_policy.h"
 
 #include "falcor2/core/object.h"
 #include "falcor2/core/enum.h"
 
 #include "falcor2/utils/managed_vector.h"
+#include "falcor2/utils/buffer_suballocator.h"
 #include "falcor2/utils/offset_allocator.h"
 
 #include <sgl/device/shader_cursor.h>
 #include <sgl/device/raytracing.h>
+#include <sgl/core/data_type.h>
 
 #include <span>
+#include <string_view>
 #include <vector>
 #include <utility>
 #include <memory>
+#include <optional>
 
 #include <cstdint>
 
@@ -38,6 +42,7 @@ namespace falcor {
 enum class RenderObjectType {
     triangle_geometry,
     lss_geometry,
+    area_light_geometry,
     geometry_group,
     geometry_instance,
     transform,
@@ -297,6 +302,9 @@ struct RenderTriangleGeometry;
 using RenderTriangleGeometryHandle = RenderObjectHandle<RenderTriangleGeometry, RenderObjectType::triangle_geometry>;
 struct RenderLSSGeometry;
 using RenderLSSGeometryHandle = RenderObjectHandle<RenderLSSGeometry, RenderObjectType::lss_geometry>;
+struct RenderAreaLightGeometry;
+using RenderAreaLightGeometryHandle
+    = RenderObjectHandle<RenderAreaLightGeometry, RenderObjectType::area_light_geometry>;
 struct RenderGeometryGroup;
 using RenderGeometryGroupHandle = RenderObjectHandle<RenderGeometryGroup, RenderObjectType::geometry_group>;
 struct RenderGeometryInstance;
@@ -313,6 +321,55 @@ struct RenderTriangleGeometryDesc {
     uint32_t index_count;
 };
 
+static constexpr uint32_t MAX_ADDITIONAL_GEOMETRY_ATTRIBUTES = 32;
+static constexpr uint32_t ADDITIONAL_ATTRIBUTE_DESC_ROW_SIZE = MAX_ADDITIONAL_GEOMETRY_ATTRIBUTES + 1;
+static constexpr uint32_t ADDITIONAL_ATTRIBUTE_STREAM_ALIGNMENT = 48;
+
+static_assert(sizeof(shared::TriangleGeometryDesc) == 16);
+
+struct RenderGeometryAdditionalAttributeData {
+    uint32_t mask_bit;
+    shared::AdditionalAttributeType type;
+    uint32_t component_count;
+    /// Tightly packed elements. Boolean values use normalized uint8 storage.
+    std::span<const uint8_t> data;
+};
+
+struct RenderGeometryAdditionalAttribute {
+    uint32_t mask_bit;
+    shared::AdditionalAttributeType type;
+    uint32_t component_count;
+    OffsetAllocator::Allocation allocation;
+};
+
+using RenderTriangleGeometryAdditionalAttributeData = RenderGeometryAdditionalAttributeData;
+using RenderTriangleGeometryAdditionalAttribute = RenderGeometryAdditionalAttribute;
+
+struct RenderGeometryAdditionalAttributeStorage {
+    ManagedVector<shared::PackedAdditionalAttribute> m_descs;
+    BufferSuballocator m_data;
+    uint32_t m_geometry_count{0};
+
+    RenderGeometryAdditionalAttributeStorage(std::string_view desc_label, std::string_view data_label);
+
+    void destroy(uint32_t geometry_index, std::vector<RenderGeometryAdditionalAttribute>& attributes);
+    void update(
+        uint32_t geometry_index,
+        uint32_t vertex_count,
+        std::vector<RenderGeometryAdditionalAttribute>& attributes,
+        std::span<const RenderGeometryAdditionalAttributeData> data
+    );
+
+    void update_buffers(sgl::CommandEncoder* command_encoder);
+    void bind(sgl::ShaderCursor cursor) const;
+
+    uint32_t geometry_count() const { return m_geometry_count; }
+    bool has_attributes() const { return m_geometry_count > 0; }
+
+private:
+    void update_descs(uint32_t geometry_index, const std::vector<RenderGeometryAdditionalAttribute>& attributes);
+};
+
 struct RenderTriangleGeometry {
     uint32_t vertex_count;
     uint32_t vertex_offset;
@@ -320,6 +377,7 @@ struct RenderTriangleGeometry {
     uint32_t index_offset;
     OffsetAllocator::Allocation vertex_allocation;
     OffsetAllocator::Allocation index_allocation;
+    std::vector<RenderGeometryAdditionalAttribute> additional_attributes;
     /// List of geometry groups referencing this geometry.
     std::vector<RenderGeometryGroupHandle> geometry_groups;
 };
@@ -327,6 +385,7 @@ struct RenderTriangleGeometry {
 struct RenderTriangleGeometryData {
     std::span<const shared::PackedTriangleVertex> vertices;
     std::span<const uint32_t> indices;
+    std::span<const RenderGeometryAdditionalAttributeData> additional_attributes;
 };
 
 struct RenderTriangleGeometries {
@@ -336,6 +395,7 @@ struct RenderTriangleGeometries {
     ManagedVector<uint32_t> m_indices;
     OffsetAllocator m_vertex_allocator;
     OffsetAllocator m_index_allocator;
+    RenderGeometryAdditionalAttributeStorage m_additional_attributes;
 
     RenderTriangleGeometries(sgl::Device* device);
 
@@ -351,6 +411,9 @@ struct RenderTriangleGeometries {
 
     void update_buffers(sgl::CommandEncoder* command_encoder);
     void bind(sgl::ShaderCursor cursor) const;
+
+    uint32_t additional_attribute_geometry_count() const { return m_additional_attributes.geometry_count(); }
+    bool has_additional_attributes() const { return m_additional_attributes.has_attributes(); }
 };
 
 // ----------------------------------------------------------------------------
@@ -369,6 +432,7 @@ struct RenderLSSGeometry {
     uint32_t index_offset;
     OffsetAllocator::Allocation vertex_allocation;
     OffsetAllocator::Allocation index_allocation;
+    std::vector<RenderGeometryAdditionalAttribute> additional_attributes;
     /// List of geometry groups referencing this geometry.
     std::vector<RenderGeometryGroupHandle> geometry_groups;
 };
@@ -376,24 +440,8 @@ struct RenderLSSGeometry {
 struct RenderLSSGeometryData {
     std::span<const shared::PackedLSSVertex> vertices;
     std::span<const uint32_t> indices;
+    std::span<const RenderGeometryAdditionalAttributeData> additional_attributes;
 };
-
-/// Mode used for LSS (Linear Swept Sphere) intersection.
-enum class RenderLSSMode {
-    /// Use native hardware LSS acceleration structure primitives.
-    hardware,
-    /// Use procedural AABB acceleration structure primitives with custom intersection shader.
-    procedural,
-};
-
-SGL_ENUM_INFO(
-    RenderLSSMode,
-    {
-        {RenderLSSMode::hardware, "hardware"},
-        {RenderLSSMode::procedural, "procedural"},
-    }
-);
-SGL_ENUM_REGISTER(RenderLSSMode);
 
 struct RenderLSSGeometries {
     RenderObjectPool<RenderLSSGeometry, RenderLSSGeometryHandle> m_pool;
@@ -402,14 +450,15 @@ struct RenderLSSGeometries {
     ManagedVector<uint32_t> m_indices;
     OffsetAllocator m_vertex_allocator;
     OffsetAllocator m_index_allocator;
+    RenderGeometryAdditionalAttributeStorage m_additional_attributes;
 
-    RenderLSSMode m_lss_mode{RenderLSSMode::hardware};
+    LSSIntersectionMode m_intersection_mode{LSSIntersectionMode::hardware};
     ref<sgl::Buffer> m_aabb_buffer;
     ref<sgl::ComputeKernel> m_compute_aabbs_kernel;
 
-    RenderLSSGeometries(sgl::Device* device, RenderLSSMode lss_mode);
+    RenderLSSGeometries(sgl::Device* device, LSSIntersectionMode intersection_mode);
 
-    RenderLSSMode lss_mode() const { return m_lss_mode; }
+    LSSIntersectionMode intersection_mode() const { return m_intersection_mode; }
 
     RenderLSSGeometryHandle create(const RenderLSSGeometryDesc& desc);
     void destroy(RenderLSSGeometryHandle handle);
@@ -423,6 +472,38 @@ struct RenderLSSGeometries {
 
     void update_buffers(sgl::CommandEncoder* command_encoder);
     void bind(sgl::ShaderCursor cursor) const;
+
+    uint32_t additional_attribute_geometry_count() const { return m_additional_attributes.geometry_count(); }
+    bool has_additional_attributes() const { return m_additional_attributes.has_attributes(); }
+};
+
+// ----------------------------------------------------------------------------
+// RenderAreaLightGeometry
+// ----------------------------------------------------------------------------
+
+struct RenderAreaLightGeometryDesc { };
+
+struct RenderAreaLightGeometry {
+    /// List of geometry groups referencing this geometry.
+    std::vector<RenderGeometryGroupHandle> geometry_groups;
+};
+
+struct RenderAreaLightGeometries {
+    RenderObjectPool<RenderAreaLightGeometry, RenderAreaLightGeometryHandle> m_pool;
+    ManagedVector<rhi::AABB> m_aabbs;
+
+    RenderAreaLightGeometries();
+
+    RenderAreaLightGeometryHandle create(const RenderAreaLightGeometryDesc& desc);
+    void destroy(RenderAreaLightGeometryHandle handle);
+
+    void write_geometry_instance_desc(RenderAreaLightGeometryHandle handle, shared::GeometryInstanceDesc& desc) const;
+    void write_acceleration_structure_build_input(
+        RenderAreaLightGeometryHandle handle,
+        sgl::AccelerationStructureBuildInput& build_input
+    ) const;
+
+    void update_buffers(sgl::CommandEncoder* command_encoder);
 };
 
 // ----------------------------------------------------------------------------
@@ -449,6 +530,9 @@ struct RenderGeometryInstanceDesc {
     RenderGeometryGroupHandle geometry_group;
     RenderTransformHandle transform;
     std::span<shared::MaterialID> material_ids;
+    std::optional<shared::GeometryInstanceDescPayload> payload_override;
+    uint8_t instance_mask{static_cast<uint8_t>(shared::INSTANCE_MASK_BIT_REGULAR_GEOMETRY)};
+    bool enable_backface_culling{false};
 };
 
 struct RenderGeometryInstance {
@@ -457,6 +541,9 @@ struct RenderGeometryInstance {
     shared::GeometryInstanceID geometry_instance_id;
     uint32_t geometry_instance_count;
     std::vector<shared::MaterialID> material_ids;
+    std::optional<shared::GeometryInstanceDescPayload> payload_override;
+    uint8_t instance_mask{static_cast<uint8_t>(shared::INSTANCE_MASK_BIT_REGULAR_GEOMETRY)};
+    bool enable_backface_culling{false};
 };
 
 enum class RenderGeometryInstanceDirtyFlags : uint8_t {
@@ -466,6 +553,9 @@ enum class RenderGeometryInstanceDirtyFlags : uint8_t {
     geometry_group = 1 << 2,
     transform = 1 << 3,
     opacity = 1 << 4,
+    payload = 1 << 5,
+    instance_mask = 1 << 6,
+    culling = 1 << 7,
 };
 FALCOR_ENUM_CLASS_OPERATORS(RenderGeometryInstanceDirtyFlags);
 
@@ -504,9 +594,10 @@ public:
         none = 0,
         triangle_geometry = 1 << 0,
         lss_geometry = 1 << 1,
-        geometry_group = 1 << 2,
-        geometry_instance = 1 << 3,
-        transform = 1 << 4,
+        area_light_geometry = 1 << 2,
+        geometry_group = 1 << 3,
+        geometry_instance = 1 << 4,
+        transform = 1 << 5,
     };
 
     RenderScene(sgl::Device* device);
@@ -527,6 +618,12 @@ public:
     const RenderLSSGeometry& get_lss_geometry(RenderLSSGeometryHandle handle) const;
     void update_lss_geometry(RenderLSSGeometryHandle handle, const RenderLSSGeometryData& data);
 
+    // RenderAreaLightGeometry
+
+    RenderAreaLightGeometryHandle create_area_light_geometry(const RenderAreaLightGeometryDesc& desc);
+    void destroy_area_light_geometry(RenderAreaLightGeometryHandle handle);
+    const RenderAreaLightGeometry& get_area_light_geometry(RenderAreaLightGeometryHandle handle) const;
+
     // RenderGeometryGroup
 
     RenderGeometryGroupHandle create_geometry_group(const RenderGeometryGroupDesc& desc);
@@ -538,6 +635,12 @@ public:
     RenderGeometryInstanceHandle create_geometry_instance(const RenderGeometryInstanceDesc& desc);
     void destroy_geometry_instance(RenderGeometryInstanceHandle handle);
     const RenderGeometryInstance& get_geometry_instance(RenderGeometryInstanceHandle handle) const;
+    void update_geometry_instance_payload(
+        RenderGeometryInstanceHandle handle,
+        const shared::GeometryInstanceDescPayload& payload
+    );
+    void update_geometry_instance_mask(RenderGeometryInstanceHandle handle, uint8_t instance_mask);
+    void update_geometry_instance_backface_culling(RenderGeometryInstanceHandle handle, bool enable_backface_culling);
     size_t geometry_instance_desc_count() const;
 
     // RenderTransform
@@ -551,8 +654,17 @@ public:
     void bind_to_scene(sgl::ShaderCursor cursor) const;
 
     bool has_triangle_geometry() const { return m_triangle_geometries.m_pool.count() > 0; }
+    uint32_t triangle_additional_attribute_geometry_count() const
+    {
+        return m_triangle_geometries.additional_attribute_geometry_count();
+    }
     bool has_lss_geometry() const { return m_lss_geometries.m_pool.count() > 0; }
-    RenderLSSMode lss_mode() const { return m_lss_geometries.lss_mode(); }
+    bool has_additional_attributes() const
+    {
+        return m_triangle_geometries.has_additional_attributes() || m_lss_geometries.has_additional_attributes();
+    }
+    bool has_area_light_geometry() const { return m_area_light_geometries.m_pool.count() > 0; }
+    LSSIntersectionMode lss_intersection_mode() const { return m_lss_geometries.intersection_mode(); }
     bool has_geometry_type(shared::GeometryType type) const;
 
     /// If true, TLAS updates use refit when only transforms have changed (default: true).
@@ -562,6 +674,7 @@ public:
 private:
     RenderTriangleGeometry& get_triangle_geometry(RenderTriangleGeometryHandle handle);
     RenderLSSGeometry& get_lss_geometry(RenderLSSGeometryHandle handle);
+    RenderAreaLightGeometry& get_area_light_geometry(RenderAreaLightGeometryHandle handle);
     RenderTransform& get_transform(RenderTransformHandle handle);
 
     sgl::Buffer* get_scratch_buffer(size_t required_size);
@@ -582,6 +695,7 @@ private:
 
     RenderTriangleGeometries m_triangle_geometries;
     RenderLSSGeometries m_lss_geometries;
+    RenderAreaLightGeometries m_area_light_geometries;
 
     RenderObjectPool<RenderGeometryGroup, RenderGeometryGroupHandle> m_geometry_group_pool;
     RenderGeometryInstancePool m_geometry_instance_pool;

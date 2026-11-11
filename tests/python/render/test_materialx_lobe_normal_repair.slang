@@ -5,7 +5,7 @@ import slangpy;
 import falcor2.render;
 import falcor2.utils;
 
-static const int TEST_LOBE_COUNT = 5;
+static const int TEST_LOBE_COUNT = 4;
 
 public struct MaterialXLobeNormalRepairProbeResult
 {

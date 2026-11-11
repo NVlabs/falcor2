@@ -1,0 +1,61 @@
+--- a/docs/python/convertDoxygen.py
++++ b/docs/python/convertDoxygen.py
+@@ -75,7 +75,7 @@
+ # modules, for example) add the path to sys.path
+ #
+ if (python_path != None):
+-    sys.path.append(python_path)
++    sys.path.insert(0, python_path)
+ 
+ if dll_path != None and os.name == "nt":
+     dll_paths = dll_path.replace("/", os.sep).split(";")
+@@ -85,6 +85,7 @@
+ #
+ # Try to import the plugin module that creates the desired output
+ #
++os.environ["PXR_DOXYGEN_PACKAGE"] = packageName
+ try:
+     cdWriterModule = importlib.import_module(".cdWriter" + output_format, package="doxygenlib")
+ except ImportError as err:
+--- a/docs/python/doxygenlib/cdWriterDocstring.py
++++ b/docs/python/doxygenlib/cdWriterDocstring.py
+@@ -56,19 +56,22 @@
+ VECTOR_SUFFIX_REPLACE = r"list[\1]"
+ 
+ 
++PXR_PACKAGE_NAME = os.environ.get("PXR_DOXYGEN_PACKAGE", "pxr")
++
++
+ def importPxrModule(moduleName: str) -> types.ModuleType:
+     """Import a single pxr submodule
+ 
+     moduleName is the package that follows pxr, ie, pxr.{moduleName}
+     """
+-    return importlib.import_module(f"pxr.{moduleName}")
++    return importlib.import_module(f"{PXR_PACKAGE_NAME}.{moduleName}")
+ 
+ def getAllPxrModules() -> Dict[str, types.ModuleType]:
+     """Find and import all pxr.* modules
+ 
+     Returns a dictionary mapping from submodule name to module object
+     """
+-    pxrModule = importlib.import_module("pxr")
++    pxrModule = importlib.import_module(PXR_PACKAGE_NAME)
+     modules = {}
+ 
+     for folder in pxrModule.__path__:
+@@ -109,7 +112,7 @@
+     def __init__(self, packageName, moduleName):
+ 
+         # Import the python module...
+-        if packageName == "pxr":
++        if packageName == PXR_PACKAGE_NAME:
+             self.module = pxrModules[moduleName]
+         else:
+             try:
+@@ -741,4 +744,5 @@
+             #Warn("Property %s does not have a docstring" % ".".join(words[-2:]))
+             return None
+                 
++        docString = docString.replace('\\', '\\\\')
+         return setterString % docString

@@ -9,7 +9,8 @@
 BEGIN_DISABLE_USD_WARNINGS
 #include <pxr/base/tf/stringUtils.h>
 #include <pxr/usd/sdf/layer.h>
-#include <pxr/usd/sdf/primSpec.h>
+#include <pxr/usd/pcp/composeSite.h>
+#include <pxr/usd/pcp/primIndex.h>
 #include <pxr/usd/sdf/reference.h>
 #include <pxr/usd/sdf/types.h>
 #include <pxr/usd/usd/primRange.h>
@@ -56,21 +57,23 @@ std::string sanitize_material_name(std::string name)
     return sanitized;
 }
 
-std::filesystem::path resolve_path(const UsdPrim& prim, const std::string& asset_path)
+SdfReferenceVector get_mtlx_references(const UsdPrim& prim)
 {
-    for (const auto& prim_spec : prim.GetPrimStack()) {
-        if (!prim_spec)
+    SdfReferenceVector references;
+    // Compose each site separately: an outer USD reference must not replace
+    // the MaterialX references inside its target. USD also anchors asset paths.
+    for (const auto& node : prim.GetPrimIndex().GetNodeRange()) {
+        if (!node.CanContributeSpecs())
             continue;
-        const SdfLayerHandle& layer = prim_spec->GetLayer();
-        if (!layer)
-            continue;
-
-        const std::string absolute_path = layer->ComputeAbsolutePath(asset_path);
-        if (!absolute_path.empty())
-            return absolute_path;
+        SdfReferenceVector site_references;
+        PcpArcInfoVector source_info;
+        PcpComposeSiteReferences(node, &site_references, &source_info);
+        for (const auto& reference : site_references) {
+            if (TfStringEndsWith(reference.GetAssetPath(), ".mtlx"))
+                references.push_back(reference);
+        }
     }
-
-    return asset_path;
+    return references;
 }
 
 std::vector<std::string> get_mtlx_material_names(const std::filesystem::path& file_path)
@@ -112,17 +115,11 @@ size_t process_mtlx_references(const pxr::UsdStageRefPtr& stage)
     size_t generated_materials = 0;
 
     for (const UsdPrim& prim : UsdPrimRange::Stage(stage)) {
-        if (!prim.IsA<UsdGeomScope>())
+        const bool is_material = prim.IsA<UsdShadeMaterial>();
+        if (!is_material && !prim.IsA<UsdGeomScope>())
             continue;
 
-        SdfReferenceVector authored_references;
-        for (const SdfPrimSpecHandle& prim_spec : prim.GetPrimStack()) {
-            if (!prim_spec || !prim_spec->HasReferences())
-                continue;
-
-            const SdfReferenceVector references = prim_spec->GetReferenceList().GetAppliedItems();
-            authored_references.insert(authored_references.end(), references.begin(), references.end());
-        }
+        const SdfReferenceVector authored_references = get_mtlx_references(prim);
         if (authored_references.empty())
             continue;
 
@@ -136,7 +133,7 @@ size_t process_mtlx_references(const pxr::UsdStageRefPtr& stage)
                 continue;
 
             std::vector<std::string> material_names;
-            const std::filesystem::path resolved_asset_path = resolve_path(prim, asset_path);
+            const std::filesystem::path resolved_asset_path = asset_path;
             try {
                 material_names = get_mtlx_material_names(resolved_asset_path);
             } catch (const mx::Exception& e) {
@@ -151,15 +148,40 @@ size_t process_mtlx_references(const pxr::UsdStageRefPtr& stage)
             if (material_names.empty())
                 continue;
 
-            UsdGeomScope::Define(stage, materials_scope_path);
+            if (is_material) {
+                // Direct references select one material without changing its binding path.
+                const SdfPath source_materials_path("/MaterialX/Materials");
+                const auto selected = std::find_if(
+                    material_names.begin(),
+                    material_names.end(),
+                    [&](const std::string& name)
+                    {
+                        return source_materials_path.AppendChild(TfToken(sanitize_material_name(name)))
+                            == reference.GetPrimPath();
+                    }
+                );
+                if (selected == material_names.end()) {
+                    sgl::log_warn(
+                        "Unsupported or missing MaterialX material target '{}' in '{}' on '{}'.",
+                        reference.GetPrimPath().GetString(),
+                        asset_path,
+                        prim.GetPath().GetString()
+                    );
+                    continue;
+                }
+                material_names = {*selected};
+            } else {
+                UsdGeomScope::Define(stage, materials_scope_path);
+            }
             for (const std::string& material_node_name : material_names) {
                 const std::string material_name = sanitize_material_name(material_node_name);
-                const SdfPath material_path = materials_scope_path.AppendChild(TfToken(material_name));
+                const SdfPath material_path
+                    = is_material ? prim.GetPath() : materials_scope_path.AppendChild(TfToken(material_name));
 
                 UsdShadeMaterial material = UsdShadeMaterial::Define(stage, material_path);
                 UsdShadeShader shader = UsdShadeShader::Define(stage, material_path.AppendChild(TfToken("Shader")));
 
-                shader.SetSourceAsset(SdfAssetPath(asset_path), MTLX_SOURCE_TYPE);
+                shader.SetSourceAsset(SdfAssetPath(resolved_asset_path.string()), MTLX_SOURCE_TYPE);
                 shader.SetSourceAssetSubIdentifier(TfToken(material_node_name), MTLX_SOURCE_TYPE);
 
                 UsdShadeOutput shader_output = shader.CreateOutput(SHADER_OUTPUT_NAME, SdfValueTypeNames->Token);
@@ -172,6 +194,9 @@ size_t process_mtlx_references(const pxr::UsdStageRefPtr& stage)
 
                 ++generated_materials;
             }
+            // References are ordered strongest first; a direct material has one wrapper.
+            if (is_material)
+                break;
         }
     }
 

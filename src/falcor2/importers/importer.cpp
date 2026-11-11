@@ -14,6 +14,7 @@
 #include <sgl/core/string.h>
 #include <sgl/core/thread.h>
 
+#include <algorithm>
 #include <exception>
 #include <mutex>
 #include <utility>
@@ -194,33 +195,48 @@ ref<ImporterScene> import_scene(const std::filesystem::path& path, const ImportO
     // Ensure the global importer cache is set up.
     ensure_importer_cache();
 
-    ref<ImporterScene> importer_scene;
     std::string extension = sgl::string::to_lower(path.extension().string());
     if (extension == ".usd" || extension == ".usda" || extension == ".usdc" || extension == ".usdz") {
-        importer_scene = UsdImporter().load_scene(path);
+        return UsdImporter().load_scene(path, import_options);
     } else if (extension == ".gltf" || extension == ".glb") {
-        importer_scene = GltfImporter().load_scene(path);
+        return GltfImporter().load_scene(path, import_options);
     } else {
         FALCOR_THROW("Unknown scene file extension \"{}\"", extension);
     }
+}
 
-    detail::convert_area_lights_to_geometry(*importer_scene, import_options);
+void detail::apply_import_options(ImporterScene& importer_scene, const ImportOptions& import_options)
+{
+    // Pose baking is an importer-scene operation. Format-specific importers only populate generic skin data.
+    if (import_options.bake_poses)
+        importer_scene.bake_pose();
 
-    if (import_options.recompute_normals) {
-        sgl::thread::parallel_for(
-            sgl::thread::blocked_range<size_t>(0, importer_scene->meshes.size()),
-            [&](auto range)
+    detail::convert_area_lights_to_geometry(importer_scene, import_options);
+
+    // Avoid scheduling work when no mesh requests recomputed normals.
+    if (std::none_of(
+            importer_scene.meshes.begin(),
+            importer_scene.meshes.end(),
+            [](const ImporterMesh& mesh)
             {
-                for (auto i : range) {
-                    auto& mesh = importer_scene->meshes[i];
-                    mesh.add_normals_from_faces();
-                    mesh.add_tangents_from_normals();
-                }
+                return mesh.properties.get<bool>("recompute_normals");
             }
-        );
-    }
+        ))
+        return;
 
-    return importer_scene;
+    sgl::thread::parallel_for(
+        sgl::thread::blocked_range<size_t>(0, importer_scene.meshes.size()),
+        [&](auto range)
+        {
+            for (auto i : range) {
+                ImporterMesh& mesh = importer_scene.meshes[i];
+                if (!mesh.properties.get<bool>("recompute_normals"))
+                    continue;
+                mesh.add_normals_from_faces();
+                mesh.add_tangents_from_normals();
+            }
+        }
+    );
 }
 
 } // namespace falcor

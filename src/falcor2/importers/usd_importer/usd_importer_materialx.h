@@ -18,7 +18,7 @@ struct ImporterMaterial;
 
 namespace usd_importer {
 
-/// Expand Scope prims that reference .mtlx files into UsdShade materials and shaders.
+/// Wrap .mtlx documents referenced by Scopes, or selected materials referenced by Material prims, in UsdShade.
 /// Returns number of materials generated.
 size_t process_mtlx_references(const pxr::UsdStageRefPtr& stage);
 

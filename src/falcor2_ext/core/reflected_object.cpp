@@ -38,7 +38,9 @@ FALCOR_PY_EXPORT(core_reflected_object)
                     properties_setitem(props, key, value);
                     self.set_properties(props);
                 }
-            }
+            },
+            "key"_a,
+            "value"_a.none()
         )
         .def(
             "__getitem__",

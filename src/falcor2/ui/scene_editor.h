@@ -98,7 +98,7 @@ public:
     void set_camera_controller(ref<CameraController> controller);
 
     /// The currently selected scene object, or nullptr if no object is selected.
-    SceneObject* selected_object() const { return m_selected_object; }
+    SceneObject* selected_object() const;
     void set_selected_object(SceneObject* object);
 
     /// Monotonically increasing version counter that changes whenever the selection changes.
@@ -110,7 +110,7 @@ public:
 
     /// Frame the currently selected entity in the camera view.
     /// @param camera The camera to update, or nullptr to only update the camera controller.
-    /// @return True if the selected entity had valid bounds and the camera controller was updated.
+    /// @return True if an entity was selected and the camera controller was updated.
     bool frame_selected(Camera* camera);
 
     /// Current tool mode (select, move, rotate, scale).
@@ -216,7 +216,7 @@ private:
     ref<Entity> m_inspector_return_entity;
     GraphUICallback m_graph_ui_callback;
     EditorCommandRegistry m_commands;
-    SceneObject* m_selected_object{nullptr};
+    ref<SceneObject> m_selected_object;
     uint64_t m_selection_version{0};
 
     ToolMode m_tool_mode{ToolMode::select};
@@ -256,6 +256,7 @@ private:
     void setup_dockspace();
     void setup_default_layout(uint32_t dockspace_id);
     void register_commands();
+    void validate_selection();
     bool can_frame_selected() const;
 
     void main_menu_ui();

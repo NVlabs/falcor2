@@ -52,4 +52,9 @@ void SceneObject::_set_default_name()
         m_name = fmt::format("{}.{}", sgl::enum_to_string(kind()), m_collection_index);
 }
 
+void SceneObject::_set_source_asset_ref(std::optional<SourceAssetRef> source_asset_ref)
+{
+    m_source_asset_ref = source_asset_ref ? std::make_unique<SourceAssetRef>(std::move(*source_asset_ref)) : nullptr;
+}
+
 } // namespace falcor

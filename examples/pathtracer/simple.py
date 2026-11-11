@@ -8,7 +8,12 @@ from pathlib import Path
 
 import falcor2 as f2
 import slangpy as spy
-from falcor2.editor import Editor, EditorConfig, create_device
+from falcor2.editor import (
+    Editor,
+    EditorConfig,
+    EditorArgumentParser,
+    create_device,
+)
 from falcor2.rendernodes import PathTracerPipeline
 
 DESCRIPTION = "Example PathTracer"
@@ -18,24 +23,23 @@ DEFAULT_WIDTH = 1920
 DEFAULT_HEIGHT = 1080
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=DESCRIPTION)
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = EditorArgumentParser(
+        description=DESCRIPTION,
+        editor_defaults=EditorConfig(
+            width=DEFAULT_WIDTH,
+            height=DEFAULT_HEIGHT,
+            title=DESCRIPTION,
+            vsync=False,
+        ),
+    )
     parser.add_argument(
         "--scene-path",
         type=Path,
         default=DEFAULT_SCENE_PATH,
         help="Path to a scene file.",
     )
-    parser.add_argument(
-        "--device-type",
-        choices=("automatic", "d3d12", "vulkan", "cuda"),
-        default="automatic",
-        help="Device type used for renderer.",
-    )
-    parser.add_argument("--width", type=int, default=DEFAULT_WIDTH)
-    parser.add_argument("--height", type=int, default=DEFAULT_HEIGHT)
-
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def main() -> None:
@@ -54,18 +58,10 @@ def main() -> None:
 
     editor = Editor.create(
         device,
-        config=EditorConfig(
-            width=args.width,
-            height=args.height,
-            title=DESCRIPTION,
-            vsync=False,
-        ),
+        config=args.editor_config,
         scene=scene,
     )
-    while editor.update():
-        if editor.needs_render:
-            image = pipeline(scene, delta_time=editor.dt)
-            editor.present(image)
+    editor.run(lambda scene: pipeline(scene, delta_time=editor.dt))
 
 
 if __name__ == "__main__":

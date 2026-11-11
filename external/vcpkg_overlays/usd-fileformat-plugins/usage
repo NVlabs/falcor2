@@ -1,0 +1,41 @@
+Optional Adobe file-format plugins for Falcor2's private, core-only OpenUSD.
+
+The core package contains shared utilities and does not require the FBX SDK.
+No port features are enabled by default. Select usd-fileformat-plugins[fbx] to
+build the FBX plugin. In Falcor2, FALCOR_ENABLE_USD_FBX=ON selects usd-fbx, which
+explicitly requests that port feature.
+
+The FBX feature downloads and verifies the platform's Autodesk FBX SDK 2020.3.11, then
+extracts it into the port's build directory without running the installer.
+No system-wide SDK installation is required. The SDK is linked statically;
+Autodesk's SDK license applies and its notice is included in this package.
+The overlay targets Windows x64, Linux x64, and macOS x64/arm64.
+
+To use an existing copy of the same SDK, set FBXSDK_ROOT and add FBXSDK_ROOT to
+VCPKG_KEEP_ENV_VARS before configuring. Both Debug and Release library hashes
+must match the pinned platform SDK. Unset FBXSDK_ROOT to use automatic acquisition.
+
+With the FBX feature enabled, Release registry:
+  <triplet>/share/usd-fileformat-plugins/plugin/usdFbx/resources/plugInfo.json
+Debug registry:
+  <triplet>/debug/share/usd-fileformat-plugins/plugin/usdFbx/resources/plugInfo.json
+
+On Windows, add <triplet>/bin to the DLL search path and preload
+<triplet>/bin/falcor2_adobe_usdFbx.dll using ctypes.WinDLL(absolute_path), and call
+falcor2.pxr.Plug.Registry().RegisterPlugins(<absolute registry filename>).
+Keep the os.add_dll_directory() and DLL handles alive. Preloading supplies
+Python's dependency search flags that USD's LoadLibrary call does not use.
+Use debug/bin and the Debug registry only with the Debug Falcor2 runtime.
+
+On Linux/macOS, register the same registry path; the plugin is installed under
+<triplet>/lib as libfalcor2_adobe_usdFbx.so or libfalcor2_adobe_usdFbx.dylib.
+Relative runtime search paths resolve dependencies in that directory.
+Use debug/lib and the Debug registry with the Debug Falcor2 runtime.
+
+Then use falcor2.pxr.Usd.Stage.Open() or falcor2.UsdImporter().load_scene() with an
+absolute FBX filename. Generic scene dispatch and automatic deployment are not
+part of this experiment. Never load this plugin into an unrelated pxr runtime.
+
+FBX is the only supported format feature. Shared image helpers use OpenImageIO
+and ArResolver instead of Hio. SBSAR/Hio procedural image providers are not
+supported. USD, its overlay, and the existing triplets are unchanged.

@@ -78,6 +78,7 @@ def load_linked_reference_module(device: spy.Device) -> spy.Module:
     )
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_write_guide_interface_reflects_output_functions(
     device_type: spy.DeviceType, device: spy.Device
@@ -111,7 +112,27 @@ def test_write_guide_interface_reflects_output_functions(
 
     assert reflected_outputs == EXPECTED_GUIDE_OUTPUT_VALUE_TYPES
 
+    generic_data = linked_module.layout.find_function_by_name_in_type(
+        interface_type, "generic_data"
+    )
+    assert generic_data is not None
+    assert generic_data.static
+    assert not generic_data.have_return_value
+    assert [parameter.type.full_name for parameter in generic_data.parameters] == [
+        "vector<uint,2>",
+        "uint",
+        "vector<float,4>",
+    ]
+    generic_data_enabled = linked_module.layout.find_function_by_name_in_type(
+        interface_type, "generic_data_enabled"
+    )
+    assert generic_data_enabled is not None
+    assert generic_data_enabled.static
+    assert generic_data_enabled.return_type.full_name == "bool"
+    assert [parameter.type.full_name for parameter in generic_data_enabled.parameters] == ["uint"]
 
+
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_write_guide_interface_reflects_output_specs(
     device_type: spy.DeviceType, device: spy.Device
@@ -138,6 +159,7 @@ def test_write_guide_interface_reflects_output_specs(
             )
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_hardware_depth_clear_value_is_far_plane(
     device_type: spy.DeviceType, device: spy.Device
@@ -150,6 +172,7 @@ def test_hardware_depth_clear_value_is_far_plane(
     np.testing.assert_allclose(tuple(hardware_depth.clear_value), (1.0, 0.0, 0.0, 0.0))
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_write_guide_prelude_matches_enabled_guides(
     device_type: spy.DeviceType, device: spy.Device
@@ -212,6 +235,12 @@ def test_write_guide_prelude_matches_enabled_guides(
     assert (
         "public static override void diffuse_albedo(vector<uint,2> coord, " "vector<float,4> value)"
     ) in prelude
+    assert "indexed_output_" not in prelude
+    assert (
+        "public static override void generic_data(vector<uint,2> coord, uint id, "
+        "vector<float,4> value)" in prelude
+    )
+    assert "public static bool generic_data_enabled(uint id)" in prelude
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)

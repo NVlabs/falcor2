@@ -45,11 +45,11 @@ def _add_emissive_quad(scene: f2.Scene) -> tuple[f2.StandardMaterial, f2.Entity]
 def _add_component_lights(scene: f2.Scene) -> tuple[f2.PointLight, f2.ConstantLight]:
     point_entity = scene.create_entity()
     point_light = point_entity.create_component(f2.PointLight)
-    point_light.intensity = spy.float3(1.0)
+    point_light.intensity = 1.0
 
     environment_entity = scene.create_entity()
     environment_light = environment_entity.create_component(f2.ConstantLight)
-    environment_light.radiance = spy.float3(2.0)
+    environment_light.intensity = 2.0
     return point_light, environment_light
 
 
@@ -190,6 +190,7 @@ def test_hierarchical_sampler_clamps_build_options() -> None:
     assert sampler.bin_count == 128
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_hierarchical_sampler_option_invalidation(
     device_type: spy.DeviceType,
@@ -237,6 +238,7 @@ def test_hierarchical_sampler_option_invalidation(
     assert not sampler.update(scene)
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_hierarchical_sampler_rebuilds_refits_and_updates_component_lights(
     device_type: spy.DeviceType,
@@ -276,8 +278,8 @@ def test_hierarchical_sampler_rebuilds_refits_and_updates_component_lights(
     assert sampler.rebuild_count == 1
     assert sampler.refit_count == 2
 
-    point_light.intensity = spy.float3(4.0)
-    environment_light.radiance = spy.float3(8.0)
+    point_light.intensity = 4.0
+    environment_light.intensity = 8.0
     scene.update()
     assert sampler.update(scene)
     assert sampler.rebuild_count == 1
@@ -290,6 +292,7 @@ def test_hierarchical_sampler_rebuilds_refits_and_updates_component_lights(
     assert sampler.node_count == 1
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_hierarchical_sampler_rebuilds_only_when_active_triangle_mapping_changes(
     device_type: spy.DeviceType,
@@ -325,6 +328,7 @@ def test_hierarchical_sampler_rebuilds_only_when_active_triangle_mapping_changes
     assert sampler.node_count == 1
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_reference_pathtracer_exposes_hierarchical_sampler(
     device_type: spy.DeviceType,
@@ -337,6 +341,7 @@ def test_reference_pathtracer_exposes_hierarchical_sampler(
     assert node.light_sampler.slang_type_name == "HierarchicalLightSampler"
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_hierarchical_sampler_evaluates_complete_scene_pdfs(
     device_type: spy.DeviceType,
@@ -352,7 +357,7 @@ def test_hierarchical_sampler_evaluates_complete_scene_pdfs(
 
     helper = SceneShaderHelper(device)
     source_module = spy.Module.load_from_file(device, "render/test_light_sampler.slang")
-    module = helper.get_module(scene, source_module)
+    module, requirements = helper.prepare(scene, source_module)
 
     def bind_sampler(cursor: Any) -> None:
         helper.bind_scene(cursor)
@@ -360,7 +365,7 @@ def test_hierarchical_sampler_evaluates_complete_scene_pdfs(
 
     environment_pdf = (
         module.hierarchical_environment_pdf.as_func()
-        .type_conformances(scene.requirements.type_conformances)
+        .type_conformances(requirements.type_conformances)
         .write(bind_sampler)
         .return_type(spy.Tensor)
     )
@@ -376,7 +381,7 @@ def test_hierarchical_sampler_evaluates_complete_scene_pdfs(
 
     emissive_pdf = (
         module.hierarchical_emissive_pdf.as_func()
-        .type_conformances(scene.requirements.type_conformances)
+        .type_conformances(requirements.type_conformances)
         .write(bind_sampler)
         .return_type(spy.Tensor)
     )
@@ -390,6 +395,7 @@ def test_hierarchical_sampler_evaluates_complete_scene_pdfs(
     np.testing.assert_array_equal(pdf[2:], np.zeros(2, dtype=np.float32))
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_hierarchical_sampler_refit_matches_rebuild_and_sampling_pdf(
     device_type: spy.DeviceType,
@@ -434,7 +440,7 @@ def test_hierarchical_sampler_refit_matches_rebuild_and_sampling_pdf(
 
     helper = SceneShaderHelper(device)
     source_module = spy.Module.load_from_file(device, "render/test_light_sampler.slang")
-    module = helper.get_module(scene, source_module)
+    module, _ = helper.prepare(scene, source_module)
     refit_sample_pdf = _create_hierarchical_shader_function(
         module, helper, scene, refit_sampler, "hierarchical_emissive_triangle_tree_sample_pdf"
     )
@@ -489,9 +495,10 @@ def test_hierarchical_sampler_refit_matches_rebuild_and_sampling_pdf(
         refit_sampler,
         "hierarchical_emissive_triangle_tree_triangle_id",
     )
+    # Avoid a CDF boundary where CPU/GPU cone rounding changes the selected triangle.
     sample_values = spy.Tensor.from_numpy(
         device,
-        ((np.arange(64, dtype=np.float32) + 0.5) / 64.0),
+        ((np.arange(64, dtype=np.float32) + 0.25) / 64.0),
     )
     triangle_ids = spy.Tensor.from_numpy(device, np.arange(4, dtype=np.uint32))
     node_indices = spy.Tensor.from_numpy(
@@ -578,6 +585,7 @@ def test_hierarchical_sampler_refit_matches_rebuild_and_sampling_pdf(
     compare_samplers()
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_hierarchical_sampler_builds_valid_trees_for_all_heuristics(
     device_type: spy.DeviceType,
@@ -601,7 +609,7 @@ def test_hierarchical_sampler_builds_valid_trees_for_all_heuristics(
 
         helper = SceneShaderHelper(device)
         source_module = spy.Module.load_from_file(device, "render/test_light_sampler.slang")
-        module = helper.get_module(scene, source_module)
+        module, _ = helper.prepare(scene, source_module)
         triangle_count = sum(intensity > 0.0 for _, intensity in triangle_specs)
 
         for split_heuristic, bin_count, max_triangle_count_per_leaf in configurations:
@@ -702,6 +710,7 @@ def test_hierarchical_sampler_builds_valid_trees_for_all_heuristics(
                     )
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 @pytest.mark.parametrize(
     "leaf_mode",
@@ -727,7 +736,7 @@ def test_hierarchical_sampler_saoh_sample_matches_pdf(
 
     helper = SceneShaderHelper(device)
     source_module = spy.Module.load_from_file(device, "render/test_light_sampler.slang")
-    module = helper.get_module(scene, source_module)
+    module, _ = helper.prepare(scene, source_module)
     sample_pdf = _create_hierarchical_shader_function(
         module, helper, scene, sampler, "hierarchical_emissive_triangle_tree_sample_pdf"
     )
@@ -740,6 +749,7 @@ def test_hierarchical_sampler_saoh_sample_matches_pdf(
     np.testing.assert_allclose(samples[:, 2], samples[:, 3], rtol=1e-6)
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 @pytest.mark.parametrize(
     "leaf_mode",
@@ -767,7 +777,7 @@ def test_hierarchical_sampler_asymmetric_tree_sample_pdf_matches_exactly(
 
     helper = SceneShaderHelper(device)
     source_module = spy.Module.load_from_file(device, "render/test_light_sampler.slang")
-    module = helper.get_module(scene, source_module)
+    module, _ = helper.prepare(scene, source_module)
     sample_pdf = _create_hierarchical_shader_function(
         module, helper, scene, sampler, "hierarchical_emissive_triangle_tree_sample_pdf"
     )
@@ -781,6 +791,7 @@ def test_hierarchical_sampler_asymmetric_tree_sample_pdf_matches_exactly(
     np.testing.assert_array_equal(samples[:, 2], samples[:, 3])
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 @pytest.mark.parametrize(
     "leaf_mode",
@@ -805,7 +816,7 @@ def test_hierarchical_sampler_rejects_back_facing_hemisphere(
 
     helper = SceneShaderHelper(device)
     source_module = spy.Module.load_from_file(device, "render/test_light_sampler.slang")
-    module = helper.get_module(scene, source_module)
+    module, _ = helper.prepare(scene, source_module)
     hemisphere_pdf = _create_hierarchical_shader_function(
         module, helper, scene, sampler, "hierarchical_emissive_triangle_tree_hemisphere_pdf"
     )
@@ -816,6 +827,7 @@ def test_hierarchical_sampler_rejects_back_facing_hemisphere(
     np.testing.assert_array_equal(pdf[:, 1], np.zeros(2, dtype=np.float32))
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_hierarchical_sampler_contextual_leaf_pdf_is_finite_near_vertex(
     device_type: spy.DeviceType,
@@ -832,7 +844,7 @@ def test_hierarchical_sampler_contextual_leaf_pdf_is_finite_near_vertex(
 
     helper = SceneShaderHelper(device)
     source_module = spy.Module.load_from_file(device, "render/test_light_sampler.slang")
-    module = helper.get_module(scene, source_module)
+    module, _ = helper.prepare(scene, source_module)
     eval_pdf = _create_hierarchical_shader_function(
         module, helper, scene, sampler, "hierarchical_emissive_triangle_tree_near_vertex_pdf"
     )
@@ -842,6 +854,7 @@ def test_hierarchical_sampler_contextual_leaf_pdf_is_finite_near_vertex(
     assert (pdf >= 0.0).all()
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_hierarchical_sampler_contextual_leaf_uses_triangle_distance(
     device_type: spy.DeviceType,
@@ -868,7 +881,7 @@ def test_hierarchical_sampler_contextual_leaf_uses_triangle_distance(
 
     helper = SceneShaderHelper(device)
     source_module = spy.Module.load_from_file(device, "render/test_light_sampler.slang")
-    module = helper.get_module(scene, source_module)
+    module, _ = helper.prepare(scene, source_module)
     eval_pdf = _create_hierarchical_shader_function(
         module, helper, scene, sampler, "hierarchical_emissive_triangle_tree_pdf"
     )
@@ -880,6 +893,7 @@ def test_hierarchical_sampler_contextual_leaf_uses_triangle_distance(
     )
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_hierarchical_sampler_contextual_leaf_handles_near_degenerate_triangle(
     device_type: spy.DeviceType,
@@ -906,7 +920,7 @@ def test_hierarchical_sampler_contextual_leaf_handles_near_degenerate_triangle(
 
     helper = SceneShaderHelper(device)
     source_module = spy.Module.load_from_file(device, "render/test_light_sampler.slang")
-    module = helper.get_module(scene, source_module)
+    module, _ = helper.prepare(scene, source_module)
     eval_pdf = _create_hierarchical_shader_function(
         module, helper, scene, sampler, "hierarchical_emissive_triangle_tree_pdf"
     )
@@ -917,6 +931,7 @@ def test_hierarchical_sampler_contextual_leaf_handles_near_degenerate_triangle(
     np.testing.assert_allclose(pdf.sum(), 1.0, rtol=1e-6)
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_hierarchical_sampler_contextual_leaf_excludes_zero_area_triangle(
     device_type: spy.DeviceType,
@@ -943,7 +958,7 @@ def test_hierarchical_sampler_contextual_leaf_excludes_zero_area_triangle(
 
     helper = SceneShaderHelper(device)
     source_module = spy.Module.load_from_file(device, "render/test_light_sampler.slang")
-    module = helper.get_module(scene, source_module)
+    module, _ = helper.prepare(scene, source_module)
     eval_pdf = _create_hierarchical_shader_function(
         module, helper, scene, sampler, "hierarchical_emissive_triangle_tree_pdf"
     )
@@ -954,6 +969,7 @@ def test_hierarchical_sampler_contextual_leaf_excludes_zero_area_triangle(
     np.testing.assert_array_equal(pdf, np.array([0.0, 1.0], dtype=np.float32))
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_reference_pathtracer_renders_with_hierarchical_sampler(
     device_type: spy.DeviceType,

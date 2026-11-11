@@ -9,7 +9,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <mutex>
 
 // This helper follows the MDL SDK discovery example/documentation pattern:
 // add an MDL search path, run IMdl_discovery_api::discover(), traverse the
@@ -19,8 +18,6 @@
 
 namespace falcor {
 namespace {
-
-std::mutex g_mdl_discovery_mutex;
 
 struct DiscoveredModule {
     std::string qualified_name;
@@ -77,28 +74,6 @@ bool module_included(const mi::neuraylib::IMdl_module_info* module, const std::v
     return false;
 }
 
-class ScopedSearchPath {
-public:
-    ScopedSearchPath(MDLContext& context, std::filesystem::path path)
-        : m_context(context)
-        , m_path(std::move(path))
-    {
-        FALCOR_CHECK(m_context.add_search_paths({&m_path, 1}), "Failed to add MDL discovery search path.");
-        m_armed = true;
-    }
-
-    ~ScopedSearchPath()
-    {
-        if (m_armed)
-            m_context.remove_search_paths({&m_path, 1});
-    }
-
-private:
-    MDLContext& m_context;
-    std::filesystem::path m_path;
-    bool m_armed = false;
-};
-
 void collect_modules(
     const mi::neuraylib::IMdl_info* info,
     const std::filesystem::path& root,
@@ -145,14 +120,12 @@ void collect_modules(
 std::vector<MDLDiscoveredMaterial>
 discover_mdl_materials(const std::filesystem::path& library_path, const std::vector<std::string>& include_modules)
 {
-    std::lock_guard<std::mutex> lock(g_mdl_discovery_mutex);
-
     MDLContext& context = MDLContext::get();
     auto* neuray = static_cast<mi::neuraylib::INeuray*>(context.get_neuray());
     FALCOR_CHECK(neuray, "MDLContext backend did not expose a valid Neuray interface.");
 
     const std::filesystem::path root = std::filesystem::weakly_canonical(library_path);
-    ScopedSearchPath scoped_search_path(context, root);
+    MDLSearchPathScope scoped_search_path(context, {&root, 1});
 
     mi::base::Handle<mi::neuraylib::IMdl_discovery_api> discovery_api(
         neuray->get_api_component<mi::neuraylib::IMdl_discovery_api>()

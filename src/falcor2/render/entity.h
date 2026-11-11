@@ -92,7 +92,8 @@ public:
     /// Called during Scene::update() to update the transform.
     void update_transform();
 
-    RenderTransformHandle _render_transform() const { return m_render_transform; }
+    /// Return the render transform, creating it on first use by geometry.
+    RenderTransformHandle _render_transform();
 
     /// Reflect this class.
     template<reflection::ClassReflector R>

@@ -9,12 +9,55 @@ __exported import falcor2.render.materials.mtlx.mtlx;
 /// BSDF test utilities for chi-square and other statistical tests.
 namespace bsdf_tests {
 
+// Reconstruct at each incident direction: lobe-selection probabilities depend on wi.
+public struct TestGLTFBSDF : IBSDF
+{
+    public GLTFBSDFData data;
+    public BSDFEval eval_with_pdf<S : ISampleGenerator>(float3 wi, float3 wo, inout S sg, BSDFContext bc)
+    {
+        return GLTFBSDF(wi, data).eval_with_pdf(wi, wo, sg, bc);
+    }
+    public bool sample<S : ISampleGenerator>(float3 wi, out BSDFSample result, inout S sg, BSDFContext bc)
+    {
+        return GLTFBSDF(wi, data).sample(wi, result, sg, bc);
+    }
+    public AlbedoContributions eval_albedo(float3 wi) { return GLTFBSDF(wi, data).eval_albedo(wi); }
+    public RoughnessInformation eval_roughness(float3 wi) { return GLTFBSDF(wi, data).eval_roughness(wi); }
+    public property float3 ior_as_reflectance
+    {
+        get {
+            return GLTFBSDF(float3(0.0, 0.0, 1.0), data).ior_as_reflectance;
+        }
+    }
+};
+
+public struct TestGLTFSpecGlossBSDF : IBSDF
+{
+    public GLTFSpecGlossBSDFData data;
+    public BSDFEval eval_with_pdf<S : ISampleGenerator>(float3 wi, float3 wo, inout S sg, BSDFContext bc)
+    {
+        return GLTFSpecGlossBSDF(wi, data).eval_with_pdf(wi, wo, sg, bc);
+    }
+    public bool sample<S : ISampleGenerator>(float3 wi, out BSDFSample result, inout S sg, BSDFContext bc)
+    {
+        return GLTFSpecGlossBSDF(wi, data).sample(wi, result, sg, bc);
+    }
+    public AlbedoContributions eval_albedo(float3 wi) { return GLTFSpecGlossBSDF(wi, data).eval_albedo(wi); }
+    public RoughnessInformation eval_roughness(float3 wi) { return GLTFSpecGlossBSDF(wi, data).eval_roughness(wi); }
+    public property float3 ior_as_reflectance
+    {
+        get {
+            return GLTFSpecGlossBSDF(float3(0.0, 0.0, 1.0), data).ior_as_reflectance;
+        }
+    }
+};
+
 public struct FixedSampleGenerator : ISampleGenerator
 {
     uint3 samples;
     uint index;
 
-    public __init(uint seed)
+    public __init(uint seed, uint scrambling_seed = 0)
     {
         samples = uint3(seed);
         index = 0;
@@ -55,6 +98,11 @@ public float4 test_anisotropic_ggx_policy()
         clamped_zero.alpha.x,
         wide_cutoff.is_singular() ? 1.0 : 0.0
     );
+}
+
+public float probe_anisotropic_ggx_ndf(float2 alpha, float3 h)
+{
+    return AnisotropicGGXPolicy<10000, true>(alpha).eval_ndf(h);
 }
 
 public float4 test_diffuse_specular_albedo(DiffuseSpecularBRDF bsdf, float3 wi)

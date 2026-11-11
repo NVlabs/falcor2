@@ -9,6 +9,11 @@
 struct MDLRendererState
 {
     float3 V; // View direction
+#if MDL_HAS_SCENE_DATA
+    // Only scene-data callbacks retain the hit; UVs/transforms are resolved during state initialization.
+    Conditional<PackedHitInfo, ENABLE_GEOMETRY_PROPERTIES> hit_info
+        = Conditional<PackedHitInfo, ENABLE_GEOMETRY_PROPERTIES>(PackedHitInfo());
+#endif
 };
 
 #define RENDERER_STATE_TYPE MDLRendererState
@@ -282,7 +287,7 @@ tex_lookup_float4_2d(uint tex, float2 coord, int wrap_u, int wrap_v, float2 crop
 
     coord = apply_smootherstep_filter(coord, uint2(width, height));
 
-    if (!FALCOR_TEXTURE_COORDINATE_ORIGIN_LOWER_LEFT)
+    if (!UV_ORIGIN_LOWER_LEFT)
         coord.y = 1.0 - coord.y;
 
     // TODO: use the correct sampler
@@ -1205,470 +1210,160 @@ float4 df_bsdf_measurement_albedos(uint bm_idx, float2 theta_phi)
     return float4(albedo_refl[0], albedo_refl[1], albedo_trans[0], albedo_trans[1]);
 }
 
-// -----------------------------------------------------------------------------
-// Scene Data API
-// -----------------------------------------------------------------------------
-
-bool scene_data_isvalid_internal(
-    Shading_state_material state,   // MDL state that also contains a custom renderer state
-    uint scene_data_id,             // the scene_data_id (from target code or manually added)
-    bool uniform_lookup)
-{
-    // invalid id
-    if (scene_data_id == 0)
-        return false;
-
-    // get scene data buffer layout and access infos
-    SceneDataInfo info = state.renderer_state.scene_data_infos[
-        state.renderer_state.scene_data_info_offset + scene_data_id];
-
-    SceneDataKind kind = info.GetKind();
-    switch (kind)
-    {
-        case SCENE_DATA_KIND_VERTEX:
-        case SCENE_DATA_KIND_INSTANCE:
-            return true;
-
-        default:
-            return false;
-    }
-}
-
-bool scene_data_isvalid(
-    Shading_state_material state,   // MDL state that also contains a custom renderer state
-    uint scene_data_id)             // the scene_data_id (from target code or manually added)
-{
-    return scene_data_isvalid_internal(state, scene_data_id, false);
-}
-
-// try to avoid a lot of redundant code, always return float4 but (statically) switch on components
-float4 scene_data_lookup_floatX(
-    Shading_state_material state,   // MDL state that also contains a custom renderer state
-    uint scene_data_id,             // the scene_data_id (from target code or manually added)
-    float4 default_value,           // default value in case the requested data is not valid
-    bool uniform_lookup,            // true if a uniform lookup is requested
-    int number_of_components)       // 1, 2, 3, or 4
-{
-    // invalid id
-    if (scene_data_id == 0)
-        return default_value;
-
-    // get scene data buffer layout and access infos
-    SceneDataInfo info = state.renderer_state.scene_data_infos[
-        state.renderer_state.scene_data_info_offset + scene_data_id];
-
-    if (uniform_lookup && !info.GetUniform())
-        return default_value;
-
-    SceneDataKind kind = info.GetKind();
-    SceneDataInterpolationMode mode = info.GetInterpolationMode();
-
-    // access data depending of the scope (per scene, object, or vertex)
-    switch (kind)
-    {
-    case SCENE_DATA_KIND_VERTEX:
-    {
-        // address of the per vertex data (for each index)
-        uint3 addresses =
-            state.renderer_state.scene_data_geometry_byte_offset + // address of the geometry
-            state.renderer_state.hit_vertex_indices * info.GetByteStride() + // element offset
-            info.GetByteOffset(); // offset within the vertex or to first element
-
-        // raw data read from the buffer
-        uint4 value_a_raw = uint4(0, 0, 0, 0);
-        uint4 value_b_raw = uint4(0, 0, 0, 0);
-        uint4 value_c_raw = uint4(0, 0, 0, 0);
-        switch (number_of_components)
-        {
-            case 1:
-                value_a_raw.x = state.renderer_state.scene_data_vertex.Load(addresses.x);
-                value_b_raw.x = state.renderer_state.scene_data_vertex.Load(addresses.y);
-                value_c_raw.x = state.renderer_state.scene_data_vertex.Load(addresses.z);
-                break;
-            case 2:
-                value_a_raw.xy = state.renderer_state.scene_data_vertex.Load2(addresses.x);
-                value_b_raw.xy = state.renderer_state.scene_data_vertex.Load2(addresses.y);
-                value_c_raw.xy = state.renderer_state.scene_data_vertex.Load2(addresses.z);
-                break;
-            case 3:
-                value_a_raw.xyz = state.renderer_state.scene_data_vertex.Load3(addresses.x);
-                value_b_raw.xyz = state.renderer_state.scene_data_vertex.Load3(addresses.y);
-                value_c_raw.xyz = state.renderer_state.scene_data_vertex.Load3(addresses.z);
-                break;
-            case 4:
-                value_a_raw = state.renderer_state.scene_data_vertex.Load4(addresses.x);
-                value_b_raw = state.renderer_state.scene_data_vertex.Load4(addresses.y);
-                value_c_raw = state.renderer_state.scene_data_vertex.Load4(addresses.z);
-                break;
-        }
-
-        // convert to float, int or color data
-        float4 value_a = float4(0, 0, 0, 0);
-        float4 value_b = float4(0, 0, 0, 0);
-        float4 value_c = float4(0, 0, 0, 0);
-        switch (info.GetElementType())
-        {
-            case SCENE_DATA_ELEMENT_TYPE_FLOAT: // reinterpret as float
-            case SCENE_DATA_ELEMENT_TYPE_COLOR: // (handled as float3, no spectral support)
-                value_a = asfloat(value_a_raw);
-                value_b = asfloat(value_b_raw);
-                value_c = asfloat(value_c_raw);
-                break;
-
-            case SCENE_DATA_ELEMENT_TYPE_INT:
-                // reinterpret as signed int and convert from integer to float
-                value_a = float4(asint(value_a_raw));
-                value_b = float4(asint(value_b_raw));
-                value_c = float4(asint(value_c_raw));
-                break;
-        }
-
-        // interpolate across the triangle
-        const float3 barycentric = state.renderer_state.barycentric;
-        switch (mode)
-        {
-            case SCENE_DATA_INTERPOLATION_MODE_LINEAR:
-                return value_a * barycentric.x +
-                    value_b * barycentric.y +
-                    value_c * barycentric.z;
-
-            case SCENE_DATA_INTERPOLATION_MODE_NEAREST:
-                if (barycentric.x > barycentric.y)
-                    return barycentric.x > barycentric.z ? value_a : value_c;
-                else
-                    return barycentric.y > barycentric.z ? value_b : value_c;
-
-            case SCENE_DATA_INTERPOLATION_MODE_NONE:
-            default: // unsupported interpolation mode
-                return default_value;
-        }
-    }
-
-    case SCENE_DATA_KIND_INSTANCE:
-    {
-        // raw data read from the buffer
-        uint address = info.GetByteOffset();
-        uint4 value_raw = uint4(0, 0, 0, 0);
-        switch (number_of_components)
-        {
-            case 1: value_raw.x = state.renderer_state.scene_data_instance.Load(address); break;
-            case 2: value_raw.xy = state.renderer_state.scene_data_instance.Load2(address); break;
-            case 3: value_raw.xyz = state.renderer_state.scene_data_instance.Load3(address); break;
-            case 4: value_raw = state.renderer_state.scene_data_instance.Load4(address); break;
-        }
-
-        // convert to float, int or color data
-        // do not interpolate as all currently available modes would result in the same value
-        switch (info.GetElementType())
-        {
-            case SCENE_DATA_ELEMENT_TYPE_FLOAT: // reinterpret as float
-            case SCENE_DATA_ELEMENT_TYPE_COLOR: // (handled as float3, no spectral support)
-                return asfloat(value_raw);
-
-            case SCENE_DATA_ELEMENT_TYPE_INT:   // reinterpret as signed int and convert to float
-                return float4(asint(value_raw));
-        }
-    }
-
-    case SCENE_DATA_KIND_NONE:
-    default:
-        return default_value;
-    }
-}
-
-float4 scene_data_lookup_float4(
-    Shading_state_material state,
-    uint scene_data_id,
-    float4 default_value,
-    bool uniform_lookup)
-{
-    return scene_data_lookup_floatX(state, scene_data_id, default_value, uniform_lookup, 4);
-}
-
-float3 scene_data_lookup_float3(
-    Shading_state_material state,
-    uint scene_data_id,
-    float3 default_value,
-    bool uniform_lookup)
-{
-    return scene_data_lookup_floatX(state, scene_data_id, default_value.xyzx, uniform_lookup, 3).xyz;
-}
-
-float3 scene_data_lookup_color(
-    Shading_state_material state,
-    uint scene_data_id,
-    float3 default_value,
-    bool uniform_lookup)
-{
-    return scene_data_lookup_floatX(state, scene_data_id, default_value.xyzx, uniform_lookup, 3).xyz;
-}
-
-float2 scene_data_lookup_float2(
-    Shading_state_material state,
-    uint scene_data_id,
-    float2 default_value,
-    bool uniform_lookup)
-{
-    return scene_data_lookup_floatX(state, scene_data_id, default_value.xyxx, uniform_lookup, 2).xy;
-}
-
-float scene_data_lookup_float(
-    Shading_state_material state,
-    uint scene_data_id,
-    float default_value,
-    bool uniform_lookup)
-{
-    return scene_data_lookup_floatX(state, scene_data_id, default_value.xxxx, uniform_lookup, 1).x;
-}
-
-
-int4 scene_data_lookup_intX(
-    Shading_state_material state,
-    uint scene_data_id,
-    int4 default_value,
-    bool uniform_lookup,
-    int number_of_components)
-{
-    // invalid id
-    if (scene_data_id == 0)
-        return default_value;
-
-    // get scene data buffer layout and access infos
-    SceneDataInfo info = state.renderer_state.scene_data_infos[
-        state.renderer_state.scene_data_info_offset + scene_data_id];
-
-    if (uniform_lookup && !info.GetUniform())
-        return default_value;
-
-    SceneDataKind kind = info.GetKind();
-    SceneDataInterpolationMode mode = info.GetInterpolationMode();
-
-    // access data depending of the scope (per scene, object, or vertex)
-    switch (kind)
-    {
-    case SCENE_DATA_KIND_VERTEX:
-    {
-        // address of the per vertex data (for each index)
-        uint3 addresses =
-            state.renderer_state.scene_data_geometry_byte_offset + // address of the geometry
-            state.renderer_state.hit_vertex_indices * info.GetByteStride() + // element offset
-            info.GetByteOffset(); // offset within the vertex or to first element
-
-        // raw data read from the buffer
-        uint4 value_a_raw = uint4(0, 0, 0, 0);
-        uint4 value_b_raw = uint4(0, 0, 0, 0);
-        uint4 value_c_raw = uint4(0, 0, 0, 0);
-        switch (number_of_components)
-        {
-            case 1:
-                value_a_raw.x = state.renderer_state.scene_data_vertex.Load(addresses.x);
-                value_b_raw.x = state.renderer_state.scene_data_vertex.Load(addresses.y);
-                value_c_raw.x = state.renderer_state.scene_data_vertex.Load(addresses.z);
-                break;
-            case 2:
-                value_a_raw.xy = state.renderer_state.scene_data_vertex.Load2(addresses.x);
-                value_b_raw.xy = state.renderer_state.scene_data_vertex.Load2(addresses.y);
-                value_c_raw.xy = state.renderer_state.scene_data_vertex.Load2(addresses.z);
-                break;
-            case 3:
-                value_a_raw.xyz = state.renderer_state.scene_data_vertex.Load3(addresses.x);
-                value_b_raw.xyz = state.renderer_state.scene_data_vertex.Load3(addresses.y);
-                value_c_raw.xyz = state.renderer_state.scene_data_vertex.Load3(addresses.z);
-                break;
-            case 4:
-                value_a_raw = state.renderer_state.scene_data_vertex.Load4(addresses.x);
-                value_b_raw = state.renderer_state.scene_data_vertex.Load4(addresses.y);
-                value_c_raw = state.renderer_state.scene_data_vertex.Load4(addresses.z);
-                break;
-        }
-
-        // convert to float, int or color data
-        int4 value_a = int4(0, 0, 0, 0);
-        int4 value_b = int4(0, 0, 0, 0);
-        int4 value_c = int4(0, 0, 0, 0);
-        switch (info.GetElementType())
-        {
-            case SCENE_DATA_ELEMENT_TYPE_FLOAT: // reinterpret as float and convert to int
-            case SCENE_DATA_ELEMENT_TYPE_COLOR: // (handled as float3, no spectral support)
-                value_a = int4(asfloat(value_a_raw));
-                value_b = int4(asfloat(value_b_raw));
-                value_c = int4(asfloat(value_c_raw));
-                break;
-
-            case SCENE_DATA_ELEMENT_TYPE_INT:
-                // reinterpret as signed int
-                value_a = asint(value_a_raw);
-                value_b = asint(value_b_raw);
-                value_c = asint(value_c_raw);
-                break;
-        }
-
-        // interpolate across the triangle
-        const float3 barycentric = state.renderer_state.barycentric;
-        switch (mode)
-        {
-            case SCENE_DATA_INTERPOLATION_MODE_LINEAR:
-                return int4(float4(value_a) * barycentric.x +
-                            float4(value_b) * barycentric.y +
-                            float4(value_c) * barycentric.z);
-
-            case SCENE_DATA_INTERPOLATION_MODE_NEAREST:
-                if (barycentric.x > barycentric.y)
-                    return barycentric.x > barycentric.z ? value_a : value_c;
-                else
-                    return barycentric.y > barycentric.z ? value_b : value_c;
-
-            case SCENE_DATA_INTERPOLATION_MODE_NONE:
-            default: // unsupported interpolation mode
-                return default_value;
-        }
-    }
-
-    case SCENE_DATA_KIND_INSTANCE:
-    {
-        // raw data read from the buffer
-        uint address = info.GetByteOffset();
-        uint4 value_raw = uint4(0, 0, 0, 0);
-        switch (number_of_components)
-        {
-            case 1: value_raw.x = state.renderer_state.scene_data_instance.Load(address); break;
-            case 2: value_raw.xy = state.renderer_state.scene_data_instance.Load2(address); break;
-            case 3: value_raw.xyz = state.renderer_state.scene_data_instance.Load3(address); break;
-            case 4: value_raw = state.renderer_state.scene_data_instance.Load4(address); break;
-        }
-
-        // convert to float, int or color data
-        // do not interpolate as all currently available modes would result in the same value
-        switch (info.GetElementType())
-        {
-            case SCENE_DATA_ELEMENT_TYPE_FLOAT: // reinterpret as float and convert to int
-            case SCENE_DATA_ELEMENT_TYPE_COLOR: // (handled as float3, no spectral support)
-                return int4(asfloat(value_raw));
-
-            case SCENE_DATA_ELEMENT_TYPE_INT: // reinterpret as signed int
-                return asint(value_raw);
-        }
-    }
-
-    case SCENE_DATA_KIND_NONE:
-    default:
-        return default_value;
-    }
-}
-
-int4 scene_data_lookup_int4(
-    Shading_state_material state,
-    uint scene_data_id,
-    int4 default_value,
-    bool uniform_lookup)
-{
-    return scene_data_lookup_intX(state, scene_data_id, default_value, uniform_lookup, 4);
-}
-
-int3 scene_data_lookup_int3(
-    Shading_state_material state,
-    uint scene_data_id,
-    int3 default_value,
-    bool uniform_lookup)
-{
-    return scene_data_lookup_intX(state, scene_data_id, default_value.xyzx, uniform_lookup, 3).xyz;
-}
-
-int2 scene_data_lookup_int2(
-    Shading_state_material state,
-    uint scene_data_id,
-    int2 default_value,
-    bool uniform_lookup)
-{
-    return scene_data_lookup_intX(state, scene_data_id, default_value.xyxx, uniform_lookup, 2).xy;
-}
-
-int scene_data_lookup_int(
-    Shading_state_material state,
-    uint scene_data_id,
-    int default_value,
-    bool uniform_lookup)
-{
-    return scene_data_lookup_intX(state, scene_data_id, default_value.xxxx, uniform_lookup, 1).x;
-}
-
-// currently no scene data with derivatives is supported
-Derived_float4 scene_data_lookup_deriv_float4(
-    Shading_state_material state,
-    uint scene_data_id,
-    Derived_float4 default_value,
-    bool uniform_lookup)
-{
-    if (!scene_data_isvalid_internal(state, scene_data_id, uniform_lookup))
-        return default_value;
-
-    Derived_float4 res;
-    res.val = scene_data_lookup_float4(
-        state, scene_data_id, default_value.val, uniform_lookup);
-    res.dx = float4(0, 0, 0, 0);
-    res.dy = float4(0, 0, 0, 0);
-    return res;
-}
-
-Derived_float3 scene_data_lookup_deriv_float3(
-    Shading_state_material state,
-    uint scene_data_id,
-    Derived_float3 default_value,
-    bool uniform_lookup)
-{
-    if (!scene_data_isvalid_internal(state, scene_data_id, uniform_lookup))
-        return default_value;
-
-    Derived_float3 res;
-    res.val = scene_data_lookup_float3(
-        state, scene_data_id, default_value.val, uniform_lookup);
-    res.dx = float3(0, 0, 0);
-    res.dy = float3(0, 0, 0);
-    return res;
-}
-
-Derived_float3 scene_data_lookup_deriv_color(
-    Shading_state_material state,
-    uint scene_data_id,
-    Derived_float3 default_value,
-    bool uniform_lookup)
-{
-    return scene_data_lookup_deriv_float3(
-        state, scene_data_id, default_value, uniform_lookup);
-}
-
-Derived_float2 scene_data_lookup_deriv_float2(
-    Shading_state_material state,
-    uint scene_data_id,
-    Derived_float2 default_value,
-    bool uniform_lookup)
-{
-    if (!scene_data_isvalid_internal(state, scene_data_id, uniform_lookup))
-        return default_value;
-
-    Derived_float2 res;
-    res.val = scene_data_lookup_float2(
-        state, scene_data_id, default_value.val, uniform_lookup);
-    res.dx = float2(0, 0);
-    res.dy = float2(0, 0);
-    return res;
-}
-
-Derived_float scene_data_lookup_deriv_float(
-    Shading_state_material state,
-    uint scene_data_id,
-    Derived_float default_value,
-    bool uniform_lookup)
-{
-    if (!scene_data_isvalid_internal(state, scene_data_id, uniform_lookup))
-        return default_value;
-
-    Derived_float res;
-    res.val = scene_data_lookup_float(
-        state, scene_data_id, default_value.val, uniform_lookup);
-    res.dx = 0;
-    res.dy = 0;
-    return res;
-}
-
 #endif
+
+// Scene-data callbacks use SDK runtime string IDs, not Scene attribute IDs. Uniform values and matrices
+// have no storage in Falcor; return the caller's whole default without acquiring geometry.
+bool scene_data_isvalid(inout Shading_state_material state, int scene_data_id)
+{
+#if MDL_HAS_SCENE_DATA
+    if (!ENABLE_GEOMETRY_PROPERTIES)
+        return false;
+    uint id = mdl_scene_data_attribute_id(uint(scene_data_id));
+    if (id == 0xffffffffu)
+        return false;
+    return get_hit_geomprop_accessor(state.renderer_state.hit_info).has_attribute(id);
+#else
+    return false;
+#endif
+}
+
+float scene_data_lookup_float(Shading_state_material state, int scene_data_id, float default_value, bool uniform_lookup)
+{
+#if MDL_HAS_SCENE_DATA
+    if (!ENABLE_GEOMETRY_PROPERTIES || uniform_lookup)
+        return default_value;
+    uint id = mdl_scene_data_attribute_id(uint(scene_data_id));
+    if (id == 0xffffffffu)
+        return default_value;
+    return get_hit_geomprop_accessor(state.renderer_state.hit_info).get_float(id, default_value);
+#else
+    return default_value;
+#endif
+}
+
+float2
+scene_data_lookup_float2(Shading_state_material state, int scene_data_id, float2 default_value, bool uniform_lookup)
+{
+#if MDL_HAS_SCENE_DATA
+    if (!ENABLE_GEOMETRY_PROPERTIES || uniform_lookup)
+        return default_value;
+    uint id = mdl_scene_data_attribute_id(uint(scene_data_id));
+    if (id == 0xffffffffu)
+        return default_value;
+    return get_hit_geomprop_accessor(state.renderer_state.hit_info).get_float2(id, default_value);
+#else
+    return default_value;
+#endif
+}
+
+float3
+scene_data_lookup_float3(Shading_state_material state, int scene_data_id, float3 default_value, bool uniform_lookup)
+{
+#if MDL_HAS_SCENE_DATA
+    if (!ENABLE_GEOMETRY_PROPERTIES || uniform_lookup)
+        return default_value;
+    uint id = mdl_scene_data_attribute_id(uint(scene_data_id));
+    if (id == 0xffffffffu)
+        return default_value;
+    return get_hit_geomprop_accessor(state.renderer_state.hit_info).get_float3(id, default_value);
+#else
+    return default_value;
+#endif
+}
+
+float4
+scene_data_lookup_float4(Shading_state_material state, int scene_data_id, float4 default_value, bool uniform_lookup)
+{
+#if MDL_HAS_SCENE_DATA
+    if (!ENABLE_GEOMETRY_PROPERTIES || uniform_lookup)
+        return default_value;
+    uint id = mdl_scene_data_attribute_id(uint(scene_data_id));
+    if (id == 0xffffffffu)
+        return default_value;
+    return get_hit_geomprop_accessor(state.renderer_state.hit_info).get_float4(id, default_value);
+#else
+    return default_value;
+#endif
+}
+
+int scene_data_lookup_int(Shading_state_material state, int scene_data_id, int default_value, bool uniform_lookup)
+{
+#if MDL_HAS_SCENE_DATA
+    if (!ENABLE_GEOMETRY_PROPERTIES || uniform_lookup)
+        return default_value;
+    uint id = mdl_scene_data_attribute_id(uint(scene_data_id));
+    if (id == 0xffffffffu)
+        return default_value;
+    return get_hit_geomprop_accessor(state.renderer_state.hit_info).get_int(id, default_value);
+#else
+    return default_value;
+#endif
+}
+
+int2 scene_data_lookup_int2(Shading_state_material state, int scene_data_id, int2 default_value, bool uniform_lookup)
+{
+#if MDL_HAS_SCENE_DATA
+    if (!ENABLE_GEOMETRY_PROPERTIES || uniform_lookup)
+        return default_value;
+    uint id = mdl_scene_data_attribute_id(uint(scene_data_id));
+    if (id == 0xffffffffu)
+        return default_value;
+    return get_hit_geomprop_accessor(state.renderer_state.hit_info).get_int2(id, default_value);
+#else
+    return default_value;
+#endif
+}
+
+int3 scene_data_lookup_int3(Shading_state_material state, int scene_data_id, int3 default_value, bool uniform_lookup)
+{
+#if MDL_HAS_SCENE_DATA
+    if (!ENABLE_GEOMETRY_PROPERTIES || uniform_lookup)
+        return default_value;
+    uint id = mdl_scene_data_attribute_id(uint(scene_data_id));
+    if (id == 0xffffffffu)
+        return default_value;
+    return get_hit_geomprop_accessor(state.renderer_state.hit_info).get_int3(id, default_value);
+#else
+    return default_value;
+#endif
+}
+
+int4 scene_data_lookup_int4(Shading_state_material state, int scene_data_id, int4 default_value, bool uniform_lookup)
+{
+#if MDL_HAS_SCENE_DATA
+    if (!ENABLE_GEOMETRY_PROPERTIES || uniform_lookup)
+        return default_value;
+    uint id = mdl_scene_data_attribute_id(uint(scene_data_id));
+    if (id == 0xffffffffu)
+        return default_value;
+    return get_hit_geomprop_accessor(state.renderer_state.hit_info).get_int4(id, default_value);
+#else
+    return default_value;
+#endif
+}
+
+float3
+scene_data_lookup_color(Shading_state_material state, int scene_data_id, float3 default_value, bool uniform_lookup)
+{
+#if MDL_HAS_SCENE_DATA
+    if (!ENABLE_GEOMETRY_PROPERTIES || uniform_lookup)
+        return default_value;
+    uint id = mdl_scene_data_attribute_id(uint(scene_data_id));
+    if (id == 0xffffffffu)
+        return default_value;
+    return get_hit_geomprop_accessor(state.renderer_state.hit_info).get_float3(id, default_value);
+#else
+    return default_value;
+#endif
+}
+
+float4x4 scene_data_lookup_float4x4(
+    inout Shading_state_material state,
+    int scene_data_id,
+    float4x4 default_value,
+    bool uniform_lookup
+)
+{
+    return default_value;
+}

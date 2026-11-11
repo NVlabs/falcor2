@@ -75,6 +75,8 @@ Icon light_icon(const Light* light)
         return Icon::light_distant;
     case shared::LightType::sphere_light:
         return Icon::light_sphere;
+    case shared::LightType::cylinder_light:
+        return Icon::light_cylinder;
     case shared::LightType::disk_light:
         return Icon::light_disk;
     case shared::LightType::rect_light:
@@ -401,6 +403,42 @@ void draw_sphere_light_gizmo(
     }
 }
 
+void draw_cylinder_light_gizmo(
+    const GizmoDrawContext& context,
+    const CylinderLight* light,
+    const LightGizmoTransform& transform,
+    ImU32 color
+)
+{
+    const CylinderLightWorldGeometry geometry = light->world_geometry();
+    const float3 axial_extent = geometry.half_length_ws * geometry.axis_ws;
+    const float3 end0 = geometry.center_ws - axial_extent;
+    const float3 end1 = geometry.center_ws + axial_extent;
+    context.draw_ring(end0, geometry.radius_u_ws, geometry.radius_v_ws, color);
+    context.draw_ring(end1, geometry.radius_u_ws, geometry.radius_v_ws, color);
+    for (const float3 radial : {
+             geometry.radius_u_ws,
+             -geometry.radius_u_ws,
+             geometry.radius_v_ws,
+             -geometry.radius_v_ws,
+         }) {
+        context.draw_line(end0 + radial, end1 + radial, color);
+    }
+
+    const float3 direction = geometry.radius_ws > 0.f ? -geometry.radius_v_ws / geometry.radius_ws : -transform.axis_z;
+    if (light->enable_shaping()) {
+        draw_centered_light_shaping_gizmo(
+            context,
+            transform,
+            direction,
+            light->shaping_cone_angle(),
+            light->shaping_cone_softness(),
+            color
+        );
+    }
+    draw_light_direction_gizmo(context, transform, direction, color);
+}
+
 void draw_disk_light_gizmo(
     const GizmoDrawContext& context,
     const DiskLight* light,
@@ -534,6 +572,8 @@ void draw_selected_light_gizmo(
         draw_light_direction_gizmo(context, transform, transform.axis_z, color);
     else if (const SphereLight* sphere = light->as<SphereLight>())
         draw_sphere_light_gizmo(context, sphere, world_from_object, transform, color);
+    else if (const CylinderLight* cylinder = light->as<CylinderLight>())
+        draw_cylinder_light_gizmo(context, cylinder, transform, color);
     else if (const DiskLight* disk = light->as<DiskLight>())
         draw_disk_light_gizmo(context, disk, world_from_object, transform, color);
     else if (const RectLight* rect = light->as<RectLight>())

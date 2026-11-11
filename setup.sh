@@ -20,6 +20,8 @@ if [ ! -d ${BASE_DIR}/.vscode ]; then
 fi
 
 # call ./tools/pipinstall.sh
-bash "${BASE_DIR}/tools/pipinstall.sh"
+bash "${BASE_DIR}/tools/pipinstall.sh" || exit $?
+
+python "${BASE_DIR}/falcor2/tools/cli.py" setup --skills-only "$@" || exit $?
 
 exit 0

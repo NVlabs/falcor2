@@ -7,6 +7,7 @@ from pathlib import Path
 from datetime import datetime
 import numpy as np
 import slangpy as spy
+import falcor2 as f2
 import sys
 
 sys.path.append(str(Path(__file__).parent))
@@ -36,19 +37,7 @@ class App:
 
         # Setup slangpy window and device
         self.window = spy.Window(width=1920, height=1080, title="PathTracer", resizable=False)
-        self.device = spy.Device(
-            # type=spy.DeviceType.cuda,
-            enable_debug_layers=False,
-            # enable_compilation_reports=True,
-            compiler_options={
-                "include_paths": [
-                    Path(__file__).parent.parent.parent / "slang",
-                    spy.SHADER_PATH,
-                ],
-                # "debug_info": spy.SlangDebugInfoLevel.standard,
-            },
-            # enable_cuda_interop=True,
-        )
+        self.device = f2.create_device({"enable_debug_layers": False})
 
         # Setup surface
         self.surface = self.device.create_surface(self.window)
@@ -114,9 +103,7 @@ class App:
             return
 
         if event.type == spy.KeyboardEventType.key_press:
-            if event.key == spy.KeyCode.escape:
-                self.window.close()
-            elif event.key == spy.KeyCode.f1:
+            if event.key == spy.KeyCode.f1:
                 if self.output_texture:
                     spy.tev.show_async(self.output_texture, name=datetime.now().isoformat())
             elif event.key == spy.KeyCode.f2:

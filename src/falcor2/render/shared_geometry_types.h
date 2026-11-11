@@ -12,6 +12,7 @@ namespace falcor::shared {
 
 using namespace sgl::math;
 
+#include "falcor2/render/geometry/area_light_geometry_types.slang"
 #include "falcor2/render/geometry/triangle_geometry_types.slang"
 #include "falcor2/render/geometry/lss_geometry_types.slang"
 

@@ -4,6 +4,7 @@
 #include "usdshade_to_mtlx.h"
 
 #include "material_network.h"
+#include "falcor2/core/platform.h"
 #include "falcor2/importers/importer_types.h"
 
 #include <algorithm>
@@ -126,9 +127,8 @@ mx::FileSearchPath compute_search_paths()
 {
     mx::FileSearchPath search_paths;
 
-#ifdef MTLX_STANDARD_LIBRARY_PATH
-    search_paths.append(mx::FilePath(MTLX_STANDARD_LIBRARY_PATH));
-#endif
+    const std::filesystem::path standard_library_path = platform::runtime_directory() / "mtlx/standard";
+    search_paths.append(mx::FilePath(standard_library_path.lexically_normal().string()));
 
     auto get_env_var = [](const char* env_name) -> std::string
     {
@@ -197,14 +197,11 @@ const mx::DocumentPtr& get_std_libraries()
         const mx::FileSearchPath search_paths = compute_search_paths();
         load_libraries_from_search_path(libs, search_paths, {"libraries", "."});
 
-#if defined(FALCOR_PROJECT_DIR)
         if (libs->getNodeDefs().empty()) {
-            const std::filesystem::path materialx_root
-                = std::filesystem::path(FALCOR_PROJECT_DIR) / "external" / "MaterialX";
+            const std::filesystem::path materialx_root = platform::project_directory() / "external" / "MaterialX";
             if (std::filesystem::exists(materialx_root))
                 load_libraries_from_search_path(libs, mx::FileSearchPath(materialx_root.string()), {"libraries"});
         }
-#endif
 
         if (libs->getNodeDefs().empty()) {
             throw std::runtime_error("Failed to load MaterialX 1.39 standard libraries for USD MaterialX conversion.");
@@ -236,7 +233,9 @@ public:
         : m_material(material)
     {
         m_doc = mx::createDocument();
-        m_doc->importLibrary(get_std_libraries());
+        // Resolve library definitions without serializing them as authored source
+        // or XML includes. The material loader imports its own libraries.
+        m_doc->setDataLibrary(get_std_libraries());
     }
 
     std::optional<Properties> build()
@@ -360,8 +359,20 @@ private:
             if (!mx_input)
                 mx_input = mx_node->addInput(std::string(input.name()), upstream->getType());
 
-            if (mx_input)
-                mx_input->setConnectedNode(upstream);
+            if (mx_input) {
+                // The root surface cannot refer directly to a node inside the MaterialX nodegraph.
+                // Publish a graph output for this UsdShade connection across the graph boundary.
+                if (mx_node->getParent() != upstream->getParent()) {
+                    mx::OutputPtr output = m_node_graph->addOutput(
+                        m_node_graph->createValidChildName(upstream->getName() + "_out"),
+                        upstream->getType()
+                    );
+                    output->setConnectedNode(upstream);
+                    mx_input->setConnectedOutput(output);
+                } else {
+                    mx_input->setConnectedNode(upstream);
+                }
+            }
         }
     }
 

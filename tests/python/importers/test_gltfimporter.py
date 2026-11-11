@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from pathlib import Path
+import json
 import pytest
 import slangpy as spy
 import falcor2 as f2
@@ -41,6 +42,13 @@ def test_load_scene(test_file: str):
 
     # Verify the first mesh has the expected geometry counts
     first_mesh = scene.meshes[0]
+    assert first_mesh.source_asset_ref.format == "gltf"
+    assert first_mesh.source_asset_ref.asset_path == str((DATA / test_file).resolve())
+    assert first_mesh.source_asset_ref.object_path == "/meshes/0"
+    assert first_mesh.subgeometries[0].material_index >= 0
+    assert scene.materials[
+        first_mesh.subgeometries[0].material_index
+    ].source_asset_ref.object_path.startswith("/materials/")
     assert first_mesh.vertex_count == 24  # Expected vertex count
 
     # Count total triangles across all subgeometries
@@ -291,16 +299,14 @@ def test_pbr_material_structure(test_file: str):
     # Optional parameters that might be present
     optional_pbr_params = {
         "baseColorTexture",  # Base color texture
-        "baseColorTexture_texcoord",  # Base color texture coordinates
+        "baseColorTexture:texcoord",  # Base color texture coordinates
         "metallicRoughnessTexture",  # Combined metallic-roughness texture
-        "metallicRoughnessTexture_texcoord",  # Metallic-roughness texture coordinates
+        "metallicRoughnessTexture:texcoord",  # Metallic-roughness texture coordinates
         "normalTexture",  # Normal map
-        "normalTexture_texcoord",  # Normal texture coordinates
-        "normalTexture_scale",  # Normal texture scale
-        "occlusionTexture",  # Occlusion texture
-        "occlusionTexture_texcoord",  # Occlusion texture coordinates
+        "normalTexture:texcoord",  # Normal texture coordinates
+        "normalTexture:strength",  # Normal texture strength
         "emissiveTexture",  # Emissive texture
-        "emissiveTexture_texcoord",  # Emissive texture coordinates
+        "emissiveTexture:texcoord",  # Emissive texture coordinates
         "alphaMode",  # Alpha mode (OPAQUE, MASK, BLEND)
         "alphaCutoff",  # Alpha cutoff for MASK mode
         "doubleSided",  # Double-sided flag
@@ -309,6 +315,7 @@ def test_pbr_material_structure(test_file: str):
     all_pbr_params = expected_pbr_params | optional_pbr_params
 
     for i, material in enumerate(scene.materials):
+        assert not any(key.startswith("occlusion") for key in material.params.keys())
         # Check that we have some PBR parameters
         pbr_params_found = set(material.params.keys()) & all_pbr_params
         assert (
@@ -334,7 +341,7 @@ def test_pbr_material_structure(test_file: str):
                 "metallicFactor",
                 "roughnessFactor",
                 "alphaCutoff",
-                "normalTexture_scale",
+                "normalTexture:strength",
             ]:
                 # These should be numeric string values or texture indices
                 if isinstance(param_value, str):
@@ -374,16 +381,12 @@ def test_mesh_material_assignment(test_file: str):
 
     assert scene is not None
 
-    # Collect all material names from materials list
-    material_names = {material.name for material in scene.materials}
-
     # Check that mesh subgeometries reference valid materials
     for mesh_idx, mesh in enumerate(scene.meshes):
         for subgeom_idx, subgeom in enumerate(mesh.subgeometries):
-            if subgeom.material_name != "":  # Empty string means no material assigned
-                assert (
-                    subgeom.material_name in material_names
-                ), f"Mesh {mesh_idx} subgeometry {subgeom_idx} references unknown material '{subgeom.material_name}'"
+            assert (
+                -1 <= subgeom.material_index < len(scene.materials)
+            ), f"Mesh {mesh_idx} subgeometry {subgeom_idx} references invalid material index {subgeom.material_index}"
 
     print(f"Mesh-material assignment verified for {len(scene.meshes)} meshes")
 
@@ -606,6 +609,19 @@ def test_scene_structure_matches_json(test_file: str):
         expected_structure = json.load(f)
     del expected_structure["file_path"]  # Remove file path for comparison
 
+    # The separately versioned data snapshots predate colon sub-attributes.
+    # Translate only their texture metadata keys; still compare all values exactly.
+    for material in expected_structure.get("materials", {}).get("materials", []):
+        params = material["parameters"]
+        for key in list(params):
+            texture, separator, attribute = key.rpartition("_")
+            if (
+                separator
+                and texture.endswith("Texture")
+                and attribute in {"texcoord", "offset", "rotation", "scale", "strength"}
+            ):
+                params[f"{texture}:{attribute}"] = params.pop(key)
+
     # Generate the actual scene structure using the same analysis functions
     actual_structure = {
         "components": importers.get_scene_component_counts(scene),
@@ -631,6 +647,35 @@ def test_scene_structure_matches_json(test_file: str):
 
     # Assert that there are no differences
     assert not diff, f"Scene structure mismatch for {model_path}:\n{diff.pretty()}"
+
+
+@pytest.mark.parametrize("transmission_factor", [None, 0.0, 1.0])
+def test_transmission_metadata_requires_authored_extension(
+    tmp_path: Path, transmission_factor: float | None
+) -> None:
+    material = {"name": "Surface"}
+    gltf = {
+        "asset": {"version": "2.0"},
+        "materials": [material],
+        "nodes": [],
+        "scenes": [{"nodes": []}],
+        "scene": 0,
+    }
+    if transmission_factor is not None:
+        material["extensions"] = {
+            "KHR_materials_transmission": {"transmissionFactor": transmission_factor}
+        }
+        gltf["extensionsUsed"] = ["KHR_materials_transmission"]
+    scene_path = tmp_path / "transmission.gltf"
+    scene_path.write_text(json.dumps(gltf), encoding="utf-8")
+
+    scene = f2.GltfImporter().load_scene(scene_path)
+    assert len(scene.materials) == 1
+    params = scene.materials[0].params
+    if transmission_factor is None:
+        assert not params.has_property("hasTransmission")
+    else:
+        assert params.get_bool("hasTransmission") is True
 
 
 def test_emissive_strength_extension():
@@ -791,6 +836,7 @@ def test_gltf_double_sided_materials():
     ), "SingleSidedMaterial should have doubleSided=False"
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_gltf_scene_alpha_mask_material_mapping(device_type: spy.DeviceType) -> None:
     scene_path = DATA / "assets/kronos/AlphaBlendModeTest/glTF/AlphaBlendModeTest.gltf"
@@ -801,6 +847,7 @@ def test_gltf_scene_alpha_mask_material_mapping(device_type: spy.DeviceType) -> 
     scene = f2.Scene.load(device, scene_path)
     scene.update()
     materials = {material.name: material for material in scene.materials}
+    assert all(material.double_sided for material in materials.values())
 
     expected_cutoffs = {
         "MatCutoff25": 0.25,
@@ -816,8 +863,19 @@ def test_gltf_scene_alpha_mask_material_mapping(device_type: spy.DeviceType) -> 
 
     assert materials["MatBlend"]["alpha_mode"] == f2.AlphaMode.blend
     assert materials["MatOpaque"]["alpha_mode"] == f2.AlphaMode.opaque
-    assert scene.requirements.requires_opacity_evaluation
+    assert scene.required_capabilities.has(f2.SceneCapabilityFlags.opacity_evaluation)
 
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_required_interactivity(tmp_path: Path) -> None:
+    path = tmp_path / "interactivity.gltf"
+    asset = {"asset": {"version": "2.0"}, "extensionsUsed": ["KHR_interactivity"]}
+    path.write_text(json.dumps(asset))
+    f2.GltfImporter().load_scene(path)
+    asset["extensionsRequired"] = ["KHR_interactivity"]
+    path.write_text(json.dumps(asset))
+    with pytest.raises(RuntimeError, match="Unsupported required extension KHR_interactivity"):
+        f2.GltfImporter().load_scene(path)

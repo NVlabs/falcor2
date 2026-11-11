@@ -20,5 +20,7 @@ if not exist %~dp0\.vscode\ (
 )
 
 call %~dp0\tools\pipinstall.bat
+if errorlevel 1 exit /b %errorlevel%
 
-exit /b 0
+python "%~dp0falcor2\tools\cli.py" setup --skills-only %*
+exit /b %errorlevel%

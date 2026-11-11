@@ -1,0 +1,32 @@
+{
+  "test_benchmark_pathtracer[pathtracer_helmet-DeviceType.vulkan]": {
+    "reference": "51efc5931aa4620af781f98c309162c1dbee97eb75f134033f4bb8ed9a2fb27a"
+  },
+  "test_benchmark_pathtracer[pathtracer_helmet-DeviceType.cuda]": {
+    "reference": "241534774d13ac1a758699484287cbd16ace46e211f0009424ad02d6acf5ecd7"
+  },
+  "test_benchmark_pathtracer[pathtracer_mis-DeviceType.vulkan]": {
+    "reference": "8b9c0366dffee7bd9ec568e865e7048ce252f72ddc62c163b6f2c71676ec1f73"
+  },
+  "test_benchmark_pathtracer[pathtracer_mis-DeviceType.cuda]": {
+    "reference": "b5a73e0a52f1f5d86769a7965ef1768420126cdb318c2dfdc7a1f1b97dddc2c0"
+  },
+  "test_benchmark_pathtracer[high_bounce_gi-DeviceType.vulkan]": {
+    "reference": "98baabf43d82d992f5cef32b82d1021375d47738b2ac26e52171e01c0d170374"
+  },
+  "test_benchmark_pathtracer[high_bounce_gi-DeviceType.cuda]": {
+    "reference": "f8ff65f8c07d2020368dca85a93beb8918d70c8b57e3de2bc15213ba6dc8ae4f"
+  },
+  "test_benchmark_pathtracer[multi_material_scene-DeviceType.vulkan]": {
+    "reference": "5cfc61250c6840b38b6ea18d35af68e248536a3d04f6286165e69134d6a14dc8"
+  },
+  "test_benchmark_pathtracer[multi_material_scene-DeviceType.cuda]": {
+    "reference": "ac255aabbcc281841992585214ac2b71cfa59bcfac7d057082418642f4f1dddf"
+  },
+  "test_benchmark_pathtracer[texture_heavy-DeviceType.vulkan]": {
+    "reference": "e0e55075702d9aca7b19e58220d566d72d47de1cfa5ade7190e24aa5d21bdc15"
+  },
+  "test_benchmark_pathtracer[texture_heavy-DeviceType.cuda]": {
+    "reference": "e2ccb5a933d3186b645e86e895e57386b4f0dac6f8ae9b12210d626ad6c7e3d7"
+  }
+}

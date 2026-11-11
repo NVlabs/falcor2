@@ -17,7 +17,6 @@ struct MxDielectricLutBuffers {
     ref<sgl::Buffer> reflfront_energy;
     ref<sgl::Buffer> bothfront_energy;
     ref<sgl::Buffer> bothback_energy;
-    ref<sgl::Buffer> bothback_fit_energy;
 };
 
 FALCOR_API MxDielectricLutBuffers create_mx_dielectric_lut_buffers(sgl::Device* device);

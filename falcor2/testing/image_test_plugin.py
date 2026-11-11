@@ -88,6 +88,14 @@ class ImageTest:
         # Convert image to numpy array for processing
         image_array = self._convert_to_numpy(image)
 
+        # Validate before the hash fast path or reference generation can accept it.
+        if not np.isfinite(tolerance) or tolerance < 0:
+            raise ValueError("Image tolerance must be finite and nonnegative.")
+        if image_array.size == 0 or not np.all(np.isfinite(image_array)):
+            raise AssertionError(
+                f"Invalid image for {self._full_test_name(additional_name)}: empty or contains NaN/Inf."
+            )
+
         # Generate hash of image content
         image_hash = self._compute_image_hash(image_array)
 
@@ -217,17 +225,29 @@ class ImageTest:
             copy=False,
         )
 
+        if image_array.ndim == 2 and reference_array.ndim == 3 and reference_array.shape[2] == 1:
+            reference_array = reference_array[..., 0]
+
         # Remove last dimension from reference array if comparing 2 channel image
         if (
             len(reference_array.shape) == 3
             and reference_array.shape[2] == 3
+            and len(image_array.shape) == 3
             and image_array.shape[2] == 2
         ):
             reference_array = reference_array[:, :, :2]
 
         # Compute difference + compare
-        diff = float(np.mean((image_array - reference_array) ** 2))
-        if diff > tolerance:
+        if reference_array.shape != image_array.shape or not np.all(np.isfinite(reference_array)):
+            return ImageComparison(
+                status="failed",
+                reference_hash=reference_hash,
+                message=f"Invalid reference for {full_test_name}: shape mismatch or NaN/Inf.",
+            )
+
+        with np.errstate(over="ignore", invalid="ignore"):
+            diff = float(np.mean((image_array.astype(np.float64) - reference_array) ** 2))
+        if not np.isfinite(diff) or diff > tolerance:
             self._save_error_images(image_array, reference_array, additional_name)
             return ImageComparison(
                 status="failed",

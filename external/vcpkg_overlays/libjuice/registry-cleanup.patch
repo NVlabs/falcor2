@@ -1,0 +1,10 @@
+--- a/src/conn.c
++++ b/src/conn.c
+@@ -89,2 +89,3 @@
+ 			mutex_unlock(&registry->mutex);
++			mutex_destroy(&registry->mutex);
+ 			free(registry->agents);
+@@ -121,2 +122,3 @@
+ 		entry->registry = NULL;
++		mutex_destroy(&registry->mutex);
+ 		free(registry->agents);

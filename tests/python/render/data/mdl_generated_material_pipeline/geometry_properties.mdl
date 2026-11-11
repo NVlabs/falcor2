@@ -1,0 +1,23 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+mdl 1.10;
+import ::df::*;
+import ::scene::*;
+import ::state::*;
+
+// Keep named and state reads together: regression for https://github.com/shader-slang/slang/issues/13046.
+export material Default(uniform float3 fallback = float3(0.11, 0.12, 0.13)) = material(
+    surface: material_surface(scattering: df::diffuse_reflection_bsdf(tint: color(
+        scene::data_lookup_float3("Pref", fallback) + state::texture_coordinate(1)
+        + state::transform_point(state::coordinate_world, state::coordinate_object, state::position())
+    )))
+);
+
+export material UV() = material(surface: material_surface(scattering: df::diffuse_reflection_bsdf(
+    tint: color(state::texture_coordinate(1))
+)));
+
+export material Pref() = material(surface: material_surface(scattering: df::diffuse_reflection_bsdf(
+    tint: color(scene::data_lookup_float3("Pref", float3(0.9, 0.8, 0.7)))
+)));

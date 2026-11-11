@@ -1,0 +1,17 @@
+{
+  "test_material_aov_marble_blue_veins_on_aswf_shader_ball[materialx-closure_tree-DeviceType.d3d12]": {
+    "reference": "86ab27a1e7bd23aa0e96324cdfe5bbe0bb0e56ab3357686814c9523e067f30df"
+  },
+  "test_material_aov_marble_blue_veins_on_aswf_shader_ball[materialx-default-DeviceType.d3d12][default-mode-1]": {
+    "reference": "e9d846ff7e4a07f76d0eec82a6e09965dd0be58aaf816f5dc6f00ed952e2efef"
+  },
+  "test_material_aov_marble_blue_veins_on_aswf_shader_ball[materialx-default-DeviceType.d3d12][default-mode-2]": {
+    "reference": "2c527d543f2b7e6835c93646c120a54ca520275b4084831f91452f60c1c42061"
+  },
+  "test_material_aov_marble_blue_veins_on_aswf_shader_ball[materialx-bsdf_mix-DeviceType.d3d12]": {
+    "reference": "e9d846ff7e4a07f76d0eec82a6e09965dd0be58aaf816f5dc6f00ed952e2efef"
+  },
+  "test_material_aov_marble_blue_veins_on_aswf_shader_ball[mdl-DeviceType.d3d12]": {
+    "reference": "ce30e853111cf89a2df7120fd93842c4d49b0a7467fefaff93410068803cb606"
+  }
+}

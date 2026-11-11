@@ -31,22 +31,31 @@ TEST_CASE("ImporterAnimationChannel - keyframe_count")
     CHECK_EQ(ch.keyframe_count(), 3);
 }
 
-TEST_CASE("ImporterAnimation - duration empty")
+TEST_CASE("ImporterAnimation - key range empty")
 {
     ImporterAnimation anim;
-    CHECK_EQ(anim.duration(), 0.f);
+    CHECK_FALSE(anim.key_range().is_valid());
+    anim.channels.emplace_back();
+    CHECK_FALSE(anim.key_range().is_valid());
 }
 
-TEST_CASE("ImporterAnimation - duration single channel")
+TEST_CASE("ImporterAnimation - key range single channel")
 {
     ImporterAnimation anim;
     ImporterAnimationChannel ch;
     ch.times = {0.f, 0.5f, 1.5f};
     anim.channels.push_back(ch);
-    CHECK_EQ(anim.duration(), doctest::Approx(1.5f));
+    CHECK_EQ(anim.key_range().end, doctest::Approx(1.5f));
+    anim.channels[0].times = {-3.f, -1.f};
+    CHECK_EQ(anim.key_range().start, -3.0);
+    CHECK_EQ(anim.key_range().end, -1.0);
+    anim.channels[0].times = {0.f};
+    CHECK(anim.key_range().is_valid());
+    CHECK_EQ(anim.key_range().start, 0.f);
+    CHECK_EQ(anim.key_range().end, 0.f);
 }
 
-TEST_CASE("ImporterAnimation - duration multiple channels")
+TEST_CASE("ImporterAnimation - key range multiple channels")
 {
     ImporterAnimation anim;
 
@@ -63,7 +72,15 @@ TEST_CASE("ImporterAnimation - duration multiple channels")
     anim.channels.push_back(ch2);
     anim.channels.push_back(ch3);
 
-    CHECK_EQ(anim.duration(), doctest::Approx(3.f));
+    CHECK_EQ(anim.key_range().end, doctest::Approx(3.f));
+    anim.channels.insert(anim.channels.begin(), ImporterAnimationChannel{});
+    for (float start : {-10.f, 10.f}) {
+        anim.channels[1].times = {start, start + 1.f};
+        anim.channels[2].times = {start + 0.5f, start + 3.f};
+        anim.channels[3].times.clear();
+        CHECK_EQ(anim.key_range().start, start);
+        CHECK_EQ(anim.key_range().end, start + 3.f);
+    }
 }
 
 TEST_SUITE_END();

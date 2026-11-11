@@ -46,21 +46,27 @@ public struct Frame : IDifferentiable
         Component preserved_component = Component::normal
     )
     {
-        // Only useful for extreme bump cases where tangent and normal can become almost colinear.
-        // if (abs(dot(normal, tangent)) >= 0.999) {
-        //     this.normal = normal;
-        //     branchless_ONB(this.normal, this.tangent, this.bitangent);
-        //     return;
-        // }
-        if (preserved_component == Component::normal) {
-            this.normal = normal;
-            this.bitangent = normalize(cross(normal, tangent));
-            this.tangent = cross(bitangent, normal);
-        } else // preserve tangent, used for curves
-        {
-            this.tangent = tangent;
-            this.bitangent = normalize(cross(normal, tangent));
-            this.normal = cross(tangent, bitangent);
+        const float3 unnormalized_bitangent = cross(normal, tangent);
+        // Collinear inputs do not define a tangent plane. Keep the requested axis
+        // and choose a stable perpendicular pair instead of normalizing zero.
+        if (dot(unnormalized_bitangent, unnormalized_bitangent) <= 1.0e-12) {
+            if (preserved_component == Component::normal) {
+                this.normal = normal;
+                branchless_ONB(normal, this.tangent, this.bitangent);
+            } else {
+                this.tangent = tangent;
+                branchless_ONB(tangent, this.bitangent, this.normal);
+            }
+        } else {
+            this.bitangent = normalize(unnormalized_bitangent);
+            if (preserved_component == Component::normal) {
+                this.normal = normal;
+                this.tangent = cross(bitangent, normal);
+            } else // preserve tangent, used for curves
+            {
+                this.tangent = tangent;
+                this.normal = cross(tangent, bitangent);
+            }
         }
         this.bitangent *= handedness;
     }
@@ -115,16 +121,21 @@ float3 adjust_shading_normal_impl(
     float sign_N = dot(shading_normal, Ng) >= 0.f ? 1.f : -1.f;
     float3 Ns = sign_N * shading_normal;
 
-    // Blend the shading normal towards the geometric normal at grazing angles.
-    // This is to avoid the view vector from becoming back-facing.
-    const float COS_THETA_THRESHOLD = 0.1f;
-    float cos_theta = dot(view_dir, Ns);
-    if (cos_theta <= COS_THETA_THRESHOLD) {
-        float t = saturate(cos_theta * (1.f / COS_THETA_THRESHOLD));
-        was_adjusted = true;
-        return normalize(sign_N * lerp(Ng, Ns, t));
-    }
+    // Algorithm from Appendix A.3 of https://arxiv.org/abs/1705.01263
+    // The specular reflection of the view direction is computed.
+    // If the reflection vector lies under the horizon, the shading normal is adjusted.
+    // This ensures that the majority of the reflection lobe lies on the same side,
+    // but it does not guarantee that all directions are valid in the general case.
 
+    // Specular reflection in shading normal
+    float3 R = reflect(-view_dir, Ns);
+    float a = dot(Ng, R);
+    if (a < 0) // Perturb normal
+    {
+        float b = max(0.001, dot(Ns, Ng));
+        was_adjusted = true;
+        return normalize(sign_N * (view_dir + normalize(R - Ns * a / b)));
+    }
     return shading_normal;
 }
 
@@ -143,4 +154,25 @@ public void adjust_shading_normal(inout Frame sf, const float3 geometric_normal,
     const float3 adjusted_normal = adjust_shading_normal_impl(sf.normal, geometric_normal, view_dir, was_adjusted);
     if (was_adjusted)
         sf = Frame(adjusted_normal, sf.tangent, sf.handedness_sign());
+}
+
+/// Repairs a shading frame into the hemisphere of oriented_geometric_normal, preserving handedness.
+/// All normals and view_dir must be unit length. front_geometric_normal must face view_dir;
+/// oriented_geometric_normal selects the intended shading side and may face away for transmission.
+public void adjust_shading_frame(
+    inout Frame sf,
+    const float3 oriented_geometric_normal,
+    const float3 front_geometric_normal,
+    const float3 view_dir
+)
+{
+    const float cos_theta = dot(sf.normal, oriented_geometric_normal);
+    if (cos_theta < 0.0) {
+        // A mapped normal can cross the geometric horizon. Keep its tangential direction,
+        // but put it on the intended side before the side-preserving reflection repair.
+        const float3 normal
+            = normalize(sf.normal - cos_theta * oriented_geometric_normal + 0.001 * oriented_geometric_normal);
+        sf = Frame(normal, sf.tangent, sf.handedness_sign());
+    }
+    adjust_shading_normal(sf, front_geometric_normal, view_dir);
 }

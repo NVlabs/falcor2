@@ -263,6 +263,23 @@ public struct OpenPBRMaterialInstance : IMaterialInstance
     }
 };
 
+namespace openpbrmat {
+struct AttributeTextureMetadataFields
+{
+    typedef BitField<uint, 0, 2> channel;
+    typedef BitField<uint, 2, 3> texcoord;
+}
+
+struct GeometryTextureMetadataFields
+{
+    typedef BitField<uint, 0, 3> normal_texcoord;
+    typedef BitField<uint, 3, 3> opacity_texcoord;
+    typedef BitField<uint, 6, 2> opacity_channel;
+    typedef BitField<uint, 8, 1> use_vertex_color;
+    typedef BitField<uint, 9, 1> normal_map_encoded;
+}
+}
+
 public struct OpenPBRMaterial : IMaterial
 {
     typedef OpenPBRMaterialInstance MaterialInstance;
@@ -270,13 +287,13 @@ public struct OpenPBRMaterial : IMaterial
     public struct FloatAttribute
     {
         float16_t value;
-        uint16_t texture_channel;
+        uint16_t texture_metadata;
         TextureHandle texture_handle;
     };
     public struct Float3Attribute
     {
         float16_t3 value;
-        uint16_t _pad0;
+        uint16_t texture_metadata;
         TextureHandle texture_handle;
     };
 
@@ -327,6 +344,8 @@ public struct OpenPBRMaterial : IMaterial
     public bool has_emission;
     public bool geometry_thin_walled;
     public BufferHandle attributes_buffer;
+    public TextureHandle opacity_texture_handle;
+    public uint16_t geometry_texture_metadata;
 
     // Attributes attributes;
 
@@ -341,8 +360,12 @@ public struct OpenPBRMaterial : IMaterial
         // Setup shading frame.
         Frame shading_frame_ws = {};
         if (normal_texture_handle.is_valid()) {
-            float3 normal = stdmat::decode_normal_map(
-                normal_texture_handle.sample(lod_sampler, si.uv, float4(0.0, 0.0, 1.0, 0.0)).xyz
+            const uint texture_coord_index
+                = openpbrmat::GeometryTextureMetadataFields::normal_texcoord::extract(geometry_texture_metadata);
+            const float2 texture_coord = surface_material::resolve_texcoord(si, texture_coord_index);
+            float3 normal = surface_material::decode_normal_map(
+                normal_texture_handle.sample(lod_sampler, texture_coord, float4(0.0, 0.0, 1.0, 0.0)).xyz,
+                openpbrmat::GeometryTextureMetadataFields::normal_map_encoded::extract(geometry_texture_metadata) != 0
             );
             normal = normalize(lerp(float3(0.0, 0.0, 1.0), normal, normal_texture_scale));
             shading_frame_ws = Frame(
@@ -353,7 +376,8 @@ public struct OpenPBRMaterial : IMaterial
         } else {
             shading_frame_ws = si.shading_frame_ws;
         }
-        if (hints & MaterialInstanceHints::adjust_shading_normal) {
+        // TODO: Use is_set() once https://github.com/shader-slang/slang/issues/12926 is fixed.
+        if ((hints & MaterialInstanceHints::adjust_shading_normal) != MaterialInstanceHints::none) {
             adjust_shading_normal(shading_frame_ws, si.front_normal_ws(), si.wi_ws);
         }
 
@@ -363,52 +387,54 @@ public struct OpenPBRMaterial : IMaterial
         Attributes attributes = attributes_buffer.load<Attributes>(0);
 
         // Base
-        mi.inputs.base_weight = eval_attribute(attributes.base_weight, si.uv, lod_sampler);
-        mi.inputs.base_color = eval_attribute(attributes.base_color, si.uv, lod_sampler);
-        mi.inputs.base_diffuse_roughness = eval_attribute(attributes.base_diffuse_roughness, si.uv, lod_sampler);
-        mi.inputs.base_metalness = eval_attribute(attributes.base_metalness, si.uv, lod_sampler);
+        mi.inputs.base_weight = eval_attribute(attributes.base_weight, si, lod_sampler);
+        mi.inputs.base_color = eval_attribute(attributes.base_color, si, lod_sampler);
+        if (openpbrmat::GeometryTextureMetadataFields::use_vertex_color::extract(geometry_texture_metadata) != 0)
+            mi.inputs.base_color *= surface_material::resolve_vertex_color(si).rgb;
+        mi.inputs.base_diffuse_roughness = eval_attribute(attributes.base_diffuse_roughness, si, lod_sampler);
+        mi.inputs.base_metalness = eval_attribute(attributes.base_metalness, si, lod_sampler);
 
         // Specular
-        mi.inputs.specular_weight = eval_attribute(attributes.specular_weight, si.uv, lod_sampler);
-        mi.inputs.specular_color = eval_attribute(attributes.specular_color, si.uv, lod_sampler);
-        mi.inputs.specular_roughness = eval_attribute(attributes.specular_roughness, si.uv, lod_sampler);
+        mi.inputs.specular_weight = eval_attribute(attributes.specular_weight, si, lod_sampler);
+        mi.inputs.specular_color = eval_attribute(attributes.specular_color, si, lod_sampler);
+        mi.inputs.specular_roughness = eval_attribute(attributes.specular_roughness, si, lod_sampler);
         mi.inputs.specular_roughness_anisotropy
-            = eval_attribute(attributes.specular_roughness_anisotropy, si.uv, lod_sampler);
-        mi.inputs.specular_ior = eval_attribute(attributes.specular_ior, si.uv, lod_sampler);
+            = eval_attribute(attributes.specular_roughness_anisotropy, si, lod_sampler);
+        mi.inputs.specular_ior = eval_attribute(attributes.specular_ior, si, lod_sampler);
 
         // Coat
-        mi.inputs.coat_weight = eval_attribute(attributes.coat_weight, si.uv, lod_sampler);
-        mi.inputs.coat_color = eval_attribute(attributes.coat_color, si.uv, lod_sampler);
-        mi.inputs.coat_roughness = eval_attribute(attributes.coat_roughness, si.uv, lod_sampler);
-        mi.inputs.coat_roughness_anisotropy = eval_attribute(attributes.coat_roughness_anisotropy, si.uv, lod_sampler);
-        mi.inputs.coat_ior = eval_attribute(attributes.coat_ior, si.uv, lod_sampler);
-        mi.inputs.coat_darkening = eval_attribute(attributes.coat_darkening, si.uv, lod_sampler);
+        mi.inputs.coat_weight = eval_attribute(attributes.coat_weight, si, lod_sampler);
+        mi.inputs.coat_color = eval_attribute(attributes.coat_color, si, lod_sampler);
+        mi.inputs.coat_roughness = eval_attribute(attributes.coat_roughness, si, lod_sampler);
+        mi.inputs.coat_roughness_anisotropy = eval_attribute(attributes.coat_roughness_anisotropy, si, lod_sampler);
+        mi.inputs.coat_ior = eval_attribute(attributes.coat_ior, si, lod_sampler);
+        mi.inputs.coat_darkening = eval_attribute(attributes.coat_darkening, si, lod_sampler);
 
         // Fuzz
-        mi.inputs.fuzz_weight = eval_attribute(attributes.fuzz_weight, si.uv, lod_sampler);
-        mi.inputs.fuzz_color = eval_attribute(attributes.fuzz_color, si.uv, lod_sampler);
-        mi.inputs.fuzz_roughness = eval_attribute(attributes.fuzz_roughness, si.uv, lod_sampler);
+        mi.inputs.fuzz_weight = eval_attribute(attributes.fuzz_weight, si, lod_sampler);
+        mi.inputs.fuzz_color = eval_attribute(attributes.fuzz_color, si, lod_sampler);
+        mi.inputs.fuzz_roughness = eval_attribute(attributes.fuzz_roughness, si, lod_sampler);
 
         // Transmission / volume
-        mi.inputs.transmission_weight = eval_attribute(attributes.transmission_weight, si.uv, lod_sampler);
-        mi.inputs.transmission_color = eval_attribute(attributes.transmission_color, si.uv, lod_sampler);
-        mi.inputs.transmission_depth = eval_attribute(attributes.transmission_depth, si.uv, lod_sampler);
-        mi.inputs.transmission_scatter = eval_attribute(attributes.transmission_scatter, si.uv, lod_sampler);
+        mi.inputs.transmission_weight = eval_attribute(attributes.transmission_weight, si, lod_sampler);
+        mi.inputs.transmission_color = eval_attribute(attributes.transmission_color, si, lod_sampler);
+        mi.inputs.transmission_depth = eval_attribute(attributes.transmission_depth, si, lod_sampler);
+        mi.inputs.transmission_scatter = eval_attribute(attributes.transmission_scatter, si, lod_sampler);
         mi.inputs.transmission_scatter_anisotropy
-            = eval_attribute(attributes.transmission_scatter_anisotropy, si.uv, lod_sampler);
+            = eval_attribute(attributes.transmission_scatter_anisotropy, si, lod_sampler);
         mi.inputs.transmission_dispersion_scale
-            = eval_attribute(attributes.transmission_dispersion_scale, si.uv, lod_sampler);
+            = eval_attribute(attributes.transmission_dispersion_scale, si, lod_sampler);
         mi.inputs.transmission_dispersion_abbe_number
-            = eval_attribute(attributes.transmission_dispersion_abbe_number, si.uv, lod_sampler);
+            = eval_attribute(attributes.transmission_dispersion_abbe_number, si, lod_sampler);
 
         // Thin-film
-        mi.inputs.thin_film_weight = eval_attribute(attributes.thin_film_weight, si.uv, lod_sampler);
-        mi.inputs.thin_film_thickness = eval_attribute(attributes.thin_film_thickness, si.uv, lod_sampler);
-        mi.inputs.thin_film_ior = eval_attribute(attributes.thin_film_ior, si.uv, lod_sampler);
+        mi.inputs.thin_film_weight = eval_attribute(attributes.thin_film_weight, si, lod_sampler);
+        mi.inputs.thin_film_thickness = eval_attribute(attributes.thin_film_thickness, si, lod_sampler);
+        mi.inputs.thin_film_ior = eval_attribute(attributes.thin_film_ior, si, lod_sampler);
 
         // Emission
-        mi.inputs.emission_luminance = eval_attribute(attributes.emission_luminance, si.uv, lod_sampler);
-        mi.inputs.emission_color = eval_attribute(attributes.emission_color, si.uv, lod_sampler);
+        mi.inputs.emission_luminance = eval_attribute(attributes.emission_luminance, si, lod_sampler);
+        mi.inputs.emission_color = eval_attribute(attributes.emission_color, si, lod_sampler);
 
         // Geometry
         // inputs.geometry_opacity = 1.0f;
@@ -430,6 +456,29 @@ public struct OpenPBRMaterial : IMaterial
 
     public override MaterialFlags flags() { return header.flags; }
 
+    public override float eval_opacity<LodSampler : ILodSampler>(
+        const SurfaceInteraction si,
+        const LodSampler lod_sampler,
+        const MaterialInstanceHints hints = MaterialInstanceHints::none
+    )
+    {
+        if (!is_set(header.opacity_flags, OpacityFlags::enabled))
+            return 1.f;
+
+        const uint texture_coord_index
+            = openpbrmat::GeometryTextureMetadataFields::opacity_texcoord::extract(geometry_texture_metadata);
+        float opacity = header.opacity_factor;
+        if (opacity_texture_handle.is_valid()) {
+            const float2 texture_coord = surface_material::resolve_texcoord(si, texture_coord_index);
+            const uint texture_channel
+                = openpbrmat::GeometryTextureMetadataFields::opacity_channel::extract(geometry_texture_metadata);
+            opacity *= opacity_texture_handle.sample(lod_sampler, texture_coord, float4(1.f))[texture_channel];
+        }
+        if (openpbrmat::GeometryTextureMetadataFields::use_vertex_color::extract(geometry_texture_metadata) != 0)
+            opacity *= surface_material::resolve_vertex_color(si).a;
+        return opacity;
+    }
+
     public override uint2 compute_emission_sampling_grid(float2 uv[3]) { return uint2(100, 100); }
 
     public override float3 eval_emission<LodSampler : ILodSampler>(
@@ -439,8 +488,8 @@ public struct OpenPBRMaterial : IMaterial
     )
     {
         Attributes attributes = attributes_buffer.load<Attributes>(0);
-        float emission_luminance = eval_attribute(attributes.emission_luminance, si.uv, lod_sampler);
-        float3 emission_color = eval_attribute(attributes.emission_color, si.uv, lod_sampler);
+        float emission_luminance = eval_attribute(attributes.emission_luminance, si, lod_sampler);
+        float3 emission_color = eval_attribute(attributes.emission_color, si, lod_sampler);
         return emission_luminance * emission_color * float.PI;
     }
 
@@ -451,21 +500,39 @@ public struct OpenPBRMaterial : IMaterial
     )
     {
         Attributes attributes = attributes_buffer.load<Attributes>(0);
-        float emission_luminance = eval_attribute(attributes.emission_luminance, si.uv, lod_sampler);
-        float3 emission_color = eval_attribute(attributes.emission_color, si.uv, lod_sampler);
+        float emission_luminance = eval_attribute(attributes.emission_luminance, si, lod_sampler);
+        float3 emission_color = eval_attribute(attributes.emission_color, si, lod_sampler);
         return emission_luminance * emission_color;
     }
 
-    private float
-    eval_attribute<LodSampler : ILodSampler>(const FloatAttribute attribute, float2 uv, const LodSampler lod_sampler)
+    private float eval_attribute<LodSampler : ILodSampler>(
+        const FloatAttribute attribute,
+        const SurfaceInteraction si,
+        const LodSampler lod_sampler
+    )
     {
+        if (!attribute.texture_handle.is_valid())
+            return float(attribute.value);
+        const uint texture_coord_index
+            = openpbrmat::AttributeTextureMetadataFields::texcoord::extract(attribute.texture_metadata);
+        const float2 texture_coord = surface_material::resolve_texcoord(si, texture_coord_index);
+        const uint texture_channel
+            = openpbrmat::AttributeTextureMetadataFields::channel::extract(attribute.texture_metadata);
         return float(attribute.value)
-            * attribute.texture_handle.sample(lod_sampler, uv, float(1.0))[attribute.texture_channel];
+            * attribute.texture_handle.sample(lod_sampler, texture_coord, float(1.0))[texture_channel];
     }
 
-    private float3
-    eval_attribute<LodSampler : ILodSampler>(const Float3Attribute attribute, float2 uv, const LodSampler lod_sampler)
+    private float3 eval_attribute<LodSampler : ILodSampler>(
+        const Float3Attribute attribute,
+        const SurfaceInteraction si,
+        const LodSampler lod_sampler
+    )
     {
-        return float3(attribute.value) * attribute.texture_handle.sample(lod_sampler, uv, float4(1.0)).rgb;
+        if (!attribute.texture_handle.is_valid())
+            return float3(attribute.value);
+        const uint texture_coord_index
+            = openpbrmat::AttributeTextureMetadataFields::texcoord::extract(attribute.texture_metadata);
+        const float2 texture_coord = surface_material::resolve_texcoord(si, texture_coord_index);
+        return float3(attribute.value) * attribute.texture_handle.sample(lod_sampler, texture_coord, float4(1.0)).rgb;
     }
 };

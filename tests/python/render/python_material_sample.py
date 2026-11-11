@@ -48,13 +48,13 @@ class PythonMaterialSample(f2.Material):
         self._texture_handles[0] = self.scene.texture_manager.load_texture(
             self.texture0,
             resolver=self._asset_resolver,
-            srgb=True,
+            flags=f2.TextureLoadFlags.color,
             load_deferred=True,
         )
         self._texture_handles[1] = self.scene.texture_manager.load_texture(
             self.texture1,
             resolver=self._asset_resolver,
-            srgb=True,
+            flags=f2.TextureLoadFlags.color,
             load_deferred=True,
         )
 

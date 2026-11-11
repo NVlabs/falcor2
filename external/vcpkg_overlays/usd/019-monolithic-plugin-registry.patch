@@ -1,0 +1,28 @@
+Extend the plugin-registry layout fix from vcpkg PR #53664 to monolithic builds:
+https://github.com/microsoft/vcpkg/pull/53664
+
+Patch 009 moves Windows SHARED component resources to bin/usd. Monolithic
+components are OBJECT libraries, so their resources remain in lib/usd. Keep
+the root registry beside those resources so its relative Includes resolve.
+This preserves Falcor2's existing monolithic package layout; Falcor2 stages
+the complete resource tree beside its runtime and sets the plugin search path.
+
+diff --git a/cmake/macros/Public.cmake b/cmake/macros/Public.cmake
+--- a/cmake/macros/Public.cmake
++++ b/cmake/macros/Public.cmake
+@@ -1072,10 +1072,12 @@ function(pxr_setup_plugins)
+     # Plug anchors its default search path to the directory holding the plug
+     # library and looks for "<that directory>/usd/plugInfo.json".  The top
+     # level registry must therefore be installed next to the per-library
+-    # resource trees, which _pxr_library places under the same directory the
+-    # shared libraries themselves are installed to.
+-    if(WIN32)
++    # resource trees. The vcpkg layout patch moves SHARED component resources
++    # to bin/usd on Windows, but monolithic OBJECT components keep lib/usd.
++    # Extend https://github.com/microsoft/vcpkg/pull/53664 to keep the registry
++    # beside those resources in both build modes.
++    if(WIN32 AND NOT PXR_BUILD_MONOLITHIC)
+         _get_install_dir("${CMAKE_INSTALL_BINDIR}/usd" pluginRegistryDir)
+     else()
+         _get_install_dir("${CMAKE_INSTALL_LIBDIR}/usd" pluginRegistryDir)
+     endif()

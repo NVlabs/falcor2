@@ -23,7 +23,19 @@ implementing utils;
 public float evalNdfGGX(float alpha, float cosTheta)
 {
     float a2 = alpha * alpha;
-    float d = ((cosTheta * a2 - cosTheta) * cosTheta + 1);
+    float d = (1.0 - cosTheta) * (1.0 + cosTheta) + a2 * cosTheta * cosTheta;
+    return a2 / (d * d * float.PI);
+}
+
+/// Evaluates isotropic GGX from a normalized local-space half vector in the positive hemisphere.
+/// As with the scalar overload, alpha must be clamped to a small positive value beforehand.
+/// Prefer this overload when the full vector is available: transverse components
+/// retain narrow-lobe variation even when the normalized Z component rounds to one.
+[Differentiable]
+public float evalNdfGGX(float alpha, float3 h)
+{
+    float a2 = alpha * alpha;
+    float d = dot(h.xy, h.xy) + a2 * h.z * h.z;
     return a2 / (d * d * float.PI);
 }
 
@@ -72,7 +84,7 @@ public float3 sampleGGX_NDF(float alpha, float2 u, out float pdf)
 public float evalPdfGGX_VNDF(float alpha, float3 wi, float3 h)
 {
     float G1 = evalG1GGX(alpha * alpha, wi.z);
-    float D = evalNdfGGX(alpha, h.z);
+    float D = evalNdfGGX(alpha, h);
     return G1 * D * max(0.f, dot(wi, h)) / wi.z;
 }
 

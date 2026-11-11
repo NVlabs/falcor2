@@ -46,7 +46,7 @@ def _create_mirrored_quad() -> f2.ImporterMesh:
 
     subgeometries = list(mesh.subgeometries)
     subgeometries[0].name = "mirrored_quad"
-    subgeometries[0].material_name = "debug_material"
+    subgeometries[0].material_index = 0
     mesh.subgeometries = subgeometries
     return mesh
 
@@ -94,6 +94,7 @@ def _create_scene(device: spy.Device, transform_scale: spy.float3) -> f2.Scene:
     return scene
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_render_frame_handedness(device_type: spy.DeviceType) -> None:
     if device_type == spy.DeviceType.cuda:
@@ -129,7 +130,7 @@ def test_render_frame_handedness(device_type: spy.DeviceType) -> None:
         scene.active_camera = camera
         scene.update()
 
-        module = helper.get_module(scene, "falcor2.editor")
+        module, requirements = helper.prepare(scene, "falcor2.editor")
         output = device.create_texture(
             type=spy.TextureType.texture_2d,
             format=spy.Format.rgba32_float,
@@ -140,7 +141,7 @@ def test_render_frame_handedness(device_type: spy.DeviceType) -> None:
             label=f"mirrored_{transform_scale.x}_{render_mode.name}",
         )
 
-        module.render_debug_no_ids.type_conformances(scene.requirements.type_conformances).write(
+        module.render_debug_no_ids.type_conformances(requirements.type_conformances).write(
             helper.bind_scene
         ).dispatch(
             thread_count=spy.uint3(WIDTH, HEIGHT, 1),
@@ -188,6 +189,7 @@ def test_render_frame_handedness(device_type: spy.DeviceType) -> None:
     )
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_material_frame_handedness(device_type: spy.DeviceType) -> None:
     device = helpers.get_device(device_type)
@@ -216,13 +218,13 @@ def test_material_frame_handedness(device_type: spy.DeviceType) -> None:
     signs = spy.Tensor.from_numpy(device, np.array([1.0, -1.0], dtype=np.float32))
     helper = SceneShaderHelper(device)
     source_module = spy.Module.load_from_file(device, "render/test_tangent_handedness.slang")
-    module = helper.get_module(scene, source_module)
+    module, requirements = helper.prepare(scene, source_module)
 
     # This checks that Standard, SpecGloss, and OpenPBR preserve the input handedness when their
     # normal-map paths rebuild the material frame, and that MaterialX geomprop sees the same sign.
     material_probe = (
         module.material_frame_probe.as_func()
-        .type_conformances(scene.requirements.type_conformances)
+        .type_conformances(requirements.type_conformances)
         .write(helper.bind_scene)
         .return_type(spy.Tensor)
     )

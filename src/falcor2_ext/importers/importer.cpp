@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "nanobind.h"
+#include <nanobind/stl/array.h>
 #include <nanobind/stl/function.h>
 
 #include "falcor2/importers/importer.h"
@@ -54,9 +55,23 @@ FALCOR_PY_EXPORT(importers_importer)
 {
     using namespace falcor;
 
+    nb::sgl_enum<GLTFMaterialMode>(m, "GLTFMaterialMode", D(GLTFMaterialMode));
+
     nb::class_<ImportOptions>(m, "ImportOptions", D(ImportOptions))
         .def(nb::init<>())
+        .DEF_RW(ImportOptions, import_mesh_motion)
+        .DEF_RW(ImportOptions, import_curve_motion)
+        .DEF_RW(ImportOptions, gltf_material_mode)
+        .DEF_RW(ImportOptions, usd_texcoord_primvar_names)
+        .DEF_RW(ImportOptions, mesh_refinement_level)
+        .DEF_RW(ImportOptions, curve_refinement_level)
+        .def_rw(
+            "repair_broken_geometry",
+            &ImportOptions::repair_broken_geometry,
+            "Attempt to detect, report and fix invalid geometry. Enabled by default."
+        )
         .DEF_RW(ImportOptions, recompute_normals)
+        .DEF_RW(ImportOptions, bake_poses)
         .DEF_RW(ImportOptions, force_rectangle_lights_to_geometry)
         .DEF_RW(ImportOptions, force_disk_lights_to_geometry)
         .DEF_RW(ImportOptions, force_sphere_lights_to_geometry);

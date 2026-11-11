@@ -67,7 +67,7 @@ class TonemapperNode(RenderNode):
         self._operator_functions: dict[TonemappingOperator, tuple[Any, Any, Any]] = {}
         self._operator = TonemappingOperator.aces_film
         self._set_operator(operator)
-        self._auto_exposure = True
+        self._auto_exposure = False
         self._auto_exposure_mode = AutoExposureMode.previous_frame
         self._exposure_compensation = 0.0
         self._exposure_key = 0.18

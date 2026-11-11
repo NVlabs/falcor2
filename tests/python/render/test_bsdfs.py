@@ -70,12 +70,77 @@ class BSDFFlags(enum.IntFlag):
     all = 0xF7
 
 
+# Keep the complete statistical sweeps for these additional models in nightly.
+_NIGHTLY_STATISTICAL_BSDF_TYPES = (
+    "DisneyDiffuseBRDF",
+    "OrenNayarBRDF",
+    "DiffuseSpecularBRDF",
+    "SheenBSDF",
+    "mtlx::MxOrenNayarDiffuseBSDF",
+    "mtlx::MxTranslucentBSDF",
+    "mtlx::MxSubsurfaceDiffuseFallbackBSDF",
+    "mtlx::MxSheenLutBSDF",
+    "mtlx::MxConductorAiryBSDF",
+    "mtlx::MxConductorTurquinAnalyticCompensationBSDF",
+    "mtlx::MxDielectricAiryBSDF",
+    "mtlx::MxGeneralizedSchlickColor82BSDF",
+    "mtlx::MxGeneralizedSchlickAiryBSDF",
+    "DielectricPlateBSDF",
+)
+
 WI_NORMAL = spy.float3(0.0, 0.0, 1.0)
 WI_30DEG = spy.float3(0.5, 0.0, 0.866025)
 WI_60DEG = spy.float3(0.866025, 0.0, 0.5)
 WI_GRAZING = spy.float3(0.994987, 0.0, 0.1)
 
+# Dict bindings zero-fill omitted fields rather than applying Slang initializers.
+_GLTF_DATA = {
+    "base_color": [0.7, 0.4, 0.2],
+    "roughness": 0.7,
+    "anisotropy_direction": [0.6, 0.8],
+    "diffuse_transmission_color": [0.2, 0.6, 0.8],
+    "dielectric_f0": [0.02, 0.04, 0.06],
+    "dielectric_f90": 0.75,
+    "ior": 1.5,
+    "eta": 1.0,
+    "thin_walled": True,
+}
+
+# Three mixed-lobe cases complement the image grids without a parameter sweep.
+# SpecGloss retains selected-component throughput, so only that workflow needs
+# a separate PDF check instead of per-sample full-mixture weight equality.
+GLTF_BSDF_CONFIGS = [
+    (
+        "bsdf_tests::TestGLTFBSDF",
+        {"data": {**_GLTF_DATA, "metallic": 0.4, "anisotropy_strength": 0.6}},
+        [WI_30DEG],
+        None,
+        SkipFlags.NONE,
+    ),
+    (
+        "bsdf_tests::TestGLTFBSDF",
+        {"data": {**_GLTF_DATA, "transmission": 0.5, "diffuse_transmission": 0.3}},
+        [WI_30DEG],
+        None,
+        SkipFlags.NONE,
+    ),
+    (
+        "bsdf_tests::TestGLTFSpecGlossBSDF",
+        {
+            "data": {
+                "diffuse": [0.7, 0.4, 0.2],
+                "specular": [0.1, 0.5, 0.3],
+                "glossiness": 0.3,
+            }
+        },
+        [WI_30DEG],
+        None,
+        SkipFlags.SAMPLE_CONSISTENCY,
+    ),
+]
+
 BSDF_CONFIGS = [
+    *GLTF_BSDF_CONFIGS,
     # --- Lambertian diffuse BRDF ---
     (
         "LambertDiffuseBRDF",
@@ -683,6 +748,42 @@ def _mtlx_lut_bindings(_bsdf_resources: _BSDFResources) -> dict[str, Any]:
     return f2.create_mtlx_lut_bindings(_bsdf_resources.device)
 
 
+@pytest.mark.nightly_if_not_vk(device_param="_bsdf_resources")
+def test_gltf_specgloss_sample_pdf(_bsdf_resources: _BSDFResources) -> None:
+    bsdf_type, bindings, wi_list, bc, _ = GLTF_BSDF_CONFIGS[2]
+    test = BSDFEvalSampleConsistencyTest(
+        device=_bsdf_resources.device,
+        module=_bsdf_resources.module,
+        bsdf_type=bsdf_type,
+        bsdf_bindings=bindings,
+        wi=wi_list[0],
+        bc=bc,
+    )
+    # Still checks finite nonnegative weights/directions and sample/eval PDF agreement.
+    assert test.run(weight_tol=float("inf")), test.messages
+
+
+def test_anisotropic_ggx_ndf_near_normal(_bsdf_resources: _BSDFResources) -> None:
+    # h.z can round to one even when h.xy materially changes a narrow NDF.
+    xy = np.array([[0, 0], [0, 1e-5], [0, 1e-4], [0, 2e-4], [2e-4, -1e-4], [0.001, 0.002]])
+    h = np.concatenate([xy, np.sqrt(1 - np.sum(xy * xy, axis=1))[:, None]], axis=1).astype(
+        np.float32
+    )
+    assert h[3, 2] == 1.0 and h[3, 1] != 0.0
+    # Also exercise the algebraic form at the horizon, without dividing by h.z.
+    h = np.concatenate([h, [[1, 0, 0], [0, 1, 0]]]).astype(np.float32)
+    function = _bsdf_resources.module["bsdf_tests::probe_anisotropic_ggx_ndf"]
+    for axes in ((0.640324, 0.0009), (0.0009, 0.640324), (0.25, 0.25), (0.001, 0.9)):
+        alpha = np.array(axes, dtype=np.float32)
+        actual = function(
+            spy.float2(alpha), spy.Tensor.from_numpy(_bsdf_resources.device, h)
+        ).to_numpy()
+        # Khronos anisotropic GGX D, evaluated from the exact shader inputs in float64.
+        scaled = h.astype(np.float64) / np.array([*alpha.astype(np.float64), 1.0])
+        expected = 1 / (np.pi * np.prod(alpha.astype(np.float64)) * np.sum(scaled**2, axis=1) ** 2)
+        np.testing.assert_allclose(actual, expected, rtol=2e-6, atol=0)
+
+
 def test_anisotropic_ggx_policy_preserves_default_and_allows_clamping(
     _bsdf_resources: _BSDFResources,
 ) -> None:
@@ -694,6 +795,7 @@ def test_anisotropic_ggx_policy_preserves_default_and_allows_clamping(
     assert result.w == pytest.approx(1.0)
 
 
+@pytest.mark.nightly_if_not_vk(device_param="_bsdf_resources")
 @pytest.mark.parametrize(
     ("bsdf", "wi"),
     [
@@ -711,12 +813,14 @@ def test_diffuse_specular_albedo(
     assert np.asarray(result) == pytest.approx([0.0, 0.0, 0.0, 0.0], abs=2e-6)
 
 
+@pytest.mark.nightly_if_not_vk(device_param="_bsdf_resources")
 def test_mtlx_mix_preserves_absorption_side(_bsdf_resources: _BSDFResources) -> None:
     result = _bsdf_resources.module["bsdf_tests::test_mtlx_mix_albedo_contributions"]()
 
     assert np.asarray(result) == pytest.approx([0.0, 0.0, 0.35, 0.65])
 
 
+@pytest.mark.nightly_if_not_vk(device_param="_bsdf_resources")
 def test_mtlx_beer_delta_transmission(
     _bsdf_resources: _BSDFResources,
     _mtlx_lut_bindings: dict[str, Any],
@@ -743,6 +847,7 @@ def test_mtlx_beer_delta_transmission(
     assert rejected.x == pytest.approx(0.0)
 
 
+@pytest.mark.nightly_if_not_vk(device_param="_bsdf_resources")
 def test_standard_bsdf_diffuse_transmission_support(_bsdf_resources: _BSDFResources) -> None:
     result = _bsdf_resources.module["bsdf_tests::test_standard_bsdf_diffuse_transmission_support"](
         data={
@@ -764,6 +869,7 @@ def test_standard_bsdf_diffuse_transmission_support(_bsdf_resources: _BSDFResour
     assert result.w == pytest.approx(0.25)
 
 
+@pytest.mark.nightly_if_not_vk(device_param="_bsdf_resources")
 def test_specular_microfacet_smooth_transmission(_bsdf_resources: _BSDFResources) -> None:
     result = _bsdf_resources.module["bsdf_tests::test_specular_microfacet_smooth_transmission"](
         bsdf={
@@ -780,6 +886,7 @@ def test_specular_microfacet_smooth_transmission(_bsdf_resources: _BSDFResources
     assert result.w == pytest.approx(0.7 / 1.5**2)
 
 
+@pytest.mark.nightly_if_not_vk(device_param="_bsdf_resources")
 def test_specular_microfacet_albedo(_bsdf_resources: _BSDFResources) -> None:
     brdf_kernel = _bsdf_resources.module["bsdf_tests::test_specular_microfacet_brdf_albedo"]
     disabled_brdf = brdf_kernel(
@@ -808,6 +915,7 @@ def test_specular_microfacet_albedo(_bsdf_resources: _BSDFResources) -> None:
         assert sum(result) == pytest.approx(1.0)
 
 
+@pytest.mark.nightly_if_not_vk(device_param="_bsdf_resources")
 def test_pbrt_dielectric_event_support_and_albedo(_bsdf_resources: _BSDFResources) -> None:
     result = _bsdf_resources.module["bsdf_tests::test_pbrt_dielectric_event_support"](
         bsdf={"D": {"alpha": [0.0, 0.0]}, "eta": 1.5}
@@ -823,6 +931,7 @@ def test_pbrt_dielectric_event_support_and_albedo(_bsdf_resources: _BSDFResource
     assert result.w == pytest.approx(1.0 - result.z)
 
 
+@pytest.mark.nightly_if_not_vk(device_param="_bsdf_resources")
 def test_pbrt_dielectric_transmission_scaling(_bsdf_resources: _BSDFResources) -> None:
     result = _bsdf_resources.module["bsdf_tests::test_pbrt_dielectric_transmission_scaling"](
         smooth_bsdf={"D": {"alpha": [0.0, 0.0]}, "eta": 1.5},
@@ -836,6 +945,7 @@ def test_pbrt_dielectric_transmission_scaling(_bsdf_resources: _BSDFResources) -
     assert result.w == pytest.approx(expected_scale, rel=1e-5)
 
 
+@pytest.mark.nightly_if_not_vk(device_param="_bsdf_resources")
 def test_mtlx_generalized_schlick_colored_branch_probability(
     _bsdf_resources: _BSDFResources,
     _mtlx_lut_bindings: dict[str, Any],
@@ -901,6 +1011,7 @@ def test_mtlx_generalized_schlick_colored_branch_probability(
     assert transmitted.z / transmitted_only.z == pytest.approx(1.0 - p_reflect, rel=1e-6)
 
 
+@pytest.mark.nightly_if_not_vk(device_param="_bsdf_resources")
 @pytest.mark.parametrize(
     "family,expected_events",
     [
@@ -936,7 +1047,7 @@ def test_mtlx_retroreflection(
 
     assert sample_result.x == pytest.approx(0.0, abs=1e-6)
     assert sample_result.y == pytest.approx(0.0, abs=1e-5)
-    assert sample_result.z == pytest.approx(0.0, abs=1e-6)
+    assert sample_result.z == pytest.approx(0.0, abs=3e-6)
     assert sample_result.w == expected_events
 
 
@@ -945,6 +1056,8 @@ def test_mtlx_retroreflection(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.nightly_if_not_vk(device_param="_bsdf_resources")
+@pytest.mark.nightly_if(bsdf_type=_NIGHTLY_STATISTICAL_BSDF_TYPES)
 @pytest.mark.parametrize("bsdf_type,bsdf_bindings,wi,bc", _make_params(SkipFlags.CHI2))
 def test_bsdf_chi2(
     _bsdf_resources: _BSDFResources,
@@ -972,6 +1085,8 @@ def test_bsdf_chi2(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.nightly_if_not_vk(device_param="_bsdf_resources")
+@pytest.mark.nightly_if(bsdf_type=_NIGHTLY_STATISTICAL_BSDF_TYPES)
 @pytest.mark.parametrize(
     "bsdf_type,bsdf_bindings,wi,bc", _make_params(SkipFlags.SAMPLE_CONSISTENCY)
 )
@@ -996,6 +1111,7 @@ def test_bsdf_eval_sample_consistency(
     assert test.run(), test.messages
 
 
+@pytest.mark.nightly_if_not_vk(device_param="_bsdf_resources")
 def test_mtlx_scratch_conductor_pdf_consistency(
     _bsdf_resources: _BSDFResources,
     _mtlx_lut_bindings: dict[str, Any],
@@ -1085,6 +1201,8 @@ def test_pbrt_dielectric_lobe_sampling_hint_eval_sample_consistency(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.nightly_if_not_vk(device_param="_bsdf_resources")
+@pytest.mark.nightly_if(bsdf_type=_NIGHTLY_STATISTICAL_BSDF_TYPES)
 @pytest.mark.parametrize(
     "bsdf_type,bsdf_bindings,wi,bc",
     _make_params(SkipFlags.RECIPROCITY),

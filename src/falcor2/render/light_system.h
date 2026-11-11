@@ -4,6 +4,7 @@
 #pragma once
 
 #include "falcor2/render/scene_system.h"
+#include "falcor2/render/render_scene.h"
 #include "falcor2/render/shared_scene_types.h"
 
 #include "falcor2/utils/managed_vector.h"
@@ -11,6 +12,7 @@
 
 #include <cstdint>
 #include <span>
+#include <unordered_map>
 #include <vector>
 
 namespace falcor {
@@ -63,7 +65,15 @@ public:
     std::span<const float> light_powers() const;
 
 private:
+    struct AreaLightGeometryInstance {
+        RenderGeometryInstanceHandle geometry_instance;
+        RenderTransformHandle transform;
+        float4x4 proxy_transform;
+        bool seen{false};
+    };
+
     void create_kernels();
+    void sync_area_light_geometry();
 
     ComponentCollection& m_components;
 
@@ -72,6 +82,9 @@ private:
 
     std::vector<sgl::TypeConformance> m_type_conformances;
     ManagedVector<shared::LightData> m_light_data;
+    RenderAreaLightGeometryHandle m_area_light_geometry;
+    RenderGeometryGroupHandle m_area_light_geometry_group;
+    std::unordered_map<const Light*, AreaLightGeometryInstance> m_area_light_geometry_instances;
     uint32_t m_light_count{0};
     uint32_t m_analytic_light_count{0};
     shared::LightID m_environment_light_id{shared::LightID::invalid};

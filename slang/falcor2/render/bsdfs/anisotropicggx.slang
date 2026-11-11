@@ -80,20 +80,16 @@ public struct AnisotropicGGXPolicy<let TSingularCutoffInverse : int, let TClampB
     [Differentiable]
     public float eval_ndf(const float3 h)
     {
-        float cos_theta_sq = h.z * h.z;
-        float sin_theta_sq = max(1.0 - cos_theta_sq, 0.0);
-        float tan_theta_sq = sin_theta_sq / cos_theta_sq;
-        if (isinf(tan_theta_sq))
-            return 0.0;
-
-        float cos_theta_qu = cos_theta_sq * cos_theta_sq;
-        if (cos_theta_qu < 1e-16)
-            return 0.0;
-
-        float2 cos_sin_phi_sq = sin_theta_sq == 0.0 ? float2(1.0, 0.0) : float2(h.x * h.x, h.y * h.y) / sin_theta_sq;
-        float2 alpha_sq = cos_sin_phi_sq / (alpha * alpha);
-        float e = tan_theta_sq * (alpha_sq.x + alpha_sq.y);
-        return 1.0 / (float.PI* alpha.x* alpha.y* cos_theta_qu* sqr(1.0 + e));
+        // Evaluate GGX using Cartesian components, as in Eq. (1) of Heitz,
+        // "Sampling the GGX Distribution of Visible Normals" (2018):
+        // https://jcgt.org/published/0007/04/01/paper.pdf
+        // This preserves more precision near the normal than reconstructing
+        // angular terms from 1 - h.z^2: h.xy retains narrow-lobe variation even
+        // when h.z rounds to one. The Cartesian form also avoids division by
+        // h.z and remains finite at the horizon for positive alpha, so no
+        // horizon early-outs are needed.
+        float3 scaled_h = float3(h.xy / alpha, h.z);
+        return 1.0 / (float.PI* alpha.x* alpha.y* sqr(dot(scaled_h, scaled_h)));
     }
 
     /// Computes the distribution of visible normals, i.e. D_wi(h)

@@ -523,6 +523,7 @@ def test_ngx_evaluate_descs_retain_texture_fields(device_type: spy.DeviceType) -
     )
 
 
+@pytest.mark.nightly_if(device_type=(spy.DeviceType.cuda,))
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_dlss_rr_api_smoke(device_type: spy.DeviceType) -> None:
     device = helpers.get_device(device_type)
@@ -570,6 +571,7 @@ def test_dlss_rr_api_smoke(device_type: spy.DeviceType) -> None:
     device.wait()
 
 
+@pytest.mark.nightly_if(device_type=(spy.DeviceType.cuda,))
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_dlss_sr_api_smoke(device_type: spy.DeviceType) -> None:
     device = helpers.get_device(device_type)
@@ -616,6 +618,7 @@ def test_dlss_sr_api_smoke(device_type: spy.DeviceType) -> None:
     device.wait()
 
 
+@pytest.mark.nightly_if(device_type=(spy.DeviceType.cuda,))
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_dlss_g_api_smoke(device_type: spy.DeviceType) -> None:
     device = helpers.get_device(device_type)
@@ -658,6 +661,7 @@ def test_dlss_g_api_smoke(device_type: spy.DeviceType) -> None:
     device.wait()
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_dlss_rr_synthetic_denoises(device_type: spy.DeviceType) -> None:
     device = helpers.get_device(device_type)

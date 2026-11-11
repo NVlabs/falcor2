@@ -21,6 +21,7 @@
 
 #include <sgl/device/resource.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <vector>
@@ -34,6 +35,7 @@ const CommandId TOOL_MOVE{"scene_editor.tool.move"};
 const CommandId TOOL_ROTATE{"scene_editor.tool.rotate"};
 const CommandId TOOL_SCALE{"scene_editor.tool.scale"};
 const CommandId TOGGLE_TRANSFORM_SPACE{"scene_editor.transform.toggle_space"};
+const CommandId CLEAR_SELECTION{"scene_editor.edit.clear_selection"};
 const CommandId DELETE_SELECTED{"scene_editor.edit.delete_selected"};
 const CommandId CREATE_ENTITY{"scene_editor.create.entity"};
 const CommandId CREATE_GEOMETRY{"scene_editor.create.geometry"};
@@ -153,6 +155,7 @@ SceneEditor::SceneEditor()
 void SceneEditor::set_scene(ref<Scene> scene)
 {
     if (scene != m_scene) {
+        set_selected_object(nullptr);
         m_scene = std::move(scene);
         if (!m_scene) {
             m_scene_gizmo_renderer = nullptr;
@@ -161,7 +164,6 @@ void SceneEditor::set_scene(ref<Scene> scene)
             m_icon_library = make_ref<IconLibrary>(ref<sgl::Device>(m_scene->device()));
             m_scene_gizmo_renderer = make_ref<detail::SceneGizmoRenderer>(m_icon_library);
         }
-        set_selected_object(nullptr);
     }
 }
 
@@ -170,24 +172,36 @@ void SceneEditor::set_camera_controller(ref<CameraController> controller)
     m_camera_controller = std::move(controller);
 }
 
+SceneObject* SceneEditor::selected_object() const
+{
+    SceneObject* object = m_selected_object.get();
+    return object && object->is_valid() && object->scene() == m_scene.get() ? object : nullptr;
+}
+
 void SceneEditor::set_selected_object(SceneObject* object)
 {
     FALCOR_CHECK(
-        object == nullptr || object->scene() == m_scene.get(),
+        object == nullptr || (object->is_valid() && object->scene() == m_scene.get()),
         "Selected object must be part of the current scene."
     );
     m_inspector_return_entity = {};
     m_reveal_selection_in_outliner = false;
-    if (object != m_selected_object) {
-        m_selected_object = object;
+    if (object != m_selected_object.get()) {
+        m_selected_object = object ? ref<SceneObject>(object) : ref<SceneObject>();
         ++m_selection_version;
     }
 }
 
+void SceneEditor::validate_selection()
+{
+    if (m_selected_object && (!m_selected_object->is_valid() || m_selected_object->scene() != m_scene.get()))
+        set_selected_object(nullptr);
+}
+
 void SceneEditor::remove_selected_object()
 {
-    if (m_selected_object) {
-        m_selected_object->remove();
+    if (SceneObject* object = selected_object()) {
+        object->remove();
         set_selected_object(nullptr);
     }
 }
@@ -197,10 +211,18 @@ bool SceneEditor::frame_selected(Camera* camera)
     if (!can_frame_selected())
         return false;
 
-    Entity* entity = m_selected_object->as<Entity>();
+    Entity* entity = selected_object()->as<Entity>();
     AABB aabb = entity->world_aabb();
-    float distance = sgl::math::length(aabb.size()) * 1.5f;
-    m_camera_controller->focus(aabb.center(), distance);
+    float3 target;
+    float distance;
+    if (aabb.is_valid()) {
+        target = aabb.center();
+        distance = std::max(sgl::math::length(aabb.size()) * 1.5f, 0.01f);
+    } else {
+        target = entity->world_from_object_matrix().get_col(3).xyz();
+        distance = std::max(m_camera_controller->orbit_distance(), 1.f);
+    }
+    m_camera_controller->focus(target, distance);
     if (camera && camera->entity())
         camera->entity()->set_world_transform(m_camera_controller->transform());
     return true;
@@ -208,11 +230,11 @@ bool SceneEditor::frame_selected(Camera* camera)
 
 bool SceneEditor::can_frame_selected() const
 {
-    if (!m_camera_controller || !m_selected_object)
+    if (!m_camera_controller)
         return false;
 
-    Entity* entity = m_selected_object->as<Entity>();
-    return entity && entity->world_aabb().is_valid();
+    SceneObject* object = selected_object();
+    return object && object->as<Entity>();
 }
 
 void SceneEditor::set_tool_mode(ToolMode mode)
@@ -258,19 +280,22 @@ void SceneEditor::set_camera_matrices(const float4x4& view, const float4x4& proj
 
 void SceneEditor::update_playback(double dt)
 {
-    if (!m_playing || !m_scene || !m_scene->has_animation())
+    if (!m_playing || !m_scene)
         return;
 
-    double duration = m_scene->animation_duration();
+    const AnimationTimeRange range = m_scene->animation_range();
+    if (!range.is_valid())
+        return;
+    const double duration = double(range.end) - double(range.start);
     if (duration <= 0.0)
         return;
 
     double time = m_scene->time() + dt;
-    if (time > duration) {
+    if (time > range.end) {
         if (m_looping)
-            time = std::fmod(time, duration);
+            time = range.start + std::fmod(time - range.start, duration);
         else {
-            time = duration;
+            time = range.end;
             m_playing = false;
         }
     }
@@ -292,6 +317,7 @@ void SceneEditor::begin_frame()
 
 void SceneEditor::editor_ui()
 {
+    validate_selection();
     main_menu_ui();
     setup_dockspace();
 
@@ -333,7 +359,7 @@ void SceneEditor::viewport_ui(sgl::Texture* output_texture, float fps)
         if (m_scene_gizmo_renderer && (m_show_camera_gizmos || m_show_light_gizmos)) {
             m_scene_gizmo_renderer->draw(
                 m_scene.get(),
-                m_selected_object,
+                selected_object(),
                 m_view_matrix,
                 m_proj_matrix,
                 m_viewport_state.pos,
@@ -361,7 +387,8 @@ bool SceneEditor::is_gizmo_active() const
     if (m_tool_mode == ToolMode::select)
         return false;
 
-    Entity* entity = m_selected_object ? m_selected_object->as<Entity>() : nullptr;
+    SceneObject* selected = selected_object();
+    Entity* entity = selected ? selected->as<Entity>() : nullptr;
     if (!entity)
         return false;
 
@@ -573,6 +600,22 @@ void SceneEditor::register_commands()
         },
     });
     m_commands.register_command({
+        .id = command_ids::CLEAR_SELECTION,
+        .label = "Clear selection",
+        .shortcut = key_shortcut(sgl::KeyCode::escape, "Escape"),
+        .execute =
+            [this]
+        {
+            set_selected_object(nullptr);
+        },
+        .can_execute =
+            [this]
+        {
+            return selected_object() && !(m_camera_controller && m_camera_controller->is_interacting())
+                && !(ImGui::GetCurrentContext() && ImGuizmo::IsUsing());
+        },
+    });
+    m_commands.register_command({
         .id = command_ids::DELETE_SELECTED,
         .label = "Remove selected object",
         .shortcut = key_shortcut(sgl::KeyCode::delete_, "Delete"),
@@ -584,7 +627,7 @@ void SceneEditor::register_commands()
         .can_execute =
             [this]
         {
-            return m_scene && m_selected_object;
+            return m_scene && selected_object();
         },
     });
     m_commands.register_command({
@@ -627,7 +670,7 @@ void SceneEditor::register_commands()
         .can_execute =
             [this]
         {
-            return m_scene && m_scene->has_animation();
+            return m_scene && m_scene->animation_range().is_valid();
         },
         .is_checked =
             [this]
@@ -641,14 +684,14 @@ void SceneEditor::register_commands()
         .execute =
             [this]
         {
-            FALCOR_ASSERT(m_scene && m_scene->has_animation());
+            FALCOR_ASSERT(m_scene && m_scene->animation_range().is_valid());
             set_playing(false);
-            m_scene->set_time(0.0);
+            m_scene->set_time(m_scene->animation_range().start);
         },
         .can_execute =
             [this]
         {
-            return m_scene && m_scene->has_animation();
+            return m_scene && m_scene->animation_range().is_valid();
         },
     });
     m_commands.register_command({
@@ -726,6 +769,7 @@ void SceneEditor::main_menu_ui()
             }
         }
         if (ImGui::BeginMenu("Edit")) {
+            command_menu_item(command_ids::CLEAR_SELECTION);
             command_menu_item(command_ids::DELETE_SELECTED);
             ImGui::EndMenu();
         }
@@ -972,12 +1016,10 @@ void SceneEditor::outliner_ui()
         );
 
         detail::OutlinerQuery query(m_outliner_search.data());
-        Geometry* reveal_geometry
-            = m_reveal_selection_in_outliner && m_selected_object ? m_selected_object->as<Geometry>() : nullptr;
-        Material* reveal_material
-            = m_reveal_selection_in_outliner && m_selected_object ? m_selected_object->as<Material>() : nullptr;
-        Entity* reveal_entity
-            = m_reveal_selection_in_outliner && m_selected_object ? m_selected_object->as<Entity>() : nullptr;
+        SceneObject* selected = selected_object();
+        Geometry* reveal_geometry = m_reveal_selection_in_outliner && selected ? selected->as<Geometry>() : nullptr;
+        Material* reveal_material = m_reveal_selection_in_outliner && selected ? selected->as<Material>() : nullptr;
+        Entity* reveal_entity = m_reveal_selection_in_outliner && selected ? selected->as<Entity>() : nullptr;
 
         ImGui::BeginChild("##scrollregion");
         if (draw_forced_open_tree_node("Geometries", !query.empty(), reveal_geometry != nullptr)) {
@@ -990,7 +1032,7 @@ void SceneEditor::outliner_ui()
             if (m_sort_outliner)
                 detail::sort_outliner_objects(geometries);
             for (Geometry* geometry : geometries)
-                scene_object_node(geometry, m_selected_object, clicked_object);
+                scene_object_node(geometry, selected, clicked_object);
             ImGui::TreePop();
         }
         if (draw_forced_open_tree_node("Materials", !query.empty(), reveal_material != nullptr)) {
@@ -1003,7 +1045,7 @@ void SceneEditor::outliner_ui()
             if (m_sort_outliner)
                 detail::sort_outliner_objects(materials);
             for (Material* material : materials)
-                scene_object_node(material, m_selected_object, clicked_object);
+                scene_object_node(material, selected, clicked_object);
             ImGui::TreePop();
         }
         if (draw_forced_open_tree_node("Entities", !query.empty(), reveal_entity != nullptr)) {
@@ -1028,7 +1070,7 @@ void SceneEditor::outliner_ui()
             if (m_sort_outliner)
                 detail::sort_outliner_objects(root_entities);
             for (Entity* entity : root_entities)
-                entity_node(entity, m_selected_object, clicked_object, visible_entities_ptr, reveal_entity);
+                entity_node(entity, selected, clicked_object, visible_entities_ptr, reveal_entity);
             ImGui::TreePop();
         }
 
@@ -1048,9 +1090,8 @@ void SceneEditor::inspector_ui()
     if (ImGui::Begin("Inspector", &m_show_inspector)) {
         if (!m_scene) {
             ImGui::TextDisabled("No scene loaded");
-        } else if (m_selected_object) {
+        } else if (SceneObject* selected_object = this->selected_object()) {
             if (!inspector_navigation_ui()) {
-                SceneObject* selected_object = m_selected_object;
                 scene_object_ui<Geometry>(selected_object, &SceneEditor::geometry_ui);
                 scene_object_ui<Material>(selected_object, &SceneEditor::material_ui);
                 scene_object_ui<Entity>(selected_object, &SceneEditor::entity_ui);
@@ -1070,7 +1111,7 @@ void SceneEditor::transport_ui()
     if (ImGui::Begin("Transport", &m_show_transport)) {
         if (!m_scene) {
             ImGui::TextDisabled("No scene loaded");
-        } else if (m_scene->has_animation()) {
+        } else if (const AnimationTimeRange range = m_scene->animation_range(); range.is_valid()) {
             // Play/pause toggle.
             if (ImGui::Button(playing() ? "Pause" : "Play"))
                 m_commands.execute(command_ids::TOGGLE_PLAYBACK);
@@ -1083,8 +1124,8 @@ void SceneEditor::transport_ui()
             // Time slider.
             ImGui::SetNextItemWidth(-1.f);
             double time = m_scene->time();
-            double min_time = 0.0;
-            double max_time = m_scene->animation_duration();
+            const double min_time = range.start;
+            const double max_time = range.end;
             if (ImGui::SliderScalar("##time", ImGuiDataType_Double, &time, &min_time, &max_time, "%.3f s"))
                 m_scene->set_time(time);
         } else {
@@ -1313,7 +1354,7 @@ void SceneEditor::entity_node(
 
 void SceneEditor::reveal_outliner_item(SceneObject* object)
 {
-    if (m_reveal_selection_in_outliner && object == m_selected_object) {
+    if (m_reveal_selection_in_outliner && object == selected_object()) {
         ImGui::SetScrollHereY(0.5f);
         m_reveal_selection_in_outliner = false;
     }
@@ -1335,7 +1376,8 @@ void SceneEditor::add_scene_object_popup(const char* label)
 
 void SceneEditor::add_component_popup(const char* label)
 {
-    Entity* entity = m_selected_object ? m_selected_object->as<Entity>() : nullptr;
+    SceneObject* selected = selected_object();
+    Entity* entity = selected ? selected->as<Entity>() : nullptr;
     if (!entity)
         return;
     if (ImGui::BeginPopup(label)) {
@@ -1401,7 +1443,8 @@ void SceneEditor::viewport_gizmo()
     if (m_tool_mode == ToolMode::select)
         return;
 
-    Entity* entity = m_selected_object ? m_selected_object->as<Entity>() : nullptr;
+    SceneObject* selected = selected_object();
+    Entity* entity = selected ? selected->as<Entity>() : nullptr;
     if (!entity)
         return;
 
@@ -1472,6 +1515,7 @@ void SceneEditor::help_ui()
         &command_ids::TOOL_SCALE,
         &command_ids::TOGGLE_TRANSFORM_SPACE,
         &command_ids::FRAME_SELECTED,
+        &command_ids::CLEAR_SELECTION,
         &command_ids::DELETE_SELECTED,
         &command_ids::TOGGLE_HELP,
     };

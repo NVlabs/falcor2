@@ -90,9 +90,9 @@ public void mx_pop_extra_closure_weight(inout MxExtraBsdfPropertiesContext ctx, 
 
 } // namespace mtlx
 
-// Diagnostic traversal for closure_tree extra BSDF reporting. Leaf rows are
-// written through `ctx.leaf_visit_to_bsdf_index`, so graph order stays outside
-// the BSDF type and this diagnostic does not extend the core ILayerableBSDF contract.
+// Diagnostic traversal for closure_tree extra BSDF reporting. Structured
+// leaves carry their stable generated row in BSDF_INDEX. The negative default
+// preserves the current backend's visit map until that backend is retired.
 // FramedWeighted is the leaf reporting boundary; raw BSDF leaves do not need
 // diagnostic conformances.
 
@@ -113,7 +113,8 @@ public extension<Inner> mtlx::MxWeightedBSDF<Inner> : mtlx::IMxExtraBsdfProperti
     }
 }
 
-public extension<Inner> mtlx::MxFramedWeightedBSDF<Inner> : mtlx::IMxExtraBsdfPropertiesCollector
+public extension<Inner, let BSDF_INDEX : int> mtlx::MxFramedWeightedBSDF<Inner, BSDF_INDEX>
+    : mtlx::IMxExtraBsdfPropertiesCollector
     where Inner : mtlx::ILayerableBSDF
 {
     public float3 collect_extra_bsdf_properties(
@@ -122,10 +123,15 @@ public extension<Inner> mtlx::MxFramedWeightedBSDF<Inner> : mtlx::IMxExtraBsdfPr
         inout mtlx::MxExtraBsdfPropertiesContext ctx
     )
     {
-        const int leaf_visit_index = ctx.leaf_visit_index++;
-        const int bsdf_index = leaf_visit_index < ExtraBsdfProperties::max_bsdf_count
-            ? ctx.leaf_visit_to_bsdf_index[leaf_visit_index]
-            : leaf_visit_index;
+        int bsdf_index = BSDF_INDEX;
+        // BSDF_INDEX is a value generic, so structured leaf specializations
+        // discard this compatibility path during compilation.
+        if (BSDF_INDEX < 0) {
+            const int leaf_visit_index = ctx.leaf_visit_index++;
+            bsdf_index = leaf_visit_index < ExtraBsdfProperties::max_bsdf_count
+                ? ctx.leaf_visit_to_bsdf_index[leaf_visit_index]
+                : leaf_visit_index;
+        }
         const float3 local_wi = this.frame.to_local(ctx.wi_adjusted);
         reported_count = max(reported_count, bsdf_index + 1);
         if (bsdf_index >= ExtraBsdfProperties::max_bsdf_count)
@@ -224,7 +230,8 @@ public extension<Inner> mtlx::MxWeightedBSDF<Inner> : mtlx::IMxMaterialPropertie
     }
 }
 
-public extension<Inner> mtlx::MxFramedWeightedBSDF<Inner> : mtlx::IMxMaterialPropertiesCollector
+public extension<Inner, let BSDF_INDEX : int> mtlx::MxFramedWeightedBSDF<Inner, BSDF_INDEX>
+    : mtlx::IMxMaterialPropertiesCollector
     where Inner : mtlx::ILayerableBSDF
 {
     public float3 collect_material_properties(

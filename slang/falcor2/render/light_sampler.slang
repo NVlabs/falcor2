@@ -16,6 +16,14 @@ public interface ILightSampler
     /// Evaluates the complete scene-light PDF for an environment direction.
     public float eval_environment_pdf(const LightSampleContext ctx, const float3 dir_ws);
 
+    /// Evaluates the complete scene-light PDF for a known area-light hit.
+    public float eval_area_light_pdf(
+        const LightSampleContext ctx,
+        const LightID light_id,
+        const float3 emitter_pos_ws,
+        const float3 emitter_normal_ws
+    );
+
     /// Evaluates the complete scene-light PDF for a known emissive triangle hit.
     public float eval_emissive_pdf(
         const LightSampleContext ctx,
@@ -148,6 +156,20 @@ public struct UniformLightSampler : ILightSampler
         if (g_scene.light_system.environment_light_count == 0)
             return 0.0;
         return eval_source_selection_pdf() * eval_environment_mixture_pdf(ctx, dir_ws);
+    }
+
+    public float eval_area_light_pdf(
+        const LightSampleContext ctx,
+        const LightID light_id,
+        const float3 emitter_pos_ws,
+        const float3 emitter_normal_ws
+    )
+    {
+        if (uint(light_id) >= g_scene.light_system.analytic_light_count)
+            return 0.0;
+        return eval_source_selection_pdf()
+            * g_scene.light_system.get_light(light_id)
+                  .eval_surface_sampling_pdf(ctx, emitter_pos_ws, emitter_normal_ws);
     }
 
     public float eval_emissive_pdf(
@@ -286,6 +308,20 @@ public struct PowerLightSampler : ILightSampler
         return environment_probability * eval_environment_mixture_pdf(ctx, dir_ws);
     }
 
+    public float eval_area_light_pdf(
+        const LightSampleContext ctx,
+        const LightID light_id,
+        const float3 emitter_pos_ws,
+        const float3 emitter_normal_ws
+    )
+    {
+        if (uint(light_id) >= g_scene.light_system.analytic_light_count)
+            return 0.0;
+        return eval_source_selection_pdf(EmitterType::analytic, uint(light_id))
+            * g_scene.light_system.get_light(light_id)
+                  .eval_surface_sampling_pdf(ctx, emitter_pos_ws, emitter_normal_ws);
+    }
+
     public float eval_emissive_pdf(
         const LightSampleContext ctx,
         const EmissiveTriangleID triangle_id,
@@ -394,6 +430,25 @@ public struct HierarchicalLightSampler : ILightSampler
         if (environment_probability <= 0.0)
             return 0.0;
         return environment_probability * eval_environment_mixture_pdf(ctx, dir_ws);
+    }
+
+    public float eval_area_light_pdf(
+        const LightSampleContext ctx,
+        const LightID light_id,
+        const float3 emitter_pos_ws,
+        const float3 emitter_normal_ws
+    )
+    {
+        if (uint(light_id) >= g_scene.light_system.analytic_light_count)
+            return 0.0;
+        const float analytic_probability
+            = detail::compute_emitter_type_pmf(analytic_light_power, environment_light_power, emissive_triangle_power)
+                  .analytic;
+        if (analytic_probability <= 0.0)
+            return 0.0;
+        return analytic_probability * analytic_light_distribution.eval_pdf(uint(light_id))
+            * g_scene.light_system.get_light(light_id)
+                  .eval_surface_sampling_pdf(ctx, emitter_pos_ws, emitter_normal_ws);
     }
 
     public float eval_emissive_pdf(

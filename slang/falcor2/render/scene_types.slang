@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include "falcor2/shared_types_compat.slangh"
+
 #ifndef FALCOR_SHARED_HOST
 implementing render;
 import falcor2.utils;
@@ -70,38 +72,32 @@ struct MaterialOpacityDataFields
     typedef BitField<uint, 16, 16> factor;
 };
 
-#ifdef FALCOR_SHARED_HOST
-#define FALCOR_SHARED_FUNCTION inline
-#else
-#define FALCOR_SHARED_FUNCTION public static
-#endif
-
-FALCOR_SHARED_FUNCTION MaterialFlags get_material_flags(MaterialHeader header)
+FALCOR_SHARED_INLINE_FUNCTION MaterialFlags get_material_flags(MaterialHeader header)
 {
     return MaterialFlags(MaterialHeaderDataFields::flags::extract(header.material_data));
 }
 
-FALCOR_SHARED_FUNCTION uint get_nested_priority(MaterialHeader header)
+FALCOR_SHARED_INLINE_FUNCTION uint get_nested_priority(MaterialHeader header)
 {
     return MaterialHeaderDataFields::nested_priority::extract(header.material_data);
 }
 
-FALCOR_SHARED_FUNCTION OpacityFlags get_opacity_flags(MaterialHeader header)
+FALCOR_SHARED_INLINE_FUNCTION OpacityFlags get_opacity_flags(MaterialHeader header)
 {
     return OpacityFlags(MaterialOpacityDataFields::flags::extract(header.opacity_data));
 }
 
-FALCOR_SHARED_FUNCTION uint get_opacity_texture_channel(MaterialHeader header)
+FALCOR_SHARED_INLINE_FUNCTION uint get_opacity_texture_channel(MaterialHeader header)
 {
     return MaterialOpacityDataFields::texture_channel::extract(header.opacity_data);
 }
 
-FALCOR_SHARED_FUNCTION float get_opacity_threshold(MaterialHeader header)
+FALCOR_SHARED_INLINE_FUNCTION float get_opacity_threshold(MaterialHeader header)
 {
     return unpack_unorm8(MaterialOpacityDataFields::threshold::extract(header.opacity_data));
 }
 
-FALCOR_SHARED_FUNCTION float get_opacity_factor(MaterialHeader header)
+FALCOR_SHARED_INLINE_FUNCTION float get_opacity_factor(MaterialHeader header)
 {
     return unpack_unorm16(MaterialOpacityDataFields::factor::extract(header.opacity_data));
 }
@@ -125,8 +121,6 @@ inline uint pack_opacity_data(OpacityFlags flags, uint texture_channel, float th
     return data;
 }
 #endif
-
-#undef FALCOR_SHARED_FUNCTION
 
 } // namespace detail
 
@@ -196,7 +190,19 @@ public enum class GeometryType : uint {
     invalid = 0xffffffff,
     triangle = 0,
     lss = 1,
+    area_light = 2,
 };
+
+// TLAS instance mask bits and instance inclusion masks used to control area-light surfaces.
+FALCOR_SHARED_PUBLIC_CONSTANT uint INSTANCE_MASK_BIT_REGULAR_GEOMETRY = 0x01;
+FALCOR_SHARED_PUBLIC_CONSTANT uint INSTANCE_MASK_BIT_AREA_LIGHT = 0x02;
+FALCOR_SHARED_PUBLIC_CONSTANT uint INSTANCE_MASK_BIT_AREA_LIGHT_VISIBLE = 0x04;
+FALCOR_SHARED_PUBLIC_CONSTANT uint INSTANCE_INCLUSION_MASK_REGULAR_GEOMETRY = INSTANCE_MASK_BIT_REGULAR_GEOMETRY;
+FALCOR_SHARED_PUBLIC_CONSTANT uint INSTANCE_INCLUSION_MASK_PRIMARY_RAY
+    = INSTANCE_MASK_BIT_REGULAR_GEOMETRY | INSTANCE_MASK_BIT_AREA_LIGHT_VISIBLE;
+FALCOR_SHARED_PUBLIC_CONSTANT uint INSTANCE_INCLUSION_MASK_VISIBILITY_RAY = INSTANCE_INCLUSION_MASK_PRIMARY_RAY;
+FALCOR_SHARED_PUBLIC_CONSTANT uint INSTANCE_INCLUSION_MASK_SECONDARY_RAY
+    = INSTANCE_MASK_BIT_REGULAR_GEOMETRY | INSTANCE_MASK_BIT_AREA_LIGHT;
 
 /// Geometry ID.
 public enum class GeometryID : uint { invalid = 0xffffffff };
@@ -250,6 +256,7 @@ public enum class LightType : uint {
     env_map_light,
     point_light,
     sphere_light,
+    cylinder_light,
     disk_light,
     rect_light,
 };
@@ -259,6 +266,7 @@ public enum class LightFlags : uint {
     environment = 1 << 0,
     delta_position = 1 << 1,
     delta_direction = 1 << 2,
+    area = 1 << 3,
 };
 #ifdef FALCOR_SHARED_HOST
 FALCOR_ENUM_CLASS_OPERATORS(LightFlags);
@@ -279,3 +287,5 @@ public struct LightData
     public LightHeader header;
     public LightPayload payload;
 };
+
+#include "falcor2/shared_types_compat_undef.slangh"

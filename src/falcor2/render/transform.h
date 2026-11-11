@@ -55,7 +55,9 @@ public:
     Transform(const float3& translation, const quatf& rotation, const float3& scale);
 
     /// Constructor from a 4x4 transformation matrix (decomposes into TRS components).
-    /// Note: Skew and perspective components are not supported, the result will be undefined.
+    /// Removes shear by ordered orthogonalization; perspective or invalid/degenerate inputs produce identity.
+    /// The corrected matrix is cached without a
+    /// quaternion round trip until a component or composition order is changed.
     Transform(const float4x4& matrix);
 
     /// Copy assignment operator.
@@ -118,6 +120,7 @@ public:
 private:
     void mark_dirty() const { m_dirty = true; }
     void update_matrix() const;
+    void update_identity_flags() const;
 
     float3 m_translation{0.f};
     quatf m_rotation{quatf::identity()};

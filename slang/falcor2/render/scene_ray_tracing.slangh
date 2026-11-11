@@ -28,6 +28,12 @@ import falcor2.render;
     {                                                                                                                                                   \
         DeferredProceduralLSSHitInfo deferred_hit = { g_scene.get_lss_segment(GeometryInstanceID(InstanceID() + GeometryIndex2()), PrimitiveIndex()) }; \
         func(payload, deferred_hit);                                                                                                                    \
+    }                                                                                                                                                   \
+    [shader("closesthit")]                                                                                                                              \
+    void _scene_##ray_type_name##_area_light_closest_hit(inout payload_type payload, AreaLightIntersectionAttributes attribs)                           \
+    {                                                                                                                                                   \
+        DeferredAreaLightHitInfo deferred_hit = {};                                                                                                     \
+        func(payload, deferred_hit);                                                                                                                    \
     }
 
 #define SCENE_RAY_TYPE_ANY_HIT(ray_type_name, func, payload_type)                                                                                       \
@@ -48,6 +54,12 @@ import falcor2.render;
     {                                                                                                                                                   \
         DeferredProceduralLSSHitInfo deferred_hit = { g_scene.get_lss_segment(GeometryInstanceID(InstanceID() + GeometryIndex2()), PrimitiveIndex()) }; \
         func(payload, deferred_hit);                                                                                                                    \
+    }                                                                                                                                                   \
+    [shader("anyhit")]                                                                                                                                  \
+    void _scene_##ray_type_name##_area_light_any_hit(inout payload_type payload, AreaLightIntersectionAttributes attribs)                               \
+    {                                                                                                                                                   \
+        DeferredAreaLightHitInfo deferred_hit = {};                                                                                                     \
+        func(payload, deferred_hit);                                                                                                                    \
     }
 
 
@@ -56,16 +68,38 @@ public void procedural_lss_intersection()
 {
     float t;
     ProceduralLSSIntersectionAttributes attribs = {};
-    if (intersect_procedural_lss(
+    if (g_scene.intersect_lss(
+            GeometryInstanceID(InstanceID() + GeometryIndex2()),
+            PrimitiveIndex(),
             ObjectRayOrigin(),
             ObjectRayDirection(),
             RayTMin(),
             RayTCurrent(),
-            g_scene.get_lss_segment(GeometryInstanceID(InstanceID() + GeometryIndex2()), PrimitiveIndex()),
             t
         )) {
 #ifdef __TARGET_CUDA__
         // TODO: Slang should really just support ReportHit on OptiX as well!
+        ReportHitOptix(t, 0, 0);
+#else
+        ReportHit(t, 0, attribs);
+#endif
+    }
+}
+
+[shader("intersection")]
+public void area_light_intersection()
+{
+    float t;
+    AreaLightIntersectionAttributes attribs = {};
+    if (intersect_area_light(
+            GeometryInstanceID(InstanceID() + GeometryIndex2()),
+            WorldRayOrigin(),
+            WorldRayDirection(),
+            RayTMin(),
+            RayTCurrent(),
+            t
+        )) {
+#ifdef __TARGET_CUDA__
         ReportHitOptix(t, 0, 0);
 #else
         ReportHit(t, 0, attribs);

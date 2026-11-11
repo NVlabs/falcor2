@@ -9,12 +9,12 @@ public struct MDLMaterialData
     // MaterialHeader (16B) is stored just before this struct in memory.
 
     public BufferHandle data;
-    /// Offset into `data` where the argument buffer starts.
+    /// Absolute byte offsets into `data` for the three MDL data regions.
+    public uint ro_data_offset;
     public uint arg_block_offset;
-    /// Offset into `data` where the texture table starts.
     public uint texture_table_offset;
 
-    public T read_only_data_load<T>(uint offset) { return data.load_aligned<T, 4>(offset); }
+    public T read_only_data_load<T>(uint offset) { return data.load_aligned<T, 4>(ro_data_offset + offset); }
 
     public T arg_block_load<T>(uint offset) { return data.load_aligned<T, 4>(arg_block_offset + offset); }
 

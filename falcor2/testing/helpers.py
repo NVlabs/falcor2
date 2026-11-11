@@ -27,6 +27,7 @@ from slangpy import (
     NativeHandle,
 )
 import slangpy
+from falcor2.editor import create_device
 
 if TYPE_CHECKING:
     import falcor2 as f2
@@ -100,6 +101,10 @@ def configure_test_device_options(
 
 def get_module_and_shader_cache_path() -> tuple[Path | None, Path | None]:
     root = MODULE_AND_SHADER_CACHE_ROOT / "python"
+    # Each xdist process needs its own persistent cache database.
+    worker_id = os.environ.get("PYTEST_XDIST_WORKER")
+    if worker_id:
+        root = root / "workers" / worker_id
     module_cache_path = root / "module" if MODULE_CACHE_ENABLED else None
     shader_cache_path = root / "shader" if SHADER_CACHE_ENABLED else None
     return module_cache_path, shader_cache_path
@@ -211,11 +216,14 @@ def get_device(
     type: DeviceType,
     use_cache: bool = True,
     cuda_interop: bool = False,
-    floating_point_mode: SlangFloatingPointMode = SlangFloatingPointMode.default,
+    floating_point_mode: SlangFloatingPointMode = SlangFloatingPointMode.fast,
     existing_device_handles: Optional[Sequence[NativeHandle]] = None,
     enable_print: bool = False,
+    enable_compilation_reports: bool | None = None,
 ) -> Device:
     module_cache_path, shader_cache_path = get_module_and_shader_cache_path()
+    if enable_compilation_reports is None:
+        enable_compilation_reports = COMPILATION_REPORTS_ENABLED
     cache_key = (
         type,
         cuda_interop,
@@ -224,7 +232,7 @@ def get_device(
         enable_print,
         module_cache_path,
         shader_cache_path,
-        COMPILATION_REPORTS_ENABLED,
+        enable_compilation_reports,
     )
     if use_cache and cache_key in DEVICE_CACHE:
         return DEVICE_CACHE[cache_key]
@@ -246,16 +254,14 @@ def get_device(
     if enable_print:
         label += "-print"
 
-    device = Device(
-        type=type,
-        enable_debug_layers=True,
-        enable_print=enable_print,
-        enable_compilation_reports=COMPILATION_REPORTS_ENABLED,
-        compiler_options=SlangCompilerOptions(
+    desc_options: dict[str, Any] = {
+        "type": type,
+        "enable_debug_layers": True,
+        "enable_print": enable_print,
+        "enable_compilation_reports": enable_compilation_reports,
+        "compiler_options": SlangCompilerOptions(
             {
                 "include_paths": [
-                    slangpy.SHADER_PATH,
-                    PROJECT_ROOT / "slang",
                     PROJECT_ROOT / "tests" / "python",
                     Path(__file__).parent,
                 ],
@@ -268,14 +274,22 @@ def get_device(
                 "floating_point_mode": floating_point_mode,
             }
         ),
-        enable_cuda_interop=cuda_interop,
-        existing_device_handles=existing_device_handles,
-        module_cache_path=module_cache_path,
-        shader_cache_path=shader_cache_path,
-        additional_vulkan_instance_extensions=additional_vulkan_instance_extensions,
-        additional_vulkan_device_extensions=additional_vulkan_device_extensions,
-        label=label,
-    )
+        "enable_cuda_interop": cuda_interop,
+        # Tests opt into caches explicitly; None disables the app cache defaults.
+        "module_cache_path": module_cache_path,
+        "shader_cache_path": shader_cache_path,
+        "label": label,
+    }
+    if existing_device_handles is not None:
+        desc_options["existing_device_handles"] = existing_device_handles
+    if additional_vulkan_instance_extensions is not None:
+        desc_options["additional_vulkan_instance_extensions"] = (
+            additional_vulkan_instance_extensions
+        )
+    if additional_vulkan_device_extensions is not None:
+        desc_options["additional_vulkan_device_extensions"] = additional_vulkan_device_extensions
+
+    device = create_device(desc_options)
     if use_cache:
         DEVICE_CACHE[cache_key] = device
     return device

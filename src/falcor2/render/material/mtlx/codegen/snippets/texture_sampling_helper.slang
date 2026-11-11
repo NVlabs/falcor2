@@ -4,7 +4,7 @@
 implementing mtlx_snippets;
 
 // OSL-derived profiles use the TextureHandle sampler for MaterialX address/filter modes.
-// The analytic sphere visualizer's LOD sampler forces OSL texture(..., "width", 0.0) base-LOD sampling.
+// Explicit LOD 0 samplers request base-LOD sampling, equivalent to OSL texture(..., "width", 0.0).
 float4 sample_texture<TLodSampler : ILodSampler>(
     TextureHandle handle,
     float2 uv,

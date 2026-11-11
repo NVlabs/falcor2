@@ -175,10 +175,15 @@ def test_active_editor_tracks_only_the_root_render_node() -> None:
         property_editor,
     )
     editor._closed = False
+    editor._shutdown_complete = False
+    editor._stream = None
+    editor._cmd = None
+    editor._ui_frame_active = False
     editor._stop_mcp_bridge = lambda: None
     editor._end_profile_frame = lambda: None
     editor._wait_for_device = lambda: None
     editor.window = SimpleNamespace(close=lambda: None)
+    editor.surface = None
     child = _TestRenderNode()
     root = _TestRenderNode(child)
     payload = object()
@@ -223,6 +228,7 @@ def test_native_property_editor_and_graph_callback_are_bound() -> None:
     assert scene_editor.graph_ui_callback is not None
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_native_property_editor_renders_reflected_settings(
     device_type: spy.DeviceType,

@@ -56,6 +56,12 @@ preferred_size = 32
 effect = "drop_shadow"
 
 [[icon]]
+name = "light_cylinder"
+source = "icons/light_cylinder.svg"
+preferred_size = 32
+effect = "drop_shadow"
+
+[[icon]]
 name = "light_disk"
 source = "icons/light_disk.svg"
 preferred_size = 32

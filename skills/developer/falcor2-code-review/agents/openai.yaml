@@ -1,0 +1,4 @@
+interface:
+  display_name: "Falcor2 Code Review"
+  short_description: "Run specialist Falcor2 code-review agents"
+  default_prompt: "Use $falcor2-code-review to review this Falcor2 change with predefined specialist sub-agents."

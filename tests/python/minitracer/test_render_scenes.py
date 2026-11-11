@@ -79,7 +79,11 @@ def renderer_setup(device: spy.Device):
 
 def create_kronos_scene(device: spy.Device):
     """Create a scene with kronos assets."""
-    scene = Scene(device)
+    scene = Scene(
+        device,
+        initial_vertex_capacity=1_000_000,
+        initial_index_capacity=1_000_000,
+    )
 
     x = 0
     y = 0
@@ -97,6 +101,7 @@ def create_kronos_scene(device: spy.Device):
 # - CompareRoughness: Apparent texture mapping on rear of spheres
 # - ChronographWatch: Subtle uv issue on back of watch
 # - TextureSettingsTest: Subtle uv issue
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_render_kronos_sample_assets(device_type: spy.DeviceType, image_test: ImageTest):
     """Builds a single scene containing a set of Kronos sample assets and render it
@@ -133,6 +138,7 @@ def test_render_kronos_sample_assets(device_type: spy.DeviceType, image_test: Im
                 )
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_mis(device_type: spy.DeviceType, image_test: ImageTest):
     """Builds a single scene containing a set of Kronos sample assets and render
@@ -161,6 +167,7 @@ def test_mis(device_type: spy.DeviceType, image_test: ImageTest):
         image_test(image, tolerance=0.001, additional_name=f"angle_{angle}")
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_ray_tracing_pipeline(device_type: spy.DeviceType, image_test: ImageTest):
     """Renders a scene using the ray tracing pipeline."""

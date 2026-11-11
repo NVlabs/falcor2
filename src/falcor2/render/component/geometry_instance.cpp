@@ -118,9 +118,31 @@ void GeometryInstance::update_render_state()
                 material_ids[i] = (material && material->is_valid()) ? material->material_id() : shared::MaterialID{0};
             }
             desc.material_ids = material_ids;
+            desc.enable_backface_culling = compute_backface_culling();
             m_render_geometry_instance = render_scene->create_geometry_instance(desc);
         }
     }
+}
+
+bool GeometryInstance::compute_backface_culling() const
+{
+    return std::all_of(
+        m_materials.begin(),
+        m_materials.end(),
+        [](const Material* material)
+        {
+            return material && material->enable_backface_culling();
+        }
+    );
+}
+
+void GeometryInstance::update_backface_culling()
+{
+    if (m_render_geometry_instance)
+        m_scene->_render_scene()->update_geometry_instance_backface_culling(
+            m_render_geometry_instance,
+            compute_backface_culling()
+        );
 }
 
 FALCOR_SCENE_REGISTER_COMPONENT(GeometryInstance);

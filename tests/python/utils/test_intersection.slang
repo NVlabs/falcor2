@@ -24,6 +24,80 @@ TEST_CASE(intersect_ray_sphere_miss)
 }
 
 // ----------------------------------------------------------------------------
+// intersect_ray_open_cylinder
+// ----------------------------------------------------------------------------
+
+TEST_CASE(intersect_ray_open_cylinder_hit)
+{
+    float t;
+    bool hit = intersect_ray_open_cylinder(float3(0, 0, -3), float3(0, 0, 1), float3(0), float3(0, 1, 0), 1.0, 2.0, t);
+    CHECK(hit);
+    CHECK_APPROX(t, 2.0f, 1e-6f);
+}
+
+TEST_CASE(intersect_ray_open_cylinder_distant_hit)
+{
+    float t;
+    bool hit
+        = intersect_ray_open_cylinder(float3(0, 0, -10000), float3(0, 0, 1), float3(0), float3(0, 1, 0), 1.0, 2.0, t);
+    CHECK(hit);
+    CHECK_APPROX(t, 9999.0f, 1e-6f);
+}
+
+TEST_CASE(intersect_ray_open_cylinder_axial_miss)
+{
+    float t;
+    bool hit = intersect_ray_open_cylinder(float3(0, 3, -3), float3(0, 0, 1), float3(0), float3(0, 1, 0), 1.0, 2.0, t);
+    CHECK_FALSE(hit);
+}
+
+TEST_CASE(intersect_ray_open_cylinder_parallel_miss)
+{
+    float t;
+    bool hit = intersect_ray_open_cylinder(float3(0), float3(0, 1, 0), float3(0), float3(0, 1, 0), 1.0, 2.0, t);
+    CHECK_FALSE(hit);
+}
+
+TEST_CASE(intersect_ray_open_cylinder_inside_hit)
+{
+    float t;
+    bool hit = intersect_ray_open_cylinder(float3(0), float3(0, 0, 1), float3(0), float3(0, 1, 0), 1.0, 2.0, t);
+    CHECK(hit);
+    CHECK_APPROX(t, 1.0f, 1e-6f);
+}
+
+TEST_CASE(intersect_ray_open_cylinder_t_range)
+{
+    float t;
+    bool near_clipped = intersect_ray_open_cylinder(
+        float3(0, 0, -3),
+        float3(0, 0, 1),
+        float3(0),
+        float3(0, 1, 0),
+        1.0,
+        2.0,
+        t,
+        2.5,
+        5.0
+    );
+    CHECK(near_clipped);
+    CHECK_APPROX(t, 4.0f, 1e-6f);
+
+    bool far_clipped = intersect_ray_open_cylinder(
+        float3(0, 0, -3),
+        float3(0, 0, 1),
+        float3(0),
+        float3(0, 1, 0),
+        1.0,
+        2.0,
+        t,
+        0.0,
+        1.5
+    );
+    CHECK_FALSE(far_clipped);
+}
+
+// ----------------------------------------------------------------------------
 // intersect_ray_aabb
 // ----------------------------------------------------------------------------
 
@@ -113,4 +187,35 @@ TEST_CASE(intersect_ray_linear_swept_sphere_miss)
         result
     );
     CHECK_FALSE(hit);
+}
+
+TEST_CASE(intersect_ray_linear_swept_sphere_collapsed)
+{
+    const float2 radii[] = { float2(1, 1), float2(0.25, 1), float2(1, 0.25) };
+    for (uint i = 0; i < 3; ++i) {
+        const float4 a = float4(0, 0, 0, radii[i].x);
+        const float4 b = float4(0, 0, 0, radii[i].y);
+        float2 result;
+        CHECK(intersect_ray_linear_swept_sphere_han19(float3(0, 0, 3), float3(0, 0, -1), a, b, true, result));
+        CHECK_APPROX(result.x, 2.0, 1e-6);
+        CHECK_APPROX(result.y, radii[i].y > radii[i].x ? 1.0 : 0.0, 1e-6);
+        // Neither an interior concentric sphere nor a negative root may win the exit hit.
+        CHECK(intersect_ray_linear_swept_sphere_han19(float3(0), float3(0, 0, 1), a, b, true, result));
+        CHECK_APPROX(result.x, 1.0, 1e-6);
+        CHECK_FALSE(intersect_ray_linear_swept_sphere_han19(float3(0, 0, 3), float3(0, 0, -1), a, b, false, result));
+    }
+    float2 result;
+    CHECK_FALSE(
+        intersect_ray_linear_swept_sphere_han19(float3(0, 0, 3), float3(0, 0, -1), float4(0), float4(0), true, result)
+    );
+    // A short but nonzero segment still has an open cylinder surface.
+    CHECK(intersect_ray_linear_swept_sphere_han19(
+        float3(0, 0, 3),
+        float3(0, 0, -1),
+        float4(-1e-7, 0, 0, 1),
+        float4(1e-7, 0, 0, 1),
+        false,
+        result
+    ));
+    CHECK_APPROX(result.x, 2.0, 1e-6);
 }

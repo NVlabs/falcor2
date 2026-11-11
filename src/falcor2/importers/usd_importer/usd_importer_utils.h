@@ -7,6 +7,7 @@
 
 #include "falcor2/core/properties.h"
 #include "falcor2/core/types.h"
+#include "falcor2/importers/importer_types.h"
 
 BEGIN_DISABLE_USD_WARNINGS
 #include <pxr/pxr.h>
@@ -31,9 +32,11 @@ BEGIN_DISABLE_USD_WARNINGS
 #include <pxr/base/gf/vec4i.h>
 
 #include <pxr/usd/sdf/assetPath.h>
+#include <pxr/usd/sdf/schema.h>
 #include <pxr/usd/usd/attribute.h>
 
 #include <pxr/usd/usdGeom/tokens.h>
+#include <pxr/usd/usdGeom/basisCurves.h>
 #include <pxr/usd/usdGeom/imageable.h>
 #include <pxr/usd/usdGeom/primvarsAPI.h>
 #include <pxr/usd/usdGeom/gprim.h>
@@ -42,14 +45,54 @@ BEGIN_DISABLE_USD_WARNINGS
 #include <pxr/usd/usdShade/connectableAPI.h>
 END_DISABLE_USD_WARNINGS
 
+#include <algorithm>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace falcor {
 namespace usd_importer {
+
+/// Return the authored varying value count per strand for valid USD BasisCurves topology at time.
+/// Counts include pinned end spans and are independent of tessellation or the rendered curve representation.
+FALCOR_API pxr::VtArray<int> compute_curve_varying_counts(const pxr::UsdGeomBasisCurves& curves, pxr::UsdTimeCode time);
+
+/// Read indices at time, rejecting changes across authored samples when importing motion.
+/// Repeated identical samples are allowed; Default time uses the earliest sample when checking motion.
+bool read_fixed_indices(
+    const pxr::UsdAttribute& attribute,
+    pxr::VtArray<int>& indices,
+    pxr::UsdTimeCode time,
+    bool import_motion
+);
+
+/// Shared authored-time selection and metadata for fixed-topology geometry motion.
+/// no_samples selects the representation's existing fallback when motion has no authored times.
+struct GeometrySampleTimes {
+    /// Nonempty USD evaluation schedule; motion-disabled imports use a single Default time.
+    std::vector<pxr::UsdTimeCode> sample_times;
+    /// Seconds corresponding to sample_times when there are multiple samples; empty for static geometry.
+    std::vector<float> motion_times;
+    AnimationInterpolationMode interpolation = AnimationInterpolationMode::linear;
+
+    GeometrySampleTimes(
+        const pxr::UsdPrim& prim,
+        const std::vector<pxr::UsdAttribute>& attributes,
+        bool import_motion,
+        pxr::UsdTimeCode no_samples = pxr::UsdTimeCode::Default()
+    );
+};
+
+/// Read half/float/double UV arrays, optionally flattening authored indices.
+bool get_uv_values(
+    const pxr::UsdGeomPrimvar& primvar,
+    pxr::VtArray<pxr::GfVec2f>& values,
+    pxr::UsdTimeCode time = pxr::UsdTimeCode::Default(),
+    bool flatten = false
+);
 
 FALCOR_API bool set_from_value(Properties& props, std::string_view name, const pxr::VtValue& value);
 
@@ -161,6 +204,38 @@ inline T get_attribute(const pxr::UsdPrim& prim, const std::string& attr_name, c
     return get_attribute<T>(prim.GetAttribute(pxr::TfToken(attr_name)), default_value);
 }
 
+/// Overlay one authored import control. Missing or blocked values retain the initialized property.
+template<typename T>
+inline void
+read_import_property(const pxr::UsdPrim& prim, const char* attr_name, Properties& properties, const char* key)
+{
+    const auto attr = prim.GetAttribute(pxr::TfToken(attr_name));
+    if (!attr || !attr.IsAuthored())
+        return;
+    const auto expected_type = pxr::SdfSchema::GetInstance().FindType(pxr::TfType::Find<T>());
+    FALCOR_CHECK(
+        attr.GetTypeName() == expected_type,
+        "Prim '{}' attribute '{}' must have type '{}'",
+        prim.GetPath().GetString(),
+        attr_name,
+        expected_type.GetAsToken().GetString()
+    );
+    if (!attr.HasValue())
+        return;
+    T value;
+    FALCOR_CHECK(attr.Get(&value), "Cannot read prim '{}' attribute '{}'", prim.GetPath().GetString(), attr_name);
+    if constexpr (std::is_same_v<T, int>) {
+        FALCOR_CHECK(
+            value >= 0 && value <= 256,
+            "Prim '{}' attribute '{}' must be between 0 and 256 (got {})",
+            prim.GetPath().GetString(),
+            attr_name,
+            value
+        );
+    }
+    properties.set(key, value);
+}
+
 // Return the ultimate source of the given input.
 inline pxr::UsdShadeInput get_source_input(
     pxr::UsdShadeInput input,
@@ -190,7 +265,31 @@ inline pxr::UsdShadeInput get_source_input(
     return input;
 }
 
-inline pxr::UsdGeomPrimvar get_uv_primvar(const pxr::UsdGeomGprim& prim)
+/// String-view equivalent of UsdGeomPrimvar::StripPrimvarsName: remove only "primvars:", preserving sub-namespaces.
+inline std::string_view strip_primvars_name(std::string_view name)
+{
+    constexpr std::string_view prefix = "primvars:";
+    return name.starts_with(prefix) ? name.substr(prefix.size()) : name;
+}
+
+/// Require a valued primvar with a two-component type accepted by Falcor's existing UV import path.
+inline bool has_uv_primvar_value(const pxr::UsdGeomPrimvar& primvar)
+{
+    using namespace pxr;
+
+    if (!primvar || !primvar.HasValue())
+        return false;
+    const TfToken type_name = primvar.GetTypeName().GetAsToken();
+    return type_name == SdfValueTypeNames->Half2Array.GetAsToken()
+        || type_name == SdfValueTypeNames->Float2Array.GetAsToken()
+        || type_name == SdfValueTypeNames->Double2Array.GetAsToken()
+        || type_name == SdfValueTypeNames->TexCoord2fArray.GetAsToken()
+        || type_name == SdfValueTypeNames->TexCoord2dArray.GetAsToken()
+        || type_name == SdfValueTypeNames->TexCoord2hArray.GetAsToken();
+}
+
+inline pxr::UsdGeomPrimvar
+get_uv_primvar(const pxr::UsdGeomGprim& prim, std::span<const std::string> fallback_exclusions = {})
 {
     using namespace pxr;
 
@@ -201,27 +300,23 @@ inline pxr::UsdGeomPrimvar get_uv_primvar(const pxr::UsdGeomGprim& prim)
     // can be of type float2[] with an arbitrary name, or can be of of the texcoord-related types.
     // Attempt to match using both commonly-used texcoord primvar names, and texcoord types.
 
-    auto valid_type = [](UsdGeomPrimvar uv_primvar) -> bool
+    auto is_excluded = [&](const UsdGeomPrimvar& primvar)
     {
-        if (!uv_primvar || !uv_primvar.HasValue())
-            return false;
-        TfToken primvar_type_name = uv_primvar.GetTypeName().GetAsToken();
-        return primvar_type_name == SdfValueTypeNames->TexCoord2fArray.GetAsToken()
-            || primvar_type_name == SdfValueTypeNames->TexCoord2dArray.GetAsToken()
-            || primvar_type_name == SdfValueTypeNames->TexCoord2hArray.GetAsToken();
+        const std::string name = primvar.GetPrimvarName().GetString();
+        return std::find(fallback_exclusions.begin(), fallback_exclusions.end(), name) != fallback_exclusions.end();
     };
 
     UsdGeomPrimvar uv_primvar = primvars_API.GetPrimvar(TfToken("primvars:st"));
-    if (valid_type(uv_primvar))
+    if (has_uv_primvar_value(uv_primvar))
         return uv_primvar;
 
     uv_primvar = primvars_API.GetPrimvar(TfToken("primvars:st_0"));
-    if (valid_type(uv_primvar))
+    if (has_uv_primvar_value(uv_primvar))
         return uv_primvar;
 
     std::vector<UsdGeomPrimvar> all_primvars = primvars_API.GetPrimvars();
     for (auto& it : all_primvars) {
-        if (valid_type(it))
+        if (has_uv_primvar_value(it) && !is_excluded(it))
             return it;
     }
 

@@ -234,6 +234,7 @@ def test_tonemap_shader_histogram_matches_reference(
     assert histogram.to_numpy()[0] == 0
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_tonemapper_current_frame_auto_exposure_hits_current_target(
     device_type: spy.DeviceType, device: spy.Device
@@ -254,6 +255,7 @@ def test_tonemapper_current_frame_auto_exposure_hits_current_target(
     assert np.allclose(output, expected, atol=1e-5)
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_tonemapper_black_borders_have_no_histogram_influence(
     device_type: spy.DeviceType, device: spy.Device
@@ -280,6 +282,7 @@ def test_tonemapper_black_borders_have_no_histogram_influence(
     assert np.allclose(bordered_output[1:5, 1:6], base_output, atol=1e-6)
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_tonemapper_histogram_percentiles_reject_luminance_outliers(
     device_type: spy.DeviceType, device: spy.Device
@@ -306,6 +309,7 @@ def test_tonemapper_histogram_percentiles_reject_luminance_outliers(
     assert np.allclose(output.reshape(-1, 3)[10:90], expected_middle, atol=5e-4)
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_tonemapper_all_black_fallback_is_neutral_and_retains_previous_frame_history(
     device_type: spy.DeviceType, device: spy.Device
@@ -340,6 +344,7 @@ def test_tonemapper_all_black_fallback_is_neutral_and_retains_previous_frame_his
     assert np.allclose(output, expected, atol=1e-5)
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 @pytest.mark.parametrize(
     "first_value,second_value,speed_name,speed,delta_time",
@@ -403,6 +408,7 @@ def test_tonemapper_previous_frame_mode_clamps_ev_change(
     assert np.allclose(reset_output, expected_reset, atol=1e-5)
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_tonemapper_runtime_bounds_reinitialize_clamped_history(
     device_type: spy.DeviceType, device: spy.Device
@@ -413,6 +419,7 @@ def test_tonemapper_runtime_bounds_reinitialize_clamped_history(
     input_data = np.full((3, 5, 3), np.exp2(-5.0), dtype=np.float32)
     input_tensor = _tensor_from_numpy(device, input_data)
     node = TonemapperNode.create(device)
+    node.auto_exposure = True
     node.auto_exposure_mode = AutoExposureMode.previous_frame
 
     node(input_tensor)
@@ -427,6 +434,7 @@ def test_tonemapper_runtime_bounds_reinitialize_clamped_history(
     assert np.allclose(output, expected, atol=1e-5)
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 @pytest.mark.parametrize(
     "operator_name",
@@ -437,13 +445,13 @@ def test_tonemapper_selects_operator(
     device: spy.Device,
     operator_name: str,
 ) -> None:
-    """Each public operator applies manual exposure and preserves alpha."""
+    """Each public operator defaults to manual exposure and preserves alpha."""
     from falcor2.rendernodes import TonemapperNode, TonemappingOperator
 
     operator = TonemappingOperator[operator_name]
     node = TonemapperNode.create(device)
     node.operator = operator
-    node.auto_exposure = False
+    assert node.auto_exposure is False
     node.exposure_compensation = 1.0
     input_data = np.array(
         [[[-0.25, 0.25, 2.0, 0.375], [0.5, 1.0, 4.0, 0.75]]],
@@ -460,6 +468,7 @@ def test_tonemapper_selects_operator(
     assert node._adapted_exposure_ev is None
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_tonemapper_operator_applies_to_auto_exposure_paths(
     device_type: spy.DeviceType, device: spy.Device
@@ -472,6 +481,7 @@ def test_tonemapper_operator_applies_to_auto_exposure_paths(
     expected_ev = _histogram_target_ev(input_data)
     expected = _tonemap_with_shader_helper(device, "reinhard", np.exp2(expected_ev) * input_data)
     node = TonemapperNode.create(device, operator=TonemappingOperator.reinhard)
+    node.auto_exposure = True
     node.auto_exposure_mode = AutoExposureMode.previous_frame
 
     immediate_output = node(input_tensor).to_numpy()
@@ -481,6 +491,7 @@ def test_tonemapper_operator_applies_to_auto_exposure_paths(
     assert np.allclose(fused_output, expected, atol=1e-5)
 
 
+@pytest.mark.nightly_if(device_type=(spy.DeviceType.d3d12,))
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_tonemapper_nonfinite_metering_does_not_poison_exposure(
     device_type: spy.DeviceType, device: spy.Device
@@ -572,6 +583,7 @@ def test_tonemapper_auto_exposure_histogram_is_fixed_size_and_reused(
     assert np.sum(original_histogram.to_numpy()) == 20 * HISTOGRAM_WEIGHT_SCALE
 
 
+@pytest.mark.nightly_if(device_type=(spy.DeviceType.cuda,))
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_tonemapper_auto_exposure_texture_preserves_contract(
     device_type: spy.DeviceType, device: spy.Device
@@ -608,6 +620,7 @@ def test_tonemapper_auto_exposure_texture_preserves_contract(
     assert np.allclose(output_data[..., 3], 0.375)
 
 
+@pytest.mark.nightly_if(device_type=(spy.DeviceType.d3d12,))
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_tonemapper_auto_exposure_half_tensor_preserves_contract(
     device_type: spy.DeviceType, device: spy.Device

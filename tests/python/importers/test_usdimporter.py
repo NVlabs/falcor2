@@ -6,6 +6,7 @@ import struct
 import zipfile
 from pathlib import Path
 
+import numpy as np
 import pytest
 import slangpy as spy
 import falcor2 as f2
@@ -14,8 +15,277 @@ import falcor2.testing.helpers as helpers
 DATA = Path(__file__).parent.parent.parent.parent / "data"
 _DDS_PATH = DATA.parent / "external/slangpy/data/test_images/dds/bc1-unorm.dds"
 
+
+@pytest.fixture
+def preview_material(tmp_path: Path) -> tuple:
+    from falcor2.pxr import Sdf, Usd, UsdGeom, UsdShade
+
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageMetersPerUnit(stage, 1)
+    UsdGeom.SetStageUpAxis(stage, "Y")
+    material = UsdShade.Material.Define(stage, "/Material")
+    surface = UsdShade.Shader.Define(stage, "/Material/Surface")
+    surface.CreateIdAttr("UsdPreviewSurface")
+    material.CreateSurfaceOutput().ConnectToSource(
+        surface.CreateOutput("surface", Sdf.ValueTypeNames.Token)
+    )
+    texture = UsdShade.Shader.Define(stage, "/Material/Texture")
+    texture.CreateIdAttr("UsdUVTexture")
+    texture_path = tmp_path / "texture.png"
+    texture.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(str(texture_path)))
+    pixels = np.full((2, 2, 4), 64, dtype=np.uint8)
+    spy.Bitmap(pixels).write(texture_path)
+    for channel, value_type in (
+        ("rgb", Sdf.ValueTypeNames.Float3),
+        ("r", Sdf.ValueTypeNames.Float),
+        ("g", Sdf.ValueTypeNames.Float),
+        ("b", Sdf.ValueTypeNames.Float),
+        ("a", Sdf.ValueTypeNames.Float),
+    ):
+        texture.CreateOutput(channel, value_type)
+    mesh = UsdGeom.Mesh.Define(stage, "/Mesh")
+    mesh.CreatePointsAttr([(-1, -1, 0), (1, -1, 0), (1, 1, 0), (-1, 1, 0)])
+    mesh.CreateFaceVertexCountsAttr([4])
+    mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+    mesh.CreateDoubleSidedAttr(True)
+    UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+    return stage, surface, texture, texture_path
+
+
+def _load_preview(preview: tuple) -> tuple:
+    stage, _, _, _ = preview
+    device = helpers.get_device(helpers.DEFAULT_DEVICE_TYPES[0])
+    scene = f2.Scene.from_importer_scene(device, f2.UsdImporter().import_stage(stage))
+    material = next(m for m in scene.materials if isinstance(m, f2.StandardMaterial))
+    return scene, material
+
+
+def test_preview_packed_metallic_roughness(preview_material: tuple) -> None:
+    from falcor2.pxr import Sdf
+
+    _, surface, texture, texture_path = preview_material
+    texture.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set("raw")
+    for name, channel in (("metallic", "b"), ("roughness", "g")):
+        value = surface.CreateInput(name, Sdf.ValueTypeNames.Float)
+        value.Set(0.0)  # A connected input must replace this fallback.
+        value.ConnectToSource(texture.GetOutput(channel))
+    scene, material = _load_preview(preview_material)
+    assert material.metallic_roughness_texture_path == texture_path
+    assert float(material.metallic_factor) == 1
+    assert float(material.roughness_factor) == 1
+    assert (material.metallic_texture_channel, material.roughness_texture_channel) == (2, 1)
+
+
+@pytest.mark.parametrize(
+    "opacity,threshold,textured,expected_mode,expected_factor",
+    [
+        (None, 0, True, f2.AlphaMode.opaque, 1),
+        (0.25, 0, False, f2.AlphaMode.blend, 0.25),
+        (0, 0, True, f2.AlphaMode.blend, 0),
+        (0.5, 0.5, True, f2.AlphaMode.opaque, 1),
+        (0.25, 0.5, True, f2.AlphaMode.mask, 0),
+        ("alpha", 0.5, True, f2.AlphaMode.mask, 1),
+        ("alpha", 0, True, f2.AlphaMode.blend, 1),
+        ("scaled_alpha", 0.25, True, f2.AlphaMode.mask, 0.5),
+    ],
+)
+def test_preview_opacity(
+    preview_material: tuple,
+    opacity: str | float | None,
+    threshold: float,
+    textured: bool,
+    expected_mode: f2.AlphaMode,
+    expected_factor: float,
+) -> None:
+    from falcor2.pxr import Sdf
+
+    _, surface, texture, _ = preview_material
+    if textured:
+        surface.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(
+            texture.GetOutput("rgb")
+        )
+    surface.CreateInput("opacityThreshold", Sdf.ValueTypeNames.Float).Set(threshold)
+    if opacity is not None:
+        value = surface.CreateInput("opacity", Sdf.ValueTypeNames.Float)
+        if isinstance(opacity, str):
+            value.ConnectToSource(texture.GetOutput("a"))
+            if opacity == "scaled_alpha":
+                texture.CreateInput("scale", Sdf.ValueTypeNames.Float4).Set((1, 1, 1, 0.5))
+        else:
+            value.Set(opacity)
+    scene, material = _load_preview(preview_material)
+    assert material.alpha_mode == expected_mode
+    assert material.alpha_factor == pytest.approx(expected_factor)
+    if expected_mode == f2.AlphaMode.mask:
+        assert material.alpha_cutoff == pytest.approx(threshold)
+    scene.update()
+    assert scene.required_capabilities.has(f2.SceneCapabilityFlags.opacity_evaluation) == (
+        expected_mode != f2.AlphaMode.opaque
+    )
+
+
+@pytest.mark.parametrize(
+    "case", ["independent", "red", "bias", "scale", "procedural", "constant_with_texture"]
+)
+def test_preview_unsupported_opacity(preview_material: tuple, case: str) -> None:
+    from falcor2.pxr import Sdf, UsdShade
+
+    stage, surface, texture, _ = preview_material
+    surface.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(
+        texture.GetOutput("rgb")
+    )
+    opacity = surface.CreateInput("opacity", Sdf.ValueTypeNames.Float)
+    opacity.ConnectToSource(texture.GetOutput("a"))
+    if case == "independent":
+        other = UsdShade.Shader.Define(stage, "/Material/Other")
+        other.CreateIdAttr("UsdUVTexture")
+        other.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(texture.GetInput("file").Get())
+        opacity.ConnectToSource(other.CreateOutput("a", Sdf.ValueTypeNames.Float))
+    elif case == "red":
+        opacity.ConnectToSource(texture.GetOutput("r"))
+    elif case == "bias":
+        texture.CreateInput("bias", Sdf.ValueTypeNames.Float4).Set((0, 0, 0, 0.1))
+    elif case == "scale":
+        texture.CreateInput("scale", Sdf.ValueTypeNames.Float4).Set((1, 1, 1, 2))
+    elif case == "procedural":
+        texture.CreateIdAttr("UsdPrimvarReader_float")
+    else:
+        opacity.DisconnectSource()
+        opacity.Set(0.25)
+    with pytest.raises(RuntimeError, match="opacity"):
+        _load_preview(preview_material)
+
+
+def test_preview_imported_mask_clips_rays(preview_material: tuple) -> None:
+    from falcor2.pxr import Sdf
+    from falcor2.rendernodes import ReferencePathTracerNode
+
+    _, surface, texture, _ = preview_material
+    surface.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(
+        texture.GetOutput("rgb")
+    )
+    surface.CreateInput("emissiveColor", Sdf.ValueTypeNames.Color3f).Set((1, 0, 0))
+    surface.CreateInput("opacity", Sdf.ValueTypeNames.Float).ConnectToSource(texture.GetOutput("a"))
+    surface.CreateInput("opacityThreshold", Sdf.ValueTypeNames.Float).Set(0.5)
+    scene, material = _load_preview(preview_material)
+    device = helpers.get_device(helpers.DEFAULT_DEVICE_TYPES[0])
+    camera = helpers.create_test_camera(
+        scene,
+        width=8,
+        height=8,
+        fov_y=35,
+        position=spy.float3(0, 0, 2),
+        rotation=spy.math.quat_from_look_at(spy.float3(0, 0, -1), spy.float3(0, 1, 0)),
+    )
+    renderer = ReferencePathTracerNode.create(device)
+    renderer.output_spec = f2.ContainerSpec.texture2d(spy.Format.rgba32_float)
+    renderer.enable_nee = False
+    renderer.max_depth = 1
+    renderer.use_background_color = True
+    renderer.background_color = spy.float3(0)
+    renderer.pixel_filter = f2.BoxReconstructionFilter(width=0)
+    assert material.alpha_mode == f2.AlphaMode.mask
+    for opaque in (False, True):
+        if opaque:
+            material.alpha_mode = f2.AlphaMode.opaque
+        scene.update()
+        image, _ = renderer(scene, camera, iteration=0, pixel_offset=spy.float2(0))
+        color = image.to_numpy()[4, 4, :3]
+        if opaque:
+            assert color[0] > 0.5
+            assert color[1:] == pytest.approx((0, 0), abs=1e-4)
+        else:
+            assert color == pytest.approx((0, 0, 0), abs=1e-4)
+
+
+@pytest.mark.parametrize("scale", [None, (2, 3, 4, 0.25)])
+def test_textured_emission_scale(preview_material: tuple, scale: tuple | None) -> None:
+    from falcor2.pxr import Sdf
+
+    _, surface, texture, texture_path = preview_material
+    if scale is not None:
+        texture.CreateInput("scale", Sdf.ValueTypeNames.Float4).Set(scale)
+    surface.CreateInput("emissiveColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(
+        texture.GetOutput("rgb")
+    )
+    surface.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(
+        texture.GetOutput("rgb")
+    )
+    scene, imported = _load_preview(preview_material)
+    assert np.asarray(imported.emissive_factor) == pytest.approx(scale[:3] if scale else (1, 1, 1))
+    assert imported.emissive_texture_path == texture_path
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
+def test_scene_max_mip_count(tmp_path: Path, device_type: spy.DeviceType) -> None:
+    from falcor2.pxr import Usd
+
+    image_path = tmp_path / "texture.png"
+    spy.Bitmap(np.full((16, 16, 4), 128, dtype=np.uint8)).write(image_path)
+    path = tmp_path / "scene.usda"
+    stage = Usd.Stage.CreateNew(str(path))
+    stage.GetRootLayer().customLayerData = {"falcor:maxMipCount": 4}
+    stage.DefinePrim("/Root", "Xform")
+    stage.GetRootLayer().Save()
+
+    device = helpers.get_device(device_type)
+    for cap, expected in ((5, 4), (3, 3)):
+        scene = f2.Scene.load(device, path, config=f2.SceneConfig(max_mip_count=cap))
+        assert scene.config.max_mip_count == expected
+        manager = scene.texture_manager
+        handle = manager.load_texture(image_path)
+        assert handle.texture.width == handle.texture.height == 1 << (expected - 1)
+        assert manager.load_texture(image_path, max_mip_count=None) == handle
+        assert manager.load_texture(image_path, max_mip_count=expected) == handle
+        for override, width in ((2, 2), (0, 16)):
+            overridden = manager.load_texture(
+                image_path, max_mip_count=override, load_deferred=True
+            )
+            assert overridden != handle
+            manager.update()
+            assert overridden.texture.width == overridden.texture.height == width
+            assert manager.load_texture(image_path, max_mip_count=override) == overridden
+
+
+def test_importer_property_factories(tmp_path: Path) -> None:
+    options = f2.ImportOptions()
+    options.mesh_refinement_level = 2
+    options.curve_refinement_level = 7
+    options.recompute_normals = True
+    options.force_rectangle_lights_to_geometry = True
+    assert f2.ImporterMesh.make_properties(options)["refinement_level"] == 2
+    assert f2.ImporterCurve.make_properties(options)["refinement_level"] == 7
+    assert f2.ImporterLight.make_properties(options, f2.ImporterLight.Type.rectangular)[
+        "convert_to_mesh"
+    ]
+    assert not f2.ImporterLight.make_properties(options, f2.ImporterLight.Type.dome)[
+        "convert_to_mesh"
+    ]
+    scene_path = tmp_path / "properties.usda"
+    scene_path.write_text(
+        """#usda 1.0
+def Mesh "Triangle" {
+    int[] faceVertexCounts = [3]
+    int[] faceVertexIndices = [0, 1, 2]
+    point3f[] points = [(0,0,0), (1,0,0), (0,1,0)]
+    uniform token subdivisionScheme = "none"
+}
+def DomeLight "Dome" {}
+""",
+        encoding="utf-8",
+    )
+    scene = f2.UsdImporter().load_scene(scene_path, options)
+    mesh = scene.meshes[0]
+    assert mesh.properties["recompute_normals"]
+    mesh.properties["refinement_level"] = 0
+    assert mesh.properties["refinement_level"] == 0
+    scene.lights[0].properties["convert_to_mesh"] = True
+    assert scene.lights[0].properties["convert_to_mesh"]
+
+
+# One RGB pixel with an explicit sRGB chunk, used for packaged color textures.
 _PNG = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2aX8AAAAASUVORK5CYII="
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAAAXNSR0IArs4c6QAAAAxJREFUeJxjaGhoAAADBAGBS9PSEAAAAABJRU5ErkJggg=="
 )
 
 _PACKAGED_SCENE = b"""#usda 1.0
@@ -57,6 +327,9 @@ def Xform "Root"
                 bool inputs:double_sided = 0
                 color3f inputs:emissive_factor = (0, 0, 0)
                 float inputs:ior = 1.5
+                uint inputs:nested_priority = 5
+                float3 inputs:volume_sigma_a = (12, 16, 20)
+                float3 inputs:volume_sigma_s = (0.1, 0.2, 0.3)
                 float inputs:metallic_factor = 0
                 uint inputs:metallic_texture_channel = 2
                 asset inputs:normal_texture_path = @normal.dds@
@@ -155,6 +428,10 @@ def test_load_usdz_with_packaged_images(
     _write_package(package_path)
 
     imported = f2.UsdImporter().load_scene(package_path.resolve())
+    for objects in (imported.nodes, imported.meshes, imported.materials, imported.lights):
+        for obj in objects:
+            if obj.source_asset_ref is not None:
+                assert obj.source_asset_ref.asset_path == str(package_path.resolve())
     packaged_assets = {str(asset.path): bytes(asset.data) for asset in imported.assets}
 
     def get_asset_data(name: str) -> bytes:
@@ -173,6 +450,26 @@ def test_load_usdz_with_packaged_images(
     scene.update()
 
     material = scene.materials[0]
+    assert material.nested_priority == 5
+    np.testing.assert_allclose(material.volume_sigma_a, [12, 16, 20])
+    np.testing.assert_allclose(material.volume_sigma_s, [0.1, 0.2, 0.3])
+    assert material.source_asset_ref is not None
+    assert material.source_asset_ref.format == "usd"
+    assert material.source_asset_ref.object_path == "/Root/Looks/Material"
+    assert material in scene.find_objects_by_source_asset_ref(material.source_asset_ref)
+
+    source_asset_path = str(package_path.resolve())
+    quad_objects = scene.find_objects_by_source_asset_ref(
+        f2.SourceAssetRef("usd", source_asset_path, "/Root/Quad")
+    )
+    assert len([obj for obj in quad_objects if isinstance(obj, f2.Entity)]) == 1
+    assert len([obj for obj in quad_objects if isinstance(obj, f2.GeometryInstance)]) == 1
+
+    sky_objects = scene.find_objects_by_source_asset_ref(
+        f2.SourceAssetRef("usd", source_asset_path, "/Root/Sky")
+    )
+    assert len([obj for obj in sky_objects if isinstance(obj, f2.Entity)]) == 1
+    assert len([obj for obj in sky_objects if isinstance(obj, f2.Light)]) == 1
     assert material.base_color_texture is not None
     assert material.base_color_texture.format == spy.Format.rgba8_unorm_srgb
     assert material.base_color_texture_path == Path()
@@ -183,6 +480,30 @@ def test_load_usdz_with_packaged_images(
     env_map = scene.components.find(type=f2.EnvMapLight)
     assert env_map is not None
     assert env_map.env_map_path == Path()
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_source_lookup_distinguishes_assets(
+    tmp_path: Path, device_type: spy.DeviceType, device: spy.Device
+) -> None:
+    first_path = tmp_path / "first.usda"
+    second_path = tmp_path / "second.usda"
+    content = '#usda 1.0\ndef Camera "Camera" {}\n'
+    first_path.write_text(content)
+    second_path.write_text(content)
+
+    scene = f2.Scene.load(device, first_path)
+    scene.append(second_path)
+    first_source = f2.SourceAssetRef("usd", str(first_path.resolve()), "/Camera")
+    second_source = f2.SourceAssetRef("usd", str(second_path.resolve()), "/Camera")
+    first_objects = scene.find_objects_by_source_asset_ref(first_source)
+    second_objects = scene.find_objects_by_source_asset_ref(second_source)
+    for objects, source in ((first_objects, first_source), (second_objects, second_source)):
+        assert len(objects) == 2
+        assert sum(isinstance(obj, f2.Entity) for obj in objects) == 1
+        assert sum(isinstance(obj, f2.Camera) for obj in objects) == 1
+        assert all(obj.source_asset_ref == source for obj in objects)
+    assert all(obj not in second_objects for obj in first_objects)
 
 
 def test_light_shaping_properties(tmp_path: Path) -> None:
@@ -208,13 +529,23 @@ def RectLight "Rect" (
     float inputs:shaping:cone:angle = 30
     float inputs:shaping:cone:softness = 0.5
 }
+
+def CylinderLight "Cylinder" (
+    prepend apiSchemas = ["ShapingAPI"]
+)
+{
+    float inputs:length = 3
+    float inputs:radius = 0.75
+    float inputs:shaping:cone:angle = 45
+    bool treatAsLine = 1
+}
 """,
         encoding="utf-8",
     )
 
     scene = f2.UsdImporter().load_scene(scene_path)
     assert scene is not None
-    assert len(scene.lights) == 2
+    assert len(scene.lights) == 3
     light = next(light for light in scene.lights if light.name == "/Sphere")
     assert light.enable_color_temperature
     assert light.color_temperature == pytest.approx(3200.0)
@@ -243,6 +574,14 @@ def RectLight "Rect" (
     assert rect.shaping_cone_softness == pytest.approx(0.5)
     assert rect.shaping_focus == pytest.approx(0.0)
 
+    cylinder = next(light for light in scene.lights if light.name == "/Cylinder")
+    assert cylinder.type == f2.ImporterLight.Type.cylinder
+    assert cylinder.radius == pytest.approx(0.75)
+    assert cylinder.length == pytest.approx(3.0)
+    assert cylinder.treat_as_line
+    assert cylinder.enable_shaping
+    assert cylinder.shaping_cone_angle == pytest.approx(45.0)
+
 
 def test_render_light_geometry_properties(tmp_path: Path) -> None:
     scene_path = tmp_path / "render_light_geometry.usda"
@@ -252,6 +591,11 @@ def test_render_light_geometry_properties(tmp_path: Path) -> None:
 def RectLight "KarmaVisible"
 {
     bool karma:light:renderlightgeo = 1
+}
+
+def RectLight "UsdVisible"
+{
+    custom bool inputs:enableInPrimaryRay = 1
 }
 
 def RectLight "FalcorVisible"
@@ -270,9 +614,10 @@ def RectLight "FalcorHidden"
 
     scene = f2.UsdImporter().load_scene(scene_path)
     assert scene is not None
-    assert len(scene.lights) == 3
+    assert len(scene.lights) == 4
     lights = {light.name: light for light in scene.lights}
     assert lights["/KarmaVisible"].geometry_visible
+    assert lights["/UsdVisible"].geometry_visible
     assert lights["/FalcorVisible"].geometry_visible
     assert not lights["/FalcorHidden"].geometry_visible
 
@@ -290,5 +635,68 @@ def test_generic_import_routes_usdz_to_usd_importer(tmp_path: Path) -> None:
     assert "Unknown scene file extension" not in str(exc_info.value)
 
 
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
+def test_usd_texcoord_primvar_mapping_file_entry_points(
+    tmp_path: Path, device_type: spy.DeviceType, device: spy.Device
+) -> None:
+    scene_path = tmp_path / "mapped_texcoords.usda"
+    scene_path.write_text(
+        """#usda 1.0
+
+def Mesh "MappedTexcoords"
+{
+    uniform token subdivisionScheme = "none"
+    int[] faceVertexCounts = [3]
+    int[] faceVertexIndices = [0, 1, 2]
+    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+    texCoord2f[] primvars:lightmap = [(4, 1), (5, 1), (4, 2)] (
+        interpolation = "vertex"
+    )
+}
+""",
+        encoding="utf-8",
+    )
+
+    options = f2.ImportOptions()
+    defaults = [f"st{index}" for index in range(1, 8)]
+    assert list(options.usd_texcoord_primvar_names) == defaults
+    with pytest.raises((TypeError, ValueError)):
+        options.usd_texcoord_primvar_names = ["lightmap"]
+    names = defaults.copy()
+    names[0] = "lightmap"
+    options.usd_texcoord_primvar_names = names
+    assert list(options.usd_texcoord_primvar_names) == names
+
+    for imported in (
+        f2.UsdImporter().load_scene(scene_path, options),
+        f2.import_scene(scene_path, options),
+    ):
+        uv1 = imported.meshes[0].texcoords(1)
+        assert uv1 is not None
+        np.testing.assert_array_equal(uv1[0], [4.0, 1.0])
+
+    scene = f2.Scene.load(device, scene_path, options)
+    geometry = scene.geometries[0]
+    uv1 = next(
+        attribute
+        for attribute in geometry.vertex_attributes(0)
+        if attribute.semantic == f2.MeshAttributeSemantic.tex_coord and attribute.index == 1
+    )
+    assert uv1.data[0, 0] == 4.0
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_held_animation_interpolation() -> None:
+    from falcor2.pxr import Usd, UsdGeom
+
+    stage = Usd.Stage.CreateInMemory()
+    stage.SetInterpolationType(Usd.InterpolationTypeHeld)
+    translate = UsdGeom.Xform.Define(stage, "/Animated").AddTranslateOp()
+    translate.Set((0, 0, 0), 0)
+    translate.Set((10, 0, 0), 24)
+    imported = f2.UsdImporter().import_stage(stage)
+    assert len(imported.animation.channels) == 1
+    assert imported.animation.channels[0].interpolation_mode == f2.AnimationInterpolationMode.step

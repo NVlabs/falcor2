@@ -51,7 +51,7 @@ public:
     /// This is only available if not empty and after calling `update_buffer`.
     const ref<sgl::Buffer>& buffer() const { return m_buffer; }
 
-    /// Host data.
+    /// Host data. Writes through the mutable pointer require explicit dirty marking.
     const T* data() const { return m_data.data(); }
     T* data() { return m_data.data(); }
 
@@ -61,6 +61,7 @@ public:
     {
         FALCOR_CHECK_LE(size * sizeof(T), m_desc.max_buffer_size);
         m_data.resize(size);
+        m_dirty_range[1] = std::min(m_dirty_range[1], size);
     }
 
     /// Ensure the buffer has a minimum size. Size must not exceed capacity.

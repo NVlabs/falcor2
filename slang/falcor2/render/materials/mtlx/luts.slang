@@ -15,13 +15,13 @@
 
 implementing mtlx;
 
-public static constexpr int MINI_MICROFACET_GGX_NC = 16;
-public static constexpr int MINI_MICROFACET_GGX_NR = 16;
-public static constexpr int MINI_MICROFACET_GGX_NF = 1;
-public static constexpr int DIELECTRIC_NC = 16;
-public static constexpr int DIELECTRIC_NR = 16;
-public static constexpr int DIELECTRIC_NF = 32;
-public static constexpr int ZELTNER_SHEEN_LTC_RES = 32;
+public static const int MINI_MICROFACET_GGX_NC = 16;
+public static const int MINI_MICROFACET_GGX_NR = 16;
+public static const int MINI_MICROFACET_GGX_NF = 1;
+public static const int DIELECTRIC_NC = 16;
+public static const int DIELECTRIC_NR = 16;
+public static const int DIELECTRIC_NF = 32;
+public static const int ZELTNER_SHEEN_LTC_RES = 32;
 
 namespace mtlx {
 
