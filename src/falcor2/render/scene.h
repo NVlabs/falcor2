@@ -366,18 +366,20 @@ public:
     /// Requirements are conservative. Returns an empty set before the first update.
     SceneCapabilities required_capabilities() const { return m_required_capabilities; }
 
-    /// Shared immutable snapshot with all capabilities enabled. Retained snapshots survive scene updates.
-    ref<const SceneRequirements> requirements() const { return m_requirements; }
+    /// Shared immutable snapshot with scene-required capabilities enabled.
+    /// Repeated calls reuse the snapshot cached by effective capability mask; no materials are rescanned here.
+    /// Retained snapshots survive scene updates until shader or ray-tracing inputs change.
+    ref<const SceneRequirements> requirements() const { return resolve_requirements(); }
 
     /// Resolve shader and ray-tracing requirements after the last completed update, without modifying the scene.
     /// Requests add consumer shader operations and material AOV dependencies. Call after update().
-    /// specified_capabilities is used only with SceneCapabilityPolicy::specified.
+    /// SceneCapabilityPolicy::specified requires an explicit specified_capabilities value.
     /// Throws for unknown AOVs, unsupported requirements, or specified selections omitting required capabilities.
     /// Equivalent effective selections share a snapshot, independently of requested output bindings.
     ref<const SceneRequirements> resolve_requirements(
         const SceneRenderRequest& request = {},
-        SceneCapabilityPolicy policy = SceneCapabilityPolicy::all,
-        SceneCapabilities specified_capabilities = SceneCapabilities::all()
+        SceneCapabilityPolicy policy = SceneCapabilityPolicy::required,
+        std::optional<SceneCapabilities> specified_capabilities = std::nullopt
     ) const;
 
     /// Advances when synchronized scene changes may affect requirements.
@@ -589,7 +591,7 @@ private:
     /// Slang settings module that specializes scene conventions.
     ref<sgl::SlangModule> m_settings_module;
     /// Caches settings modules by capability selection for reuse across consumers.
-    /// Mutable so resolve_requirements() can populate it lazily without changing the default requirements.
+    /// Mutable so resolve_requirements() can populate it lazily without changing the all-capabilities snapshot.
     mutable std::map<SceneCapabilityFlags, ref<sgl::SlangModule>> m_specialized_settings_modules;
     /// Shader object for binding scene data.
     ref<sgl::ShaderObject> m_scene_shader_object;
@@ -624,11 +626,11 @@ private:
     /// Signal emitted when the scene is updated. The signal parameter indicates what changed.
     SceneUpdatedSignal m_updated_signal;
 
-    /// Default immutable snapshot with all capabilities enabled.
+    /// Internal immutable snapshot with all capabilities enabled.
     ref<const SceneRequirements> m_requirements;
 
     /// Snapshots cached by effective capability selection, populated lazily by resolve_requirements().
-    /// Cleared when the default snapshot changes.
+    /// Cleared when the all-capabilities snapshot changes.
     mutable std::map<SceneCapabilityFlags, ref<const SceneRequirements>> m_selected_requirements;
 
     /// Capabilities required by synchronized scene materials, excluding consumer demand.

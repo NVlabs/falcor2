@@ -129,3 +129,50 @@ TEST_CASE("editor command IDs must be unique")
 }
 
 TEST_SUITE_END();
+
+TEST_SUITE_BEGIN("EditorMenuItem");
+
+TEST_CASE("menu categories build ordered nested groups")
+{
+    EditorMenuItem menu;
+    menu.add_command("", CommandId("camera"));
+    menu.add_command("Light/Area", CommandId("rect"));
+    menu.add_command("Material", CommandId("standard"));
+    menu.add_command("Light", CommandId("point"));
+    menu.add_command("Light/Area", CommandId("disk"));
+    menu.add_command("Lighting", CommandId("settings"));
+    menu.add_command("Light/Area/Custom", CommandId("custom"));
+
+    REQUIRE_EQ(menu.children.size(), 4);
+    CHECK_EQ(menu.children[0].command, CommandId("camera"));
+    const auto& light = menu.children[1];
+    CHECK_EQ(light.label, "Light");
+    CHECK(light.command.empty());
+    REQUIRE_EQ(light.children.size(), 2);
+    CHECK_EQ(light.children[0].label, "Area");
+    CHECK_EQ(light.children[1].command, CommandId("point"));
+    const auto& area = light.children[0];
+    REQUIRE_EQ(area.children.size(), 3);
+    CHECK_EQ(area.children[0].command, CommandId("rect"));
+    CHECK_EQ(area.children[1].command, CommandId("disk"));
+    CHECK_EQ(area.children[2].label, "Custom");
+    REQUIRE_EQ(area.children[2].children.size(), 1);
+    CHECK_EQ(area.children[2].children[0].command, CommandId("custom"));
+    CHECK_EQ(menu.children[2].label, "Material");
+    REQUIRE_EQ(menu.children[2].children.size(), 1);
+    CHECK_EQ(menu.children[2].children[0].command, CommandId("standard"));
+    CHECK_EQ(menu.children[3].label, "Lighting");
+}
+
+TEST_CASE("menu categories reject empty path segments before inserting")
+{
+    EditorMenuItem menu;
+    const CommandId command("test");
+    CHECK_THROWS(menu.add_command("/Light", command));
+    CHECK_THROWS(menu.add_command("Light/", command));
+    CHECK_THROWS(menu.add_command("Light//Area", command));
+    CHECK_THROWS(menu.add_command("Light", {}));
+    CHECK(menu.children.empty());
+}
+
+TEST_SUITE_END();

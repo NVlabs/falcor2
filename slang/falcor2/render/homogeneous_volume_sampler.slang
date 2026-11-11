@@ -3,6 +3,26 @@
 
 implementing render;
 
+import falcor2.utils;
+
+/// Uniform sample coordinates for homogeneous-medium distance sampling.
+public struct VolumeDistanceSampleInput
+{
+    /// Uniform sample in [0, 1) for selecting an RGB scattering-distance proposal.
+    public float u_channel;
+    /// Uniform sample in [0, 1) for sampling distance from the selected channel's exponential distribution.
+    public float u_distance;
+}
+
+/// Consume exactly two scalar dimensions in field order, independent of medium properties.
+public VolumeDistanceSampleInput make_volume_distance_sample_input<S : ISampleGenerator>(inout S sg)
+{
+    VolumeDistanceSampleInput input;
+    input.u_channel = next_float(sg);
+    input.u_distance = next_float(sg);
+    return input;
+}
+
 /// Scattering-rate distance sampler for homogeneous media.
 ///
 /// Absorption is integrated into the event and surface weights instead of being
@@ -41,21 +61,21 @@ public struct HomogeneousVolumeSampler
 
     /// Sample a scattering distance. Returns false only when the medium cannot scatter.
     /// A selected zero-scattering channel represents probability mass at infinity.
-    public bool sample_distance<S : ISampleGenerator>(const float3 throughput, inout S sg, out float distance)
+    public bool sample_distance(const float3 throughput, const VolumeDistanceSampleInput input, out float distance)
     {
         distance = float.INFINITY;
         if (!has_scattering())
             return false;
 
         const float3 probabilities = channel_probabilities(throughput);
-        const float channel_sample = next_float(sg);
+        const float channel_sample = input.u_channel;
         const uint channel
             = channel_sample < probabilities.x ? 0 : (channel_sample < probabilities.x + probabilities.y ? 1 : 2);
         const float sigma_s = sigma_s[channel];
         if (sigma_s <= 0.0)
             return true;
 
-        const float distance_sample = min(next_float(sg), 0.999999940f);
+        const float distance_sample = input.u_distance;
         distance = -log(1.0 - distance_sample) / sigma_s;
         return true;
     }

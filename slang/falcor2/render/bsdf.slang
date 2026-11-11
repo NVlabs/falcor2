@@ -25,6 +25,66 @@ import falcor2.utils;
 /// so using a small epsilon for consistency.
 public static const float BSDF_MIN_COS_THETA = 1e-6;
 
+/// Uniform sample coordinates and auxiliary random bits for BSDF sampling.
+/// These inputs are independent of the shading coordinate frame.
+public struct BSDFSampleInput
+{
+    /// Uniform sample in [0, 1) for selecting a lobe or scattering branch.
+    public float u_lobe;
+    /// Uniform sample in [0, 1)^2 for sampling a direction within the selected lobe.
+    public float2 u_dir;
+    /// Uniform random bits for auxiliary sampling; every uint value is valid.
+    /// Preserved when routing to a selected child.
+    public uint aux_seed;
+
+    /// Preserve direction coordinates and seed while conditioning a selected mixture interval.
+    public BSDFSampleInput with_remapped_lobe(float cdf_begin, float probability)
+    {
+        BSDFSampleInput result = this;
+        result.u_lobe = remap_sample_selector(u_lobe, cdf_begin, probability);
+        return result;
+    }
+
+    /// Convert the auxiliary seed to a uniform sample in [0, 1).
+    public float aux_seed_as_float() { return (aux_seed >> 8) * 0x1p-24; }
+
+    /// Create a local random sequence for auxiliary sampling coordinates.
+    public UniformSampleGenerator make_aux_rng() { return UniformSampleGenerator(jenkins_hash(aux_seed ^ 0x415558u)); }
+}
+
+/// Consume exactly four scalar dimensions in field order, preserving all seed bits.
+public BSDFSampleInput make_bsdf_sample_input<S : ISampleGenerator>(inout S sg)
+{
+    BSDFSampleInput input;
+    input.u_lobe = next_float(sg);
+    input.u_dir = next_float2(sg);
+    input.aux_seed = sg.next_uint();
+    return input;
+}
+
+/// Remap a selector to its selected probability interval for a nested choice.
+/// The caller supplies a positive proposal probability and its preceding CDF value.
+/// Clamp rounding at either boundary so the child always receives a value in [0, 1).
+public float remap_sample_selector(float selector, float cdf_begin, float probability)
+{
+    return clamp((selector - cdf_begin) * (1.0 / probability), 0.0, 0x1.fffffep-1);
+}
+
+/// Select a binary branch and replace selector with its conditional residual.
+/// Uses the mx_choose_branch convention: strict comparison, clamped probability,
+/// and an unchanged selector for deterministic choices. Returns true for the first branch.
+public bool choose_sample_branch(inout float selector, float p_first)
+{
+    p_first = clamp(p_first, 0.0, 1.0);
+    if (p_first <= 0.0)
+        return false;
+    if (p_first >= 1.0)
+        return true;
+    bool first = selector < p_first;
+    selector = remap_sample_selector(selector, first ? 0.0 : p_first, first ? p_first : 1.0 - p_first);
+    return first;
+}
+
 public enum BSDFFlags : uint {
     none = 0x00,
 
@@ -213,52 +273,33 @@ public struct BSDFContext
     }
 };
 
-/// Deterministic sample generator used by the generator-free eval_pdf() convenience alias.
-///
-/// Random samples may affect only the value returned by eval_with_pdf(), never its PDF. Changing that
-/// contract would invalidate eval_pdf() and must be treated with utmost care.
-public struct EvalPdfFallbackSampleGenerator : ISampleGenerator
-{
-    public __init(uint seed, uint scrambling_seed = 0) { }
-    public __init(uint2 pixel, uint sample_index) { }
-
-    [mutating]
-    // next_float() maps the upper 24 bits to the midpoint sample 0.5.
-    public uint next_uint() { return 0x80000000u; }
-};
-
 public interface IBSDF
 {
     /// Evaluates the BSDF.
     /// @param wi Incident direction.
     /// @param wo Outgoing direction.
-    /// @param[inout] sg Sample generator.
     /// @param bc BSDF context.
     /// @return For surface BSDFs, returns f(wi, wo) * abs(dot(wo, n)). Curve BSDFs return their scattering
     /// response without an extra surface foreshortening factor.
-    public float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        return eval_with_pdf(wi, wo, sg, bc).value;
+        return eval_with_pdf(wi, wo, bc).value;
     }
 
     /// Evaluates the BSDF and its directional pdf together.
     /// @param wi Incident direction.
     /// @param wo Outgoing direction.
-    /// @param[inout] sg Sample generator.
     /// @param bc BSDF context.
-    /// The sample generator may affect only the value calculation; the PDF must be deterministic and
-    /// generator-independent.
     /// @return The BSDF value and solid-angle pdf returned by eval() and eval_pdf(), respectively.
-    public BSDFEval
-    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc);
+    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc);
 
     /// Samples the BSDF.
     /// @param wi Incident direction.
     /// @param[out] sample BSDF sample. Only valid if the function returns true.
-    /// @param[inout] sg Sample generator.
+    /// @param input Uniform sample coordinates and auxiliary random bits; see BSDFSampleInput.
     /// @param bc BSDF context.
     /// @return Returns true if successful.
-    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc);
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample);
 
     /// Evaluates the directional pdf for sampling outgoing direction wo.
     /// @param wi Incident direction.
@@ -267,8 +308,7 @@ public interface IBSDF
     /// @return Returns the pdf with respect to solid angle for sampling outgoing direction wo (0 for delta events).
     public float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        EvalPdfFallbackSampleGenerator sg = EvalPdfFallbackSampleGenerator(0u);
-        return eval_with_pdf(wi, wo, sg, bc).pdf;
+        return eval_with_pdf(wi, wo, bc).pdf;
     }
 
     /// Evaluate albedos (hemispherical reflectance) of the BSDF. Reflection + transmission hemisphere should be <= 1.0.

@@ -19,13 +19,9 @@ public struct BeerBTDF : IBSDF
     }
 
 
-    public BSDFEval
-    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
-    {
-        return BSDFEval();
-    }
+    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc) { return BSDFEval(); }
 
-    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
 

@@ -69,7 +69,7 @@ TEST_CASE(homogeneous_volume_sampler_keeps_pure_absorption_deterministic)
     const let sampler = HomogeneousVolumeSampler(medium);
     TinyUniformSampleGenerator sg = TinyUniformSampleGenerator(1);
     float distance;
-    CHECK_FALSE(sampler.sample_distance(float3(1.0), sg, distance));
+    CHECK_FALSE(sampler.sample_distance(float3(1.0), make_volume_distance_sample_input(sg), distance));
     CHECK_FALSE(isfinite(distance));
     CHECK_APPROX(sampler.eval_surface_weight(float3(1.0), 2.0), exp(-medium.sigma_a * 2.0), 1e-6f);
 }
@@ -80,8 +80,55 @@ TEST_CASE(homogeneous_volume_sampler_samples_finite_scattering_distance)
     const let sampler = HomogeneousVolumeSampler(medium);
     TinyUniformSampleGenerator sg = TinyUniformSampleGenerator(7);
     float distance;
-    CHECK(sampler.sample_distance(float3(1.0), sg, distance));
+    CHECK(sampler.sample_distance(float3(1.0), make_volume_distance_sample_input(sg), distance));
     CHECK(isfinite(distance));
     CHECK(distance >= 0.0);
     CHECK(all(isfinite(sampler.eval_event_weight(float3(1.0), distance))));
+}
+
+TEST_CASE(homogeneous_volume_sampler_explicit_channel_boundaries)
+{
+    const let sampler = HomogeneousVolumeSampler(make_medium(float3(0.0), float3(1.0, 2.0, 4.0)));
+    const float3 throughput = float3(1.0, 1.0, 2.0);
+    const float selectors[6] = { 0.0, 0x1.fffffep-3, 0.25, 0x1.fffffep-2, 0.5, 0x1.fffffep-1 };
+    const float rates[6] = { 1.0, 1.0, 2.0, 2.0, 4.0, 4.0 };
+    for (uint i = 0; i < 6; ++i) {
+        const VolumeDistanceSampleInput input = { selectors[i], 0.5 };
+        float distance, replay;
+        CHECK(sampler.sample_distance(throughput, input, distance));
+        CHECK(sampler.sample_distance(throughput, input, replay));
+        CHECK_EQ(distance, replay);
+        CHECK_APPROX(distance, log(2.0) / rates[i], 1.0e-6);
+    }
+}
+
+TEST_CASE(homogeneous_volume_sampler_explicit_distance_endpoints)
+{
+    const let sampler = HomogeneousVolumeSampler(make_medium(float3(0.5), float3(2.0)));
+    float distance;
+    CHECK(sampler.sample_distance(float3(1.0), VolumeDistanceSampleInput(0.0, 0.0), distance));
+    CHECK_EQ(distance, 0.0);
+    CHECK(sampler.sample_distance(float3(1.0), VolumeDistanceSampleInput(0.5, 0x1.fffffep-1), distance));
+    CHECK(isfinite(distance));
+    CHECK_APPROX(distance, 12.0 * log(2.0), 1.0e-5);
+}
+
+TEST_CASE(homogeneous_volume_sampler_zero_channel_probability_and_rate)
+{
+    const let sampler = HomogeneousVolumeSampler(make_medium(float3(0.0), float3(0.0, 2.0, 0.0)));
+    float distance;
+    // Zero proposal probabilities are skipped even at exact coordinate boundaries.
+    CHECK(sampler.sample_distance(float3(0.0, 1.0, 0.0), VolumeDistanceSampleInput(0.0, 0.5), distance));
+    CHECK_APPROX(distance, log(2.0) / 2.0, 1.0e-6);
+    CHECK(sampler.sample_distance(float3(0.0, 1.0, 0.0), VolumeDistanceSampleInput(0x1.fffffep-1, 0.5), distance));
+    CHECK_APPROX(distance, log(2.0) / 2.0, 1.0e-6);
+    // A zero rate with positive proposal mass is a successful escape sample.
+    CHECK(sampler.sample_distance(float3(1.0), VolumeDistanceSampleInput(0.0, 0.0), distance));
+    CHECK(distance == float.INFINITY);
+    CHECK(sampler.sample_distance(float3(1.0), VolumeDistanceSampleInput(0x1.fffffep-1, 0.5), distance));
+    CHECK(distance == float.INFINITY);
+
+    const let absorbing = HomogeneousVolumeSampler(make_medium(float3(1.0), float3(0.0)));
+    CHECK_FALSE(absorbing.sample_distance(float3(1.0), VolumeDistanceSampleInput(0.5, 0.5), distance));
+    CHECK(distance == float.INFINITY);
 }

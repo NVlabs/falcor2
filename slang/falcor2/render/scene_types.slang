@@ -220,13 +220,71 @@ public enum class GeometryInstanceID : uint { invalid = 0xffffffff };
 
 public enum class TransformID : uint { invalid = 0xffffffff };
 
+public enum class GeometryInstanceFlags : uint {
+    none = 0,
+    /// Reconstruct the previous object-space surface point from geometry history.
+    vertex_motion = 1 << 0,
+};
+#ifdef FALCOR_SHARED_HOST
+FALCOR_ENUM_CLASS_OPERATORS(GeometryInstanceFlags);
+#endif
+
 public struct GeometryInstanceDescHeader
 {
-    public GeometryType type;
+    /// Low 8 bits: geometry type (0xff means invalid). Upper 24 bits: GeometryInstanceFlags.
+    public uint type_and_flags;
     public GeometryID geometry_id;
     public MaterialID material_id;
     public TransformID transform_id;
+
+#ifndef FALCOR_SHARED_HOST
+    public property GeometryType type
+    {
+        get {
+            return detail::get_geometry_instance_type(this);
+        }
+    }
+
+    public property GeometryInstanceFlags flags
+    {
+        get {
+            return detail::get_geometry_instance_flags(this);
+        }
+    }
+#endif
 };
+
+namespace detail {
+
+struct GeometryInstanceHeaderFields
+{
+    typedef BitField<uint, 0, 8> type;
+    typedef BitField<uint, 8, 24> flags;
+};
+
+FALCOR_SHARED_INLINE_FUNCTION GeometryType get_geometry_instance_type(GeometryInstanceDescHeader header)
+{
+    uint type = GeometryInstanceHeaderFields::type::extract(header.type_and_flags);
+    return type == GeometryInstanceHeaderFields::type::MAX_VALUE ? GeometryType::invalid : GeometryType(type);
+}
+
+FALCOR_SHARED_INLINE_FUNCTION GeometryInstanceFlags get_geometry_instance_flags(GeometryInstanceDescHeader header)
+{
+    return GeometryInstanceFlags(GeometryInstanceHeaderFields::flags::extract(header.type_and_flags));
+}
+
+FALCOR_SHARED_INLINE_FUNCTION uint pack_geometry_instance_type_and_flags(GeometryType type, GeometryInstanceFlags flags)
+{
+    uint data = 0;
+    GeometryInstanceHeaderFields::type::insert(
+        data,
+        type == GeometryType::invalid ? GeometryInstanceHeaderFields::type::MAX_VALUE : uint(type)
+    );
+    GeometryInstanceHeaderFields::flags::insert(data, uint(flags));
+    return data;
+}
+
+} // namespace detail
 
 public struct GeometryInstanceDescPayload
 {

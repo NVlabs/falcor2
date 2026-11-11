@@ -77,7 +77,7 @@ public struct ProceduralClothBSDF : IBSDF
     }
 
 
-    public BSDFEval eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, BSDFContext bc)
+    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, BSDFContext bc)
     {
         float2 closest_hit;
         bool hit_top;
@@ -347,7 +347,7 @@ public struct ProceduralClothBSDF : IBSDF
         return BSDFEval(contribution_eval, contribution_pdf);
     }
 
-    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, BSDFContext bc)
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
 
@@ -366,8 +366,19 @@ public struct ProceduralClothBSDF : IBSDF
             return true;
         }
 
-        int selected_lobe
-            = sample_lobe(wi, closest_hit, hit_top, intersections, hit_counter, hit_id, sample.wo, sample.weight, sg);
+        var aux_rng = input.make_aux_rng();
+        int selected_lobe = sample_lobe(
+            wi,
+            closest_hit,
+            hit_top,
+            intersections,
+            hit_counter,
+            hit_id,
+            sample.wo,
+            sample.weight,
+            input,
+            aux_rng
+        );
 
         // We sampled a ray which travels into te lower hemisphere. Re-evaluate the bottom fiber if (and only if)  we
         // hit a top fiber. The incoming ray will be the outgoing ray.
@@ -377,6 +388,9 @@ public struct ProceduralClothBSDF : IBSDF
 
             if (hit_id != -1) {
                 float3 bottom_weight;
+                BSDFSampleInput bottom_input = input;
+                bottom_input.u_lobe = next_float(aux_rng);
+                bottom_input.u_dir = next_float2(aux_rng);
                 int selected_lobe = sample_lobe(
                     wi,
                     closest_hit,
@@ -386,7 +400,8 @@ public struct ProceduralClothBSDF : IBSDF
                     hit_id,
                     sample.wo,
                     bottom_weight,
-                    sg
+                    bottom_input,
+                    aux_rng
                 );
 
                 sample.weight *= bottom_weight;
@@ -1438,7 +1453,7 @@ public struct ProceduralClothBSDF : IBSDF
     }
 
     // Sample one of the lobe according to it's intensity.
-    int sample_lobe<S : ISampleGenerator>(
+    int sample_lobe(
         const float3 wi,
         const float2 closest_hit,
         const bool hit_top,
@@ -1447,7 +1462,8 @@ public struct ProceduralClothBSDF : IBSDF
         const int hit_id,
         out float3 wo,
         out float3 weight,
-        inout S sg
+        const BSDFSampleInput input,
+        inout UniformSampleGenerator aux_rng
     )
     {
         Frame sf_yarn = get_yarn_frame(hit_top);
@@ -1482,12 +1498,11 @@ public struct ProceduralClothBSDF : IBSDF
         float4 selection_weights
             = get_selection_probability(fresnel, avg(attenuation_f), avg(attenuation_b), avg(diffuse));
 
-        const float rand_select_lobe = next_float(sg);
         int selected_lobe;
-        if (rand_select_lobe < selection_weights[0]) // R lobe
+        if (input.u_lobe < selection_weights[0]) // R lobe
         {
             float phi_i = atan2(wi_fiber.z, wi_fiber.y);
-            float2 theta_phi = sample_r(next_float3(sg), theta_ifiber, weight);
+            float2 theta_phi = sample_r(float3(input.u_dir.x, 0.0, input.u_dir.y), theta_ifiber, weight);
 
             float sin_theta_o = sin(theta_phi[0]);
             float cos_theta_o = cos(theta_phi[0]);
@@ -1500,13 +1515,12 @@ public struct ProceduralClothBSDF : IBSDF
 
             weight = weight / selection_weights[0];
             selected_lobe = 0;
-        } else if (rand_select_lobe >= selection_weights[0]
-                   && rand_select_lobe < selection_weights[0] + selection_weights[1]) {
+        } else if (input.u_lobe >= selection_weights[0] && input.u_lobe < selection_weights[0] + selection_weights[1]) {
             // F lobe
             float phi_i = atan2(wi_ply.z, wi_ply.y);
             float2 theta_phi = sample_f(
-                next_float2(sg),
-                next_float2(sg),
+                input.u_dir,
+                next_float2(aux_rng),
                 asin(wi_ply.x),
                 phi_i,
                 sqrt(roughness_yarn_fm2),
@@ -1523,11 +1537,17 @@ public struct ProceduralClothBSDF : IBSDF
 
             weight = weight / selection_weights[1] * (1.f - fresnel) * fiber_transparency;
             selected_lobe = 1;
-        } else if (rand_select_lobe >= selection_weights[0] + selection_weights[1]
-                   && rand_select_lobe < selection_weights[0] + selection_weights[1] + selection_weights[2]) {
+        } else if (input.u_lobe >= selection_weights[0] + selection_weights[1]
+                   && input.u_lobe < selection_weights[0] + selection_weights[1] + selection_weights[2]) {
             // B lobe
             float phi_i = atan2(wi_fiber.z, wi_fiber.y);
-            float2 theta_phi = sample_b(next_float3(sg), asin(wi_fiber.x), phi_i, sqrt(roughness_yarn_bm2), weight);
+            float2 theta_phi = sample_b(
+                float3(input.u_dir.x, 0.0, input.u_dir.y),
+                asin(wi_fiber.x),
+                phi_i,
+                sqrt(roughness_yarn_bm2),
+                weight
+            );
             weight = attenuation_b;
 
             float sin_theta_o = sin(theta_phi[0]);
@@ -1543,7 +1563,7 @@ public struct ProceduralClothBSDF : IBSDF
         } else {
             // D lobe
             float phi_i = atan2(wi_fiber.z, wi_fiber.y);
-            float2 theta_phi = sample_d(next_float2(sg), asin(wi_fiber.x), weight);
+            float2 theta_phi = sample_d(input.u_dir, asin(wi_fiber.x), weight);
 
             float sin_theta_o = sin(theta_phi[0]);
             float cos_theta_o = cos(theta_phi[0]);

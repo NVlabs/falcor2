@@ -3,5 +3,8 @@ prerequisites.sh text eol=lf
 setup.sh text eol=lf
 tools/pipinstall.sh text eol=lf
 
+# Preserve unified-diff context markers in historical instrumentation adapters.
+tools/perf_compat/patches/*.patch text eol=lf -whitespace
+
 # Preserve the pinned upstream MDL sources and notices byte for byte on every platform.
 /external/omni_pbr/** -text

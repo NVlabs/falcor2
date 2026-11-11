@@ -26,8 +26,7 @@ public struct DielectricPlateBSDF : IBSDF
     }
 
 
-    public BSDFEval
-    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
         if (D.is_singular() || eta == 1.0 || min(wi.z, abs(wo.z)) < BSDF_MIN_COS_THETA)
             return BSDFEval();
@@ -59,7 +58,7 @@ public struct DielectricPlateBSDF : IBSDF
         return BSDFEval(value, pdf);
     }
 
-    public bool sample<S : ISampleGenerator>(float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
+    public bool sample(float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
 
@@ -78,7 +77,7 @@ public struct DielectricPlateBSDF : IBSDF
             float t1 = 1.0 - r2;
             float F = r1 + t1 * t1 * r2 / (1.0 - r1 * r2);
 
-            if (next_float(sg) < F) {
+            if (input.u_lobe < F) {
                 sample.wo = float3(-wi.x, -wi.y, wi.z);
                 sample.weight = float3(1.0);
                 sample.flags = BSDFFlags::delta_reflection;
@@ -90,7 +89,7 @@ public struct DielectricPlateBSDF : IBSDF
                 sample.pdf = 0.0;
             }
         } else {
-            float3 h = D.sample(wi, sg);
+            float3 h = D.sample(wi, input.u_dir);
             float wi_dot_h = dot(h, wi);
 
             float sin_theta_t_sq = eta * eta * (1 - wi_dot_h * wi_dot_h);
@@ -108,7 +107,7 @@ public struct DielectricPlateBSDF : IBSDF
             // with a direction-only p_r = F_plate(wi.z), sample only that lobe's distribution, and compensate its
             // weight by F(h_r) / p_r or (1 - F(h_t)) / (1 - p_r). This remains unresolved because preserving the
             // current two-stage estimator instead requires an integrated directional-transmittance model.
-            if (next_float(sg) < F) {
+            if (input.u_lobe < F) {
                 sample.wo = reflect(-wi, h);
                 if (sample.wo.z < BSDF_MIN_COS_THETA)
                     return false;
@@ -117,7 +116,9 @@ public struct DielectricPlateBSDF : IBSDF
                 sample.flags = BSDFFlags::glossy_reflection;
                 sample.pdf = F * D.eval_pdf(wi, h) / (4.0 * abs(wi_dot_h));
             } else {
-                float3 h = D_inside.sample(wi, sg);
+                // The second normal is an additional independent draw after the Fresnel decision.
+                var aux_rng = input.make_aux_rng();
+                float3 h = D_inside.sample(wi, next_float2(aux_rng));
                 float wi_dot_h = dot(h, wi);
 
                 sample.wo = refract(-wi, sign(wi.z) * h, 1.0 / eta_refract);

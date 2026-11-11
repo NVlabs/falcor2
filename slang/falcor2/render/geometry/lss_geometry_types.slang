@@ -19,9 +19,9 @@ public struct PackedLSSVertex
     // Versioning for future compatibility.
     public FALCOR_SHARED_CONSTANT uint VERSION = 2;
 
-    public float position[3];
+    public float3 position;
     public float radius;
-    public float texcoord[2];
+    public float2 texcoord;
 };
 
 namespace detail {
@@ -48,19 +48,35 @@ public static LSSVertex unpack_lss_vertex(const PackedLSSVertex pv)
 
 public struct LSSGeometryDesc
 {
+    public uint16_t vertex_buffer; ///< Vertex buffer slot.
+    public uint16_t index_buffer;  ///< Index buffer slot.
+
     public uint vertex_offset; ///< Offset into vertex buffer.
-    public uint vertex_count;  ///< Vertex count.
-    public uint index_offset;  ///< Offset into index buffer, or zero if non-indexed.
-    public uint index_count;   ///< Index count, or zero if non-indexed.
+    public uint index_offset;  ///< Offset into index buffer.
+    public uint index_count;   ///< Index count; non-indexed geometry is not supported.
+};
+
+/// One row of the LSS bounds dispatch. Resolve handles after buffer allocation/growth.
+public struct LSSAABBWork
+{
+    public BufferHandle vertex_buffer;
+    public BufferHandle index_buffer;
+    public RWBufferHandle aabb_buffer;
+    public uint vertex_offset;
+    public uint index_offset;
+    public uint index_count;
 };
 
 public struct LSSGeometryInstanceDesc
 {
     public GeometryInstanceDescHeader header;
+    public uint16_t vertex_buffer; ///< Vertex buffer slot.
+    public uint16_t index_buffer;  ///< Index buffer slot.
+
     public uint vertex_offset; ///< Offset into vertex buffer.
-    public uint vertex_count;  ///< Vertex count.
     public uint index_offset;  ///< Offset into index buffer, or zero if non-indexed.
-    public uint index_count;   ///< Index count, or zero if non-indexed.
+    // Preserve the common GeometryInstanceDesc payload size for reinterpretation.
+    public uint reserved;
 };
 
 #include "falcor2/shared_types_compat_undef.slangh"

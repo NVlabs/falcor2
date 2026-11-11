@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 implementing render;
+import falcor2.utils;
 
 public struct MaterialSystem
 {

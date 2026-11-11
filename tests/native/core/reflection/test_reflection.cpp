@@ -82,6 +82,45 @@ private:
 
 FALCOR_STATIC_ONCE(register_type<SimpleReflected>());
 
+/// A reflected object whose flat properties access fields in a nested input structure.
+class NestedCallableReflected : public ReflectedObject {
+    FALCOR_REFLECTED_OBJECT(NestedCallableReflected, ReflectedObject)
+public:
+    int value() const { return m_inputs.value; }
+
+    template<reflection::ClassReflector R>
+    static void reflect(R& r)
+    {
+        constexpr auto inputs = &NestedCallableReflected::m_inputs;
+        r.def_prop_rw(
+             "nested_value",
+             [inputs](const NestedCallableReflected& obj)
+             {
+                 return (obj.*inputs).value;
+             },
+             [inputs](NestedCallableReflected& obj, int value)
+             {
+                 (obj.*inputs).value = value;
+             },
+             default_value(3)
+        )
+            .def_prop_ro(
+                "nested_double",
+                [inputs](const NestedCallableReflected& obj)
+                {
+                    return 2 * (obj.*inputs).value;
+                }
+            );
+    }
+
+private:
+    struct Inputs {
+        int value{3};
+    } m_inputs;
+};
+
+FALCOR_STATIC_ONCE(register_type<NestedCallableReflected>());
+
 /// A reflected object with half-precision scalar/vector properties.
 class HalfReflected : public ReflectedObject {
     FALCOR_REFLECTED_OBJECT(HalfReflected, ReflectedObject)
@@ -289,6 +328,29 @@ TEST_CASE("Round-trip serialization through Properties")
     CHECK(obj2.bar() == doctest::Approx(45.6f));
     CHECK(obj2.label() == "test");
     CHECK(obj2.mode() == TestMode::quality);
+}
+
+TEST_CASE("Callable accessors round-trip nested properties")
+{
+    NestedCallableReflected source;
+    const auto* desc = TypeRegistry::get().find(typeid(NestedCallableReflected));
+    REQUIRE(desc != nullptr);
+    desc->set_any(&source, "nested_value", Any(7));
+    CHECK(source.value() == 7);
+    CHECK(desc->find_property("nested_double")->get<int>(&source) == 14);
+
+    Properties direct_props;
+    serialize_properties(source, direct_props);
+    CHECK(direct_props.get<int>("nested_value") == 7);
+    CHECK(direct_props.get<int>("nested_double") == 14);
+    NestedCallableReflected direct_copy;
+    deserialize_properties(direct_copy, direct_props);
+    CHECK(direct_copy.value() == 7);
+
+    Properties registered_props = source.properties();
+    NestedCallableReflected registered_copy;
+    registered_copy.set_properties(registered_props);
+    CHECK(registered_copy.value() == 7);
 }
 
 TEST_CASE("Float16 reflected properties serialize through Properties")

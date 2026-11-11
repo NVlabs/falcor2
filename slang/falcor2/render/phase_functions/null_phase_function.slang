@@ -11,7 +11,7 @@ public struct NullPhaseFunction : IPhaseFunction
 
     public float3 eval(const float3 wi_ws, const float3 wo_ws) { return 0.0; }
 
-    public bool sample<S : ISampleGenerator>(const float3 wi_ws, inout S sg, out PhaseFunctionSample sample)
+    public bool sample(const float3 wi_ws, const PhaseFunctionSampleInput input, out PhaseFunctionSample sample)
     {
         sample = {};
         return false;

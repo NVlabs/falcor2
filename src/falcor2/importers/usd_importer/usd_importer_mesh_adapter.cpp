@@ -166,7 +166,7 @@ MeshAttributeStream make_mesh_attribute_stream(
 /// Look up a GetPrimvarName-style name (without "primvars:"); unlike USD's GetBaseName, preserve sub-namespaces.
 pxr::UsdGeomPrimvar get_primvar_by_name(const pxr::UsdGeomMesh& mesh, std::string_view primvar_name)
 {
-    return pxr::UsdGeomPrimvar(mesh.GetPrim().GetAttribute(pxr::TfToken("primvars:" + std::string(primvar_name))));
+    return pxr::UsdGeomPrimvarsAPI(mesh).FindPrimvarWithInheritance(pxr::TfToken(std::string(primvar_name)));
 }
 
 /// Component count for supported named float32 primvars, including USD role aliases; zero means unsupported.
@@ -264,7 +264,7 @@ ImporterMesh convert_usd_mesh(
         mesh_name
     );
 
-    UsdGeomPrimvar normals_primvar = primvar_API.GetPrimvar(TfToken("primvars:normals"));
+    UsdGeomPrimvar normals_primvar = primvar_API.FindPrimvarWithInheritance(TfToken("primvars:normals"));
     // USD-authored normals apply only to polygonal meshes. Subdivision schemes define their own normals, including
     // when refinement zero selects the control-cage representation below.
     const UsdAttribute normal_attribute = input.subdivision_scheme == SubdivisionScheme::none
@@ -437,7 +437,7 @@ ImporterMesh convert_usd_mesh(
         std::vector<float> values;
         VtArray<int> indices;
     };
-    const std::vector<UsdGeomPrimvar> all_primvars = primvar_API.GetPrimvars();
+    const std::vector<UsdGeomPrimvar> all_primvars = primvar_API.FindPrimvarsWithInheritance();
     std::vector<NamedAttributeStorage> named_attribute_storage;
     named_attribute_storage.reserve(all_primvars.size());
     for (const UsdGeomPrimvar& primvar : all_primvars) {

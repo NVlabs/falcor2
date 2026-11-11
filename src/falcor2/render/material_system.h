@@ -15,10 +15,13 @@
 #include <sgl/device/fwd.h>
 #include <sgl/device/shader.h>
 
+#include <memory>
 #include <span>
 #include <vector>
 
 namespace falcor {
+
+class GLTFContext;
 
 /// Scene system responsible for managing materials.
 class MaterialSystem : public SceneSystem {
@@ -27,6 +30,7 @@ public:
     /// Constructor.
     /// @param scene The scene this system belongs to.
     MaterialSystem(Scene* scene);
+    ~MaterialSystem() override;
 
     // SceneSystem interface
 
@@ -53,6 +57,7 @@ private:
     void free_material_id(shared::MaterialID material_id);
 
     MaterialCollection& m_materials;
+    std::unique_ptr<GLTFContext> m_gltf_context;
 
     ManagedVector<shared::MaterialData> m_material_data;
     BufferSuballocator m_data_storage;

@@ -120,6 +120,8 @@ public struct DiffuseSpecularBRDF : IDifferentiable
         return F * (D * G * 0.25f / max(1e-6f, wi.z * wo.z));
     }
 
+    /// Samples a reflected direction using the GGX distribution of visible normals.
+    /// @param u Uniform sample in [0, 1)^2.
     [Differentiable]
     bool specularMicrofacetSample(const float3 wi, const float alpha, const float2 u, out float3 wo, out float pdf)
     {

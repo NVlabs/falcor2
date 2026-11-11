@@ -35,8 +35,7 @@ public struct GeneralizedSchlickBSDF : IBSDF
     }
 
 
-    public BSDFEval
-    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
         if (D.is_singular() || min(wi.z, wo.z) < BSDF_MIN_COS_THETA)
             return BSDFEval();
@@ -54,7 +53,7 @@ public struct GeneralizedSchlickBSDF : IBSDF
         return BSDFEval(value, pdf);
     }
 
-    public bool sample<S : ISampleGenerator>(float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
+    public bool sample(float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
 
@@ -67,7 +66,7 @@ public struct GeneralizedSchlickBSDF : IBSDF
             sample.flags = BSDFFlags::delta_reflection;
             sample.pdf = 0.0;
         } else {
-            float3 h = D.sample(wi, sg);
+            float3 h = D.sample(wi, input.u_dir);
             sample.wo = reflect(-wi, h);
             if (sample.wo.z < BSDF_MIN_COS_THETA)
                 return false;

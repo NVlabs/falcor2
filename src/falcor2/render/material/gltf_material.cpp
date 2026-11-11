@@ -10,6 +10,7 @@
 #include "falcor2/core/properties.h"
 #include "falcor2/render/scene.h"
 #include "falcor2/render/scene_globals.h"
+#include <algorithm>
 #include <bit>
 #include <cmath>
 
@@ -17,30 +18,16 @@ namespace falcor {
 
 namespace {
 
-uint32_t pack_texture_coordinate_selectors(
-    uint32_t base_color,
-    uint32_t metallic_roughness,
-    uint32_t normal,
-    uint32_t emissive,
-    uint32_t specular,
-    uint32_t specular_color,
-    uint32_t transmission,
-    bool normal_map_encoded,
-    bool use_vertex_color
-)
+namespace F = shared::gltfmat::FeatureBits;
+namespace T = shared::gltfmat::TextureBits;
+
+template<typename CursorT>
+void write_texture_info(CursorT cursor, const GLTFTextureBinding& binding, bool normal_map = false)
 {
-    using Bits = shared::gltfmat::TCBits;
-    uint32_t selectors = 0;
-    Bits::base_color::insert(selectors, base_color);
-    Bits::metallic_roughness::insert(selectors, metallic_roughness);
-    Bits::normal::insert(selectors, normal);
-    Bits::emissive::insert(selectors, emissive);
-    Bits::specular::insert(selectors, specular);
-    Bits::specular_color::insert(selectors, specular_color);
-    Bits::transmission::insert(selectors, transmission);
-    Bits::normal_map_encoded::insert(selectors, uint32_t(normal_map_encoded));
-    Bits::use_vertex_color::insert(selectors, uint32_t(use_vertex_color));
-    return selectors;
+    cursor["handle"] = binding.handle;
+    cursor["packed"] = binding.effective_texcoord
+        | (normal_map && is_normal_map_encoded(binding.handle) ? shared::gltfmat::TextureInfoBits::NORMAL_MAP_ENCODED
+                                                               : 0u);
 }
 
 } // namespace
@@ -108,137 +95,45 @@ private:
 
 GLTFMaterial::GLTFMaterial()
 {
-    set_slang_type_name("GLTFMaterial");
+    set_compile_masks({F::ALL_MR, T::ALL, T::ALL, T::ALL});
 }
 
 GLTFMaterial::~GLTFMaterial() { }
 
+void GLTFMaterial::set_compile_masks(EffectiveMasks masks)
+{
+    set_slang_type_name(
+        "GLTFMaterial<" + std::to_string(masks.features) + "," + std::to_string(masks.textures) + ","
+        + std::to_string(masks.transforms) + "," + std::to_string(masks.nonzero_texcoords) + ">"
+    );
+}
+
 void GLTFMaterial::on_load_resources()
 {
-    m_transforms_dirty = true;
-    m_anisotropy_texture_handle = load_material_texture(
-        m_scene->texture_manager(),
-        m_anisotropy_texture,
-        m_anisotropy_texture_sampler,
-        m_anisotropy_texture_path,
-        TextureLoadFlags::data_rgb
-    );
-    m_diffuse_transmission_texture_handle = load_material_texture(
-        m_scene->texture_manager(),
-        m_diffuse_transmission_texture,
-        m_diffuse_transmission_texture_sampler,
-        m_diffuse_transmission_texture_path,
-        TextureLoadFlags::data
-    );
-    m_diffuse_transmission_color_texture_handle = load_material_texture(
-        m_scene->texture_manager(),
-        m_diffuse_transmission_color_texture,
-        m_diffuse_transmission_color_texture_sampler,
-        m_diffuse_transmission_color_texture_path,
-        TextureLoadFlags::color
-    );
-    m_sheen_color_texture_handle = load_material_texture(
-        m_scene->texture_manager(),
-        m_sheen_color_texture,
-        m_sheen_color_texture_sampler,
-        m_sheen_color_texture_path,
-        TextureLoadFlags::color
-    );
-    m_sheen_roughness_texture_handle = load_material_texture(
-        m_scene->texture_manager(),
-        m_sheen_roughness_texture,
-        m_sheen_roughness_texture_sampler,
-        m_sheen_roughness_texture_path,
-        TextureLoadFlags::data
-    );
-    m_iridescence_texture_handle = load_material_texture(
-        m_scene->texture_manager(),
-        m_iridescence_texture,
-        m_iridescence_texture_sampler,
-        m_iridescence_texture_path,
-        TextureLoadFlags::data
-    );
-    m_iridescence_thickness_texture_handle = load_material_texture(
-        m_scene->texture_manager(),
-        m_iridescence_thickness_texture,
-        m_iridescence_thickness_texture_sampler,
-        m_iridescence_thickness_texture_path,
-        TextureLoadFlags::data_rgb
-    );
-
-    m_clearcoat_texture_handle = load_material_texture(
-        m_scene->texture_manager(),
-        m_clearcoat_texture,
-        m_clearcoat_texture_sampler,
-        m_clearcoat_texture_path,
-        TextureLoadFlags::data
-    );
-    m_clearcoat_roughness_texture_handle = load_material_texture(
-        m_scene->texture_manager(),
-        m_clearcoat_roughness_texture,
-        m_clearcoat_roughness_texture_sampler,
-        m_clearcoat_roughness_texture_path,
-        TextureLoadFlags::data_rgb
-    );
-    m_clearcoat_normal_texture_handle = load_material_texture(
-        m_scene->texture_manager(),
-        m_clearcoat_normal_texture,
-        m_clearcoat_normal_texture_sampler,
-        m_clearcoat_normal_texture_path,
-        TextureLoadFlags::normal
-    );
-    m_transmission_texture_handle = load_material_texture(
-        m_scene->texture_manager(),
-        m_transmission_texture,
-        m_transmission_texture_sampler,
-        m_transmission_texture_path,
-        TextureLoadFlags::data
-    );
-    m_specular_texture_handle = load_material_texture(
-        m_scene->texture_manager(),
-        m_specular_texture,
-        m_specular_texture_sampler,
-        m_specular_texture_path,
-        TextureLoadFlags::data
-    );
-    m_specular_color_texture_handle = load_material_texture(
-        m_scene->texture_manager(),
-        m_specular_color_texture,
-        m_specular_color_texture_sampler,
-        m_specular_color_texture_path,
-        TextureLoadFlags::color
-    );
-    m_base_color_texture_handle = load_material_texture(
-        m_scene->texture_manager(),
-        m_base_color_texture,
-        m_base_color_texture_sampler,
-        m_base_color_texture_path,
-        TextureLoadFlags::color
-    );
-
-    m_normal_texture_handle = load_material_texture(
-        m_scene->texture_manager(),
-        m_normal_texture,
-        m_normal_texture_sampler,
-        m_normal_texture_path,
-        TextureLoadFlags::normal
-    );
-
-    m_metallic_roughness_texture_handle = load_material_texture(
-        m_scene->texture_manager(),
-        m_metallic_roughness_texture,
-        m_metallic_roughness_texture_sampler,
-        m_metallic_roughness_texture_path,
-        TextureLoadFlags::data_rgb
-    );
-
-    m_emissive_texture_handle = load_material_texture(
-        m_scene->texture_manager(),
-        m_emissive_texture,
-        m_emissive_texture_sampler,
-        m_emissive_texture_path,
-        TextureLoadFlags::color
-    );
+    // Texture load formats follow the fixed mask order in texture_bindings().
+    static constexpr std::array flags{
+        TextureLoadFlags::color,    // base color
+        TextureLoadFlags::data_rgb, // metallic roughness
+        TextureLoadFlags::normal,
+        TextureLoadFlags::color,    // emissive
+        TextureLoadFlags::data,     // specular
+        TextureLoadFlags::color,    // specular color
+        TextureLoadFlags::data,     // transmission
+        TextureLoadFlags::data,     // clearcoat
+        TextureLoadFlags::data_rgb, // clearcoat roughness
+        TextureLoadFlags::normal,   // clearcoat normal
+        TextureLoadFlags::color,    // sheen color
+        TextureLoadFlags::data,     // sheen roughness
+        TextureLoadFlags::data,     // iridescence
+        TextureLoadFlags::data_rgb, // iridescence thickness
+        TextureLoadFlags::data_rgb, // anisotropy
+        TextureLoadFlags::data,     // diffuse transmission
+        TextureLoadFlags::color,    // diffuse transmission color
+    };
+    auto bindings = texture_bindings(*this);
+    static_assert(flags.size() == bindings.size());
+    for (size_t i = 0; i < bindings.size(); ++i)
+        bindings[i]->load(m_scene->texture_manager(), flags[i]);
 }
 
 void GLTFMaterial::update(SceneUpdateContext& ctx)
@@ -251,184 +146,245 @@ void GLTFMaterial::update(SceneUpdateContext& ctx)
                 return make_ref<GLTFScatteringGlobals>(device);
             }
         );
-    if (!m_transforms_dirty)
+
+    // Derive work from resolved resources and authored factors each time the
+    // material changes. In particular, factor-only edits can move tail records.
+    m_feature_mask = 0;
+    if (m_core.normal.handle.is_valid())
+        m_feature_mask |= F::NORMAL;
+    if (m_core.emissive_factor.x > 0.f || m_core.emissive_factor.y > 0.f || m_core.emissive_factor.z > 0.f)
+        m_feature_mask |= F::EMISSION;
+    if (m_core.use_vertex_color)
+        m_feature_mask |= F::VERTEX_COLOR;
+    if (float(m_core.metallic_factor) > 0.f)
+        m_feature_mask |= F::MULTISCATTER;
+    if (float(m_specular.factor) != 1.f || float(m_specular.color_factor.x) != 1.f
+        || float(m_specular.color_factor.y) != 1.f || float(m_specular.color_factor.z) != 1.f
+        || m_specular.texture.handle.is_valid() || m_specular.color_texture.handle.is_valid())
+        m_feature_mask |= F::SPECULAR;
+    if (float(m_transmission.factor) > 0.f)
+        m_feature_mask |= F::TRANSMISSION;
+    if (float(m_core.ior) != 1.5f)
+        m_feature_mask |= F::IOR;
+    if (m_volume.thickness_factor > 0.f)
+        m_feature_mask |= F::VOLUME;
+    if (float(m_clearcoat.factor) > 0.f)
+        m_feature_mask |= F::CLEARCOAT;
+    if (m_sheen.color_factor.x > 0.f || m_sheen.color_factor.y > 0.f || m_sheen.color_factor.z > 0.f)
+        m_feature_mask |= F::SHEEN;
+    if (m_iridescence.factor > 0.f)
+        m_feature_mask |= F::IRIDESCENCE;
+    if (m_anisotropy.strength > 0.f)
+        m_feature_mask |= F::ANISOTROPY;
+    if (m_diffuse_transmission.factor > 0.f)
+        m_feature_mask |= F::DIFFUSE_TRANSMISSION;
+
+    m_feature_mask &= m_feature_mask_filter & static_cast<uint32_t>(m_scene->config().gltf_allowed_features);
+    if (m_feature_mask & F::VOLUME)
+        FALCOR_CHECK(m_volume.attenuation_distance > 0.f, "attenuation_distance must be positive");
+
+    static constexpr std::array<uint32_t, 17> feature_for_texture{
+        0u,
+        0u,
+        F::NORMAL,
+        F::EMISSION,
+        F::SPECULAR,
+        F::SPECULAR,
+        F::TRANSMISSION,
+        F::CLEARCOAT,
+        F::CLEARCOAT,
+        F::CLEARCOAT,
+        F::SHEEN,
+        F::SHEEN,
+        F::IRIDESCENCE,
+        F::IRIDESCENCE,
+        F::ANISOTROPY,
+        F::DIFFUSE_TRANSMISSION,
+        F::DIFFUSE_TRANSMISSION,
+    };
+    const auto bindings = texture_bindings(*this);
+    static_assert(feature_for_texture.size() == bindings.size());
+    m_texture_mask = 0;
+    m_transform_mask = 0;
+    m_nonzero_texcoord_mask = 0;
+    for (size_t index = 0; index < bindings.size(); ++index) {
+        const GLTFTextureBinding& binding = *bindings[index];
+        if (!binding.handle.is_valid()
+            || (feature_for_texture[index] != 0 && (m_feature_mask & feature_for_texture[index]) == 0))
+            continue;
+        const uint32_t bit = 1u << index;
+        m_texture_mask |= bit;
+        if (!binding.transform.is_identity())
+            m_transform_mask |= bit;
+        if (binding.effective_texcoord != 0)
+            m_nonzero_texcoord_mask |= bit;
+    }
+
+    const uint32_t extension_mask = m_feature_mask & F::EXTENSION_BITS;
+    constexpr uint32_t feature_record_size = 32;
+    constexpr uint32_t transform_record_size = 24;
+    const size_t feature_bytes = std::popcount(extension_mask) * feature_record_size;
+    const size_t transform_bytes = std::popcount(m_transform_mask) * transform_record_size;
+    const size_t used_bytes = feature_bytes + transform_bytes;
+    ensure_data_size(used_bytes);
+    if (used_bytes == 0)
         return;
-    m_transform_mask = gltf_texture_transform_mask(m_texture_transforms);
-    const bool volume = m_thickness_factor > 0.f;
-    const bool coat = m_clearcoat_factor > 0.f;
-    const bool sheen = m_sheen_color_factor.x > 0.f || m_sheen_color_factor.y > 0.f || m_sheen_color_factor.z > 0.f;
-    const bool iridescence = m_iridescence_factor > 0.f;
-    m_has_surface_extensions = m_anisotropy_strength > 0.f || m_diffuse_transmission_factor > 0.f;
-    m_sheen_offset = m_iridescence_offset = 0xffffffffu;
-    m_clearcoat_offset = 0;
-    m_transform_offset = 0;
-    if (m_transform_mask == 0 && !volume && !coat && !sheen && !iridescence && !m_has_surface_extensions) {
-        ensure_data_size(0);
-    } else {
-        auto layout = m_scene->render_module()->layout();
-        auto type = layout->find_type_by_name("StructuredBuffer<GLTFTextureUVTransform>");
-        FALCOR_CHECK(type, "Failed to find GLTFTextureUVTransform type");
-        auto element_layout = layout->get_type_layout(type)->element_type_layout();
-        FALCOR_CHECK_LE(element_layout->alignment(), 16);
-        ref<const sgl::TypeLayoutReflection> volume_layout;
-        if (volume) {
-            auto volume_type = layout->find_type_by_name("StructuredBuffer<GLTFVolumeData>");
-            FALCOR_CHECK(volume_type, "Failed to find GLTFVolumeData type");
-            volume_layout = layout->get_type_layout(volume_type)->element_type_layout();
-            m_transform_offset = sgl::narrow_cast<uint32_t>(volume_layout->stride());
-            FALCOR_CHECK(m_attenuation_distance > 0.f, "attenuation_distance must be positive");
+
+    // Always rewrite the active region, including the padding in fixed slots.
+    // Retained allocation capacity is also zeroed so a shrunken tail cannot
+    // expose stale feature data when another edit makes it active again.
+    auto bytes = mutable_data();
+    std::fill(bytes.begin(), bytes.end(), uint8_t(0));
+    auto layout = m_scene->render_module()->layout();
+    size_t record_offset = 0;
+    auto write_record = [&](uint32_t bit, const char* type_name, auto&& writer)
+    {
+        if ((extension_mask & bit) == 0)
+            return;
+        const std::string structured_type = std::string("StructuredBuffer<") + type_name + ">";
+        auto type = layout->find_type_by_name(structured_type.c_str());
+        FALCOR_CHECK(type, "Failed to find {} type", type_name);
+        auto element = layout->get_type_layout(type)->element_type_layout();
+        FALCOR_CHECK_EQ(element->stride(), feature_record_size);
+        auto cursor = make_ref<sgl::BufferCursor>(
+            ctx.device()->type(),
+            element,
+            bytes.data() + record_offset,
+            feature_record_size
+        );
+        writer((*cursor)[0]);
+        cursor->apply();
+        record_offset += feature_record_size;
+    };
+    write_record(
+        F::SPECULAR,
+        "GLTFSpecularRecord",
+        [&](auto record)
+        {
+            write_texture_info(record["specular"], m_specular.texture);
+            write_texture_info(record["specular_color"], m_specular.color_texture);
+            record["color_strength"] = float4(float3(m_specular.color_factor), float(m_specular.factor));
         }
-        ref<const sgl::TypeLayoutReflection> coat_layout;
-        if (coat) {
-            auto coat_type = layout->find_type_by_name("StructuredBuffer<GLTFClearcoatData>");
-            FALCOR_CHECK(coat_type, "Failed to find GLTFClearcoatData type");
-            coat_layout = layout->get_type_layout(coat_type)->element_type_layout();
-            m_clearcoat_offset = m_transform_offset;
-            m_transform_offset += sgl::narrow_cast<uint32_t>(coat_layout->stride());
+    );
+    write_record(
+        F::TRANSMISSION,
+        "GLTFTransmissionRecord",
+        [&](auto record)
+        {
+            write_texture_info(record["texture"], m_transmission.texture);
+            record["factor_and_reserved"] = float4(float(m_transmission.factor), 0.f, 0.f, 0.f);
         }
-        ref<const sgl::TypeLayoutReflection> sheen_layout;
-        if (sheen) {
-            auto sheen_type = layout->find_type_by_name("StructuredBuffer<GLTFSheenData>");
-            FALCOR_CHECK(sheen_type, "Failed to find GLTFSheenData type");
-            sheen_layout = layout->get_type_layout(sheen_type)->element_type_layout();
-            m_sheen_offset = m_transform_offset;
-            m_transform_offset += sgl::narrow_cast<uint32_t>(sheen_layout->stride());
+    );
+    write_record(
+        F::IOR,
+        "GLTFIORRecord",
+        [&](auto record)
+        {
+            record["ior_and_reserved"] = float4(float(m_core.ior), 0.f, 0.f, 0.f);
         }
-        ref<const sgl::TypeLayoutReflection> iridescence_layout;
-        if (iridescence) {
-            auto iridescence_type = layout->find_type_by_name("StructuredBuffer<GLTFIridescenceData>");
-            FALCOR_CHECK(iridescence_type, "Failed to find GLTFIridescenceData type");
-            iridescence_layout = layout->get_type_layout(iridescence_type)->element_type_layout();
-            m_iridescence_offset = m_transform_offset;
-            m_transform_offset += sgl::narrow_cast<uint32_t>(iridescence_layout->stride());
-        }
-        ref<const sgl::TypeLayoutReflection> surface_layout;
-        uint32_t surface_offset = m_transform_offset;
-        if (m_has_surface_extensions) {
-            auto surface_type = layout->find_type_by_name("StructuredBuffer<GLTFSurfaceExtensionsData>");
-            FALCOR_CHECK(surface_type, "Failed to find GLTFSurfaceExtensionsData type");
-            surface_layout = layout->get_type_layout(surface_type)->element_type_layout();
-            FALCOR_CHECK_EQ(surface_layout->stride(), 40u);
-            m_transform_offset += sgl::narrow_cast<uint32_t>(surface_layout->stride());
-        }
-        const size_t transform_bytes = std::popcount(m_transform_mask) * element_layout->stride();
-        const size_t byte_size = m_transform_offset + transform_bytes;
-        ensure_data_size(byte_size);
-        auto bytes = mutable_data();
-        if (volume) {
+    );
+    write_record(
+        F::VOLUME,
+        "GLTFVolumeRecord",
+        [&](auto record)
+        {
             float3 sigma_a{0.f};
-            if (std::isfinite(m_attenuation_distance)) {
+            if (std::isfinite(m_volume.attenuation_distance)) {
                 for (int channel = 0; channel < 3; ++channel) {
-                    const float color = std::clamp(m_attenuation_color[channel], 0.f, 1.f);
-                    sigma_a[channel] = -std::log(color) / m_attenuation_distance;
+                    const float color = std::clamp(m_volume.attenuation_color[channel], 0.f, 1.f);
+                    sigma_a[channel] = -std::log(color) / m_volume.attenuation_distance;
                 }
             }
-            auto cursor = make_ref<sgl::BufferCursor>(
-                ctx.device()->type(),
-                volume_layout,
-                bytes.data(),
-                volume_layout->stride()
-            );
-            (*cursor)[0]["sigma_a"] = sigma_a;
+            record["sigma_a"] = float4(sigma_a, 0.f);
         }
-        if (coat) {
-            auto cursor = make_ref<sgl::BufferCursor>(
-                ctx.device()->type(),
-                coat_layout,
-                bytes.data() + m_clearcoat_offset,
-                coat_layout->stride()
+    );
+    write_record(
+        F::CLEARCOAT,
+        "GLTFClearcoatRecord",
+        [&](auto record)
+        {
+            write_texture_info(record["texture"], m_clearcoat.texture);
+            write_texture_info(record["roughness_texture"], m_clearcoat.roughness_texture);
+            write_texture_info(record["normal_texture"], m_clearcoat.normal_texture, true);
+            record["factors"] = float16_t4(
+                m_clearcoat.factor,
+                m_clearcoat.roughness_factor,
+                m_clearcoat.normal_texture_scale,
+                float16_t(0.f)
             );
-            (*cursor)[0]["texture"] = m_clearcoat_texture_handle;
-            (*cursor)[0]["roughness_texture"] = m_clearcoat_roughness_texture_handle;
-            (*cursor)[0]["normal_texture"] = m_clearcoat_normal_texture_handle;
-            (*cursor)[0]["normal_scale"] = float(m_clearcoat_normal_texture_scale);
-            using Bits = shared::gltfmat::ClearcoatTCBits;
-            uint32_t selectors = 0;
-            Bits::texture::insert(selectors, m_clearcoat_texture_texcoord);
-            Bits::roughness::insert(selectors, m_clearcoat_roughness_texture_texcoord);
-            Bits::normal::insert(selectors, m_clearcoat_normal_texture_texcoord);
-            Bits::normal_map_encoded::insert(
-                selectors,
-                uint32_t(is_normal_map_encoded(m_clearcoat_normal_texture_handle))
-            );
-            (*cursor)[0]["selectors"] = selectors;
         }
-        if (sheen) {
-            auto cursor = make_ref<sgl::BufferCursor>(
-                ctx.device()->type(),
-                sheen_layout,
-                bytes.data() + m_sheen_offset,
-                sheen_layout->stride()
-            );
-            (*cursor)[0]["color"] = m_sheen_color_factor;
-            (*cursor)[0]["roughness"] = m_sheen_roughness_factor;
-            (*cursor)[0]["color_texture"] = m_sheen_color_texture_handle;
-            (*cursor)[0]["roughness_texture"] = m_sheen_roughness_texture_handle;
-            using Bits = shared::gltfmat::SheenTCBits;
-            uint32_t selectors = 0;
-            Bits::color::insert(selectors, m_sheen_color_texture_texcoord);
-            Bits::roughness::insert(selectors, m_sheen_roughness_texture_texcoord);
-            (*cursor)[0]["selectors"] = selectors;
+    );
+    write_record(
+        F::SHEEN,
+        "GLTFSheenRecord",
+        [&](auto record)
+        {
+            write_texture_info(record["color_texture"], m_sheen.color_texture);
+            write_texture_info(record["roughness_texture"], m_sheen.roughness_texture);
+            record["color_roughness"] = float4(m_sheen.color_factor, m_sheen.roughness_factor);
         }
-        if (iridescence) {
-            auto cursor = make_ref<sgl::BufferCursor>(
-                ctx.device()->type(),
-                iridescence_layout,
-                bytes.data() + m_iridescence_offset,
-                iridescence_layout->stride()
+    );
+    write_record(
+        F::IRIDESCENCE,
+        "GLTFIridescenceRecord",
+        [&](auto record)
+        {
+            write_texture_info(record["texture"], m_iridescence.texture);
+            write_texture_info(record["thickness_texture"], m_iridescence.thickness_texture);
+            record["factor_ior_thickness"] = float4(
+                m_iridescence.factor,
+                m_iridescence.ior,
+                m_iridescence.thickness_minimum,
+                m_iridescence.thickness_maximum
             );
-            (*cursor)[0]["factor"] = m_iridescence_factor;
-            (*cursor)[0]["ior"] = m_iridescence_ior;
-            (*cursor)[0]["thickness_minimum"] = m_iridescence_thickness_minimum;
-            (*cursor)[0]["thickness_maximum"] = m_iridescence_thickness_maximum;
-            (*cursor)[0]["texture"] = m_iridescence_texture_handle;
-            (*cursor)[0]["thickness_texture"] = m_iridescence_thickness_texture_handle;
-            using Bits = shared::gltfmat::IridescenceTCBits;
-            uint32_t selectors = 0;
-            Bits::texture::insert(selectors, m_iridescence_texture_texcoord);
-            Bits::thickness::insert(selectors, m_iridescence_thickness_texture_texcoord);
-            (*cursor)[0]["selectors"] = selectors;
         }
-        if (m_has_surface_extensions) {
-            auto cursor = make_ref<sgl::BufferCursor>(
-                ctx.device()->type(),
-                surface_layout,
-                bytes.data() + surface_offset,
-                surface_layout->stride()
-            );
-            (*cursor)[0]["anisotropy_strength"] = m_anisotropy_strength;
-            (*cursor)[0]["anisotropy_rotation"] = m_anisotropy_rotation;
-            (*cursor)[0]["diffuse_transmission_factor"] = m_diffuse_transmission_factor;
-            (*cursor)[0]["diffuse_transmission_color_factor"] = m_diffuse_transmission_color_factor;
-            (*cursor)[0]["anisotropy_texture"] = m_anisotropy_texture_handle;
-            (*cursor)[0]["diffuse_transmission_texture"] = m_diffuse_transmission_texture_handle;
-            (*cursor)[0]["diffuse_transmission_color_texture"] = m_diffuse_transmission_color_texture_handle;
-            using Bits = shared::gltfmat::SurfaceExtensionsTCBits;
-            uint32_t selectors = 0;
-            Bits::anisotropy::insert(selectors, m_anisotropy_texture_texcoord);
-            Bits::diffuse_transmission::insert(selectors, m_diffuse_transmission_texture_texcoord);
-            Bits::diffuse_transmission_color::insert(selectors, m_diffuse_transmission_color_texture_texcoord);
-            (*cursor)[0]["selectors"] = selectors;
+    );
+    write_record(
+        F::ANISOTROPY,
+        "GLTFAnisotropyRecord",
+        [&](auto record)
+        {
+            write_texture_info(record["texture"], m_anisotropy.texture);
+            record["strength_rotation"] = float4(m_anisotropy.strength, m_anisotropy.rotation, 0.f, 0.f);
         }
-        if (transform_bytes) {
-            auto cursor = make_ref<sgl::BufferCursor>(
-                ctx.device()->type(),
-                element_layout,
-                bytes.data() + m_transform_offset,
-                transform_bytes
-            );
-            write_gltf_texture_transforms(*cursor, m_texture_transforms, m_scene->config().uv_origin);
+    );
+    write_record(
+        F::DIFFUSE_TRANSMISSION,
+        "GLTFDiffuseTransmissionRecord",
+        [&](auto record)
+        {
+            write_texture_info(record["texture"], m_diffuse_transmission.texture);
+            write_texture_info(record["color_texture"], m_diffuse_transmission.color_texture);
+            record["color_factor"] = float4(m_diffuse_transmission.color_factor, m_diffuse_transmission.factor);
         }
-    }
-    m_transforms_dirty = false;
-}
+    );
+    FALCOR_CHECK_EQ(record_offset, feature_bytes);
 
+    if (transform_bytes != 0) {
+        auto type = layout->find_type_by_name("StructuredBuffer<GLTFTextureUVTransform>");
+        FALCOR_CHECK(type, "Failed to find GLTFTextureUVTransform type");
+        auto element = layout->get_type_layout(type)->element_type_layout();
+        FALCOR_CHECK_EQ(element->stride(), transform_record_size);
+        auto cursor
+            = make_ref<sgl::BufferCursor>(ctx.device()->type(), element, bytes.data() + feature_bytes, transform_bytes);
+        write_gltf_texture_binding_transforms(
+            *cursor,
+            bindings.size(),
+            [&bindings](size_t index) -> const GLTFTextureBinding&
+            {
+                return *bindings[index];
+            },
+            m_transform_mask,
+            m_scene->config().uv_origin
+        );
+    }
+}
 shared::MaterialFlags GLTFMaterial::flags() const
 {
     shared::MaterialFlags result = shared::MaterialFlags::none;
-    if (m_double_sided || m_thickness_factor > 0.f)
+    if (m_core.double_sided || (m_feature_mask & F::VOLUME) != 0)
         result |= shared::MaterialFlags::two_sided;
-    if (m_thickness_factor <= 0.f)
+    if ((m_feature_mask & F::VOLUME) == 0)
         result |= shared::MaterialFlags::thin_walled;
     return result;
 }
@@ -436,77 +392,52 @@ shared::MaterialFlags GLTFMaterial::flags() const
 Material::OpacityDesc GLTFMaterial::opacity_desc() const
 {
     shared::OpacityFlags opacity_flags = shared::OpacityFlags::none;
-    if (m_alpha_mode == AlphaMode::mask)
+    if (m_core.alpha_mode == AlphaMode::mask)
         opacity_flags = shared::OpacityFlags::enabled | shared::OpacityFlags::use_threshold;
-    else if (m_alpha_mode == AlphaMode::blend)
+    else if (m_core.alpha_mode == AlphaMode::blend)
         opacity_flags = shared::OpacityFlags::enabled;
     if (opacity_flags != shared::OpacityFlags::none
-        && (m_base_color_texture_texcoord != 0 || m_use_vertex_color || !m_texture_transforms[0].is_identity()))
+        && (((m_feature_mask & F::VERTEX_COLOR) != 0)
+            || (m_core.base_color.handle.is_valid()
+                && (m_core.base_color.effective_texcoord != 0 || !m_core.base_color.transform.is_identity()))))
         opacity_flags |= shared::OpacityFlags::evaluate_material;
 
     return {
         .flags = opacity_flags,
-        .texture_handle = m_base_color_texture_handle,
+        .texture_handle = m_core.base_color.handle,
         .texture_channel = 3,
-        .factor = m_alpha_factor,
-        .threshold = m_alpha_cutoff,
+        .factor = m_core.alpha_factor,
+        .threshold = m_core.alpha_cutoff,
     };
 }
 
 SceneCapabilities GLTFMaterial::required_capabilities() const
 {
-    bool uses_geometry_properties = m_use_vertex_color || m_anisotropy_texture_texcoord != 0
-        || m_diffuse_transmission_texture_texcoord != 0 || m_diffuse_transmission_color_texture_texcoord != 0
-        || m_sheen_color_texture_texcoord != 0 || m_sheen_roughness_texture_texcoord != 0
-        || m_iridescence_texture_texcoord != 0 || m_iridescence_thickness_texture_texcoord != 0
-        || m_clearcoat_texture_texcoord != 0 || m_clearcoat_roughness_texture_texcoord != 0
-        || m_clearcoat_normal_texture_texcoord != 0 || m_transmission_texture_texcoord != 0
-        || m_specular_texture_texcoord != 0 || m_specular_color_texture_texcoord != 0
-        || m_base_color_texture_texcoord != 0 || m_metallic_roughness_texture_texcoord != 0
-        || m_normal_texture_texcoord != 0 || m_emissive_texture_texcoord != 0;
-    return material_capabilities(uses_geometry_properties);
+    const bool uses_geometry_properties = (m_feature_mask & F::VERTEX_COLOR) != 0 || m_nonzero_texcoord_mask != 0;
+    const bool requires_solid_transmission
+        = (m_feature_mask & F::VOLUME) != 0 && (m_feature_mask & (F::TRANSMISSION | F::DIFFUSE_TRANSMISSION)) != 0;
+    return material_capabilities(uses_geometry_properties, requires_solid_transmission);
 }
 
 template<typename CursorT>
 void GLTFMaterial::write_to_cursor_impl(CursorT cursor) const
 {
-    cursor["sheen_offset"] = m_sheen_offset;
-    cursor["iridescence_offset"] = m_iridescence_offset;
-    cursor["clearcoat_factor"] = m_clearcoat_factor;
-    cursor["clearcoat_roughness_factor"] = m_clearcoat_roughness_factor;
-    cursor["clearcoat_offset"] = m_clearcoat_offset;
-    cursor["transmission_texture"] = m_transmission_texture_handle;
-    cursor["transmission_factor"] = m_transmission_factor;
-    cursor["specular_texture"] = m_specular_texture_handle;
-    cursor["specular_color_texture"] = m_specular_color_texture_handle;
-    cursor["specular_factor"] = m_specular_factor;
-    cursor["specular_color_factor"] = float16_t4(m_specular_color_factor, 0.f);
+    cursor["base_color_handle"] = m_core.base_color.handle;
+    cursor["base_color_packed"] = m_core.base_color.effective_texcoord;
+    cursor["metallic_roughness_handle"] = m_core.metallic_roughness.handle;
+    cursor["metallic_roughness_packed"] = m_core.metallic_roughness.effective_texcoord;
+    cursor["normal_handle"] = (m_feature_mask & F::NORMAL) != 0 ? m_core.normal.handle : TextureHandle{};
+    cursor["normal_packed"] = m_core.normal.effective_texcoord
+        | (is_normal_map_encoded(m_core.normal.handle) ? shared::gltfmat::TextureInfoBits::NORMAL_MAP_ENCODED : 0u);
+    cursor["emissive_handle"] = (m_feature_mask & F::EMISSION) != 0 ? m_core.emissive.handle : TextureHandle{};
+    cursor["emissive_packed"] = m_core.emissive.effective_texcoord;
+    cursor["base_color_factor"] = float16_t4(m_core.base_color_factor, 0.f);
+    cursor["core_factors"]
+        = float16_t4(m_core.metallic_factor, m_core.roughness_factor, m_core.normal_texture_scale, float16_t(0.f));
+    cursor["emissive_factor"] = float4(m_core.emissive_factor, 0.f);
+    cursor["feature_mask"] = m_feature_mask;
     cursor["transform_mask"] = m_transform_mask;
-    cursor["transform_offset"] = m_transform_offset;
-    cursor["texture_transform_data"] = data_ref();
-    cursor["base_color_texture"] = m_base_color_texture_handle;
-    cursor["base_color_factor"] = float16_t4(m_base_color_factor, 0.f);
-    cursor["metallic_roughness_texture"] = m_metallic_roughness_texture_handle;
-    cursor["metallic_factor"] = m_metallic_factor;
-    cursor["roughness_factor"] = m_roughness_factor;
-    cursor["normal_texture"] = m_normal_texture_handle;
-    cursor["normal_texture_scale"] = m_normal_texture_scale;
-    cursor["emissive_factor"] = m_emissive_factor;
-    cursor["emissive_texture"] = m_emissive_texture_handle;
-    cursor["ior"] = m_ior;
-    uint32_t selectors = pack_texture_coordinate_selectors(
-        m_base_color_texture_texcoord,
-        m_metallic_roughness_texture_texcoord,
-        m_normal_texture_texcoord,
-        m_emissive_texture_texcoord,
-        m_specular_texture_texcoord,
-        m_specular_color_texture_texcoord,
-        m_transmission_texture_texcoord,
-        is_normal_map_encoded(m_normal_texture_handle),
-        m_use_vertex_color
-    );
-    shared::gltfmat::TCBits::has_surface_extensions::insert(selectors, uint32_t(m_has_surface_extensions));
-    cursor["texture_coordinate_selectors"] = selectors;
+    cursor["extra_data"] = m_scene ? data_ref() : BufferOffsetPair{};
 }
 
 template void GLTFMaterial::write_to_cursor_impl(sgl::BufferElementCursor cursor) const;

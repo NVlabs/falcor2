@@ -14,6 +14,8 @@ public struct EnvMapLight : ILight
 
     public float power_estimate()
     {
+        if (!env_map_texture_handle.is_valid())
+            return 0.0;
         Texture2D<float> importance_map = importance_map_texture.unwrap();
         uint3 dims;
         importance_map.GetDimensions(0, dims.x, dims.y, dims.z);
@@ -27,36 +29,50 @@ public struct EnvMapLight : ILight
 
     public override float3 eval_environment_radiance(const LightSampleContext ctx, const float3 dir_ws)
     {
+        if (!env_map_texture_handle.is_valid())
+            return float3(0.0);
         float3 dir_os = normalize(mul(transpose(world_from_object), dir_ws));
         float2 uv = world_to_latlong_map(dir_os);
         return env_map_texture_handle.sample(ExplicitLodSampler(), uv).rgb * scale;
     }
 
-    public bool sample<SampleGenerator : ISampleGenerator>(
-        const LightSampleContext ctx,
-        inout SampleGenerator sg,
-        out LightSample sample
-    )
+    public bool
+    sample(const LightSampleContext ctx, const float2 u, out LightSample sample, out LightSampleRef sample_ref)
     {
         sample = {};
+        sample_ref = {};
+
+        if (!env_map_texture_handle.is_valid())
+            return false;
 
         float2 uv = {};
         float pdf = {};
-        if (!importance_map_sample(importance_map_texture.unwrap(), next_float2(sg), uv, pdf))
+        if (!importance_map_sample(importance_map_texture.unwrap(), u, uv, pdf))
             return false;
 
         float3 dir_os = oct_to_ndir_equal_area_unorm(uv);
         sample.dir_ws = normalize(mul(world_from_object, dir_os));
         sample.distance = float.MAX;
         sample.pdf = pdf * float.INV_FOUR_PI;
-        sample.weight = env_map_texture_handle.sample(ExplicitLodSampler(), world_to_latlong_map(dir_os)).rgb * scale
-            / sample.pdf;
+        sample.radiance = env_map_texture_handle.sample(ExplicitLodSampler(), world_to_latlong_map(dir_os)).rgb * scale;
+        sample.weight = sample.radiance / sample.pdf;
         sample.emitter_type = EmitterType::environment;
+
+        sample_ref.emitter_type = EmitterType::environment;
+        sample_ref.parameters = ndir_to_oct_unorm(sample.dir_ws);
+
         return true;
+    }
+
+    public bool eval_sample(const LightSampleContext ctx, const LightSampleRef sample_ref, out LightSample sample)
+    {
+        return eval_environment_light_sample(this, ctx, sample_ref, sample);
     }
 
     public override float eval_pdf(const LightSampleContext ctx, const float3 dir_ws)
     {
+        if (!env_map_texture_handle.is_valid())
+            return 0.0;
         float3 dir_os = normalize(mul(transpose(world_from_object), dir_ws));
         float2 uv = ndir_to_oct_equal_area_unorm(dir_os);
         return importance_map_eval_pdf(importance_map_texture.unwrap(), uv) * float.INV_FOUR_PI;
@@ -65,6 +81,9 @@ public struct EnvMapLight : ILight
 
 public bool importance_map_sample(Texture2D<float> importance_map, float2 p, out float2 uv, out float pdf)
 {
+    uv = {};
+    pdf = {};
+
     uint3 dims;
     importance_map.GetDimensions(0, dims.x, dims.y, dims.z);
 #ifdef __TARGET_CUDA__
@@ -74,12 +93,18 @@ public bool importance_map_sample(Texture2D<float> importance_map, float2 p, out
 #endif
     float2 inv_size = 1.0 / dims.xy;
 
+    // A black importance map has no sampling distribution.
+    const float avg = importance_map.Load(int3(0, 0, dims.z - 1));
+    if (avg <= 0.0)
+        return false;
+
     uint2 pos = 0; // Top-left texel pos of current 2x2 region.
 
-    // Iterate over mips of 2x2...NxN resolution.
+    // Start at the 2x2 mip. The 1x1 root has no siblings; loading them out of bounds
+    // can clamp on CUDA and select a quadrant outside the map instead of returning zero.
     // TODO MaxIters depends on the mip count of the importance map.
     [MaxIters(10)]
-    for (int mip = dims.z - 1; mip >= 0; --mip) {
+    for (int mip = int(dims.z) - 2; mip >= 0; --mip) {
         // Scale position to current mip.
         pos *= 2;
 
@@ -136,9 +161,6 @@ public bool importance_map_sample(Texture2D<float> importance_map, float2 p, out
     // Compute final sample position in [0,1)^2.
     uv = (float2(pos) + p) * inv_size;
 
-    // 1x1 mip holds integral over importance map.
-    float avg = importance_map.Load(int3(0, 0, dims.z - 1));
-
     // Compute PDF.
     pdf = importance_map.Load(int3(pos, 0)) / avg;
 
@@ -160,5 +182,5 @@ float importance_map_eval_pdf(Texture2D<float> importance_map, float2 uv)
     float avg = importance_map.Load(int3(0, 0, dims.z - 1));
 
     // Compute PDF.
-    return importance_map.Load(int3(pos, 0)) / avg;
+    return avg > 0.0 ? importance_map.Load(int3(pos, 0)) / avg : 0.0;
 }

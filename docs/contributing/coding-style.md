@@ -77,6 +77,19 @@ Use `#pragma once` in ordinary C++ headers. In a C++ implementation file, includ
 when one exists. If platform or toolchain headers require a different order, explain the dependency in a nearby
 comment. Files intended for repeated inclusion are exempt from the `#pragma once` rule.
 
+<a id="file-3" name="file-3"></a>
+### FILE.3 - Order functions to follow the file's organization
+
+Place new functions in the relevant logical group and follow the surrounding order of abstraction. In a group
+that builds from low-level accessors to composed operations, put the accessors before the operations that use
+them. For example, vertex lookup and primitive assembly should precede surface-position reconstruction.
+Keep related overloads together. Choose an insertion point by reading the surrounding functions, rather than
+automatically adding a helper at the beginning or end of a file or class.
+
+Preserve an established public-API-first organization or declaration order where that is the local convention.
+This is not a requirement to sort every function by call dependencies or to move unrelated existing code.
+For a new group without an established order, put foundational operations before operations built on them.
+
 ## Naming conventions
 
 <a id="name-1" name="name-1"></a>
@@ -263,16 +276,20 @@ Use the existing extraction tooling; adding support for another category is a se
 <a id="bind-6" name="bind-6"></a>
 #### BIND.6 - Regenerate and validate affected binding documentation
 
-Refresh generated `py_doc.h` using the `falcor2_pydoc` target when comments or declarations
+Refresh [py_doc.h](../../src/falcor2_ext/py_doc.h) using the `falcor2_pydoc` target when comments or declarations
 change for APIs using that extraction path. Add supported declarations to the target's inputs as needed; do not
 edit generated entries by hand. Build the Release bindings and check the affected Python help and generated stubs.
 Reflection descriptions and literal help need the same help checks, without an additional generation step.
 In an already configured build, run:
 
 ```text
-# Windows
+# Windows (cmake + vs2022 prompt)
 cmake --build --preset windows-msvc-release --target falcor2_pydoc
 cmake --build --preset windows-msvc-release
+
+# Windows (build script)
+<python> tools/build.py --build-only --config Release --target falcor2_pydoc
+<python> tools/build.py --build-only --config Release
 
 # Linux
 cmake --build --preset linux-gcc-release --target falcor2_pydoc

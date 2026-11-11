@@ -11,6 +11,9 @@ public struct Scene
     /// Top-level acceleration structure.
     public RaytracingAccelerationStructure tlas;
 
+    /// Shared table of homogeneous vertex and index buffers.
+    public StructuredBuffer<BufferHandle> geometry;
+
     /// Triangle geometry data.
     public TriangleGeometryData triangle_geometry;
 
@@ -90,26 +93,34 @@ public struct Scene
         return get_prev_world_from_object(get_geometry_instance_desc(id).header.transform_id);
     }
 
-    /// Compute the motion vector for a surface point, accounting for both camera and object motion.
-    public float2
-    get_motion_vector(Camera camera, Camera prev_camera, GeometryInstanceID geometry_instance_id, float3 pos_ws)
+    /// Resolve the same surface point in previous-frame world space.
+    /// Static vertices reuse position_ws; vertex motion reconstructs the previous object-space point from hit.
+    public float3 get_previous_position_ws(IHitInfo hit, float3 position_ws)
     {
-        float4x4 obj_from_world = get_object_from_world(geometry_instance_id);
-        float3 pos_os = mul(obj_from_world, float4(pos_ws, 1.0)).xyz;
-        float4x4 prev_wfo = get_prev_world_from_object(geometry_instance_id);
-        float3 prev_pos_ws = mul(prev_wfo, float4(pos_os, 1.0)).xyz;
-        float2 current_pixel = camera.project_world_to_pixel(pos_ws);
-        float2 prev_pixel = prev_camera.project_world_to_pixel(prev_pos_ws);
-        return prev_pixel - current_pixel;
+        let instance = get_geometry_instance_desc(hit.geometry_instance_id);
+        float3 prev_position_os;
+        if (!is_set(instance.header.flags, GeometryInstanceFlags::vertex_motion)) {
+            prev_position_os = transform_point(get_object_from_world(instance.header.transform_id), position_ws);
+        } else if (let triangle_hit = hit as TriangleHitInfo) {
+            prev_position_os = get_previous_position_os(triangle_hit);
+        } else if (let lss_hit = hit as LSSHitInfo) {
+            prev_position_os = get_previous_position_os(lss_hit);
+        } else {
+            prev_position_os = transform_point(get_object_from_world(instance.header.transform_id), position_ws);
+        }
+        return transform_point(get_prev_world_from_object(instance.header.transform_id), prev_position_os);
     }
 
     /// Construct a surface interaction from a hit.
-    public SurfaceInteraction make_surface_interaction(IHitInfo hit, float3 wi_ws)
+    /// Enable intrinsics only for the current native LSS hit in a ray-tracing hit shader.
+    /// Cached hits, ray queries and procedural LSS hits must keep the default buffer-backed reconstruction.
+    public SurfaceInteraction
+    make_surface_interaction<let HasTracingIntrinsics : bool = false>(IHitInfo hit, float3 wi_ws)
     {
         if (let triangle_hit = hit as TriangleHitInfo) {
             return make_triangle_surface_interaction(triangle_hit, wi_ws);
         } else if (let lss_hit = hit as LSSHitInfo) {
-            return make_lss_surface_interaction(lss_hit, wi_ws);
+            return make_lss_surface_interaction<HasTracingIntrinsics>(lss_hit, wi_ws);
         }
         return {};
     }

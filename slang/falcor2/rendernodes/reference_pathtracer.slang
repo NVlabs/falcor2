@@ -17,8 +17,8 @@ import slangpy;
 extern static const bool ENABLE_NEE = false;
 /// Enable multiple importance sampling.
 extern static const bool ENABLE_MIS = true;
-/// Track closed-surface interiors for solid dielectric transmission.
-extern static const bool ENABLE_INTERIOR_TRACKING = true;
+/// Track closed-surface interiors exactly when the selected scene capabilities require them.
+static const bool ENABLE_INTERIOR_TRACKING = ENABLE_SOLID_TRANSMISSION;
 /// Handle priority-based interfaces between nested interiors.
 extern static const bool ENABLE_NESTED_INTERIORS = false;
 /// Handle homogeneous absorption and scattering in tracked interiors.
@@ -328,9 +328,11 @@ void prepare_trace_segment(inout PathState path, inout OpacityEvaluator opacity_
         if (path.is_inside_homogeneous_medium()) {
             const HomogeneousMediumProperties medium = path.interior_list.active_medium();
             const HomogeneousVolumeSampler sampler = HomogeneousVolumeSampler(medium);
-            float distance;
-            if (sampler.sample_distance(path.throughput, path.sg, distance)) {
-                if (isfinite(distance) && distance < ray.t_max) {
+            if (sampler.has_scattering()) {
+                const VolumeDistanceSampleInput input = make_volume_distance_sample_input(path.sg);
+                float distance;
+                if (sampler.sample_distance(path.throughput, input, distance) && isfinite(distance)
+                    && distance < ray.t_max) {
                     ray.t_max = distance;
                     path.set_volume_event();
                 }
@@ -674,7 +676,8 @@ PendingDirectLighting prepare_direct_lighting<VisibilityQuery : IVisibilityQuery
     LightSample sample = {};
     PathVertex vertex = { si };
     LightSampleContext light_ctx = make_light_sample_context(si, sampled_hemispheres);
-    if (!light_sampler.sample(light_ctx, path.sg, sample))
+    const LightSampleInput light_input = make_light_sample_input(path.sg);
+    if (!light_sampler.sample(light_ctx, light_input, sample))
         return pending;
     if (!is_direction_in_sampled_hemispheres(vertex, sampled_hemispheres, sample.dir_ws))
         return pending;
@@ -687,11 +690,11 @@ PendingDirectLighting prepare_direct_lighting<VisibilityQuery : IVisibilityQuery
     float mis_weight = 1.0;
     float3 scatter_eval;
     if (ENABLE_MIS && !sample.has_flag(LightSampleFlags::nee_only)) {
-        const BSDFEval scatter = material_instance.eval_with_pdf(si, sample.dir_ws, path.sg);
+        const BSDFEval scatter = material_instance.eval_with_pdf(si, sample.dir_ws);
         scatter_eval = scatter.value;
         mis_weight = mis_heuristic(1, sample.pdf, 1, scatter.pdf);
     } else {
-        scatter_eval = material_instance.eval(si, sample.dir_ws, path.sg);
+        scatter_eval = material_instance.eval(si, sample.dir_ws);
     }
     pending.valid = true;
     pending.contribution = path.throughput * scatter_eval * sample.weight * mis_weight;
@@ -787,7 +790,8 @@ public struct PathTracer
         const HenyeyGreensteinPhaseFunction phase_function
             = HenyeyGreensteinPhaseFunction(clamp(medium.anisotropy, -0.999, 0.999));
         PhaseFunctionSample phase_sample = {};
-        if (!phase_function.sample(-path.ray_dir_ws, path.sg, phase_sample)) {
+        const PhaseFunctionSampleInput phase_input = make_phase_function_sample_input(path.sg);
+        if (!phase_function.sample(-path.ray_dir_ws, phase_input, phase_sample)) {
             path.terminate();
             return;
         }
@@ -890,11 +894,12 @@ public struct PathTracer
         // https://github.com/shader-slang/slang/issues/12916. An explicit local preserves the
         // intended copy-in/copy-out semantics without blocking inlining of handle_surface_hit().
         SampleGenerator material_sg = path.sg;
-        const bool sampled_material = material_instance.sample(si, material_sg, sample);
+        const MaterialSampleInput material_input = make_material_sample_input(material_sg);
         path.sg = material_sg;
 #else
-        const bool sampled_material = material_instance.sample(si, path.sg, sample);
+        const MaterialSampleInput material_input = make_material_sample_input(path.sg);
 #endif
+        const bool sampled_material = material_instance.sample(si, material_input, sample);
         if (!sampled_material) {
             path.terminate();
             return;
@@ -929,7 +934,7 @@ public struct PathTracer
             path.terminate();
     }
 
-    void handle_surface_hit<VisibilityQuery : IVisibilityQuery>(
+    void handle_surface_hit<VisibilityQuery : IVisibilityQuery, let HasTracingIntrinsics : bool = false>(
         VisibilityQuery visibility_query,
         no_diff IHitInfo hit,
         const float ray_t_current,
@@ -940,7 +945,7 @@ public struct PathTracer
         uint2 id = context.pixel_id(path);
 
         // Make surface interaction at hit point.
-        SurfaceInteraction si = g_scene.make_surface_interaction(hit, -path.ray_dir_ws);
+        SurfaceInteraction si = g_scene.make_surface_interaction<HasTracingIntrinsics>(hit, -path.ray_dir_ws);
         path.throughput = eval_segment_throughput(path, ray_t_current);
         path.set_volume_event(false);
         MaterialID material_id = g_scene.get_geometry_instance_desc(hit.geometry_instance_id).header.material_id;
@@ -1142,11 +1147,14 @@ void scatter_miss(inout PathPayload payload)
 }
 
 SCENE_RAY_TYPE_CLOSEST_HIT(scatter, scatter_closest_hit, PathPayload);
-void scatter_closest_hit<D : IDeferredHitInfo>(inout PathPayload payload, D deferred_hit)
+void scatter_closest_hit<D : IDeferredHitInfo, let HasTracingIntrinsics : bool = false>(
+    inout PathPayload payload,
+    D deferred_hit
+)
 {
     if (VISIBILITY_RAY_MODE == VisibilityRayMode::ray_query) {
         InlineVisibilityQuery visibility_query;
-        g_path_tracer.handle_surface_hit(
+        g_path_tracer.handle_surface_hit<InlineVisibilityQuery, HasTracingIntrinsics>(
             visibility_query,
             deferred_hit.create(),
             RayTCurrent(),
@@ -1155,7 +1163,7 @@ void scatter_closest_hit<D : IDeferredHitInfo>(inout PathPayload payload, D defe
         );
     } else if (VISIBILITY_RAY_MODE == VisibilityRayMode::trace_ray) {
         TraceRayVisibilityQuery visibility_query;
-        g_path_tracer.handle_surface_hit(
+        g_path_tracer.handle_surface_hit<TraceRayVisibilityQuery, HasTracingIntrinsics>(
             visibility_query,
             deferred_hit.create(),
             RayTCurrent(),
@@ -1163,6 +1171,11 @@ void scatter_closest_hit<D : IDeferredHitInfo>(inout PathPayload payload, D defe
             g_trace_path_context
         );
     }
+}
+
+void scatter_closest_hit(inout PathPayload payload, DeferredLSSHitInfo deferred_hit)
+{
+    scatter_closest_hit<DeferredLSSHitInfo, true>(payload, deferred_hit);
 }
 
 void scatter_closest_hit(inout PathPayload payload, DeferredAreaLightHitInfo deferred_hit)
@@ -1385,7 +1398,11 @@ void write_primary_surface_interaction(
     if (WriteGuide::motion_vectors_enabled())
         WriteGuide::motion_vectors(
             coord,
-            g_scene.get_motion_vector(camera, previous_camera, hit.geometry_instance_id, si.position_ws)
+            camera.get_motion_vector(
+                previous_camera,
+                si.position_ws,
+                g_scene.get_previous_position_ws(hit, si.position_ws)
+            )
         );
     if (WriteGuide::geometry_id_enabled()) {
         let geometry_instance = g_scene.get_geometry_instance_desc(hit.geometry_instance_id);
@@ -1421,7 +1438,7 @@ public void render(
         ray = ray_sampler.camera.get_ray(uv, next_float2(sg));
 
     uint path_id = id.y * ray_sampler.camera.dims.x + id.x;
-    float3 radiance = trace_path(ray, path_id, sg) * filter_sample.weight;
+    float3 radiance = trace_path(ray, path_id, sg) * filter_sample.weight * ray_sampler.camera.exposure_scale;
 
     if (WriteGuide::nan_count_enabled() && any(isnan(radiance)))
         WriteGuide::nan_count(id, 1u);

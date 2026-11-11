@@ -166,10 +166,8 @@ blanket interface guarantees.
   selection-compensated native behavior.
 - `slang/falcor2/render/materials/standard_material_instance.slang` and
   `slang/falcor2/render/materials/openpbr_material.slang` - local-frame adaptation and an upstream split evaluator.
-- `slang/falcor2/render/materials/mtlx/interface.slang`,
-  `slang/falcor2/render/materials/mtlx/bsdf_wrapper.slang`, and
-  `src/falcor2/render/material/mtlx/codegen/snippets/methods/basic/basic_material_instance.slang` - layerable BSDFs,
-  graph composition, and generated material-instance dispatch.
+- `slang/falcor2/render/materials/mtlx/interface.slang` and
+  `slang/falcor2/render/materials/mtlx/bsdf_wrapper.slang` - layerable BSDFs and graph composition.
 - `src/falcor2/render/material/mdl/mdl_material.cpp` - generated MDL material-instance evaluation and sampling.
 - `slang/falcor2/rendernodes/reference_pathtracer.slang` and
   `slang/falcor2/tools/materials/scene_sampling_tools.slang` - production transport consumption and diagnostic entry

@@ -72,15 +72,18 @@ The only user skill, `falcor2-health-check`, verifies package installation, nati
 imports, and GPU device creation, with driver diagnostics. It makes no environment
 changes. Refresh removes unchanged managed copies of the former getting-started,
 render-scene, and create-app skills; locally edited copies produce conflicts. Developer
-skills cover plan review, code review, and comparative research. Use `comparative-research`
+skills cover capturing a session as an ExecPlan, plan review, code review,
+design-document maintenance, and comparative research. Use `comparative-research`
 to investigate a question across named systems, implementations, or papers with
 delegated researchers, saved evidence, and a synthesis that accounts for missing
 coverage. The research workflow is domain-independent and uses available tools;
-it does not require an external research service. Reviewer definitions ship
-alongside the code-review skill. Developer setup also copies
+it does not require an external research service. Invoke `falcor2-create-exec-plan`
+when ready to turn the recent discussion or planning-mode output into an ExecPlan; it follows
+PLANS.md and stops before implementation. Their
+reviewer definitions ship alongside the skill. Developer setup also copies
 `skills/PLANS.md` to `.agents/PLANS.md` for both agents, including Claude-only
 installations. This shared template covers preparation and execution and records
-the Falcor2 source location. Read `.plans/GUIDELINES.md` when the checkout has it.
+the Falcor2 source location. Plans and `.plans/GUIDELINES.md` stay in that checkout.
 The template has the same refresh and local-edit protection as skills. Refresh
 removes unchanged managed copies of the retired `prepare-executable-plan` and
 `execute-reviewed-plan` skills; edited copies produce conflicts. Unmanaged copies

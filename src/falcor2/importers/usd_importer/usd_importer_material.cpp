@@ -604,6 +604,10 @@ std::optional<Properties> usdpreviewsurface_to_standardmaterial(const ImporterMa
         properties.set("roughness_factor", roughness_it.get<float>());
     }
 
+    if (auto it = params.find("ior"); it != params.end() && it.type() == PropertyType::float_) {
+        properties.set("ior", it.get<float>());
+    }
+
     if (auto it = params.find("normal"); it != params.end() && it.type() == PropertyType::int_) {
         importer_material::set_texture_path(
             properties,

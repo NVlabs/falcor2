@@ -22,11 +22,12 @@ inline const std::initializer_list<std::string_view> DEFAULT_MATERIAL_TARGETS = 
     "MaterialXMaterial",
 };
 
+// Prefer authored material representations over potentially simplified preview shaders.
 inline const std::initializer_list<std::string_view> DEFAULT_MATERIAL_SOURCES = {
     "Falcor",
-    "UsdPreviewSurface",
     "MDL",
     "MaterialX",
+    "UsdPreviewSurface",
 };
 
 namespace importer_material {

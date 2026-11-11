@@ -21,8 +21,7 @@ public struct OrenNayarBRDF : IBSDF
     }
 
 
-    public BSDFEval
-    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
         if (min(wi.z, wo.z) < BSDF_MIN_COS_THETA)
             return BSDFEval();
@@ -55,19 +54,19 @@ public struct OrenNayarBRDF : IBSDF
         return BSDFEval(albedo * (A + B * cos_diff * sin_alpha * tan_beta) * pdf, pdf);
     }
 
-    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
 
         // Note that cosine sampling can become rather inefficient if we have high retro-reflectivity
-        sample.wo = square_to_cosine_hemisphere_concentric(next_float2(sg));
+        sample.wo = square_to_cosine_hemisphere_concentric(input.u_dir);
         sample.pdf = square_to_cosine_hemisphere_concentric_pdf(sample.wo);
         sample.flags = BSDFFlags::diffuse_reflection;
 
         if (min(wi.z, sample.wo.z) < BSDF_MIN_COS_THETA)
             return false;
 
-        sample.weight = eval(wi, sample.wo, sg, bc) / sample.pdf;
+        sample.weight = eval(wi, sample.wo, bc) / sample.pdf;
         return true;
     }
 

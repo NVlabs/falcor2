@@ -1,0 +1,49 @@
+--- /dev/null
++++ b/tools/perf_compat_native/__init__.py
+@@ -0,0 +1,46 @@
++# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
++# SPDX-License-Identifier: Apache-2.0
++
++"""Expose existing native compilation reports on the pre-June5 Python binding."""
++
++import hashlib
++from pathlib import Path
++import subprocess
++
++
++def prepare(root):
++    slangpy = root / "external/slangpy"
++
++    def git(*args):
++        return subprocess.check_output(["git", "-C", str(slangpy), *args], text=True).strip()
++
++    pin = git("rev-parse", "HEAD")
++    relative = "src/slangpy_ext/device/device.cpp"
++    original = git("show", f"{pin}:{relative}") + "\n"
++    anchor = '    device.def(\n        "create_root_shader_object",'
++    if '"get_compilation_reports"' in original:
++        raise ValueError("Reporting backport is not needed on this SlangPy revision")
++    if original.count(anchor) != 1 or original.count('#include "nanobind.h"') != 1:
++        raise ValueError("Reporting binding integration anchor missing")
++    patched = original.replace(
++        '#include "nanobind.h"', '#include "nanobind.h"\n#include "compilation_report.h"'
++    ).replace(
++        anchor,
++        '    device.def(\n        "get_compilation_reports",\n'
++        "        &detail::get_compilation_reports,\n"
++        '        "Return compilation reports for all shader programs tracked by the device."\n'
++        "    );\n\n" + anchor,
++    )
++    target = slangpy / relative
++    if target.read_text(encoding="utf-8") not in (original, patched):
++        raise ValueError("Unexpected local changes to the reporting binding target")
++    header = Path(__file__).with_name("compilation_report.h").read_text(encoding="utf-8")
++    target.write_text(patched, encoding="utf-8", newline="\n")
++    target.with_name("compilation_report.h").write_text(header, encoding="utf-8", newline="\n")
++    return {
++        "id": "pre-june5-device-compilation-report-bindings-v1",
++        "slangpy_source": pin,
++        "upstream_header_source": "6b7e20bad0554382b6bdd942f7bdd696a0a4f359",
++        "device_cpp_sha256": hashlib.sha256(patched.encode()).hexdigest(),
++        "header_sha256": hashlib.sha256(header.encode()).hexdigest(),
++    }

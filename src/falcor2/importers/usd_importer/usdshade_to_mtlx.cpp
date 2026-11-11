@@ -267,6 +267,7 @@ public:
         mx::NodePtr shader_node = m_doc->addNode(shader_category, "Surface", "surfaceshader");
         if (!shader_node)
             return {};
+        shader_node->setNodeDefString(std::string(terminal_id));
 
         mx::NodePtr material_node = m_doc->addMaterialNode(m_doc->createValidChildName(material_name), shader_node);
         if (!material_node)
@@ -321,13 +322,14 @@ private:
         if (!node_def)
             return nullptr;
 
-        // Create a node name from the path; let MaterialX make it valid
+        // Distinct USD paths can have the same leaf name in this flattened graph.
         std::string node_name = path;
         const size_t last_slash = node_name.find_last_of('/');
         if (last_slash != std::string::npos && last_slash + 1 < node_name.size())
             node_name = node_name.substr(last_slash + 1);
         if (node_name.empty())
             node_name = "node";
+        node_name = m_node_graph->createValidChildName(node_name);
 
         mx::NodePtr mx_node = m_node_graph->addNode(get_mx_node_string(node_def), node_name, node_def->getType());
         if (!mx_node)
@@ -355,9 +357,25 @@ private:
             if (!upstream)
                 continue;
 
+            // A multioutput node's aggregate type is not the type carried by the connection.
+            std::string output_name;
+            std::string output_type = upstream->getType();
+            if (upstream->isMultiOutputType()) {
+                output_name = input.connection()->output();
+                const mx::NodeDefPtr node_def = upstream->getNodeDef();
+                const mx::OutputPtr output = node_def ? node_def->getActiveOutput(output_name) : nullptr;
+                FALCOR_CHECK(
+                    output,
+                    "Unknown MaterialX output '{}.{}'",
+                    source.props().get<std::string_view>("_path"),
+                    output_name
+                );
+                output_type = output->getType();
+            }
+
             mx::InputPtr mx_input = mx_node->getInput(std::string(input.name()));
             if (!mx_input)
-                mx_input = mx_node->addInput(std::string(input.name()), upstream->getType());
+                mx_input = mx_node->addInput(std::string(input.name()), output_type);
 
             if (mx_input) {
                 // The root surface cannot refer directly to a node inside the MaterialX nodegraph.
@@ -365,12 +383,16 @@ private:
                 if (mx_node->getParent() != upstream->getParent()) {
                     mx::OutputPtr output = m_node_graph->addOutput(
                         m_node_graph->createValidChildName(upstream->getName() + "_out"),
-                        upstream->getType()
+                        output_type
                     );
                     output->setConnectedNode(upstream);
+                    if (!output_name.empty())
+                        output->setOutputString(output_name);
                     mx_input->setConnectedOutput(output);
                 } else {
                     mx_input->setConnectedNode(upstream);
+                    if (!output_name.empty())
+                        mx_input->setOutputString(output_name);
                 }
             }
         }

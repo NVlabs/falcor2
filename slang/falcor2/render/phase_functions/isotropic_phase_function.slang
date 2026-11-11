@@ -12,9 +12,9 @@ public struct IsotropicPhaseFunction : IPhaseFunction
 
     public float3 eval(const float3 wi, const float3 wo) { return float.INV_FOUR_PI; }
 
-    public bool sample<S : ISampleGenerator>(const float3 wi, inout S sg, out PhaseFunctionSample sample)
+    public bool sample(const float3 wi, const PhaseFunctionSampleInput input, out PhaseFunctionSample sample)
     {
-        sample.wo_ws = square_to_uniform_sphere(next_float2(sg));
+        sample.wo_ws = square_to_uniform_sphere(input.u_dir);
         sample.pdf = float.INV_FOUR_PI;
         sample.weight = 1.0;
         return true;

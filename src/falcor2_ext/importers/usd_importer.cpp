@@ -19,7 +19,7 @@ FALCOR_PY_EXPORT(importers_usd_importer)
             nb::overload_cast<const std::filesystem::path&, const ImportOptions&>(&UsdImporter::load_scene),
             "path"_a,
             "import_options"_a = ImportOptions(),
-            D(UsdImporter, load_scene)
+            D(UsdImporter, load_scene, 2)
         )
         .def(
             "import_stage",
@@ -36,6 +36,6 @@ FALCOR_PY_EXPORT(importers_usd_importer)
                 "def import_stage(self, stage: falcor2.pxr.Usd.Stage, import_options: ImportOptions = ...) -> "
                 "ImporterScene"
             ),
-            D(UsdImporter, import_stage)
+            D(UsdImporter, import_stage, 2)
         );
 }

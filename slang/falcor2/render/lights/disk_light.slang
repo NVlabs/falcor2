@@ -19,20 +19,20 @@ public struct DiskLight : ILight
         return luminance(radiance) * float.PI * surface_area * shaping.cosine_hemisphere_power_factor();
     }
 
-    public bool sample<SampleGenerator : ISampleGenerator>(
-        const LightSampleContext ctx,
-        inout SampleGenerator sg,
-        out LightSample sample
-    )
+    public bool
+    sample(const LightSampleContext ctx, const float2 u, out LightSample sample, out LightSampleRef sample_ref)
     {
         sample = {};
+        sample_ref = {};
+
         if (surface_area <= 0.0 || dot(normal_ws, ctx.pos_ws - center_ws) <= 0.0)
             return false;
 
-        const float2 u = next_float2(sg);
         const float2 pos_on_unit_disk = square_to_uniform_disk_polar(u.yx);
         const float3 sampled_pos_ws = center_ws + pos_on_unit_disk.x * radius_u_ws + pos_on_unit_disk.y * radius_v_ws;
 
+        sample_ref.emitter_type = EmitterType::analytic;
+        sample_ref.parameters = pos_on_unit_disk;
         return finalize_analytic_area_light_sample(
             ctx.pos_ws,
             sampled_pos_ws,
@@ -40,6 +40,20 @@ public struct DiskLight : ILight
             surface_area,
             radiance,
             shaping,
+            normal_ws,
+            sample
+        );
+    }
+
+    public bool eval_sample(const LightSampleContext ctx, const LightSampleRef sample_ref, out LightSample sample)
+    {
+        sample = {};
+        const float2 p = sample_ref.parameters;
+        return eval_analytic_light_sample(
+            this,
+            ctx,
+            sample_ref,
+            center_ws + p.x * radius_u_ws + p.y * radius_v_ws,
             normal_ws,
             sample
         );

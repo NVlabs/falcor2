@@ -43,7 +43,7 @@ public struct DiscreteDistribution1D
     public float eval_cdf(uint index) { return cdf_buffer[index]; }
 
     /// Sample an index from the distribution.
-    /// @param u Uniform random number in [0, 1).
+    /// @param u Uniform sample in [0, 1).
     /// @param[out] index Sampled index in [0, size-1].
     /// @param[out] pdf Probability of the sampled index.
     /// @return True if the distribution is non-empty.
@@ -57,7 +57,7 @@ public struct DiscreteDistribution1D
     /// Sample an index and reuse the random number.
     /// After sampling, u is remapped to [0, 1) within the selected bin,
     /// allowing it to be reused for further sampling decisions.
-    /// @param[inout] u Uniform random number in [0, 1), remapped on output.
+    /// @param[inout] u Uniform sample in [0, 1), remapped on output.
     /// @param[out] index Sampled index in [0, size-1].
     /// @param[out] pdf Probability of the sampled index.
     /// @return True if the distribution is non-empty.
@@ -104,7 +104,7 @@ public struct AliasTable1D
     public float eval_pdf(uint index) { return pdf_buffer[index]; }
 
     /// Sample an index from the distribution.
-    /// @param u Two independent uniform random numbers in [0, 1).
+    /// @param u Uniform sample in [0, 1)^2.
     /// @param[out] index Sampled index in [0, size-1].
     /// @param[out] pdf Probability of the sampled index.
     /// @return True if the distribution is non-empty.
@@ -118,6 +118,11 @@ public struct AliasTable1D
         return size > 0;
     }
 
+    /// Sample an index from the distribution using one sample coordinate.
+    /// @param u Uniform sample in [0, 1).
+    /// @param[out] index Sampled index in [0, size-1].
+    /// @param[out] pdf Probability of the sampled index.
+    /// @return True if the distribution is non-empty.
     public bool sample(float u, out uint index, out float pdf)
     {
         u *= size;
@@ -133,7 +138,7 @@ public struct AliasTable1D
     /// Sample an index and reuse the random number.
     /// After sampling, u is remapped to [0, 1) within the selected bin,
     /// allowing it to be reused for further sampling decisions.
-    /// @param[inout] u Uniform random number in [0, 1), remapped on output.
+    /// @param[inout] u Uniform sample in [0, 1), remapped on output.
     /// @param[out] index Sampled index in [0, size-1].
     /// @param[out] pdf Probability of the sampled index.
     /// @return True if the distribution is non-empty.

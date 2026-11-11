@@ -1,0 +1,19 @@
+--- a/falcor2/testing/benchmark/reporting/__init__.py
++++ b/falcor2/testing/benchmark/reporting/__init__.py
+@@ -1,16 +1,4 @@
+ # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+-# pyright: reportUnusedImport=false
+-
+-from .fixtures import (
+-    benchmark_slang_function,
+-    BenchmarkSlangFunction,
+-    benchmark_python_function,
+-    BenchmarkPythonFunction,
+-    benchmark_compute_kernel,
+-    BenchmarkComputeKernel,
+-    report,
+-    ReportFixture,
+-)
+ 
+ # Re-exported so other projects can submit to BenchView with the same payload shape.
+ # A project supplies its own BenchViewProject; everything else is shared.

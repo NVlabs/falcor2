@@ -7,7 +7,7 @@ implementing rendering;
 /// Note that the triangle is only emitting on the front-facing side.
 /// @param pos_ws Shading point in world-space.
 /// @param triangle Emissive triangle to sample.
-/// @param u Uniform random number (2D).
+/// @param u Uniform sample in [0, 1)^2.
 /// @param[out] sample Sampled direction.
 /// @param[out] weight Sample weight (emitted radiance divided by pdf).
 /// @return True if a sample was generated, false otherwise.

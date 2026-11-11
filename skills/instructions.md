@@ -29,6 +29,9 @@ Use the installed skill relevant to the requested task:
 
 - `falcor2-health-check`: verify package installation, native imports, and GPU
   device creation; report driver diagnostics without changing the environment.
+- `falcor2-setup-blender-hydra`: inspect a selected Blender build, acquire its
+  matching official SDK, build and test HydraIPC, and install or verify the
+  Blender extension on Linux or Windows using standalone repository tools.
 
 Skills point to their reusable helpers or repository tools. Skill paths are
 relative to the consuming project root. Setup installs guidance; it does not

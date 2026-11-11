@@ -1,0 +1,39 @@
+--- a/falcor2/testing/helpers.py
++++ b/falcor2/testing/helpers.py
+@@ -153,13 +153,17 @@
+     floating_point_mode: SlangFloatingPointMode = SlangFloatingPointMode.default,
+     existing_device_handles: Optional[Sequence[NativeHandle]] = None,
+     enable_print: bool = False,
++    enable_compilation_reports: bool | None = None,
+ ) -> Device:
++    if enable_compilation_reports is None:
++        enable_compilation_reports = BENCHMARK_COMPILATION_REPORTS_ENABLED
+     cache_key = (
+         type,
+         cuda_interop,
+         floating_point_mode,
+         tuple(existing_device_handles) if existing_device_handles else (),
+         enable_print,
++        enable_compilation_reports,
+     )
+     if use_cache and cache_key in DEVICE_CACHE:
+         return DEVICE_CACHE[cache_key]
+@@ -185,6 +189,9 @@
+         type=type,
+         enable_debug_layers=True,
+         enable_print=enable_print,
++        enable_compilation_reports=enable_compilation_reports,
++        module_cache_path=None,
++        shader_cache_path=None,
+         compiler_options=SlangCompilerOptions(
+             {
+                 "include_paths": [
+@@ -390,3 +397,8 @@
+     return boto3.client(
+         "s3", endpoint_url=ENDPOINT, aws_access_key_id=ACCESS_KEY, aws_secret_access_key=SECRET_KEY
+     )
++
++
++BENCHMARK_COMPILATION_REPORTS_ENABLED = False
++MODULE_CACHE_ENABLED = False
++SHADER_CACHE_ENABLED = False

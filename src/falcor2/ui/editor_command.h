@@ -12,6 +12,8 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace falcor::ui {
 
@@ -56,6 +58,17 @@ private:
 
     // Keep pointers returned by find() stable when commands are registered.
     std::deque<EditorCommand> m_commands;
+};
+
+/// A command leaf or submenu. The root and submenus have empty command IDs.
+struct FALCOR_API EditorMenuItem {
+    std::string label;
+    CommandId command;
+    std::vector<EditorMenuItem> children;
+
+    /// Insert a command under a slash-separated category, preserving first-appearance order.
+    /// An empty category inserts at the root; empty path segments are rejected.
+    void add_command(std::string_view category, const CommandId& id);
 };
 
 } // namespace falcor::ui

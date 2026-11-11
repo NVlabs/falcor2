@@ -1,0 +1,25 @@
+--- a/falcor2/testing/benchmark/plugin.py
++++ b/falcor2/testing/benchmark/plugin.py
+@@ -24,7 +24,7 @@
+ 
+ import pytest
+ 
+-from slangpy.testing.benchmark import (
++from falcor2.testing.benchmark.reporting import (
+     build_benchview_observation,
+     build_benchview_submissions,
+     build_metric,
+@@ -613,10 +613,9 @@
+             )
+             if self._project_id == "falcor2-slang":
+                 for observation in observations:
+-                    observation.setdefault("case", {}).setdefault("dimensions", {})["baseline"] = (
+-                        project_info["version"]
+-                    )
+-                    observation["case"]["dimensions"]["compiler_integration"] = "rebuild"
++                    observation.setdefault("case", {}).setdefault("dimensions", {})[
++                        "compiler_integration"
++                    ] = "rebuild"
+             for observation in observations:
+                 observation.setdefault("metadata", {})["gpuClocksLocked"] = context[
+                     "gpu_clocks_locked"

@@ -34,7 +34,6 @@ standard_normal_repair_probe(uint material_id, float2 uv, float side, float hand
     let properties = adjusted.collect_extra_bsdf_properties(si, si.wi_ws).value;
     result.tangent = si.shading_frame_ws.to_global(properties.bsdf_T[0]);
     result.bitangent = si.shading_frame_ws.to_global(properties.bsdf_B[0]);
-    var sg = TinyUniformSampleGenerator(uint2(7, 0), 0);
-    result.eval = adjusted.eval(si, si.wi_ws, sg);
+    result.eval = adjusted.eval(si, si.wi_ws);
     return result;
 }

@@ -164,18 +164,13 @@ def test_materialx_canonical_names_are_independent_of_editable_inputs() -> None:
     # All three instances share generated code. Evaluate two pairs to verify
     # that both scalar and texture values still come from per-instance data.
     module, helper = load_scene_sampling_module(device, scene)
-    material_eval = (
-        module["material_eval_simple<TinyUniformSampleGenerator>"]
-        .as_func()
-        .write(helper.bind_scene)
-    )
-    seed = np.array([(7, 0, 7)], dtype=np.uint32)
+    material_eval = module["material_eval_simple"].as_func().write(helper.bind_scene)
     uvs = np.array([(0.5, 0.5)], dtype=np.float32)
     wi = np.array([(0.0, 1.0, 0.0)], dtype=np.float32)
     wo = np.array([(0.0, 1.0, 0.0)], dtype=np.float32)
 
     def evaluate(material: f2.Material) -> np.ndarray:
-        result = cast(spy.Tensor, material_eval(seed, material, uvs, wi, wo))
+        result = cast(spy.Tensor, material_eval(material, uvs, wi, wo))
         value = _float3_array(result.cursor()[0].read())
         assert np.isfinite(value).all()
         return value
@@ -318,8 +313,8 @@ SCENE_MATERIALS = [
         {
             "opacity": 1.0,
             "sample": {
-                "wo_ws": spy.float3(-0.19386107, 0.9628616, -0.1879241),
-                "pdf": 0.30648836493492126,
+                "wo_ws": spy.float3(0.20243618, 0.85205954, 0.4827154),
+                "pdf": 0.27121896,
                 "weight": spy.float3(0.92, 0.62, 0.24),
                 "flags": 1,
             },
@@ -343,8 +338,8 @@ SCENE_MATERIALS = [
         {
             "opacity": 0.25,
             "sample": {
-                "wo_ws": spy.float3(-0.19386107, 0.9628616, -0.1879241),
-                "pdf": 0.30648836493492126,
+                "wo_ws": spy.float3(0.20243618, 0.85205954, 0.4827154),
+                "pdf": 0.27121896,
                 "weight": spy.float3(1, 0, 1),
                 "flags": 1,
             },
@@ -530,9 +525,10 @@ SCENE_MATERIALS = [
         {
             "opacity": 1.0,
             "sample": {
-                "wo_ws": spy.float3(0.04189388, 0.90362144, -0.42627868),
-                "pdf": 2.1251282691955566,
-                "weight": spy.float3(0.0005833827, 0.0005833827, 0.0005833827),
+                # MDL xi receives (u_dir.x, u_dir.y, u_lobe, raw seed coordinate).
+                "wo_ws": spy.float3(-0.14830333, 0.57023865, 0.8079813),
+                "pdf": 1.0471245050430298,
+                "weight": spy.float3(0.0005298115, 0.0005298115, 0.0005298115),
                 "flags": 2,
             },
             "eval": spy.float3(0.0028125402, 0.0028125402, 0.0028125402),
@@ -865,12 +861,8 @@ def test_materialx_mtlx_tiled_brass_scene_material_successor(
         sample = sample_cursor[sample_index].read()
         assert_valid_sample_result(sample)
 
-    eval_func = (
-        module["material_eval_simple<TinyUniformSampleGenerator>"]
-        .as_func()
-        .write(helper.bind_scene)
-    )
-    eval_results = cast(spy.Tensor, eval_func(seed, material, uvs, wi, wo))
+    eval_func = module["material_eval_simple"].as_func().write(helper.bind_scene)
+    eval_results = cast(spy.Tensor, eval_func(material, uvs, wi, wo))
     eval_cursor = eval_results.cursor()
     eval_cursor.load()
 
@@ -1026,21 +1018,13 @@ def _read_single_material_outputs(
     sample_cursor = sample_results.cursor()
     sample_cursor.load()
 
-    eval_func = (
-        module["material_eval_simple<TinyUniformSampleGenerator>"]
-        .as_func()
-        .write(helper.bind_scene)
-    )
-    eval_results = cast(spy.Tensor, eval_func(seed, material, uvs, wi, wo))
+    eval_func = module["material_eval_simple"].as_func().write(helper.bind_scene)
+    eval_results = cast(spy.Tensor, eval_func(material, uvs, wi, wo))
     eval_cursor = eval_results.cursor()
     eval_cursor.load()
 
-    eval_with_pdf_func = (
-        module["material_eval_with_pdf_simple<TinyUniformSampleGenerator>"]
-        .as_func()
-        .write(helper.bind_scene)
-    )
-    eval_with_pdf_results = cast(spy.Tensor, eval_with_pdf_func(seed, material, uvs, wi, wo))
+    eval_with_pdf_func = module["material_eval_with_pdf_simple"].as_func().write(helper.bind_scene)
+    eval_with_pdf_results = cast(spy.Tensor, eval_with_pdf_func(material, uvs, wi, wo))
     eval_with_pdf_cursor = eval_with_pdf_results.cursor()
     eval_with_pdf_cursor.load()
 
@@ -1613,9 +1597,9 @@ def test_scene_material_sampler(
     assert_expected_subset("sample", result, test_material)
 
     # Test eval
-    signature = "material_eval_simple<TinyUniformSampleGenerator>"
+    signature = "material_eval_simple"
     material_eval = module[signature].as_func().write(helper.bind_scene)
-    eval_results = cast(spy.Tensor, material_eval(seed, material, uvs, wi, wo))
+    eval_results = cast(spy.Tensor, material_eval(material, uvs, wi, wo))
     eval_cursor = eval_results.cursor()
     eval_cursor.load()
     result = eval_cursor[0].read()
@@ -1732,15 +1716,15 @@ def test_scene_material_sampler_batch(
         assert_expected_subset("sample", result, test_material)
 
     # Test eval and PDF
-    signature = "material_eval_with_pdf_system<TinyUniformSampleGenerator>"
+    signature = "material_eval_with_pdf_system"
     material_eval_with_pdf = (
         module[signature]
         .as_func()
         .type_conformances(type_conformances)
         .write(helper.bind_scene)
-        .map(spy.uint3, int, spy.float2, spy.float3, spy.float3)
+        .map(int, spy.float2, spy.float3, spy.float3)
     )
-    eval_results = cast(spy.Tensor, material_eval_with_pdf(seed, material_ids_np, uvs, wi, wo))
+    eval_results = cast(spy.Tensor, material_eval_with_pdf(material_ids_np, uvs, wi, wo))
     eval_cursor = eval_results.cursor()
     eval_cursor.load()
     for i, test_material in enumerate(active_scene_materials):
@@ -1823,7 +1807,6 @@ def test_example_python_material(device_type: spy.DeviceType) -> None:
 
     props = f2.Properties()
 
-    seed = spy.uint3(7, 0, 7)
     uvs = spy.float2(0.5, 0.5)
     wi = spy.float3(0, 1, 0)
     wo = spy.float3(0, 1, 0)
@@ -1835,21 +1818,21 @@ def test_example_python_material(device_type: spy.DeviceType) -> None:
     type_conformances = cast(list[spy.TypeConformance], scene.requirements.type_conformances)
 
     def compare_evals(mat: f2.Material, expected_albedo: spy.float3):
-        signature_simple = f"material_eval_simple<TinyUniformSampleGenerator>"
+        signature_simple = "material_eval_simple"
         material_eval_simple = module[signature_simple].as_func().write(helper.bind_scene)
 
-        result_simple = cast(spy.float3, material_eval_simple(seed, mat, uvs, wi, wo))
+        result_simple = cast(spy.float3, material_eval_simple(mat, uvs, wi, wo))
         device.flush_print()
 
-        signature_system = f"material_eval_system<TinyUniformSampleGenerator>"
+        signature_system = "material_eval_system"
         material_eval_system = (
             module[signature_system]
             .as_func()
             .write(helper.bind_scene)
             .type_conformances(type_conformances)
-            .map(spy.uint3, int, spy.float2, spy.float3, spy.float3)
+            .map(int, spy.float2, spy.float3, spy.float3)
         )
-        result_system = material_eval_system(seed, int(mat.material_id), uvs, wi, wo)
+        result_system = material_eval_system(int(mat.material_id), uvs, wi, wo)
         device.flush_print()
 
         assert result_simple == result_system

@@ -54,15 +54,13 @@ public struct SpecularMicrofacetBRDF : IBSDF, IDifferentiable
 
 
     [Differentiable]
-    public override
-        float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        return eval_with_pdf(wi, wo, sg, bc).value;
+        return eval_with_pdf(wi, wo, bc).value;
     }
 
     [Differentiable]
-    public BSDFEval
-    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
         if (min(wi.z, wo.z) < BSDF_MIN_COS_THETA)
             return BSDFEval();
@@ -81,7 +79,7 @@ public struct SpecularMicrofacetBRDF : IBSDF, IDifferentiable
         return BSDFEval(F * D * G * 0.25 / wi.z, pdf);
     }
 
-    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
 
@@ -103,7 +101,7 @@ public struct SpecularMicrofacetBRDF : IBSDF, IDifferentiable
             return false;
 
         float half_pdf = {};
-        float3 h = sampleGGX_VNDF(alpha, wi, next_float2(sg), half_pdf);
+        float3 h = sampleGGX_VNDF(alpha, wi, input.u_dir, half_pdf);
         float wi_dot_h = dot(wi, h);
         if (wi_dot_h <= 0.0)
             return false;
@@ -173,15 +171,13 @@ public struct SpecularMicrofacetBSDF : IBSDF, IDifferentiable
 
 
     [Differentiable]
-    public override
-        float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        return eval_with_pdf(wi, wo, sg, bc).value;
+        return eval_with_pdf(wi, wo, bc).value;
     }
 
     [Differentiable]
-    public BSDFEval
-    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
         if (min(wi.z, abs(wo.z)) < BSDF_MIN_COS_THETA)
             return BSDFEval();
@@ -229,14 +225,12 @@ public struct SpecularMicrofacetBSDF : IBSDF, IDifferentiable
         return BSDFEval(transmission_albedo * (1.0 - F) * D * G * abs(t), pdf);
     }
 
-    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
 
         if (wi.z < BSDF_MIN_COS_THETA)
             return false;
-
-        float lobe_sample = next_float(sg);
 
         if (alpha == 0.0) {
             bool has_reflection = has_lobe(BSDFFlags::delta_reflection);
@@ -249,7 +243,7 @@ public struct SpecularMicrofacetBSDF : IBSDF, IDifferentiable
 
             bool is_reflection = has_reflection;
             if (has_reflection && has_transmission)
-                is_reflection = lobe_sample < F;
+                is_reflection = input.u_lobe < F;
             else if (has_transmission && F == 1.0)
                 return false;
 
@@ -271,7 +265,7 @@ public struct SpecularMicrofacetBSDF : IBSDF, IDifferentiable
             return false;
 
         float half_pdf = {};
-        float3 h = sampleGGX_VNDF(alpha, wi, next_float2(sg), half_pdf);
+        float3 h = sampleGGX_VNDF(alpha, wi, input.u_dir, half_pdf);
         float wi_dot_h = dot(wi, h);
         if (wi_dot_h <= 0.0)
             return false;
@@ -281,7 +275,7 @@ public struct SpecularMicrofacetBSDF : IBSDF, IDifferentiable
 
         bool is_reflection = has_reflection;
         if (has_reflection && has_transmission)
-            is_reflection = lobe_sample < F;
+            is_reflection = input.u_lobe < F;
         else if (has_transmission && F == 1.0)
             return false;
 

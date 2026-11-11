@@ -57,7 +57,7 @@ public float evalPdfGGX_NDF(float alpha, float cosTheta)
 /// See Listing A.1 in https://seblagarde.files.wordpress.com/2015/07/course_notes_moving_frostbite_to_pbr_v32.pdf
 ///
 /// @param alpha GGX width parameter (should be clamped to small epsilon beforehand).
-/// @param u Uniform random number (2D).
+/// @param u Uniform sample in [0, 1)^2.
 /// @param[out] pdf Sampling probability.
 /// @return Sampled half vector in local space.
 [Differentiable]
@@ -88,6 +88,8 @@ public float evalPdfGGX_VNDF(float alpha, float3 wi, float3 h)
     return G1 * D * max(0.f, dot(wi, h)) / wi.z;
 }
 
+/// Samples a visible GGX normal in the stretched hemisphere configuration.
+/// @param u Uniform sample in [0, 1)^2.
 [Differentiable]
 public float3 SampleVndf_Hemisphere(float2 u, float3 Vh)
 {
@@ -109,7 +111,7 @@ public float3 SampleVndf_Hemisphere(float2 u, float3 Vh)
 /// See https://arxiv.org/abs/2306.05044
 /// @param alpha Isotropic GGX width parameter (should be clamped to small epsilon beforehand).
 /// @param wi Incident direction in local space, in the positive hemisphere.
-/// @param u Uniform random number (2D).
+/// @param u Uniform sample in [0, 1)^2.
 /// @param[out] pdf Sampling probability.
 /// @return Sampled half vector in local space, in the positive hemisphere.
 [Differentiable]

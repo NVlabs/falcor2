@@ -5,6 +5,8 @@
 #include "usd_importer_macros.h"
 
 BEGIN_DISABLE_USD_WARNINGS
+#include <pxr/base/gf/matrix3d.h>
+#include <pxr/base/gf/matrix4d.h>
 #include <pxr/base/gf/numericCast.h>
 #include <pxr/base/gf/vec2d.h>
 #include <pxr/base/gf/vec2h.h>
@@ -259,6 +261,27 @@ bool try_set_vector_sources(Properties& props, std::string_view name, const pxr:
     return (try_set_vector<TargetVector, SourceVectors>(props, name, value) || ...);
 }
 
+template<typename TargetMatrix, typename SourceMatrix>
+bool try_set_matrix(Properties& props, std::string_view name, const pxr::VtValue& value)
+{
+    if (!value.IsHolding<SourceMatrix>())
+        return false;
+
+    const auto& source = value.UncheckedGet<SourceMatrix>();
+    TargetMatrix converted;
+    // Preserve authored coefficients; geometric transforms use a separate transposing conversion.
+    for (int r = 0; r < TargetMatrix::rows; ++r) {
+        for (int c = 0; c < TargetMatrix::cols; ++c) {
+            auto component = pxr::GfNumericCast<typename TargetMatrix::value_type>(source[r][c]);
+            if (!component)
+                return false;
+            converted[r][c] = *component;
+        }
+    }
+    props.set(name, converted);
+    return true;
+}
+
 template<typename TargetVector, typename SourceVector>
 bool try_set_vector_array(Properties& props, std::string_view name, const pxr::VtValue& value)
 {
@@ -437,6 +460,12 @@ bool set_from_value(Properties& props, std::string_view name, const pxr::VtValue
         return true;
 
     if (try_set_vector_sources<float4, pxr::GfVec4f, pxr::GfVec4d, pxr::GfVec4h>(props, name, value))
+        return true;
+
+    if (try_set_matrix<float3x3, pxr::GfMatrix3d>(props, name, value))
+        return true;
+
+    if (try_set_matrix<float4x4, pxr::GfMatrix4d>(props, name, value))
         return true;
 
     if (try_set_string(props, name, value))

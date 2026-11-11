@@ -472,8 +472,7 @@ public struct ScratchConductorBRDF : IBSDF
     }
 
 
-    public BSDFEval
-    eval_with_pdf<S : ISampleGenerator>(const float3 wiLocal, const float3 woLocal, inout S sg, BSDFContext bc)
+    public BSDFEval eval_with_pdf(const float3 wiLocal, const float3 woLocal, BSDFContext bc)
     {
         if (min(wiLocal.z, woLocal.z) < BSDF_MIN_COS_THETA)
             return BSDFEval();
@@ -485,22 +484,22 @@ public struct ScratchConductorBRDF : IBSDF
             scratch = calculateScratchEvalWithPdf(wiLocal, woLocal);
 
         PBRTConductorBSDF unscratched = { D, eta, k };
-        BSDFEval result = unscratched.eval_with_pdf(wiLocal, woLocal, sg, bc);
+        BSDFEval result = unscratched.eval_with_pdf(wiLocal, woLocal, bc);
         result.value
             = result.value * (1.0 - mask[0]) + scratch.value * mask[0] * (phongCoefficient + 2.f) / (2.f * float.PI);
         result.pdf = result.pdf * (1.0 - mask[0]) + scratch.pdf * mask[0] * (phongCoefficient + 2.f) / (2.f * float.PI);
         return result;
     }
 
-    public bool sample<S : ISampleGenerator>(float3 wiLocal, out BSDFSample sample, inout S sg, BSDFContext bc = {})
+    public bool sample(float3 wiLocal, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
 
         if (wiLocal.z < 0.0f)
             return false;
 
-        const float2 rand = next_float2(sg);
-        const float threshold = rand[0];
+        BSDFSampleInput child_input = input;
+        const bool scratched = choose_sample_branch(child_input.u_lobe, mask[0]);
 
         // eval() and eval_pdf() expose the full masked mixture of the unscratched conductor and scratch lobes.
         // sample() chooses one branch and returns that branch's local weight, but its non-delta pdf includes the
@@ -508,9 +507,9 @@ public struct ScratchConductorBRDF : IBSDF
         bool valid = false;
         float3 outgoing;
         float3 f;
-        if (mask[0] <= threshold) {
+        if (!scratched) {
             PBRTConductorBSDF unscratched = { D, eta, k };
-            valid = unscratched.sample(wiLocal, sample, sg, bc);
+            valid = unscratched.sample(wiLocal, child_input, bc, sample);
             if (valid && !sample.has_flag(BSDFFlags::delta)) {
                 float evalScratch = 0.f;
                 if (phongCoefficient < kDiracLimit)
@@ -528,16 +527,16 @@ public struct ScratchConductorBRDF : IBSDF
             // note that we have a different sign here
             const float3 projectedIncomingYZ = calculatePojectedIncoming(-wiLocal, P2, P4);
             // avoid nummerical precision issues with rescaling
-            const float pos = 0.01f + rand[1] * 0.99f;
+            var aux_rng = input.make_aux_rng();
+            const float pos = 0.01 + next_float(aux_rng) * 0.99;
             valid = trace(wiLocal, pos, projectedIncomingYZ, outgoing, f);
 
             if (valid) {
                 // We apply the roughness after the bounces. This does not simulate rough grooves but allows us to
                 // perform eval() and evalPdf(). While it's possible to set the roughness really low, a good value
                 // is between 10k and 50k.
-                const float2 randPhong = next_float2(sg);
-                const float theta = acos(pow(randPhong[0], 1.f / (phongCoefficient + 1.f)));
-                const float phi = 2.f * float.PI * randPhong[1];
+                const float theta = acos(pow(input.u_dir.x, 1.f / (phongCoefficient + 1.f)));
+                const float phi = 2.f * float.PI * input.u_dir.y;
 
                 const float3 phongLocal = spherical_to_cartesian(float2(theta, phi));
 

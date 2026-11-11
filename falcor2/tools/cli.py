@@ -5,7 +5,8 @@
 
 Keep this module independent of native Falcor2 imports so setup works before a
 build or GPU configuration. Source scripts invoke this file directly; the installed
-f2 launcher loads it without executing falcor2/__init__.py.
+f2 launcher loads it without executing falcor2/__init__.py. Hydra commands use
+the tools in an existing Falcor2 checkout.
 
 Setup resolves configuration, preflights managed-file conflicts, then applies the
 changes and records hashes for future refreshes. Instruction entrypoints belong
@@ -273,12 +274,12 @@ def _instruction_guide(agents: list[str], profile: str, source: Path | None) -> 
         assert source is not None
         guide += (
             f"\n## Developing Falcor2\n\nFalcor2 source checkout: `{source.as_posix()}`.\n"
-            "Read AGENTS.md in that checkout when present before changing Falcor2.\n"
-            "Follow its build/test policy and coding-style guide; do not apply\n"
-            "repository-specific commands to the consuming application. For planned\n"
-            "changes read the installed .agents/PLANS.md in this project and read\n"
-            ".plans/GUIDELINES.md in that checkout when present. Developer skills\n"
-            "provide plan review, code review, and comparative research.\n"
+            "Read AGENTS.md in that checkout before changing Falcor2 itself. Follow\n"
+            "its build/test policy; do not apply repository-specific commands to the\n"
+            "consuming application. For planned changes read the installed\n"
+            ".agents/PLANS.md in this project and .plans/GUIDELINES.md in that checkout.\n"
+            "Developer skills provide plan review, code-review,\n"
+            "and explicitly requested design-document maintenance workflows.\n"
         )
     return guide.encode("utf-8")
 
@@ -334,7 +335,7 @@ def _desired_files(agents: list[str], profile: str, source: Path | None) -> dict
                     f"Falcor2 source root: `{source.as_posix()}`\n\n"
                     "Resolve repository paths in this skill against this source root, not the\n"
                     "consuming application's root. Run repository commands from this checkout.\n"
-                    "Read its AGENTS.md when present and the relevant policy files. If the checkout has moved\n"
+                    "Read its AGENTS.md and referenced policy files. If the checkout has moved\n"
                     "or is unavailable, rerun f2 setup --source PATH --profile developer.\n"
                     "For planning, read ../../../.agents/PLANS.md relative to this file.\n"
                     "This shared template for Codex and Claude applies to\n"
@@ -565,11 +566,34 @@ def _setup(args: argparse.Namespace) -> int:
     )
 
 
+def _hydra(argv: list[str]) -> int:
+    """Delegate to an existing checkout, which owns the Hydra build/install tools."""
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--source", type=Path)
+    options, arguments = parser.parse_known_args(argv)
+    try:
+        project, source = resolve_context(None, options.source)
+        if source is None:
+            saved = read_settings(project).get("source")
+            candidate = Path(saved) if saved else Path(_git(Path.cwd(), "--show-toplevel") or ".")
+            if _is_source(candidate):
+                source = candidate.resolve()
+        if source is None or not (source / "tools/hydra.py").is_file():
+            raise ValueError("Hydra tools require a Falcor2 checkout; use --source PATH.")
+        return subprocess.call([sys.executable, str(source / "tools/hydra.py"), *arguments])
+    except (OSError, ValueError) as error:
+        print(f"f2 hydra: {error}", file=sys.stderr)
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
-    """Route Falcor2 tool commands."""
+    """Route commands, leaving Hydra arguments to the checkout tool's parser."""
     arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] == "hydra":
+        return _hydra(arguments[1:])
     parser = argparse.ArgumentParser(prog="f2", description="Falcor2 project tools")
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("hydra", help="Install and verify prebuilt Hydra plugins")
     setup = commands.add_parser(
         "setup",
         help="Configure project-local AI skills and instructions",

@@ -1,0 +1,51 @@
+--- a/tests/python/conftest.py
++++ b/tests/python/conftest.py
+@@ -17,6 +17,11 @@
+ import falcor2 as f2
+ import falcor2.testing.helpers as helpers
+ from falcor2.testing.image_test_plugin import ImageTestPlugin
++from falcor2.testing.benchmark import (
++    add_benchmark_options,
++    benchmark_image_test,
++    BenchmarkPlugin,
++)
+ from falcor2.testing.tier_selection import deselect_nightly_items
+ from falcor2.testing.shader_test_plugin import SlangTestFile, clear_dispatcher_cache
+ from falcor2.testing.telemetry_plugin import (
+@@ -41,6 +46,7 @@
+ 
+ def pytest_addoption(parser: pytest.Parser):
+     """Add command line options for testing."""
++    add_benchmark_options(parser)
+     parser.addoption(
+         "--image-tests-generate",
+         action="store_true",
+@@ -120,10 +126,14 @@
+ 
+ def pytest_configure(config: pytest.Config):
+     """Configure the image test plugin."""
++    if config.getoption("--benchmark-only"):
++        config.option.benchmark = True
++    config.pluginmanager.register(BenchmarkPlugin(config), "falcor2_benchmark")
+     helpers.configure_test_device_options(
+         module_cache_enabled=bool(config.getoption("--module-cache")),
+         shader_cache_enabled=bool(config.getoption("--shader-cache")),
+-        compilation_reports_enabled=bool(config.getoption("--telemetry")),
++        compilation_reports_enabled=bool(config.getoption("--telemetry"))
++        or bool(config.getoption("--benchmark")),
+         cache_dir=config.getoption("--module-and-shader-cache-dir"),
+     )
+     config.pluginmanager.register(ImageTestPlugin(config), "image_test_plugin")
+@@ -171,7 +181,11 @@
+         item.stash[DEVICE_LEAKS_STASH_KEY] = helpers.close_leaked_devices()
+         policy = str(item.config.getoption("--device-cache-policy"))
+         next_path = nextitem.path if nextitem is not None else None
+-        if helpers._should_recycle_device_cache(policy, item.path, next_path):
++        # Collect old device-owned cycles before the next benchmark creates a
++        # different backend's device; delayed Vulkan destruction can deadlock.
++        if item.config.getoption("--benchmark-only") or helpers._should_recycle_device_cache(
++            policy, item.path, next_path
++        ):
+             _recycle_worker_gpu_state()
+ 
+ 

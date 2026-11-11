@@ -51,10 +51,10 @@ void gather_triangle_count(
     IMaterial material = g_scene.get_material(geometry_instance_desc.header.material_id);
     bool potentially_emissive = material.is_emissive();
     if (geometry_instance_desc.header.type == GeometryType::triangle && potentially_emissive) {
-        TriangleGeometryInstanceDesc triangle_geometry_instance_desc
-            = reinterpret<TriangleGeometryInstanceDesc>(geometry_instance_desc);
+        TriangleGeometryDesc triangle_geometry_desc
+            = g_scene.triangle_geometry.descs[uint(geometry_instance_desc.header.geometry_id)];
         is_emissive[geometry_instance_index] = 1;
-        triangle_count[geometry_instance_index] = triangle_geometry_instance_desc.index_count / 3;
+        triangle_count[geometry_instance_index] = triangle_geometry_desc.index_count / 3;
     } else {
         is_emissive[geometry_instance_index] = 0;
         triangle_count[geometry_instance_index] = 0;

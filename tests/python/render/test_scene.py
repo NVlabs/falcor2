@@ -27,10 +27,14 @@ def scene(device: spy.Device) -> f2.Scene:
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_scene_default_capabilities(device: spy.Device) -> None:
     scene = f2.Scene.create(device)
-    assert scene.requirements.capabilities == f2.SceneCapabilities.all()
+    assert scene.requirements.capabilities == f2.SceneCapabilities()
     scene.update()
     assert scene.requirements == scene.resolve_requirements()
     assert scene.required_capabilities == f2.SceneCapabilities()
+    assert (
+        scene.resolve_requirements(policy=f2.SceneCapabilityPolicy.all).capabilities
+        == f2.SceneCapabilities.all()
+    )
     with pytest.raises(AttributeError):
         scene.requirements.capabilities = f2.SceneCapabilities()
 
@@ -43,18 +47,22 @@ def test_capability_resolution(device: spy.Device) -> None:
     empty = f2.SceneCapabilities()
     geometry = f2.SceneCapabilities(f2.SceneCapabilityFlags.geometry_properties)
     opacity = f2.SceneCapabilities(f2.SceneCapabilityFlags.opacity_evaluation)
-    general = scene.requirements
+    general = scene.resolve_requirements(policy=f2.SceneCapabilityPolicy.all)
     before = scene.resolve_requirements(policy=f2.SceneCapabilityPolicy.required)
     assert before.capabilities == empty
+    assert scene.requirements is before
     generation = scene.requirements_generation
+    with pytest.raises(RuntimeError, match="requires specified_capabilities"):
+        scene.resolve_requirements(policy=f2.SceneCapabilityPolicy.specified)
 
     material.base_color_texture_texcoord = 1
     assert scene.resolve_requirements(policy=f2.SceneCapabilityPolicy.required) == before
     assert scene.update() & f2.SceneUpdateFlags.requirements
     assert scene.requirements_generation > generation
-    assert scene.requirements == general
+    assert scene.resolve_requirements(policy=f2.SceneCapabilityPolicy.all) is general
     required = scene.resolve_requirements(policy=f2.SceneCapabilityPolicy.required)
     assert required.capabilities == geometry
+    assert scene.requirements is required
     assert before.capabilities == empty
     with pytest.raises(RuntimeError, match="omits required capabilities"):
         scene.resolve_requirements(
@@ -96,7 +104,31 @@ def test_capability_resolution(device: spy.Device) -> None:
     assert (
         scene.resolve_requirements(policy=f2.SceneCapabilityPolicy.required).capabilities == empty
     )
+    assert scene.requirements.capabilities == empty
     assert required.capabilities == geometry
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_solid_transmission_scene_setting(device: spy.Device) -> None:
+    scene = f2.Scene.create(device)
+    material = scene.create_material(f2.StandardMaterial)
+    scene.update()
+
+    def enabled(requirements: f2.SceneRequirements) -> bool:
+        module = spy.Module.load_from_source(
+            device,
+            "solid_transmission_scene_setting_probe",
+            "import falcor2.render; uint enabled() { return ENABLE_SOLID_TRANSMISSION ? 1u : 0u; }",
+            link=requirements.modules,
+        )
+        return bool(module.enabled())
+
+    assert not enabled(scene.requirements)
+    assert enabled(scene.resolve_requirements(policy=f2.SceneCapabilityPolicy.all))
+
+    material.specular_transmission_factor = 1.0
+    scene.update()
+    assert enabled(scene.requirements)
 
 
 def _set_quad(geometry: f2.StaticMeshGeometry) -> None:
@@ -156,9 +188,12 @@ def test_consumer_geometry_queries(device: spy.Device) -> None:
     assert modules[0] is not modules[1]
     assert scene.required_capabilities == empty
     assert scene.requirements_generation == generation
-    # Omitting a selection enables all capabilities, including opacity evaluation.
+    # The default selection follows scene and consumer requirements.
     general, _ = helper.prepare(scene, source)
     assert general is not modules[1]
+    assert scene.requirements.capabilities == empty
+    with pytest.raises(RuntimeError, match="requires specified_capabilities"):
+        helper.prepare(scene, source, policy=f2.SceneCapabilityPolicy.specified)
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
@@ -181,7 +216,7 @@ def test_acceleration_structure_opacity_follows_materials(device: spy.Device) ->
     ):
         material.alpha_mode = mode
         scene.update()
-        assert scene.requirements.capabilities == f2.SceneCapabilities.all()
+        assert scene.requirements.capabilities == scene.required_capabilities
         module, _ = helper.prepare(scene, source)
         count = module.nonopaque_triangle_count.as_func().write(helper.bind_scene)()
         assert count == expected
@@ -234,7 +269,7 @@ def test_unused_streams_do_not_change_capability_selection(
     def check() -> None:
         scene.update()
         assert scene.required_capabilities == f2.SceneCapabilities()
-        assert scene.requirements.capabilities == f2.SceneCapabilities.all()
+        assert scene.requirements.capabilities == scene.required_capabilities
         required = scene.resolve_requirements(policy=f2.SceneCapabilityPolicy.required)
         assert required.capabilities == f2.SceneCapabilities()
         assert scene.requirements_generation == generation
@@ -268,7 +303,7 @@ def test_imported_scene_capabilities(device: spy.Device, tmp_path: Path) -> None
     path.write_text('{"asset": {"version": "2.0"}}', encoding="utf-8")
     scene = f2.Scene.load(device, path)
     scene.update()
-    assert scene.requirements.capabilities == f2.SceneCapabilities.all()
+    assert scene.requirements.capabilities == scene.required_capabilities
     assert not scene.resolve_requirements(
         policy=f2.SceneCapabilityPolicy.required
     ).capabilities.has(f2.SceneCapabilityFlags.geometry_properties)
@@ -1047,13 +1082,14 @@ def test_shared_requirement_snapshots(device: spy.Device) -> None:
     scene = f2.Scene.create(device)
     material = scene.create_material(f2.StandardMaterial)
     scene.update()
-    general = scene.requirements
-    required = scene.resolve_requirements(policy=f2.SceneCapabilityPolicy.required)
-    assert scene.resolve_requirements() is general
+    general = scene.resolve_requirements(policy=f2.SceneCapabilityPolicy.all)
+    required = scene.requirements
+    assert scene.resolve_requirements() is required
     assert scene.resolve_requirements(policy=f2.SceneCapabilityPolicy.required) is required
     assert (
         scene.resolve_requirements(
-            policy=f2.SceneCapabilityPolicy.specified, specified_capabilities=f2.SceneCapabilities()
+            policy=f2.SceneCapabilityPolicy.specified,
+            specified_capabilities=scene.required_capabilities,
         )
         is required
     )
@@ -1064,26 +1100,28 @@ def test_shared_requirement_snapshots(device: spy.Device) -> None:
         transform.translation = spy.float3(x, 0, 0)
         entity.transform = transform
         scene.update()
-        assert scene.requirements is general
+        assert scene.resolve_requirements(policy=f2.SceneCapabilityPolicy.all) is general
+        assert scene.requirements is required
         assert scene.resolve_requirements(policy=f2.SceneCapabilityPolicy.required) is required
 
     geometry = scene.create_geometry(f2.StaticMeshGeometry)
     _set_quad(geometry)
     scene.update()
-    with_geometry = scene.requirements
+    with_geometry = scene.resolve_requirements(policy=f2.SceneCapabilityPolicy.all)
     assert with_geometry is not general
     assert with_geometry.matches_shader_inputs(general)
     assert with_geometry != general
     assert not general.has_geometry_type(f2.GeometryType.triangle)
     assert with_geometry.has_geometry_type(f2.GeometryType.triangle)
-    optimized = scene.resolve_requirements(policy=f2.SceneCapabilityPolicy.required)
+    optimized = scene.requirements
     assert optimized.matches_shader_inputs(required)
     assert optimized != required
 
     # Material demand changes revalidate selections, even if the all-capabilities shader is unchanged.
     material.alpha_mode = f2.AlphaMode.mask
     scene.update()
-    assert scene.requirements is with_geometry
+    assert scene.resolve_requirements(policy=f2.SceneCapabilityPolicy.all) is with_geometry
+    assert scene.requirements.capabilities == scene.required_capabilities
     for _ in range(2):
         with pytest.raises(RuntimeError, match="omits required capabilities"):
             scene.resolve_requirements(
@@ -1099,7 +1137,8 @@ def test_shared_requirement_snapshots(device: spy.Device) -> None:
 
     geometry.remove()
     scene.update()
-    assert scene.requirements == general
+    assert scene.resolve_requirements(policy=f2.SceneCapabilityPolicy.all) == general
+    assert scene.requirements == required
     other = f2.Scene.create(device)
     other.create_material(f2.StandardMaterial)
     other.update()
@@ -1146,10 +1185,13 @@ def test_render_request_resolution(device: spy.Device) -> None:
     with pytest.raises(RuntimeError, match="not provided"):
         scene.resolve_requirements(request)
     scene.update()
-    assert scene.resolve_requirements(request) is general
+    required = scene.resolve_requirements(request)
     assert scene.resolve_requirements() is general
-    assert general.capabilities.has(f2.SceneCapabilityFlags.material_aovs)
-    required = scene.resolve_requirements(request, f2.SceneCapabilityPolicy.required)
+    assert not general.capabilities.has(f2.SceneCapabilityFlags.material_aovs)
+    assert (
+        scene.resolve_requirements(request, f2.SceneCapabilityPolicy.all).capabilities
+        == f2.SceneCapabilities.all()
+    )
     attributes = f2.SceneCapabilities(f2.SceneCapabilityFlags.geometry_properties)
     aov_capabilities = attributes.merged(
         f2.SceneCapabilities(f2.SceneCapabilityFlags.material_aovs)

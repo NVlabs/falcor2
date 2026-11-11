@@ -28,6 +28,8 @@ struct FALCOR_API CameraUniforms {
     float aperture_radius{0.f};
     /// Focus-plane distance along image_w in world units. Zero selects the pinhole model.
     float focus_distance{0.f};
+    /// Linear RGB multiplier corresponding to the camera's exposure compensation.
+    float exposure_scale{1.f};
 
     /// Viewport width in pixels.
     int width() const { return static_cast<int>(dims.x); }
@@ -48,6 +50,7 @@ struct FALCOR_API CameraUniforms {
         cursor["image_w"] = image_w;
         cursor["aperture_radius"] = aperture_radius;
         cursor["focus_distance"] = focus_distance;
+        cursor["exposure_scale"] = exposure_scale;
     }
 };
 
@@ -69,6 +72,10 @@ public:
     /// f-stop value.
     float fstop() const { return m_fstop; }
     void set_fstop(float fstop);
+
+    /// Exposure compensation in stops: +1 doubles rendered RGB; -1 halves it.
+    float exposure() const { return m_exposure; }
+    void set_exposure(float exposure);
 
     /// Physical vertical sensor aperture in mm.
     float sensor_height() const { return m_sensor_height; }
@@ -151,6 +158,14 @@ public:
                 reflection::ui_label("F-Stop")
             )
             .def_prop_rw(
+                "exposure",
+                &Camera::exposure,
+                &Camera::set_exposure,
+                "Exposure compensation in stops.",
+                reflection::value_range(MIN_EXPOSURE, MAX_EXPOSURE),
+                reflection::ui_label("Exposure compensation (EV)")
+            )
+            .def_prop_rw(
                 "sensor_height",
                 &Camera::sensor_height,
                 &Camera::set_sensor_height,
@@ -218,6 +233,8 @@ private:
     static constexpr float MAX_FOV_Y = 180.f;
     static constexpr float MIN_FSTOP = 0.5f;
     static constexpr float MAX_FSTOP = 128.f;
+    static constexpr float MIN_EXPOSURE = -32.f;
+    static constexpr float MAX_EXPOSURE = 32.f;
 
     void needs_recompute() { m_needs_recompute = true; }
 
@@ -225,6 +242,8 @@ private:
     float m_focal_length{50.f};
     /// f-stop value.
     float m_fstop{8.f};
+    /// Exposure compensation in stops.
+    float m_exposure{0.f};
     /// Sensor height in mm.
     float m_sensor_height{24.f};
     /// Whether thin-lens depth of field is enabled.

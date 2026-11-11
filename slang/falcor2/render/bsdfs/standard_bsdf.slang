@@ -116,50 +116,48 @@ public struct StandardBSDF : IBSDF, IDifferentiable
 
 
     [Differentiable]
-    public override
-        float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        return eval_with_pdf(wi, wo, sg, bc).value;
+        return eval_with_pdf(wi, wo, bc).value;
     }
 
     [Differentiable]
-    public BSDFEval
-    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
         BSDFEval result = {};
         if (p_diffuse_reflection > 0.0) {
-            const BSDFEval lobe = diffuse_reflection.eval_with_pdf(wi, wo, sg, bc);
+            const BSDFEval lobe = diffuse_reflection.eval_with_pdf(wi, wo, bc);
             result.value += (1.0 - spec_trans) * (1.0 - diff_trans) * lobe.value;
             result.pdf += p_diffuse_reflection * lobe.pdf;
         }
         if (p_diffuse_transmission > 0.0) {
-            const BSDFEval lobe = diffuse_transmission.eval_with_pdf(wi, wo, sg, bc);
+            const BSDFEval lobe = diffuse_transmission.eval_with_pdf(wi, wo, bc);
             result.value += (1.0 - spec_trans) * diff_trans * lobe.value;
             result.pdf += p_diffuse_transmission * lobe.pdf;
         }
         if (p_specular_reflection > 0.0) {
-            const BSDFEval lobe = specular_reflection.eval_with_pdf(wi, wo, sg, bc);
+            const BSDFEval lobe = specular_reflection.eval_with_pdf(wi, wo, bc);
             result.value += (1.0 - spec_trans) * lobe.value;
             result.pdf += p_specular_reflection * lobe.pdf;
         }
         if (p_specular_transmission > 0.0) {
-            const BSDFEval lobe = specular_transmission.eval_with_pdf(wi, wo, sg, bc);
+            const BSDFEval lobe = specular_transmission.eval_with_pdf(wi, wo, bc);
             result.value += spec_trans * lobe.value;
             result.pdf += p_specular_transmission * lobe.pdf;
         }
         return result;
     }
 
-    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
 
-        float u_select = next_float(sg);
-
         // Sample one lobe using the prepared probabilities, then for non-delta samples fold in the other
         // compatible lobe PDFs so the returned PDF matches eval_pdf().
-        if (u_select < p_diffuse_reflection) {
-            if (!diffuse_reflection.sample(wi, sample, sg, bc))
+        // The diffuse and specular reflection lobes do not consume u_lobe, so only
+        // the specular transmission BSDF needs it remapped for its nested Fresnel choice.
+        if (input.u_lobe < p_diffuse_reflection) {
+            if (!diffuse_reflection.sample(wi, input, bc, sample))
                 return false;
 
             sample.weight *= (1.0 - spec_trans) * (1.0 - diff_trans) / p_diffuse_reflection;
@@ -169,8 +167,8 @@ public struct StandardBSDF : IBSDF, IDifferentiable
                 sample.pdf += p_specular_reflection * specular_reflection.eval_pdf(wi, sample.wo, bc);
             if (p_specular_transmission > 0.0)
                 sample.pdf += p_specular_transmission * specular_transmission.eval_pdf(wi, sample.wo, bc);
-        } else if (u_select < p_diffuse_reflection + p_diffuse_transmission) {
-            if (!diffuse_transmission.sample(wi, sample, sg, bc))
+        } else if (input.u_lobe < p_diffuse_reflection + p_diffuse_transmission) {
+            if (!diffuse_transmission.sample(wi, input, bc, sample))
                 return false;
 
             sample.weight *= (1.0 - spec_trans) * diff_trans / p_diffuse_transmission;
@@ -178,8 +176,8 @@ public struct StandardBSDF : IBSDF, IDifferentiable
 
             if (p_specular_transmission > 0.0)
                 sample.pdf += p_specular_transmission * specular_transmission.eval_pdf(wi, sample.wo, bc);
-        } else if (u_select < p_diffuse_reflection + p_diffuse_transmission + p_specular_reflection) {
-            if (!specular_reflection.sample(wi, sample, sg, bc))
+        } else if (input.u_lobe < p_diffuse_reflection + p_diffuse_transmission + p_specular_reflection) {
+            if (!specular_reflection.sample(wi, input, bc, sample))
                 return false;
 
             sample.weight *= (1.0 - spec_trans) / p_specular_reflection;
@@ -193,7 +191,15 @@ public struct StandardBSDF : IBSDF, IDifferentiable
             if (p_specular_transmission > 0.0)
                 sample.pdf += p_specular_transmission * specular_transmission.eval_pdf(wi, sample.wo, bc);
         } else if (p_specular_transmission > 0.0) {
-            if (!specular_transmission.sample(wi, sample, sg, bc))
+            if (!specular_transmission.sample(
+                    wi,
+                    input.with_remapped_lobe(
+                        p_diffuse_reflection + p_diffuse_transmission + p_specular_reflection,
+                        p_specular_transmission
+                    ),
+                    bc,
+                    sample
+                ))
                 return false;
 
             sample.weight *= spec_trans / p_specular_transmission;
@@ -253,17 +259,16 @@ public struct TestStandardBSDF : IBSDF
     public StandardBSDFData data = {};
 
 
-    public BSDFEval
-    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
         StandardBSDF bsdf = StandardBSDF(wi, data);
-        return bsdf.eval_with_pdf(wi, wo, sg, bc);
+        return bsdf.eval_with_pdf(wi, wo, bc);
     }
 
-    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         StandardBSDF bsdf = StandardBSDF(wi, data);
-        return bsdf.sample(wi, sample, sg, bc);
+        return bsdf.sample(wi, input, bc, sample);
     }
 
 

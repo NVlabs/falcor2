@@ -27,19 +27,14 @@ public struct MxSurfaceUnlitTransparentBSDF : ILayerableBSDF
 
     // TODO: Remove the eval()/eval_pdf() overrides below when
     // https://github.com/shader-slang/slang/issues/12814 is fixed.
-    public override
-        float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        return eval_with_pdf(wi, wo, sg, bc).value;
+        return eval_with_pdf(wi, wo, bc).value;
     }
 
-    public BSDFEval
-    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
-    {
-        return BSDFEval();
-    }
+    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc) { return BSDFEval(); }
 
-    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
         sample.wo = -wi;
@@ -51,8 +46,7 @@ public struct MxSurfaceUnlitTransparentBSDF : ILayerableBSDF
 
     public override float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        EvalPdfFallbackSampleGenerator sg = EvalPdfFallbackSampleGenerator(0u);
-        return eval_with_pdf(wi, wo, sg, bc).pdf;
+        return eval_with_pdf(wi, wo, bc).pdf;
     }
 
     public AlbedoContributions eval_albedo(const float3 wi) { return surface_unlit_transmission_albedo(tint); }

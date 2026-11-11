@@ -1,0 +1,74 @@
+--- a/tests/python/conftest.py
++++ b/tests/python/conftest.py
+@@ -14,6 +14,11 @@
+ import falcor2 as f2
+ import falcor2.testing.helpers as helpers
+ from falcor2.testing.image_test_plugin import ImageTestPlugin
++from falcor2.testing.benchmark import (
++    add_benchmark_options,
++    benchmark_image_test,
++    BenchmarkPlugin,
++)
+ from falcor2.testing.shader_test_plugin import SlangTestFile, clear_dispatcher_cache
+ from tools import crashpad
+ 
+@@ -24,7 +29,10 @@
+ 
+ 
+ def pytest_addoption(parser: pytest.Parser):
+-    """Add command line options for image testing."""
++    """Add command line options for testing."""
++    add_benchmark_options(parser)
++    parser.addoption("--no-module-cache", action="store_true")
++    parser.addoption("--no-shader-cache", action="store_true")
+     parser.addoption(
+         "--image-tests-generate",
+         action="store_true",
+@@ -59,6 +67,10 @@
+ 
+ def pytest_configure(config: pytest.Config):
+     """Configure the image test plugin."""
++    if config.getoption("--benchmark-only"):
++        config.option.benchmark = True
++    helpers.BENCHMARK_COMPILATION_REPORTS_ENABLED = bool(config.getoption("--benchmark"))
++    config.pluginmanager.register(BenchmarkPlugin(config), "falcor2_benchmark")
+     config.pluginmanager.register(ImageTestPlugin(config), "image_test_plugin")
+     if CRASHPAD_SUPPORT and not os.environ.get("PYTEST_XDIST_WORKER"):
+         crashpad.setup(CRASHPAD_KIND)
+@@ -66,10 +78,6 @@
+ 
+ @pytest.hookimpl(tryfirst=True)
+ def pytest_sessionstart(session: pytest.Session):
+-    # Pytest's stdout/stderr capture can invalidate the FILE handles used by
+-    # SGL's console logger while native code is still emitting diagnostics.
+-    spy.ConsoleLoggerOutput.IGNORE_PRINT_EXCEPTION = True
+-
+     if not CRASHPAD_SUPPORT:
+         return
+ 
+@@ -153,7 +161,7 @@
+ @pytest.fixture
+ def empty_scene(device: spy.Device) -> f2.Scene:
+     """A fresh empty scene, already updated."""
+-    scene = f2.Scene.create(device)
++    scene = f2.Scene(device)
+     scene.update()
+     return scene
+ 
+@@ -189,7 +197,15 @@
+ 
+ 
+ def _load_helmet_scene(device: spy.Device) -> f2.Scene:
+-    scene = f2.Scene.create(device, "data/assets/kronos/DamagedHelmet/glTF/DamagedHelmet.gltf")
++    scene = f2.Scene(device, "data/assets/kronos/DamagedHelmet/glTF/DamagedHelmet.gltf")
+     scene.update()
+     scene.update()
+     return scene
++
++
++# These benchmark assets do not exist in this historical data revision.
++
++collect_ignore = [
++    "benchmarks/internal/test_dpel_materials.py",
++    "benchmarks/test_benchmark_scenes.py",
++]
