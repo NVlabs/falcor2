@@ -250,6 +250,90 @@ TEST_CASE_GPU("camera gizmo frustum follows camera field of view and aspect rati
     }
 }
 
+TEST_CASE_GPU("editor selection getter ignores a child removed externally")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    Entity* parent = scene->create_entity();
+    Entity* child = scene->create_entity();
+    child->set_parent(parent);
+    scene->update();
+
+    auto editor = make_ref<ui::SceneEditor>();
+    editor->set_scene(scene);
+    editor->set_selected_object(child);
+    CHECK_EQ(editor->selected_object(), child);
+
+    parent->remove();
+    CHECK_EQ(editor->selected_object(), nullptr);
+    scene->update();
+
+    CHECK_EQ(editor->selected_object(), nullptr);
+}
+
+TEST_CASE_GPU("escape clears selection without removing the object")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    Entity* entity = scene->create_entity();
+    auto controller = make_ref<ui::CameraController>();
+    auto editor = make_ref<ui::SceneEditor>();
+    editor->set_scene(scene);
+    editor->set_camera_controller(controller);
+    editor->set_selected_object(entity);
+
+    sgl::MouseEvent event{};
+    event.type = sgl::MouseEventType::button_down;
+    event.button = sgl::MouseButton::right;
+    REQUIRE(controller->handle_mouse_event(event));
+    REQUIRE(controller->is_interacting());
+    CHECK_FALSE(editor->handle_keyboard_shortcut({sgl::KeyboardEventType::key_press, sgl::KeyCode::escape}));
+    CHECK_EQ(editor->selected_object(), entity);
+
+    controller->cancel_interaction();
+    CHECK(editor->handle_keyboard_shortcut({sgl::KeyboardEventType::key_press, sgl::KeyCode::escape}));
+    CHECK_EQ(editor->selected_object(), nullptr);
+    CHECK(entity->is_valid());
+    CHECK_EQ(entity->scene(), scene.get());
+    CHECK_FALSE(editor->handle_keyboard_shortcut({sgl::KeyboardEventType::key_press, sgl::KeyCode::escape}));
+}
+
+TEST_CASE_GPU("frame selected uses entity position when geometry bounds are unavailable")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    Entity* view_entity = scene->create_entity();
+    Camera* view_camera = view_entity->create_component<Camera>();
+    scene->set_active_camera(view_camera);
+
+    Entity* empty_entity = scene->create_entity();
+    Entity* light_entity = scene->create_entity();
+    light_entity->create_component<ConstantLight>();
+    Entity* camera_entity = scene->create_entity();
+    camera_entity->create_component<Camera>();
+
+    const std::array<Entity*, 3> targets{empty_entity, light_entity, camera_entity};
+    const std::array<float3, 3> positions{
+        float3(1.f, 2.f, 3.f),
+        float3(-4.f, 5.f, 6.f),
+        float3(7.f, -8.f, 9.f),
+    };
+    for (size_t i = 0; i < targets.size(); ++i) {
+        Transform transform;
+        transform.set_translation(positions[i]);
+        targets[i]->set_transform(transform);
+    }
+
+    auto camera_controller = make_ref<ui::CameraController>();
+    auto editor = make_ref<ui::SceneEditor>();
+    editor->set_scene(scene);
+    editor->set_camera_controller(camera_controller);
+
+    for (size_t i = 0; i < targets.size(); ++i) {
+        editor->set_selected_object(targets[i]);
+        CHECK(editor->frame_selected(view_camera));
+        CHECK_EQ(camera_controller->pivot(), positions[i]);
+        CHECK(camera_controller->orbit_distance() == doctest::Approx(5.f));
+    }
+}
+
 TEST_CASE_GPU("frame selected command updates the active camera")
 {
     auto scene = Scene::create(ref(ctx.device));
@@ -260,10 +344,20 @@ TEST_CASE_GPU("frame selected command updates the active camera")
 
     const float3 positions[]{{-1.f, -1.f, 0.f}, {1.f, -1.f, 0.f}, {0.f, 1.f, 0.f}};
     const uint32_t indices[]{0, 1, 2};
+    const MeshVertexAttributeDesc vertex_attributes[]{
+        {"POSITION",
+         MeshAttributeSemantic::position,
+         0,
+         sgl::DataType::float32,
+         3,
+         positions,
+         sizeof(float3),
+         sizeof(positions)},
+    };
     StaticMeshGeometryDataDesc mesh_desc{
         .name = "triangle",
         .vertex_count = 3,
-        .position_stream = {positions, sizeof(float3)},
+        .vertex_attributes = vertex_attributes,
         .sub_meshes = {
             {
                 .name = "triangle",

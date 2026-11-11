@@ -4,6 +4,7 @@
 #include "usd_importer.h"
 #include "usd_importer_context.h"
 #include "usd_importer_materialx.h"
+#include "usd_importer_skinning.h"
 #include "usd_importer_utils.h"
 #include "usd_importer_macros.h"
 
@@ -15,8 +16,12 @@ BEGIN_DISABLE_USD_WARNINGS
 
 #include <pxr/base/tf/diagnosticMgr.h>
 
+#include <pxr/usd/sdf/layer.h>
+
 #include <pxr/usd/usd/common.h>
+#include <pxr/usd/usd/editTarget.h>
 #include <pxr/usd/usd/stage.h>
+#include <pxr/usd/sdf/layer.h>
 
 #include <pxr/usd/usdGeom/metrics.h>
 #include <pxr/usd/usdGeom/tokens.h>
@@ -31,6 +36,7 @@ END_DISABLE_USD_WARNINGS
 #include <stdexcept>
 #include <string>
 #include <memory>
+#include <mutex>
 #include <vector>
 #include <algorithm>
 #include "fmt/format.h"
@@ -54,7 +60,10 @@ public:
     void IssueError(const TfError& err) override
     {
         std::string message = formatMessage(&err);
-        m_errors.push_back(message);
+        {
+            std::lock_guard lock(m_errors_mutex);
+            m_errors.push_back(message);
+        }
         sgl::log_error("USD Error: {}", message);
     }
 
@@ -70,6 +79,7 @@ public:
 
     std::string format_errors() const
     {
+        std::lock_guard lock(m_errors_mutex);
         if (m_errors.empty())
             return {};
 
@@ -99,6 +109,8 @@ private:
     }
 
     std::string formatMessage(const TfDiagnosticBase* elt) { return elt->GetCommentary(); }
+    // USD can invoke a delegate concurrently from multiple threads.
+    mutable std::mutex m_errors_mutex;
     std::vector<std::string> m_errors;
 };
 
@@ -115,9 +127,115 @@ private:
     std::function<void(void)> m_func;
 };
 
+UVOrigin get_uv_origin(const UsdStageRefPtr& stage)
+{
+    static const std::string key = "falcor:uvOriginOverride";
+    const VtDictionary& custom_layer_data = stage->GetRootLayer()->GetCustomLayerData();
+    auto it = custom_layer_data.find(key);
+    if (it == custom_layer_data.end())
+        return UVOrigin::lower_left;
+
+    if (!it->second.IsHolding<std::string>()) {
+        sgl::log_warn("Ignoring USD customLayerData '{}': expected a string.", key);
+        return UVOrigin::lower_left;
+    }
+
+    const std::string& value = it->second.UncheckedGet<std::string>();
+    if (value == "upperLeft")
+        return UVOrigin::upper_left;
+    if (value == "lowerLeft")
+        return UVOrigin::lower_left;
+    sgl::log_warn("Ignoring USD customLayerData '{}' value '{}': expected 'upperLeft' or 'lowerLeft'.", key, value);
+    return UVOrigin::lower_left;
+}
+
+uint32_t get_max_mip_count(const UsdStageRefPtr& stage)
+{
+    const auto data = stage->GetRootLayer()->GetCustomLayerData();
+    const std::string key = "falcor:maxMipCount";
+    const auto it = data.find(key);
+    if (it == data.end())
+        return 0;
+    const auto value = VtValue::Cast<uint32_t>(it->second);
+    if (value.IsHolding<uint32_t>())
+        return value.UncheckedGet<uint32_t>();
+    sgl::log_warn("Ignoring USD customLayerData '{}': expected an unsigned 32-bit integer.", key);
+    return 0;
+}
+
+UsdStageRefPtr create_import_stage(const UsdStage& source_stage)
+{
+    SdfLayerRefPtr import_session_layer = SdfLayer::CreateAnonymous("falcor2-stage-import.usda");
+    if (const SdfLayerHandle& source_session_layer = source_stage.GetSessionLayer())
+        import_session_layer->SetSubLayerPaths({source_session_layer->GetIdentifier()});
+
+    UsdStageRefPtr import_stage = UsdStage::OpenMasked(
+        source_stage.GetRootLayer(),
+        import_session_layer,
+        source_stage.GetPathResolverContext(),
+        source_stage.GetPopulationMask(),
+        UsdStage::LoadNone
+    );
+    if (!import_stage)
+        throw std::runtime_error("Failed to create a private USD stage for import.");
+
+    import_stage->MuteAndUnmuteLayers(source_stage.GetMutedLayers(), {});
+    import_stage->SetLoadRules(source_stage.GetLoadRules());
+    import_stage->SetInterpolationType(source_stage.GetInterpolationType());
+    import_stage->SetEditTarget(UsdEditTarget(import_session_layer));
+    return import_stage;
+}
+
+ref<ImporterScene> load_scene_from_stage_impl(
+    const UsdStageRefPtr& usd_stage,
+    const ImportOptions& import_options,
+    const std::string& source_asset_path
+)
+{
+    if (!usd_stage)
+        throw std::runtime_error("USD stage must not be null.");
+
+    // Expands references to .mtlx into simple UsdMaterial/UsdShader that just points to the original mtlx file. This is
+    // used instead of usdMtlx, which expands all the Mtlx nodes into UsdShade to allow more complex overrides. We
+    // cannot use that since it complicates the compilation (both USD and Falcor need MaterialX, each of a different
+    // version) and we do not need nor use it.
+    process_mtlx_references(usd_stage);
+
+    if (import_options.bake_poses) {
+        if (import_options.import_mesh_motion)
+            bake_skinning_animated(usd_stage);
+        else
+            bake_skinning(usd_stage, UsdTimeCode(0));
+    }
+
+    auto importer_context = std::make_shared<UsdImporterContext>(usd_stage, import_options, ustring(source_asset_path));
+
+    float4x4 root_transform = sgl::math::matrix_from_scaling(float3(importer_context->get_meters_per_unit()));
+    if (UsdGeomGetStageUpAxis(usd_stage) == UsdGeomTokens->z)
+        root_transform = mul(sgl::math::matrix_from_rotation_x(sgl::math::radians(-90.f)), root_transform);
+    importer_context->push_transform(root_transform, "Root");
+
+    importer_context->run(usd_stage->GetPseudoRoot());
+
+    auto scene = importer_context->get_scene();
+    scene->max_mip_count = get_max_mip_count(usd_stage);
+    scene->uv_origin = usd_importer::get_uv_origin(usd_stage);
+    for (ImporterMesh& mesh : scene->meshes)
+        mesh.uv_origin = scene->uv_origin;
+    for (ImporterCurve& curve : scene->curves)
+        curve.uv_origin = scene->uv_origin;
+
+    return scene;
+}
+
 } // namespace usd_importer
 
 ref<ImporterScene> UsdImporter::load_scene(const std::filesystem::path& path)
+{
+    return load_scene(path, ImportOptions{});
+}
+
+ref<ImporterScene> UsdImporter::load_scene(const std::filesystem::path& path, const ImportOptions& import_options)
 {
     using namespace pxr;
 
@@ -136,7 +254,9 @@ ref<ImporterScene> UsdImporter::load_scene(const std::filesystem::path& path)
     auto resolver_context = ArGetResolver().CreateDefaultContextForAsset(path.string());
     ArResolverContextBinder binder(resolver_context);
 
-    UsdStageRefPtr usd_stage = UsdStage::Open(path.string());
+    // OpenMasked creates a fresh stage instead of reusing a cached one, but can still populate caches:
+    // https://github.com/PixarAnimationStudios/OpenUSD/issues/4228
+    UsdStageRefPtr usd_stage = UsdStage::OpenMasked(path.string(), UsdStagePopulationMask::All());
     if (!usd_stage) {
         std::string message = "Failed to open USD path: " + path.string();
         std::string diagnostics = diagnostic_delegate.format_errors();
@@ -145,27 +265,36 @@ ref<ImporterScene> UsdImporter::load_scene(const std::filesystem::path& path)
         throw std::runtime_error(message);
     }
 
-    // Expands references to .mtlx into simple UsdMaterial/UsdShader that just points to the original mtlx file. This is
-    // used instead of usdMtlx, which expands all the Mtlx nodes into UsdShade to allow more complex overrides. We
-    // cannot use that since it complicates the compilation (both USD and Falcor need MaterialX, each of a different
-    // version) and we do not need nor use it.
-    usd_importer::process_mtlx_references(usd_stage);
+    // New stages target their potentially shared root layer by default. Keep import edits in the session layer.
+    usd_stage->SetEditTarget(UsdEditTarget(usd_stage->GetSessionLayer()));
 
-    auto importer_context = std::make_shared<usd_importer::UsdImporterContext>(usd_stage);
+    const std::string source_asset_path = std::filesystem::absolute(path).lexically_normal().string();
+    ref<ImporterScene> scene = usd_importer::load_scene_from_stage_impl(usd_stage, import_options, source_asset_path);
+    detail::apply_import_options(*scene, import_options);
+    return scene;
+}
 
-    float4x4 root_transform = sgl::math::matrix_from_scaling(float3(importer_context->get_meters_per_unit()));
-    if (UsdGeomGetStageUpAxis(usd_stage) == UsdGeomTokens->z)
-        root_transform = mul(sgl::math::matrix_from_rotation_x(sgl::math::radians(-90.f)), root_transform);
-    importer_context->push_transform(root_transform, "Root");
+ref<ImporterScene> UsdImporter::import_stage(const pxr::UsdStage& stage)
+{
+    return import_stage(stage, ImportOptions{});
+}
 
-    importer_context->traverse_scene(usd_stage->GetPseudoRoot());
-    importer_context->finalize();
+ref<ImporterScene> UsdImporter::import_stage(const pxr::UsdStage& stage, const ImportOptions& import_options)
+{
+    usd_importer::DiagDelegate diagnostic_delegate;
+    pxr::TfDiagnosticMgr::GetInstance().AddDelegate(&diagnostic_delegate);
+    usd_importer::ScopeGuard remove_diagnostic(
+        [&]()
+        {
+            pxr::TfDiagnosticMgr::GetInstance().RemoveDelegate(&diagnostic_delegate);
+        }
+    );
 
-    auto scene = importer_context->get_scene();
-    scene->uv_origin = UVOrigin::lower_left;
-    for (ImporterMesh& mesh : scene->meshes)
-        mesh.uv_origin = UVOrigin::lower_left;
-
+    pxr::UsdStageRefPtr import_stage = usd_importer::create_import_stage(stage);
+    const std::string source_asset_path = stage.GetRootLayer()->GetRealPath();
+    ref<ImporterScene> scene
+        = usd_importer::load_scene_from_stage_impl(import_stage, import_options, source_asset_path);
+    detail::apply_import_options(*scene, import_options);
     return scene;
 }
 

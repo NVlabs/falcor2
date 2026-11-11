@@ -1,0 +1,43 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+// Included inside the generated MDL namespace, after the SDK target code.
+// The adapter currently accepts surface emission in radiant-exitance mode.
+// glTF supplies intensity = authored radiance * pi and a diffuse EDF = 1/pi.
+// Light-selection weights use exitance; visible/sampled emission uses EDF *
+// intensity. Multiplying by cos(theta) here would incorrectly darken grazing rays.
+float3 mdl_emission_exitance(inout Shading_state_material state)
+{
+#if MDL_HAS_SURFACE_EMISSION
+    return surface_emission_intensity(state);
+#else
+    return float3(0);
+#endif
+}
+
+float3 mdl_emission_radiance(inout Shading_state_material state, float3 outgoing)
+{
+#if MDL_HAS_SURFACE_EMISSION
+    float3 intensity = mdl_emission_exitance(state);
+    if (!any(intensity > 0.f))
+        return float3(0);
+
+    Edf_evaluate_data eval_data = {};
+    eval_data.k1 = outgoing;
+    float3 edf = float3(0);
+#if MDL_DF_HANDLE_SLOT_MODE == 0
+    surface_emission_emission_evaluate(eval_data, state);
+    edf = eval_data.edf;
+#else
+    for (uint offset = 0; offset < MDL_EMISSION_HANDLE_COUNT; offset += MDL_DF_HANDLE_SLOT_MODE) {
+        eval_data.handle_offset = offset;
+        surface_emission_emission_evaluate(eval_data, state);
+        for (uint slot = 0; slot < MDL_DF_HANDLE_SLOT_MODE && offset + slot < MDL_EMISSION_HANDLE_COUNT; ++slot)
+            edf += eval_data.edf[slot];
+    }
+#endif
+    return intensity * edf;
+#else
+    return float3(0);
+#endif
+}

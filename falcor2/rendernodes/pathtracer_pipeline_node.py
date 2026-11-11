@@ -52,12 +52,16 @@ class PathTracerPipeline(RenderNode):
         self._guide_output_specs = dict(self.path_tracer.guide_output_specs)
         self._iteration = 0
         self._last_scene_update_generation = None
+        self._last_pixel_filter_generation: int | None = None
+        self._last_sample_generator = self.path_tracer.sample_generator
         self._last_camera_uniforms = None
         self._pending_reset = False
         self._spp = 1
         self._accumulation_mode = AccumulationMode.normal
         self._last_dlss_key: tuple[int, int, int, int, Any] | None = None
         self._last_enable_dlss_rr = self.enable_dlss_rr
+        self._dlss_pixel_filter = f2.BoxReconstructionFilter(width=0)
+        self._ordinary_pixel_filter: f2.ReconstructionFilter | None = None
 
     @classmethod
     def create(cls, device: spy.Device) -> "PathTracerPipeline":
@@ -191,11 +195,26 @@ class PathTracerPipeline(RenderNode):
         return self._guide_output_specs
 
     @guide_output_specs.setter
-    def guide_output_specs(self, value: dict[str, ContainerSpec | None]):
-        self._guide_output_specs = {
-            name: value.get(name) for name in self.path_tracer.guide_output_specs
-        }
+    def guide_output_specs(self, value: dict[str, ContainerSpec | None]) -> None:
+        fixed_names = self.path_tracer._fixed_guide_names
+        self._guide_output_specs = {name: value.get(name) for name in fixed_names}
+        self._guide_output_specs.update(
+            (name, spec) for name, spec in value.items() if name not in fixed_names
+        )
         self.request_reset()
+
+    def _merge_material_aov_guide_specs(
+        self,
+        fixed_specs: dict[str, ContainerSpec],
+    ) -> dict[str, ContainerSpec | None]:
+        """Merge user material AOV specifications into an internal fixed-guide mapping."""
+        result: dict[str, ContainerSpec | None] = dict(fixed_specs)
+        result.update(
+            (name, spec)
+            for name, spec in self._guide_output_specs.items()
+            if name not in self.path_tracer._fixed_guide_names
+        )
+        return result
 
     def _needs_reset(self, scene: f2.Scene, camera: Optional[f2.Camera]):
         """Return true when scene/camera/pending state invalidates accumulation."""
@@ -226,9 +245,9 @@ class PathTracerPipeline(RenderNode):
         self.dlss_rr.reset()
         self.tonemapper.reset(cmd=cmd)
         self._last_scene_update_generation = None
+        self._last_pixel_filter_generation = None
         self._last_camera_uniforms = None
         self._last_dlss_key = None
-        self._last_enable_dlss_rr = self.enable_dlss_rr
         self._pending_reset = False
 
     def _reset_accumulation(self, cmd: spy.CommandEncoder | None = None):
@@ -266,24 +285,13 @@ class PathTracerPipeline(RenderNode):
         camera: f2.Camera,
         cmd: spy.CommandEncoder | None = None,
     ) -> tuple[Any, dict[str, Any | None]]:
-        """Render one raw path-tracer iteration and return color plus guides."""
-        scene.update()
-
-        if self._needs_reset(scene, camera):
-            self._reset_accumulation(cmd=cmd)
-
-        # In normal mode the path tracer is configured from pipeline-owned specs
-        # every frame, so stale DLSS internal specs cannot leak across mode changes.
-        self.path_tracer.output_spec = self._output_spec
-        guide_specs = dict(self._guide_output_specs)
-        if self.enable_optix_denoiser:
-            for name in self.optix_denoiser.GUIDE_NAMES:
-                if guide_specs.get(name) is None:
-                    guide_specs[name] = ContainerSpec.texture2d()
-        if self.enable_nan_overlay:
-            guide_specs["nan_count"] = ContainerSpec.texture2d(spy.Format.r32_uint)
-        self.path_tracer.guide_output_specs = guide_specs
-        image, guides = self.path_tracer(scene, camera, iteration=self._iteration, cmd=cmd)
+        """Render one raw sample for the frame prepared by :meth:`_exec`."""
+        image, guides = self.path_tracer(
+            scene,
+            camera,
+            iteration=self._iteration,
+            cmd=cmd,
+        )
         self._iteration += 1
 
         return image, guides
@@ -295,7 +303,11 @@ class PathTracerPipeline(RenderNode):
         cmd: spy.CommandEncoder | None = None,
     ) -> tuple[Any, dict[str, Any | None]]:
         """Render and standard-accumulate one path-tracer iteration."""
-        image, guides = self._render_raw_iteration(scene, camera, cmd=cmd)
+        image, guides = self._render_raw_iteration(
+            scene,
+            camera,
+            cmd=cmd,
+        )
         return self.accumulator(image, cmd=cmd), guides
 
     def _render_dlss_rr_iteration(
@@ -305,8 +317,8 @@ class PathTracerPipeline(RenderNode):
         cmd: spy.CommandEncoder | None = None,
     ) -> tuple[Any, dict[str, Any | None]]:
         """Render one DLSS-RR frame and return final color plus low-resolution guides."""
-        scene.update()
-
+        if self._pending_reset:
+            self._reset_dlss_rr()
         # TODO: Need to figure out how to reset when scene changes but not camera
         # if self._needs_reset(scene, None):
         #     self._reset_dlss_rr()
@@ -337,6 +349,7 @@ class PathTracerPipeline(RenderNode):
         # DLSS mode asks the path tracer for internal low-resolution color and
         # guide textures. The pipeline final output spec remains owned by dlss_rr.
         self.path_tracer.output_spec = color_spec
+        guide_specs = self._merge_material_aov_guide_specs(guide_specs)
         if self.enable_nan_overlay:
             guide_specs = dict(guide_specs)
             guide_specs["nan_count"] = ContainerSpec.texture2d(spy.Format.r32_uint)
@@ -345,8 +358,7 @@ class PathTracerPipeline(RenderNode):
             scene,
             camera,
             iteration=self._iteration,
-            subpixel_offset=spy.float2(jitter_x, jitter_y),
-            subpixel_random_jitter=0.0,
+            pixel_offset=spy.float2(jitter_x, jitter_y),
             cmd=cmd,
         )
 
@@ -382,7 +394,12 @@ class PathTracerPipeline(RenderNode):
         the final image. In DLSS mode, ``guides`` also includes ``"color"`` for
         the low-resolution DLSS input color.
         """
-        camera = camera or (scene and scene.active_camera)
+        # Scene.update() may auto-select a newly added camera, so it must precede
+        # active-camera resolution. A pipeline invocation is one frame, and this
+        # also keeps every SPP iteration below on the same scene state.
+        scene.update()
+
+        camera = camera or scene.active_camera
         if camera is None:
             return None
 
@@ -391,9 +408,28 @@ class PathTracerPipeline(RenderNode):
         if not self.accumulate_nan_count:
             self.path_tracer.reset_nan_checks()
 
+        # On DLSS entry, save the ordinary filter and use a zero-width Box at the shared
+        # frame jitter; restore it on exit. Callers select their filter outside DLSS mode.
+        # Poll the effective filter to invalidate history after replacement or in-place
+        # edits, without a setter or subscriptions; inactive filter edits leave it intact.
         if self.enable_dlss_rr != self._last_enable_dlss_rr:
+            if self.enable_dlss_rr:
+                self._ordinary_pixel_filter = self.path_tracer.pixel_filter
+                self.path_tracer.pixel_filter = self._dlss_pixel_filter
+            else:
+                self.path_tracer.pixel_filter = self._ordinary_pixel_filter
+                self._ordinary_pixel_filter = None
             self.request_reset()
             self._last_enable_dlss_rr = self.enable_dlss_rr
+
+        generation = self.path_tracer.pixel_filter.generation
+        if generation != self._last_pixel_filter_generation:
+            self.request_reset()
+            self._last_pixel_filter_generation = generation
+
+        if self.path_tracer.sample_generator != self._last_sample_generator:
+            self.request_reset()
+            self._last_sample_generator = self.path_tracer.sample_generator
 
         if self.enable_dlss_rr:
             image, guides = self._render_dlss_rr_iteration(
@@ -402,6 +438,23 @@ class PathTracerPipeline(RenderNode):
                 cmd=cmd,
             )
         else:
+            # Configure pipeline-owned path-tracer outputs once for all SPP
+            # iterations. The path tracer resolves AOV names in the prepared scene.
+            self.path_tracer.output_spec = self._output_spec
+            guide_specs = dict(self._guide_output_specs)
+            if self.enable_optix_denoiser:
+                for name in self.optix_denoiser.GUIDE_NAMES:
+                    if guide_specs.get(name) is None:
+                        guide_specs[name] = ContainerSpec.texture2d()
+            if self.enable_nan_overlay:
+                guide_specs["nan_count"] = ContainerSpec.texture2d(spy.Format.r32_uint)
+            self.path_tracer.guide_output_specs = guide_specs
+
+            # Accumulation history is also frame state. Decide whether to reset it
+            # once before rendering this frame's samples.
+            if self._needs_reset(scene, camera):
+                self._reset_accumulation(cmd=cmd)
+
             if self._accumulation_mode == AccumulationMode.off:
                 image, guides = self._render_raw_iteration(
                     scene,

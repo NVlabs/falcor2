@@ -79,7 +79,8 @@ public struct InvalidMaterial : IMaterial
     {
         MaterialInstance mi = {};
         mi.shading_frame_ws = si.shading_frame_ws;
-        if (hints & MaterialInstanceHints::adjust_shading_normal) {
+        // TODO: Use is_set() once https://github.com/shader-slang/slang/issues/12926 is fixed.
+        if ((hints & MaterialInstanceHints::adjust_shading_normal) != MaterialInstanceHints::none) {
             adjust_shading_normal(mi.shading_frame_ws, si.normal_ws, si.wi_ws);
         }
         mi.brdf = LambertDiffuseBRDF(float3(1.0, 0.0, 1.0));

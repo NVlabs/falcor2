@@ -4,6 +4,7 @@
 #include "falcor2/ui/icon_library.h"
 
 #include "falcor2/core/error.h"
+#include "falcor2/render/texture_load_flags.h"
 
 #include <cmrc/cmrc.hpp>
 
@@ -62,8 +63,7 @@ IconLibrary::IconLibrary(ref<sgl::Device> device)
     const auto resource = filesystem.open("ui/assets/icon_atlas.png");
     sgl::MemoryStream stream(resource.begin(), resource.size());
     sgl::TextureLoader loader(m_device);
-    sgl::TextureLoader::Options options;
-    options.load_as_srgb = false;
+    const auto options = texture_loader_options(TextureLoadFlags::raw);
     m_texture = loader.load_texture(&stream, options);
     FALCOR_CHECK(
         m_texture && m_texture->width() == ICON_ATLAS_WIDTH && m_texture->height() == ICON_ATLAS_HEIGHT,

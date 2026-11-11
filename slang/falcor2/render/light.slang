@@ -11,6 +11,15 @@ public enum class EmitterType : uint {
     emissive_triangle,
 };
 
+/// Capabilities and sampling-strategy properties of a light sample.
+public enum class LightSampleFlags : uint {
+    none = 0,
+    /// pos_ws and normal_ws identify a sampled surface endpoint.
+    has_surface_point = 1 << 0,
+    /// The emitter can only contribute through next-event estimation.
+    nee_only = 1 << 1,
+};
+
 /// Context for sampling incident illumination at a shading point.
 public struct LightSampleContext
 {
@@ -38,8 +47,8 @@ public struct LightSample
     public no_diff float pdf = {};
     /// Incident-radiance sampling weight (Li / pdf).
     public float3 weight = {};
-    /// True if the emitter can only contribute through next-event estimation.
-    public no_diff bool nee_only = {};
+    /// Capabilities and sampling-strategy properties of this sample.
+    public no_diff LightSampleFlags flags = LightSampleFlags::none;
     /// Emitter type the sample is associated with.
     public no_diff EmitterType emitter_type = EmitterType::unknown;
     /// Emitter-specific identifier. Currently used for emissive triangle IDs.
@@ -48,6 +57,9 @@ public struct LightSample
     public no_diff float3 pos_ws = {};
     /// Geometric normal at the sampled emitter position in world-space, when applicable.
     public no_diff float3 normal_ws = {};
+
+    /// Returns true if any of the specified flags are set.
+    public bool has_flag(const LightSampleFlags flags) { return is_set(this.flags, flags); }
 };
 
 /// Interface for scene light sources.
@@ -86,4 +98,34 @@ public interface ILight
     /// @param dir_ws Direction from the shading point toward the light.
     /// @return The PDF value with respect to solid angle at the shading point.
     public float eval_pdf(const LightSampleContext ctx, const float3 dir_ws) { return 0.0; }
+
+    /// Intersects the authored finite light surface when it corresponds to the surface sampled from the ray origin.
+    /// Returns false for lights without such a surface or when sampling uses a distinct NEE-only proxy.
+    public bool intersect_surface(const Ray ray, out float t)
+    {
+        t = {};
+        return false;
+    }
+
+    /// Returns the outward geometric normal at a known authored finite light-surface point.
+    /// Returns zero for lights without a finite surface.
+    public float3 eval_surface_normal(const float3 pos_ws) { return {}; }
+
+    /// Evaluates emitted radiance from a known authored finite light-surface point toward a receiver.
+    /// Returns zero for lights without a finite surface or when the receiver is behind a one-sided emitter.
+    public float3
+    eval_surface_radiance(const float3 receiver_pos_ws, const float3 emitter_pos_ws, const float3 emitter_normal_ws)
+    {
+        return {};
+    }
+
+    /// Evaluates the conditional solid-angle PDF induced by the light's surface sampling strategy at a known
+    /// authored finite light-surface point. Returns zero when the point has no density under the surface sampler for
+    /// this receiver context.
+    /// The PDF excludes any scene-level light-selection probability.
+    public float
+    eval_surface_sampling_pdf(const LightSampleContext ctx, const float3 emitter_pos_ws, const float3 emitter_normal_ws)
+    {
+        return 0.0;
+    }
 };

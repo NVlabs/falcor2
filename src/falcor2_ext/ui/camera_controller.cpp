@@ -43,6 +43,12 @@ FALCOR_PY_EXPORT(ui_camera_controller)
             D(ui, CameraController, move_speed)
         )
         .def_prop_rw(
+            "world_up",
+            &ui::CameraController::world_up,
+            &ui::CameraController::set_world_up,
+            D(ui, CameraController, world_up)
+        )
+        .def_prop_rw(
             "smoothing",
             &ui::CameraController::smoothing,
             &ui::CameraController::set_smoothing,

@@ -28,7 +28,13 @@ public struct StandardMaterialInstance : IMaterialInstance
     {
         float3 wi_ls = shading_frame_ws.to_local(si.wi_ws);
         float3 wo_ls = shading_frame_ws.to_local(wo_ws);
-        if (!stdmat::is_valid_hemisphere_reflection_or_transmission(si, shading_frame_ws, wi_ls, wo_ls, wo_ws))
+        if (!surface_material::is_valid_hemisphere_reflection_or_transmission(
+                si,
+                shading_frame_ws,
+                wi_ls,
+                wo_ls,
+                wo_ws
+            ))
             return BSDFEval();
 
         StandardBSDF bsdf = StandardBSDF(wi_ls, bsdf_data);
@@ -47,7 +53,7 @@ public struct StandardMaterialInstance : IMaterialInstance
         sample.weight = bsdf_sample.weight;
         sample.flags = bsdf_sample.flags;
         sample.wo_ws = shading_frame_ws.to_global(bsdf_sample.wo);
-        return stdmat::is_valid_hemisphere_reflection_or_transmission(
+        return surface_material::is_valid_hemisphere_reflection_or_transmission(
             si,
             shading_frame_ws,
             wi_ls,

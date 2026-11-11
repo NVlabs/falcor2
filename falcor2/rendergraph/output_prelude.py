@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import slangpy as spy
 from slangpy.core.native import get_value_signature
@@ -15,13 +15,31 @@ from slangpy.reflection import SlangFunction, SlangType
 
 from . import container_torch
 from .container import Container
-from .image_format import SINT_FORMATS, UINT_FORMATS
+from .image_format import SINT_FORMATS, UINT_FORMATS, channel_count, format_to_typename
 
 BLOCK_TYPE_PREFIX = "__falcor_OutputBlock"
 BLOCK_VAR_PREFIX = "__g_falcor_OutputBlock"
 IMPL_TYPE_PREFIX = "__falcor_OutputImpl"
 OUTPUT_SPEC_ATTRIBUTE = "OutputSpec"
+_INDEXED_OUTPUT_FUNCTION = "generic_data"
 _FORMATS_BY_NAME = {output_format.name: output_format for output_format in spy.Format}
+_INDEXED_FLOAT_FORMATS = {
+    1: spy.Format.r32_float,
+    2: spy.Format.rg32_float,
+    3: spy.Format.rgba32_float,
+    4: spy.Format.rgba32_float,
+}
+_WRITABLE_FLOAT_FORMATS = frozenset(
+    (
+        spy.Format.r16_float,
+        spy.Format.rg16_float,
+        spy.Format.rgba16_float,
+        spy.Format.r32_float,
+        spy.Format.rg32_float,
+        spy.Format.rgb32_float,
+        spy.Format.rgba32_float,
+    )
+)
 
 
 class OutputOperation(Enum):
@@ -42,6 +60,16 @@ class OutputSpec:
 
 
 @dataclass(frozen=True)
+class IndexedOutput:
+    """One stable-ID output target handled by an indexed writer function."""
+
+    id: int
+    name: str
+    component_count: int
+    target: object
+
+
+@dataclass(frozen=True)
 class _ReflectedOutput:
     name: str
     coord_name: str
@@ -52,6 +80,29 @@ class _ReflectedOutput:
     storage_type: str | None = None
     write_expr: str | None = None
     direct_binding: bool = False
+
+
+@dataclass(frozen=True)
+class _IndexedFunction:
+    name: str
+    coord_name: str
+    coord_type: str
+    id_name: str
+    id_type: str
+    value_name: str
+    value_type: str
+    enabled_name: str
+    enabled_id_name: str
+    enabled_id_type: str
+
+
+@dataclass(frozen=True)
+class _PreparedIndexedOutput:
+    desc: IndexedOutput
+    field_name: str
+    storage_type: str
+    write_expr: str
+    direct_binding: bool
 
 
 class OutputPrelude:
@@ -112,6 +163,17 @@ class OutputPrelude:
             )
         return tuple(specs)
 
+    @staticmethod
+    def indexed_output_format(component_count: int) -> spy.Format:
+        """Return the default float format for an indexed output width."""
+        if (
+            isinstance(component_count, bool)
+            or not isinstance(component_count, int)
+            or component_count not in _INDEXED_FLOAT_FORMATS
+        ):
+            raise ValueError("Indexed outputs must have one through four components.")
+        return _INDEXED_FLOAT_FORMATS[component_count]
+
     def __init__(
         self,
         module: spy.Module,
@@ -147,6 +209,22 @@ class OutputPrelude:
         self._block_var_name = BLOCK_VAR_PREFIX + interface_name
         self._impl_type_name = IMPL_TYPE_PREFIX + interface_name
         self._signature_prefix = self._interface_name + "\n" + self._concrete_type_name + "\n"
+        # Only immutable descriptors over immutable-layout textures may use identity caching.
+        # Native tensors can change layout through point_to(); generic sequences can be edited.
+        self._indexed_input: tuple[IndexedOutput, ...] | None = None
+        self._indexed_sorted: tuple[IndexedOutput, ...] = ()
+        self._indexed_signature: str = ""
+        void_function_names = _void_function_names(module, interface_name)
+        self._indexed_function = _reflect_indexed_function(
+            module,
+            interface_type,
+            void_function_names,
+        )
+        self._output_names = [
+            name
+            for name in void_function_names
+            if self._indexed_function is None or name != self._indexed_function.name
+        ]
         self._specs = {
             spec.name: spec
             for spec in OutputPrelude.read_specs(
@@ -161,11 +239,34 @@ class OutputPrelude:
         """Reflected output specs by output name."""
         return self._specs
 
-    def signature(self, targets: Mapping[str, object | None]) -> str:
-        """Return SlangPy's value signature for the output target dictionary."""
-        return self._signature_prefix + get_value_signature(targets)
+    def signature(
+        self,
+        targets: Mapping[str, object | None],
+        indexed_outputs: Sequence[IndexedOutput] = (),
+    ) -> str:
+        """Return the signature for named and stable-ID output targets."""
+        indexed_outputs = self._sorted_indexed_outputs(indexed_outputs)
+        signature = self._signature_prefix + get_value_signature(targets)
+        if self._indexed_function is None or not indexed_outputs:
+            return signature
+        if indexed_outputs is self._indexed_sorted:
+            return signature + self._indexed_signature
+        indexed_signature = tuple(
+            (
+                output.id,
+                output.name,
+                output.component_count,
+                get_value_signature(output.target),
+            )
+            for output in indexed_outputs
+        )
+        return signature + "\nindexed=" + repr(indexed_signature)
 
-    def generate(self, targets: Mapping[str, object | None]) -> str:
+    def generate(
+        self,
+        targets: Mapping[str, object | None],
+        indexed_outputs: Sequence[IndexedOutput] = (),
+    ) -> str:
         """
         Generate a concrete implementation of a static writer interface.
 
@@ -173,7 +274,7 @@ class OutputPrelude:
         static interface function with the same name. The first function parameter
         is treated as the write coordinate and the second as the value to store.
         """
-        output_names = _void_function_names(self._module, self._interface_name)
+        output_names = self._output_names
         output_name_set = set(output_names)
         unknown_names = [
             name
@@ -199,11 +300,14 @@ class OutputPrelude:
             )
             for name in output_names
         ]
+        indexed_outputs = self._prepare_indexed_outputs(indexed_outputs)
         enabled_outputs = [output for output in outputs if output.enabled]
         # Vulkan reflection drops read/write resources nested in a parameter block.
         # Bind incrementing outputs directly because they require both access modes.
         block_outputs = [output for output in enabled_outputs if not output.direct_binding]
         direct_outputs = [output for output in enabled_outputs if output.direct_binding]
+        indexed_block_outputs = [output for output in indexed_outputs if not output.direct_binding]
+        indexed_direct_outputs = [output for output in indexed_outputs if output.direct_binding]
 
         lines = []
 
@@ -217,9 +321,11 @@ class OutputPrelude:
         for output in block_outputs:
             assert output.storage_type is not None
             lines.append(f"    public {output.storage_type} {output.name};")
+        for output in indexed_block_outputs:
+            lines.append(f"    public {output.storage_type} {output.field_name};")
         lines.extend(["}", ""])
 
-        if block_outputs:
+        if block_outputs or indexed_block_outputs:
             lines.extend(
                 [
                     f"public ParameterBlock<{self._block_type_name}> {self._block_var_name};",
@@ -232,6 +338,14 @@ class OutputPrelude:
             lines.extend(
                 [
                     f"public {output.storage_type} {self._block_var_name}_{output.name};",
+                    "",
+                ]
+            )
+
+        for output in indexed_direct_outputs:
+            lines.extend(
+                [
+                    f"public {output.storage_type} {self._block_var_name}_{output.field_name};",
                     "",
                 ]
             )
@@ -254,6 +368,44 @@ class OutputPrelude:
             if output.enabled:
                 assert output.write_expr is not None
                 lines.append(f"        {output.write_expr}")
+            lines.append("    }")
+            lines.append("")
+
+        if self._indexed_function is not None:
+            function = self._indexed_function
+            lines.append(
+                "    public static override void "
+                f"{function.name}({function.coord_type} {function.coord_name}, "
+                f"{function.id_type} {function.id_name}, "
+                f"{function.value_type} {function.value_name})"
+            )
+
+            lines.append("    {")
+            lines.append(f"        switch ({function.id_name})")
+            lines.append("        {")
+            for output in indexed_outputs:
+                lines.append(f"        case {output.desc.id}u:")
+                lines.append(f"            {output.write_expr}")
+                lines.append("            break;")
+            lines.append("        default:")
+            lines.append("            break;")
+            lines.append("        }")
+            lines.append("    }")
+            lines.append("")
+
+            lines.append(
+                f"    public static bool {function.enabled_name}("
+                f"{function.enabled_id_type} {function.enabled_id_name})"
+            )
+            lines.append("    {")
+            lines.append(f"        switch ({function.enabled_id_name})")
+            lines.append("        {")
+            for output in indexed_outputs:
+                lines.append(f"        case {output.desc.id}u:")
+                lines.append("            return true;")
+            lines.append("        default:")
+            lines.append("            return false;")
+            lines.append("        }")
             lines.append("    }")
             lines.append("")
 
@@ -283,9 +435,15 @@ class OutputPrelude:
             )
         return "\n".join(lines) + "\n"
 
-    def bind(self, cursor: Any, targets: Mapping[str, object | None]) -> None:
-        """Bind the named containers in ``targets`` to the generated parameter block."""
-        if not any(container is not None for container in targets.values()):
+    def bind(
+        self,
+        cursor: Any,
+        targets: Mapping[str, object | None],
+        indexed_outputs: Sequence[IndexedOutput] = (),
+    ) -> None:
+        """Bind named and stable-ID containers to the generated parameter block."""
+        indexed_outputs = self._sorted_indexed_outputs(indexed_outputs)
+        if not any(container is not None for container in targets.values()) and not indexed_outputs:
             return
 
         block = None
@@ -299,6 +457,149 @@ class OutputPrelude:
             if block is None:
                 block = cursor[self._block_var_name]
             block[name] = Container.to_render_layout(container)
+
+        # Storage declarations and write expressions belong to generate(), not per-dispatch binding.
+        for output in indexed_outputs:
+            field_name = _indexed_field_name(output.id)
+            if isinstance(output.target, spy.Tensor) or container_torch.is_torch_tensor(
+                output.target
+            ):
+                cursor[f"{self._block_var_name}_{field_name}"] = Container.to_render_layout(
+                    output.target
+                )
+                continue
+            if block is None:
+                block = cursor[self._block_var_name]
+            block[field_name] = Container.to_render_layout(output.target)
+
+    def clear_indexed(
+        self,
+        indexed_outputs: Sequence[IndexedOutput],
+        *,
+        command_encoder: Any | None = None,
+        device: spy.Device | None = None,
+    ) -> None:
+        """Clear indexed output targets to zero."""
+        for output in self._sorted_indexed_outputs(indexed_outputs):
+            Container.clear(
+                output.target,
+                clear_value=spy.float4(0.0),
+                command_encoder=command_encoder,
+                device=device,
+            )
+
+    def _sorted_indexed_outputs(
+        self,
+        indexed_outputs: Sequence[IndexedOutput],
+    ) -> tuple[IndexedOutput, ...]:
+        if indexed_outputs is self._indexed_input:
+            return self._indexed_sorted
+        # Release the previous targets even when the replacement is empty or invalid.
+        self._indexed_input = None
+        self._indexed_sorted = ()
+        self._indexed_signature = ""
+        if not indexed_outputs:
+            return ()
+        outputs = tuple(sorted(indexed_outputs, key=lambda output: output.id))
+        if outputs and self._indexed_function is None:
+            raise RuntimeError(
+                f"{self._interface_type.full_name} does not define an indexed output function."
+            )
+
+        ids: set[int] = set()
+        names: set[str] = set()
+        for output in outputs:
+            if isinstance(output.id, bool) or not isinstance(output.id, int):
+                raise TypeError("Indexed output IDs must be integers.")
+            if output.id < 0 or output.id > 0xFFFFFFFF:
+                raise ValueError("Indexed output IDs must fit in uint32.")
+            field_name = _indexed_field_name(output.id)
+            if field_name in self._output_names:
+                raise ValueError(
+                    f"Indexed output ID {output.id} conflicts with fixed output {field_name!r}."
+                )
+            if not isinstance(output.name, str) or not output.name:
+                raise ValueError("Indexed output names must not be empty.")
+            if (
+                isinstance(output.component_count, bool)
+                or not isinstance(output.component_count, int)
+                or output.component_count not in _INDEXED_FLOAT_FORMATS
+            ):
+                raise ValueError("Indexed outputs must have one through four components.")
+            if output.id in ids:
+                raise ValueError(f"Duplicate indexed output ID {output.id}.")
+            if output.name in names:
+                raise ValueError(f"Duplicate indexed output name {output.name!r}.")
+            ids.add(output.id)
+            names.add(output.name)
+
+            format_value = Container.format(output.target)
+            if (
+                format_value not in _WRITABLE_FLOAT_FORMATS
+                or channel_count(format_value) < output.component_count
+            ):
+                raise TypeError(
+                    f"Indexed output {output.name!r} target format {format_value.name} cannot preserve "
+                    f"{output.component_count} float components."
+                )
+        if isinstance(indexed_outputs, tuple) and all(
+            isinstance(output.target, spy.Texture) for output in outputs
+        ):
+            indexed_signature = tuple(
+                (output.id, output.name, output.component_count, get_value_signature(output.target))
+                for output in outputs
+            )
+            self._indexed_input = indexed_outputs
+            self._indexed_sorted = outputs
+            self._indexed_signature = "\nindexed=" + repr(indexed_signature)
+        return outputs
+
+    def _prepare_indexed_outputs(
+        self,
+        indexed_outputs: Sequence[IndexedOutput],
+    ) -> tuple[_PreparedIndexedOutput, ...]:
+        outputs = self._sorted_indexed_outputs(indexed_outputs)
+        if not outputs or self._indexed_function is None:
+            return ()
+
+        function = self._indexed_function
+        prepared: list[_PreparedIndexedOutput] = []
+        for output in outputs:
+            target_component_count = channel_count(Container.format(output.target))
+            target_value_type = _indexed_target_value_type(
+                output.target,
+                target_component_count,
+            )
+            field_name = _indexed_field_name(output.id)
+            direct_binding = isinstance(
+                output.target, spy.Tensor
+            ) or container_torch.is_torch_tensor(output.target)
+            storage_type, write_expr, direct_binding = _storage_type_and_write_expr(
+                container=output.target,
+                block_var_name=self._block_var_name,
+                name=field_name,
+                coord_name=function.coord_name,
+                coord_type=function.coord_type,
+                value_name=_indexed_value_expr(
+                    function.value_name,
+                    output.component_count,
+                    target_component_count,
+                    target_value_type,
+                ),
+                value_type=target_value_type,
+                operation=OutputOperation.write,
+                direct_binding=direct_binding,
+            )
+            prepared.append(
+                _PreparedIndexedOutput(
+                    desc=output,
+                    field_name=field_name,
+                    storage_type=storage_type,
+                    write_expr=write_expr,
+                    direct_binding=direct_binding,
+                )
+            )
+        return tuple(prepared)
 
 
 def _concrete_type_name(interface_name: str) -> str:
@@ -329,6 +630,89 @@ def _void_function_names(module: spy.Module, type_name: str) -> list[str]:
         )
         if _function_returns_void(function)
     ]
+
+
+def _reflect_indexed_function(
+    module: spy.Module,
+    interface_type: SlangType,
+    void_function_names: Sequence[str],
+) -> _IndexedFunction | None:
+    if _INDEXED_OUTPUT_FUNCTION not in void_function_names:
+        return None
+
+    function: SlangFunction = module.layout.require_function_by_name_in_type(
+        interface_type,
+        _INDEXED_OUTPUT_FUNCTION,
+    )
+    parameter_types = tuple(parameter.type.full_name for parameter in function.parameters)
+    expected_types = ("vector<uint,2>", "uint", "vector<float,4>")
+    if parameter_types != expected_types:
+        return None
+    if not function.static or function.have_return_value:
+        raise RuntimeError(
+            f"{interface_type.full_name}::{function.name} must be a static void function with "
+            "(uint2, uint, float4) parameters."
+        )
+
+    enabled_name = f"{function.name}_enabled"
+    try:
+        enabled_function: SlangFunction = module.layout.require_function_by_name_in_type(
+            interface_type, enabled_name
+        )
+    except RuntimeError as exc:
+        raise RuntimeError(f"{interface_type.full_name} must define {enabled_name}(uint).") from exc
+    if (
+        not enabled_function.static
+        or not enabled_function.have_return_value
+        or enabled_function.return_type.full_name != "bool"
+        or len(enabled_function.parameters) != 1
+        or enabled_function.parameters[0].type.full_name != "uint"
+    ):
+        raise RuntimeError(
+            f"{interface_type.full_name}::{enabled_name} must be a static bool function with one uint parameter."
+        )
+
+    return _IndexedFunction(
+        name=function.name,
+        coord_name=function.parameters[0].name,
+        coord_type=function.parameters[0].type.full_name,
+        id_name=function.parameters[1].name,
+        id_type=function.parameters[1].type.full_name,
+        value_name=function.parameters[2].name,
+        value_type=function.parameters[2].type.full_name,
+        enabled_name=enabled_name,
+        enabled_id_name=enabled_function.parameters[0].name,
+        enabled_id_type=enabled_function.parameters[0].type.full_name,
+    )
+
+
+def _indexed_field_name(output_id: int) -> str:
+    return f"indexed_output_{output_id}"
+
+
+def _float_value_type(component_count: int) -> str:
+    return "float" if component_count == 1 else f"vector<float,{component_count}>"
+
+
+def _indexed_target_value_type(target: object, target_component_count: int) -> str:
+    if isinstance(target, spy.Tensor):
+        return target.dtype.full_name
+    if container_torch.is_torch_tensor(target):
+        return format_to_typename(Container.format(target))
+    return _float_value_type(target_component_count)
+
+
+def _indexed_value_expr(
+    value_name: str,
+    component_count: int,
+    target_component_count: int,
+    target_value_type: str,
+) -> str:
+    swizzle = "xyzw"[:component_count]
+    value_expr = value_name if component_count == 4 else f"{value_name}.{swizzle}"
+    padding = ["0.0"] * (target_component_count - component_count)
+    arguments = ", ".join([value_expr, *padding])
+    return f"{target_value_type}({arguments})"
 
 
 def _reflect_output(
@@ -390,8 +774,9 @@ def _storage_type_and_write_expr(
     value_name: str,
     value_type: str,
     operation: OutputOperation,
+    direct_binding: bool = False,
 ) -> tuple[str, str, bool]:
-    direct_binding = operation == OutputOperation.increment
+    direct_binding = direct_binding or operation == OutputOperation.increment
     block_field = f"{block_var_name}_{name}" if direct_binding else f"{block_var_name}.{name}"
     if isinstance(container, spy.Texture):
         if container.type != spy.TextureType.texture_2d:

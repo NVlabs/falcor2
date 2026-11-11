@@ -17,11 +17,17 @@ import slangpy as spy
 import falcor2 as f2
 import falcor2.testing.helpers as helpers
 from falcor2.testing.image_test_plugin import ImageTestPlugin
+from falcor2.testing.tier_selection import deselect_nightly_items
 from falcor2.testing.shader_test_plugin import SlangTestFile, clear_dispatcher_cache
 from falcor2.testing.telemetry_plugin import (
     DEFAULT_TELEMETRY_OUTPUT_PATH,
     DEVICE_LEAKS_STASH_KEY,
     TelemetryPlugin,
+)
+from falcor2.testing.benchmark import (  # noqa: F401
+    add_benchmark_options,
+    benchmark_image_test,
+    BenchmarkPlugin,
 )
 from falcor2.utils.per_device_cache import PerDeviceCache
 from tools import crashpad
@@ -65,10 +71,19 @@ def pytest_addoption(parser: pytest.Parser):
         help="Run slow tests (skipped by default)",
     )
     parser.addoption(
+        "--nightly",
+        action="store_true",
+        default=False,
+        help="Run nightly and slow tests (nightly tests are deselected by default)",
+    )
+    parser.addoption(
         "--all",
         action="store_true",
         default=False,
-        help="Run all tests, including slow and image tests (equivalent to --slow --image-tests)",
+        help=(
+            "Run all tests, including slow, nightly, and image tests "
+            "(equivalent to --slow --nightly --image-tests)"
+        ),
     )
     parser.addoption(
         "--module-cache",
@@ -106,14 +121,39 @@ def pytest_addoption(parser: pytest.Parser):
         default="file",
         help="Recycle worker GPU state at session, test-file, or test boundaries",
     )
+    # The benchmark options belong to the plugin. They have to be declared here
+    # because a plugin registered during pytest_configure is too late for option
+    # parsing; the plugin instance itself is registered below.
+    add_benchmark_options(parser)
+
+
+def _benchmark_requested(config: pytest.Config) -> bool:
+    """Return whether this pytest invocation asked for benchmark mode."""
+    return any(
+        bool(config.getoption(option, default=False))
+        for option in (
+            "--benchmark",
+            "--benchmark-only",
+            "--benchmark-submit",
+            "--benchmark-export-submissions",
+        )
+    )
 
 
 def pytest_configure(config: pytest.Config):
     """Configure the image test plugin."""
+    if _benchmark_requested(config):
+        config.option.benchmark = True
+
+    # Enable compilation reports when benchmarking (needed for compile time metrics)
+    compilation_reports_needed = bool(config.getoption("--telemetry")) or bool(
+        config.getoption("--benchmark")
+    )
+
     helpers.configure_test_device_options(
         module_cache_enabled=bool(config.getoption("--module-cache")),
         shader_cache_enabled=bool(config.getoption("--shader-cache")),
-        compilation_reports_enabled=bool(config.getoption("--telemetry")),
+        compilation_reports_enabled=compilation_reports_needed,
         cache_dir=config.getoption("--module-and-shader-cache-dir"),
     )
     config.pluginmanager.register(ImageTestPlugin(config), "image_test_plugin")
@@ -124,6 +164,12 @@ def pytest_configure(config: pytest.Config):
             TelemetryPlugin(config, telemetry_output),
             "telemetry_plugin",
         )
+
+    # Registered unconditionally: its hooks are inert unless --benchmark is on.
+    # Keep the implication above in this conftest so test devices already have
+    # the compilation reports benchmarks need before the plugin is registered.
+    config.pluginmanager.register(BenchmarkPlugin(config), "falcor2_benchmark")
+
     if CRASHPAD_SUPPORT and not os.environ.get("PYTEST_XDIST_WORKER"):
         crashpad.setup(CRASHPAD_KIND)
 
@@ -185,31 +231,54 @@ def pytest_terminal_summary(terminalreporter: Any, exitstatus: int) -> None:
         crashpad.report(CRASHPAD_KIND, terminalreporter.config.get_terminal_writer())
 
 
+@pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]):
-    """Handles skipping of tests based on image test flags and slow test flags"""
+    """Select the nightly tier before applying the existing slow/image gates."""
     gen_images = config.getoption("--image-tests-generate")
     test_images = config.getoption("--image-tests")
     test_images_only = config.getoption("--image-tests-only")
     slow = config.getoption("--slow")
+    nightly = config.getoption("--nightly")
+    benchmark = config.getoption("--benchmark")
+    benchmark_only = config.getoption("--benchmark-only")
+    # The nightly tier is a superset of the slow tier.
+    if nightly:
+        slow = True
     if config.getoption("--all"):
         slow = True
+        nightly = True
         test_images = True
         test_images_only = False
         gen_images = False
 
+    deselect_nightly_items(config, items, nightly=nightly)
+
     for item in items:
         uses_image_test = "image_test" in getattr(item, "fixturenames", [])
-        is_slow_test = "slow" in [mark.name for mark in item.iter_markers()]
+        measures_only = benchmark_only and "benchmark_image_test" in getattr(
+            item, "fixturenames", []
+        )
+        marker_names = {mark.name for mark in item.iter_markers()}
+        is_slow_test = "slow" in marker_names
+        is_benchmark_test = "benchmark" in marker_names
 
         # Skip slow tests if --slow is not specified
         if is_slow_test and not slow:
             item.add_marker(pytest.mark.skip(reason="Slow test skipped (use --slow to run)"))
 
+        if is_benchmark_test and not benchmark:
+            item.add_marker(
+                pytest.mark.skip(reason="Benchmark test skipped (use --benchmark to run)")
+            )
+            continue
+
         if not uses_image_test:
             if gen_images or test_images_only:
                 item.add_marker(pytest.mark.skip(reason="Skipping non-image test"))
         else:
-            if not gen_images and not test_images:
+            # Benchmark-only fixtures still depend on image_test, but do not
+            # compare images. Ordinary image tests retain their usual gate.
+            if not gen_images and not test_images and not measures_only:
                 item.add_marker(pytest.mark.skip(reason="Skipping image test"))
 
 

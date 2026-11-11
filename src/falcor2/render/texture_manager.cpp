@@ -21,8 +21,9 @@ namespace falcor {
 // TextureManager
 // -----------------------------------------------------------------------------
 
-TextureManager::TextureManager(ref<sgl::Device> device)
+TextureManager::TextureManager(ref<sgl::Device> device, uint32_t max_mip_count)
     : m_device(std::move(device))
+    , m_max_mip_count(max_mip_count)
 {
     static_assert(TextureManager::INVALID_TEXTURE_HANDLE == shared::detail::INVALID_TEXTURE_HANDLE);
 
@@ -90,9 +91,9 @@ TextureHandle TextureManager::load_texture(const LoadTextureDesc& desc)
     }
 
     TextureOptions options{
-        .generate_mips = desc.generate_mips,
-        .srgb = desc.srgb,
+        .flags = desc.flags,
         .usage = desc.usage,
+        .max_mip_count = desc.max_mip_count.value_or(m_max_mip_count),
     };
 
     if (is_udim) {
@@ -345,11 +346,11 @@ void TextureManager::load_texture(TextureID texture_id)
     FALCOR_ASSERT(texture_entry.info);
     texture_entry.texture = m_texture_loader->load_texture(
         texture_entry.info->path,
-        sgl::TextureLoader::Options{
-            .load_as_srgb = texture_entry.info->options.srgb,
-            .generate_mips = texture_entry.info->options.generate_mips,
-            .usage = texture_entry.info->options.usage,
-        }
+        texture_loader_options(
+            texture_entry.info->options.flags,
+            texture_entry.info->options.usage,
+            texture_entry.info->options.max_mip_count
+        )
     );
     texture_entry.is_loaded = true;
     m_texture_to_texture_id.emplace(texture_entry.texture.get(), texture_id);
@@ -369,13 +370,11 @@ void TextureManager::load_textures(std::span<const TextureID> texture_ids)
             continue;
         FALCOR_ASSERT(texture_entry.info);
         paths.push_back(texture_entry.info->path);
-        options.push_back(
-            sgl::TextureLoader::Options{
-                .load_as_srgb = texture_entry.info->options.srgb,
-                .generate_mips = texture_entry.info->options.generate_mips,
-                .usage = texture_entry.info->options.usage,
-            }
-        );
+        options.push_back(texture_loader_options(
+            texture_entry.info->options.flags,
+            texture_entry.info->options.usage,
+            texture_entry.info->options.max_mip_count
+        ));
         texture_entries.push_back(&texture_entry);
         unique_texture_ids.push_back(texture_id);
     }
@@ -446,8 +445,8 @@ ref<sgl::Texture> TextureManager::create_udim_indirection_texture(const UDIMTile
         width = std::max(width, udim_tile.tile_u + 1);
         height = std::max(height, udim_tile.tile_v + 1);
     }
-    FALCOR_ASSERT_GT(width, 0);
-    FALCOR_ASSERT_GT(height, 0);
+    FALCOR_ASSERT_GT(width, 0u);
+    FALCOR_ASSERT_GT(height, 0u);
     // Create indirection data.
     std::vector<uint32_t> indirection_data(width * height, shared::detail::INVALID_TEXTURE_HANDLE);
     for (const auto& udim_tile : udim_tiles) {
@@ -669,7 +668,8 @@ TextureManager::get_or_create_sampler(std::variant<std::monostate, SamplerConfig
 
 TextureManager::SamplerID TextureManager::get_or_create_sampler(ref<sgl::Sampler> sampler)
 {
-    FALCOR_ASSERT(sampler != nullptr);
+    if (!sampler)
+        return m_default_sampler_id;
 
     auto it = m_sampler_to_sampler_id.find(sampler.get());
     if (it != m_sampler_to_sampler_id.end())

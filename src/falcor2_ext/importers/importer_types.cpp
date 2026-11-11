@@ -4,6 +4,7 @@
 #include "nanobind.h"
 
 #include "falcor2/importers/importer_types.h"
+#include "falcor2/importers/importer.h"
 
 #include <unordered_map>
 
@@ -51,6 +52,28 @@ void check_no_importer_mesh_views(const ImporterMesh& mesh)
         it == g_importer_mesh_view_counts.end(),
         "Cannot generate tangents while NumPy vertex stream views are alive; release them and reacquire the streams "
         "after tangent generation"
+    );
+}
+
+nb::ndarray<nb::numpy, float> curve_positions(ImporterCurve& curve, uint32_t sample_index)
+{
+    const auto values = curve.position_stream(sample_index);
+    return nb::ndarray<nb::numpy, float>(
+        reinterpret_cast<float*>(values.data),
+        {values.size, 3},
+        nb::cast(&curve, nb::rv_policy::reference),
+        {int64_t(values.stride / sizeof(float)), 1}
+    );
+}
+
+nb::ndarray<nb::numpy, float> curve_radii(ImporterCurve& curve, uint32_t sample_index)
+{
+    const auto values = curve.radius_stream(sample_index);
+    return nb::ndarray<nb::numpy, float>(
+        reinterpret_cast<float*>(values.data),
+        {values.size},
+        nb::cast(&curve, nb::rv_policy::reference),
+        {int64_t(values.stride / sizeof(float))}
     );
 }
 
@@ -146,6 +169,7 @@ using MeshAttr = nb::ndarray<nb::numpy, nb::c_contig, nb::device::cpu>;
 ImporterMesh* mesh_create(std::vector<Indices> subgeometries, std::map<std::string, MeshAttr> attributes)
 {
     auto mesh = new ImporterMesh();
+    mesh->properties = ImporterMesh::make_properties({});
 
     mesh->subgeometries.resize(subgeometries.size());
 
@@ -177,7 +201,7 @@ ImporterMesh* mesh_create(std::vector<Indices> subgeometries, std::map<std::stri
         attribute_name_to_semantic_index(name, new_attrib.semantic, new_attrib.index);
 
         // Vertex count comes from positions
-        if (new_attrib.semantic == ImporterSemantic::position) {
+        if (new_attrib.semantic == ImporterSemantic::position && new_attrib.index == 0) {
             vertex_count = attr_nd.shape(0);
         }
 
@@ -196,6 +220,9 @@ ImporterMesh* mesh_create(std::vector<Indices> subgeometries, std::map<std::stri
     if (!mesh->find_attribute(ImporterSemantic::position)) {
         SGL_THROW("Mesh must have position attribute");
     }
+
+    for (const auto& [name, values] : attributes)
+        FALCOR_CHECK(values.shape(0) == vertex_count, "Attribute '{}' vertex count differs from position zero", name);
 
     // Allocate vertex buffers
     mesh->allocate_vertices(vertex_count);
@@ -253,7 +280,19 @@ FALCOR_PY_EXPORT(importers_importer_types)
 {
     using namespace falcor;
 
-    nb::sgl_enum<UVOrigin>(m, "UVOrigin", D(UVOrigin));
+    nb::class_<SourceAssetRef>(m, "SourceAssetRef")
+        .def(nb::init<>())
+        .def(nb::init<ustring, ustring, ustring>(), "format"_a, "asset_path"_a, "object_path"_a)
+        .DEF_RW(SourceAssetRef, format)
+        .DEF_RW(SourceAssetRef, asset_path)
+        .DEF_RW(SourceAssetRef, object_path)
+        .def(
+            "__eq__",
+            [](const SourceAssetRef& self, const SourceAssetRef& other)
+            {
+                return self == other;
+            }
+        );
 
     nb::sgl_enum<ImporterSemantic> e(m, "ImporterSemantic", D(ImporterSemantic));
 
@@ -270,7 +309,7 @@ FALCOR_PY_EXPORT(importers_importer_types)
     nb::class_<ImporterMesh::Subgeometry>(m, "ImporterMeshSubgeometry", D(ImporterMesh, Subgeometry))
         .DEF_RW_2(ImporterMesh, Subgeometry, name)
         .DEF_RW_2(ImporterMesh, Subgeometry, indices, nb::rv_policy::reference_internal)
-        .DEF_RW_2(ImporterMesh, Subgeometry, material_name)
+        .DEF_RW_2(ImporterMesh, Subgeometry, material_index)
         .def_prop_ro(
             "indices_numpy",
             [](ImporterMesh::Subgeometry& self)
@@ -285,14 +324,29 @@ FALCOR_PY_EXPORT(importers_importer_types)
         );
 
     nb::class_<ImporterMesh>(m, "ImporterMesh", D(ImporterMesh))
+        .def_static("make_properties", &ImporterMesh::make_properties, "options"_a, D(ImporterMesh, make_properties))
+        .DEF_RW(ImporterMesh, properties, nb::rv_policy::reference_internal)
         .def_static("create", &mesh_create, "subgeometries"_a, "attributes"_a, "Create a new ImporterMesh.")
         .DEF_RW(ImporterMesh, name)
+        .DEF_RW(ImporterMesh, source_asset_ref, nb::rv_policy::copy, nb::for_setter(nb::arg().none()))
         .DEF_RW(ImporterMesh, uv_origin)
+        .DEF_RW(ImporterMesh, motion_times, nb::rv_policy::reference_internal)
+        .DEF_RW(ImporterMesh, motion_interpolation_mode)
         .DEF_RW(ImporterMesh, subgeometries, nb::rv_policy::reference_internal)
         .DEF_RO(ImporterMesh, local_aabb)
         .DEF_PROP_RO(ImporterMesh, vertex_count)
         .DEF_PROP_RO(ImporterMesh, attributes, nb::rv_policy::reference_internal)
         .def("calculate_local_aabb", &ImporterMesh::calculate_local_aabb, D(ImporterMesh, calculate_local_aabb))
+        .def(
+            "bake_pose",
+            [](ImporterMesh& self, const std::vector<float4x4>& mesh_from_bind_mesh_by_joint)
+            {
+                check_no_importer_mesh_views(self);
+                self.bake_pose(mesh_from_bind_mesh_by_joint);
+            },
+            "mesh_from_bind_mesh_by_joint"_a,
+            D(ImporterMesh, bake_pose)
+        )
         .def("add_normals_from_faces", &ImporterMesh::add_normals_from_faces, D(ImporterMesh, add_normals_from_faces))
         .def(
             "add_tangents_from_uvs",
@@ -307,6 +361,11 @@ FALCOR_PY_EXPORT(importers_importer_types)
             "add_tangents_from_normals",
             &ImporterMesh::add_tangents_from_normals,
             D(ImporterMesh, add_tangents_from_normals)
+        )
+        .def(
+            "collapse_exact_opposite_triangles",
+            &ImporterMesh::collapse_exact_opposite_triangles,
+            D(ImporterMesh, collapse_exact_opposite_triangles)
         )
         .def("deduplicate_vertices", &ImporterMesh::deduplicate_vertices, D(ImporterMesh, deduplicate_vertices))
         .def(
@@ -417,13 +476,37 @@ FALCOR_PY_EXPORT(importers_importer_types)
             "Vertex texture coordinates as ndarray (N, 2)."
         );
 
-    nb::sgl_enum<CurveIndexingMode>(m, "CurveIndexingMode", D(CurveIndexingMode));
 
     nb::class_<ImporterCurve>(m, "ImporterCurve", D(ImporterCurve))
+        .def_static("make_properties", &ImporterCurve::make_properties, "options"_a, D(ImporterCurve, make_properties))
+        .DEF_RW(ImporterCurve, properties, nb::rv_policy::reference_internal)
         .DEF_RW(ImporterCurve, name)
-        .DEF_RW(ImporterCurve, material_name)
-        .DEF_RW(ImporterCurve, positions, nb::rv_policy::reference_internal)
-        .DEF_RW(ImporterCurve, radii, nb::rv_policy::reference_internal)
+        .DEF_RW(ImporterCurve, source_asset_ref, nb::rv_policy::copy, nb::for_setter(nb::arg().none()))
+        .DEF_RW(ImporterCurve, material_index)
+        .DEF_RW(ImporterCurve, motion_times, nb::rv_policy::reference_internal)
+        .DEF_RW(ImporterCurve, motion_interpolation_mode)
+        .DEF_PROP_RO(ImporterCurve, vertex_count)
+        .DEF_PROP_RO(ImporterCurve, sample_count)
+        .def_prop_ro(
+            "positions",
+            [](ImporterCurve& self)
+            {
+                return curve_positions(self, 0);
+            },
+            D(ImporterCurve, position_stream)
+        )
+        .def_prop_ro(
+            "radii",
+            [](ImporterCurve& self)
+            {
+                return curve_radii(self, 0);
+            },
+            D(ImporterCurve, radius_stream)
+        )
+        .def("position_sample", &curve_positions, "sample_index"_a = 0, D(ImporterCurve, position_stream))
+        .def("radius_sample", &curve_radii, "sample_index"_a = 0, D(ImporterCurve, radius_stream))
+        .DEF_RW(ImporterCurve, texcoords, nb::rv_policy::reference_internal)
+        .DEF_RW(ImporterCurve, uv_origin)
         .DEF_RW(ImporterCurve, indices, nb::rv_policy::reference_internal)
         .DEF_RW(ImporterCurve, indexing_mode)
         .DEF_RO(ImporterCurve, local_aabb)
@@ -455,6 +538,8 @@ FALCOR_PY_EXPORT(importers_importer_types)
         .DEF_RW(ImporterTexture, mime_type)
         .DEF_RW(ImporterTexture, mag_filter)
         .DEF_RW(ImporterTexture, min_filter)
+        .DEF_RW(ImporterTexture, mip_filter)
+        .DEF_RW(ImporterTexture, use_mipmaps)
         .DEF_RW(ImporterTexture, wrap_s)
         .DEF_RW(ImporterTexture, wrap_t)
         .def_prop_ro(
@@ -473,11 +558,13 @@ FALCOR_PY_EXPORT(importers_importer_types)
     nb::class_<ImporterMaterial>(m, "ImporterMaterial", D(ImporterMaterial))
         .def(nb::init<>(), "Create a new ImporterMaterial")
         .DEF_RW(ImporterMaterial, name)
+        .DEF_RW(ImporterMaterial, source_asset_ref, nb::rv_policy::copy, nb::for_setter(nb::arg().none()))
         .DEF_RW(ImporterMaterial, params, nb::rv_policy::reference_internal);
 
     nb::class_<ImporterCamera> importer_camera(m, "ImporterCamera", D(ImporterCamera));
     importer_camera //
         .DEF_RW(ImporterCamera, name)
+        .DEF_RW(ImporterCamera, source_asset_ref, nb::rv_policy::copy, nb::for_setter(nb::arg().none()))
         .DEF_RW(ImporterCamera, focal_length)
         .DEF_RW(ImporterCamera, fstop)
         .DEF_RW(ImporterCamera, sensor_size_mm)
@@ -492,10 +579,21 @@ FALCOR_PY_EXPORT(importers_importer_types)
 
     nb::class_<ImporterLight> importer_light(m, "ImporterLight", D(ImporterLight));
     importer_light //
+        .def_static(
+            "make_properties",
+            &ImporterLight::make_properties,
+            "options"_a,
+            "type"_a,
+            D(ImporterLight, make_properties)
+        )
+        .DEF_RW(ImporterLight, properties, nb::rv_policy::reference_internal)
         .DEF_RW(ImporterLight, name)
+        .DEF_RW(ImporterLight, source_asset_ref, nb::rv_policy::copy, nb::for_setter(nb::arg().none()))
         .DEF_RW(ImporterLight, type)
+        .DEF_RW(ImporterLight, color)
         .DEF_RW(ImporterLight, intensity)
         .DEF_RW(ImporterLight, exposure)
+        .DEF_RW(ImporterLight, normalize)
         .DEF_RW(ImporterLight, enable_color_temperature)
         .DEF_RW(ImporterLight, color_temperature)
         .DEF_RW(ImporterLight, geometry_visible)
@@ -503,12 +601,16 @@ FALCOR_PY_EXPORT(importers_importer_types)
         .DEF_RW(ImporterLight, width)
         .DEF_RW(ImporterLight, height)
         .DEF_RW(ImporterLight, radius)
+        .DEF_RW(ImporterLight, length)
+        .DEF_RW(ImporterLight, treat_as_point)
+        .DEF_RW(ImporterLight, treat_as_line)
         .DEF_RW(ImporterLight, enable_virtual_sphere_shrinking)
         .DEF_RW(ImporterLight, enable_shaping)
         .DEF_RW(ImporterLight, shaping_cone_angle)
         .DEF_RW(ImporterLight, shaping_cone_softness)
         .DEF_RW(ImporterLight, shaping_focus)
-        .DEF_RW(ImporterLight, env_map_path);
+        .DEF_RW(ImporterLight, env_map_path)
+        .DEF_RW(ImporterLight, pole_axis);
 
     nb::sgl_enum<ImporterLight::Type>(importer_light, "Type", D(ImporterLight, Type));
 
@@ -517,8 +619,6 @@ FALCOR_PY_EXPORT(importers_importer_types)
         .DEF_RW(ImporterPrototype, name)
         .DEF_RW(ImporterPrototype, root_node);
 
-    nb::sgl_enum<AnimationValueType>(m, "AnimationValueType", D(AnimationValueType));
-    nb::sgl_enum<AnimationInterpolationMode>(m, "AnimationInterpolationMode", D(AnimationInterpolationMode));
 
     nb::class_<ImporterAnimationChannel>(m, "ImporterAnimationChannel", D(ImporterAnimationChannel))
         .def(nb::init<>(), "Create a new ImporterAnimationChannel")
@@ -534,14 +634,24 @@ FALCOR_PY_EXPORT(importers_importer_types)
     nb::class_<ImporterAnimation>(m, "ImporterAnimation", D(ImporterAnimation))
         .def(nb::init<>(), "Create a new ImporterAnimation")
         .DEF_RW(ImporterAnimation, name)
+        .DEF_RW(ImporterAnimation, source_asset_ref, nb::rv_policy::copy, nb::for_setter(nb::arg().none()))
         .DEF_RW(ImporterAnimation, channels, nb::rv_policy::reference_internal)
-        .def("duration", &ImporterAnimation::duration);
+        .def("key_range", &ImporterAnimation::key_range, D(ImporterAnimation, key_range));
+
+    nb::class_<ImporterSkin>(m, "ImporterSkin", D(ImporterSkin))
+        .def(nb::init<>(), "Create a new ImporterSkin")
+        .DEF_RW(ImporterSkin, name)
+        .DEF_RW(ImporterSkin, skeleton_root)
+        .DEF_RW(ImporterSkin, joints, nb::rv_policy::reference_internal)
+        .DEF_RW(ImporterSkin, joint_from_bind_mesh, nb::rv_policy::reference_internal);
 
     nb::class_<ImporterNode>(m, "ImporterNode", D(ImporterNode))
         .def(nb::init<>(), "Create a new ImporterNode")
         .DEF_RW(ImporterNode, name)
+        .DEF_RW(ImporterNode, source_asset_ref, nb::rv_policy::copy, nb::for_setter(nb::arg().none()))
         .DEF_RW(ImporterNode, transform)
         .DEF_RW(ImporterNode, mesh_index)
+        .DEF_RW(ImporterNode, skin_index)
         .DEF_RW(ImporterNode, light_index)
         .DEF_RW(ImporterNode, camera_index)
         .DEF_RW(ImporterNode, curve_index)
@@ -557,10 +667,12 @@ FALCOR_PY_EXPORT(importers_importer_types)
             [](const ImporterNode& node)
             {
                 return fmt::format(
-                    "<ImporterNode name='{}' mesh_index={} light_index={} camera_index={} curve_index={} parent={} "
+                    "<ImporterNode name='{}' mesh_index={} skin_index={} light_index={} camera_index={} curve_index={} "
+                    "parent={} "
                     "children={}>",
                     node.name,
                     node.mesh_index,
+                    node.skin_index,
                     node.light_index,
                     node.camera_index,
                     node.curve_index,
@@ -575,11 +687,13 @@ FALCOR_PY_EXPORT(importers_importer_types)
     nb::class_<ImporterScene, Object>(m, "ImporterScene", D(ImporterScene))
         .def(nb::init<>())
         .DEF_RW(ImporterScene, uv_origin)
+        .DEF_RW(ImporterScene, max_mip_count)
         .DEF_RW(ImporterScene, materials, nb::rv_policy::reference_internal)
         .DEF_RW(ImporterScene, assets, nb::rv_policy::reference_internal)
         .DEF_RW(ImporterScene, textures, nb::rv_policy::reference_internal)
         .DEF_RW(ImporterScene, meshes, nb::rv_policy::reference_internal)
         .DEF_RW(ImporterScene, nodes, nb::rv_policy::reference_internal)
+        .DEF_RW(ImporterScene, skins, nb::rv_policy::reference_internal)
         .DEF_RW(ImporterScene, cameras, nb::rv_policy::reference_internal)
         .DEF_RW(ImporterScene, lights, nb::rv_policy::reference_internal)
         .DEF_RW(ImporterScene, curves, nb::rv_policy::reference_internal)
@@ -587,6 +701,12 @@ FALCOR_PY_EXPORT(importers_importer_types)
         .DEF_RW(ImporterScene, root_nodes, nb::rv_policy::reference_internal)
         .DEF_RW(ImporterScene, animation, nb::rv_policy::reference_internal)
         .def("calculate_aabbs", &ImporterScene::calculate_aabbs, D(ImporterScene, calculate_aabbs))
+        .def("bake_pose", &ImporterScene::bake_pose, D(ImporterScene, bake_pose))
+        .def(
+            "collapse_exact_opposite_triangles",
+            &ImporterScene::collapse_exact_opposite_triangles,
+            D(ImporterScene, collapse_exact_opposite_triangles)
+        )
         .def("rescale_to_fit", &ImporterScene::rescale_to_fit, "box_size"_a = 1.f, D(ImporterScene, rescale_to_fit))
         .def("get_scene_aabb", &ImporterScene::get_scene_aabb, D(ImporterScene, get_scene_aabb))
         .def(

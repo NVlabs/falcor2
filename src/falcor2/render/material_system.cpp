@@ -22,6 +22,7 @@ MaterialSystem::MaterialSystem(Scene* scene)
     , m_material_data({
           .label = "MaterialSystem::material_data",
       })
+    , m_data_storage("MaterialSystem::data_storage")
 {
 }
 
@@ -42,22 +43,28 @@ SceneUpdateFlags MaterialSystem::update(SceneUpdateContext& ctx)
     for (size_t i = 0; i < m_materials.size(); ++i) {
         Material* material = m_materials[i];
         Material::DirtyFlags dirty_flags = m_materials.dirty_flags()[i];
-        if (is_set(dirty_flags, Material::DirtyFlags::added)) {
-            material->set_material_id(allocate_material_id());
-        } else if (is_set(dirty_flags, Material::DirtyFlags::removed)) {
-            free_material_id(material->material_id());
+        if (is_set(dirty_flags, Material::DirtyFlags::removed)) {
+            m_data_storage.free(material->m_data_allocation);
+            material->m_data_allocation = {};
+            if (material->material_id() != shared::MaterialID::invalid)
+                free_material_id(material->material_id());
             material->set_material_id(shared::MaterialID::invalid);
+        } else if (is_set(dirty_flags, Material::DirtyFlags::added)) {
+            material->set_material_id(allocate_material_id());
         }
     }
 
-    // Check if any valid material uses opacity evaluation.
-    m_requires_opacity_evaluation = false;
+    // Upload before writing material records, which use the current buffer and offsets.
+    m_data_storage.update_buffer(ctx.command_encoder());
+    m_data_buffer_handle = to_handle(m_data_storage.buffer());
+
+    // Aggregate capabilities after materials have synchronized their generated code and opacity state.
+    m_required_capabilities = {};
     for (size_t i = 0; i < m_materials.size(); ++i) {
         const Material* material = m_materials[i];
         if (!material->is_valid())
             continue;
-        if (is_set(material->opacity_desc().flags, shared::OpacityFlags::enabled))
-            m_requires_opacity_evaluation = true;
+        m_required_capabilities = m_required_capabilities.merged(material->required_capabilities());
     }
 
     // Build type conformances.
@@ -116,6 +123,8 @@ SceneUpdateFlags MaterialSystem::update(SceneUpdateContext& ctx)
     m_material_data[0].header.opacity_data
         = shared::detail::pack_opacity_data(shared::OpacityFlags::none, 3, 0.5f, 1.f);
 
+    std::vector<ref<const sgl::TypeLayoutReflection>> material_layouts(m_type_conformances.size());
+
     // Write material data to corresponding slots based on material ID.
     for (size_t i = 0; i < m_materials.size(); ++i) {
         Material* material = m_materials[i];
@@ -135,21 +144,23 @@ SceneUpdateFlags MaterialSystem::update(SceneUpdateContext& ctx)
             opacity_desc.factor
         );
 
-        std::string buffer_type_name = fmt::format("StructuredBuffer<{}>", material->slang_type_name());
+        auto& element_type_layout = material_layouts[m_material_data[material_index].header.type_id];
+        if (!element_type_layout) {
+            std::string buffer_type_name = fmt::format("StructuredBuffer<{}>", material->slang_type_name());
 
-        // Search render_module and all required modules for the type layout.
-        auto layout = m_scene->render_module()->layout();
-        auto buffer_type = layout->find_type_by_name(buffer_type_name.c_str());
-        if (!buffer_type) {
-            if (const ref<sgl::SlangModule>& module = material->required_module()) {
-                layout = module->layout();
-                buffer_type = layout->find_type_by_name(buffer_type_name.c_str());
+            auto layout = m_scene->render_module()->layout();
+            auto buffer_type = layout->find_type_by_name(buffer_type_name.c_str());
+            if (!buffer_type) {
+                if (const ref<sgl::SlangModule>& module = material->required_module()) {
+                    layout = module->layout();
+                    buffer_type = layout->find_type_by_name(buffer_type_name.c_str());
+                }
             }
-        }
-        FALCOR_CHECK(buffer_type, "Failed to find type '{}' in any module.", buffer_type_name);
+            FALCOR_CHECK(buffer_type, "Failed to find type '{}' in any module.", buffer_type_name);
 
-        auto buffer_layout = layout->get_type_layout(buffer_type);
-        auto element_type_layout = buffer_layout->element_type_layout();
+            auto buffer_layout = layout->get_type_layout(buffer_type);
+            element_type_layout = buffer_layout->element_type_layout();
+        }
         auto buffer_cursor = make_ref<sgl::BufferCursor>(
             m_scene->device()->type(),
             element_type_layout,
@@ -169,6 +180,13 @@ void MaterialSystem::bind_to_scene(const sgl::ShaderCursor& cursor) const
 {
     auto material_system = cursor["material_system"];
     material_system["material_data"] = m_material_data.buffer();
+}
+
+BufferOffsetPair MaterialSystem::data_ref(BufferSuballocator::Allocation allocation) const
+{
+    if (!allocation.is_valid())
+        return {};
+    return {m_data_buffer_handle, m_data_storage.byte_offset(allocation)};
 }
 
 shared::MaterialID MaterialSystem::allocate_material_id()

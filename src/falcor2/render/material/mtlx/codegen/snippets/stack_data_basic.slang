@@ -10,11 +10,12 @@ struct $MxStackDataType
     float3 mix_values[$MxLayerCount] = {};
     float3 bsdf_n[$MxBsdfCount] = {};
     float3 bsdf_t[$MxBsdfCount] = {};
-    $MxBsdfFramesLine$MxBsdfMemberLines void set_bsdf<TBSDF : ILayerableBSDF>(int bsdf_index, TBSDF bsdf)
+    $MxBsdfFramesLine$MxBsdfMemberLines[mutating] void set_bsdf<TBSDF : ILayerableBSDF>(int bsdf_index, TBSDF bsdf)
     {
         switch (bsdf_index) {
             $MxSetBsdfCases
         }
     }
+    [mutating]
     void init_vdf_transmission_scales() { $MxInitVdfBsdfLines$MxInitVdfLayerLines }
 }

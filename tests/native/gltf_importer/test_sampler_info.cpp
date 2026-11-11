@@ -65,6 +65,8 @@ TEST_CASE("GltfImporter - Default Sampler Values")
 
     CHECK(texture.mag_filter == TextureFilterMode::linear);
     CHECK(texture.min_filter == TextureFilterMode::linear);
+    CHECK(texture.mip_filter == TextureFilterMode::linear);
+    CHECK(texture.use_mipmaps);
     CHECK(texture.wrap_s == TextureWrapMode::repeat);
     CHECK(texture.wrap_t == TextureWrapMode::repeat);
 }

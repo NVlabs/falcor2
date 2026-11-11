@@ -129,7 +129,8 @@ TEST_CASE("Importer edit stream - set environment creates dome light node")
     CHECK_EQ(light.name, "TestEnv");
     CHECK_EQ(light.type, ImporterLight::Type::dome);
     CHECK_EQ(light.env_map_path, std::filesystem::canonical(environment_map_path()).string());
-    CHECK_EQ(light.intensity, float3(1.f));
+    CHECK_EQ(light.color, float3(1.f));
+    CHECK_EQ(light.intensity, doctest::Approx(1.f));
     CHECK_EQ(light.exposure, 5.f);
 
     const ImporterNode& node = scene->nodes[0];
@@ -598,9 +599,9 @@ TEST_CASE("Importer edit stream - material selector replaces imported material")
         has_material_binding |= std::any_of(
             mesh.subgeometries.begin(),
             mesh.subgeometries.end(),
-            [](const ImporterMesh::Subgeometry& subgeometry)
+            [&](const ImporterMesh::Subgeometry& subgeometry)
             {
-                return subgeometry.material_name == BOX_MATERIAL_NAME;
+                return subgeometry.material_index == static_cast<int>(material_it - scene->materials.begin());
             }
         );
     }
@@ -752,6 +753,8 @@ TEST_CASE("Importer edit stream - import_asset preserves imported animation name
     REQUIRE(scene);
 
     CHECK_EQ(scene->animation.name, direct_scene->animation.name);
+    CHECK(direct_scene->animation.source_asset_ref.has_value());
+    CHECK_EQ(scene->animation.source_asset_ref, direct_scene->animation.source_asset_ref);
     REQUIRE_EQ(scene->animation.channels.size(), direct_scene->animation.channels.size());
     REQUIRE_FALSE(scene->nodes.empty());
     CHECK_EQ(scene->nodes[0].animation_translation, 0);

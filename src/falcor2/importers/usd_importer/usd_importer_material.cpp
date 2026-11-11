@@ -7,6 +7,7 @@
 #include "usd_importer_utils.h"
 #include "falcor2/importers/importer_types.h"
 #include "falcor2/importers/material_conversions.h"
+#include "falcor2/render/scene_types.h"
 
 BEGIN_DISABLE_USD_WARNINGS
 #include <pxr/base/tf/pathUtils.h>
@@ -125,39 +126,6 @@ resolve_material_param_value(const pxr::UsdAttribute& attr, const UsdTimeCode& t
     }
 
     return VtValue(resolve_asset_attribute(value.UncheckedGet<SdfAssetPath>(), attr, time));
-}
-
-static TfToken get_primvar_name_attribute_value(
-    const SdrShaderNodeConstPtr& sdrNode,
-    const Properties& params,
-    const TfToken& propName
-)
-{
-    VtValue vtName;
-
-    // If the name of the primvar was authored in parameters list.
-    // The authored value is the strongest opinion
-
-    const auto& paramIt = params.find(propName.GetText());
-    if (paramIt != params.end()) {
-        vtName = TfToken(paramIt->get<std::string>());
-    }
-
-    // If we didn't find an authored value consult Sdr for the default value.
-
-    if (vtName.IsEmpty() && sdrNode) {
-        if (SdrShaderPropertyConstPtr sdrPrimvarInput = sdrNode->GetShaderInput(propName)) {
-            vtName = sdrPrimvarInput->GetDefaultValue();
-        }
-    }
-
-    if (vtName.IsHolding<TfToken>()) {
-        return vtName.UncheckedGet<TfToken>();
-    } else if (vtName.IsHolding<std::string>()) {
-        return TfToken(vtName.UncheckedGet<std::string>());
-    }
-
-    return TfToken();
 }
 
 static TfToken get_node_id(
@@ -534,6 +502,8 @@ std::optional<Properties> usdpreviewsurface_to_standardmaterial(const ImporterMa
     Properties properties;
     properties.set("_scene_material_type", "StandardMaterial");
     const Properties& params = *flattened;
+    const NodeNetwork network(&importer_material.output_to_material_network.at("_terminal:surface"));
+    const Node terminal = network.terminal();
     // Specular workflow not supported by StandardMaterial yet.
     if (params.get<int>("useSpecularWorkflow", 0) == 1)
         return {};
@@ -563,14 +533,19 @@ std::optional<Properties> usdpreviewsurface_to_standardmaterial(const ImporterMa
 
     if (auto it = params.find("emissiveColor"); it != params.end()) {
         switch (it.type()) {
-        case PropertyType::int_:
+        case PropertyType::int_: {
             importer_material::set_texture_path(
                 properties,
                 "emissive_texture_path",
                 textures[it.get<int>()]->texture_path
             );
-            properties.set("emissive_factor", float3(1.f));
+            // UsdUVTexture scales color after decoding. Preserve the RGB multiplier
+            // when flattening textured emission into StandardMaterial.
+            const NodeInput emission = network.terminal().get_input("emissiveColor");
+            const Node texture = emission.connection()->source();
+            properties.set("emissive_factor", texture.props().get<float4>("scale", float4(1.f)).xyz());
             break;
+        }
         case PropertyType::float4:
             properties.set("emissive_factor", it.get<float4>().xyz());
             break;
@@ -604,6 +579,10 @@ std::optional<Properties> usdpreviewsurface_to_standardmaterial(const ImporterMa
                     "roughness_texture_channel",
                     channel_to_index("roughness", roughness_texture.source_name)
                 );
+                // A connected USD input replaces its constant fallback. In
+                // particular, the material's default metallic factor is zero.
+                properties.set("metallic_factor", 1.f);
+                properties.set("roughness_factor", 1.f);
             } else {
                 sgl::log_warn(
                     "Material {}: metallic ({}) and roughness ({}) come from different textures, currently not "
@@ -632,6 +611,75 @@ std::optional<Properties> usdpreviewsurface_to_standardmaterial(const ImporterMa
             textures[it.get<int>()]->texture_path,
             false
         );
+    }
+
+    const NodeInput opacity = terminal.get_input("opacity");
+    const NodeInput threshold_input = terminal.get_input("opacityThreshold");
+    FALCOR_CHECK(
+        !threshold_input || !threshold_input.connection(),
+        "Material {}: connected opacityThreshold is unsupported by StandardMaterial.",
+        importer_material.name
+    );
+    const float threshold = params.get<float>("opacityThreshold", 0.f);
+    FALCOR_CHECK(
+        std::isfinite(threshold) && threshold >= 0.f && threshold <= 1.f,
+        "Material {}: opacityThreshold must be in [0, 1].",
+        importer_material.name
+    );
+    if (opacity && opacity.connection()) {
+        const auto opacity_texture = to_texture(opacity);
+        const NodeInput diffuse = terminal.get_input("diffuseColor");
+        // StandardMaterial's opacity route samples the base-color texture's
+        // alpha. A separate source/UV mapping cannot be represented by it.
+        FALCOR_CHECK(
+            opacity_texture && opacity_texture->source_name == "a" && diffuse && diffuse.connection()
+                && opacity.connection()->source().props().get<std::string>("_path")
+                    == diffuse.connection()->source().props().get<std::string>("_path"),
+            "Material {}: StandardMaterial requires opacity from the base-color texture's alpha channel.",
+            importer_material.name
+        );
+        const Node texture = opacity.connection()->source();
+        for (const auto name : {"scale", "bias"}) {
+            const NodeInput input = texture.get_input(name);
+            FALCOR_CHECK(
+                !input || !input.connection(),
+                "Material {}: connected opacity texture {} is unsupported.",
+                importer_material.name,
+                name
+            );
+        }
+        const float scale = texture.props().get<float4>("scale", float4(1.f)).w;
+        const float bias = texture.props().get<float4>("bias", float4(0.f)).w;
+        FALCOR_CHECK(
+            std::isfinite(scale) && scale >= 0.f && scale <= 1.f && bias == 0.f,
+            "Material {}: opacity texture requires alpha scale in [0, 1] and zero alpha bias.",
+            importer_material.name
+        );
+        properties.set("alpha_mode", threshold > 0.f ? AlphaMode::mask : AlphaMode::blend);
+        properties.set("alpha_factor", scale);
+        properties.set("alpha_cutoff", threshold);
+    } else {
+        const float value = params.get<float>("opacity", 1.f);
+        FALCOR_CHECK(
+            std::isfinite(value) && value >= 0.f && value <= 1.f,
+            "Material {}: opacity must be in [0, 1].",
+            importer_material.name
+        );
+        if (threshold > 0.f) {
+            // Resolve constant cutouts without accidentally sampling an
+            // unrelated alpha channel in a diffuse texture.
+            properties.set("alpha_mode", value >= threshold ? AlphaMode::opaque : AlphaMode::mask);
+            properties.set("alpha_factor", value >= threshold ? 1.f : 0.f);
+            properties.set("alpha_cutoff", threshold);
+        } else if (value < 1.f) {
+            FALCOR_CHECK(
+                value == 0.f || properties.find("base_color_texture_path") == properties.end(),
+                "Material {}: constant opacity with a base-color texture is unsupported by StandardMaterial.",
+                importer_material.name
+            );
+            properties.set("alpha_mode", AlphaMode::blend);
+            properties.set("alpha_factor", value);
+        }
     }
 
     return properties;

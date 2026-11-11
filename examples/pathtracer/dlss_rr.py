@@ -9,8 +9,11 @@ from pathlib import Path
 import falcor2 as f2
 import falcor2.ngx as fngx
 import slangpy as spy
-from falcor2.editor import Editor, EditorConfig
-from falcor2.editor.utils import get_slang_include_paths
+from falcor2.editor import (
+    Editor,
+    EditorConfig,
+    EditorArgumentParser,
+)
 from falcor2.rendernodes import PathTracerPipeline
 
 DESCRIPTION = "Example PathTracer with DLSS-RR"
@@ -35,32 +38,30 @@ VIEW_INDICES = {
 DEFAULT_VIEW_NAME = "dlss_output"
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=DESCRIPTION)
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = EditorArgumentParser(
+        description=DESCRIPTION,
+        editor_defaults=EditorConfig(
+            width=DEFAULT_WIDTH,
+            height=DEFAULT_HEIGHT,
+            title=DESCRIPTION,
+            vsync=False,
+        ),
+    )
     parser.add_argument(
         "--scene-path",
         type=Path,
         default=DEFAULT_SCENE_PATH,
         help="Path to a scene file.",
     )
-    parser.add_argument(
-        "--device-type",
-        choices=("automatic", "d3d12", "vulkan", "cuda"),
-        default="automatic",
-        help="Device type used for renderer.",
-    )
-    parser.add_argument("--width", type=int, default=DEFAULT_WIDTH)
-    parser.add_argument("--height", type=int, default=DEFAULT_HEIGHT)
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def create_ngx_ready_device(device_type: spy.DeviceType) -> spy.Device:
     """Create a device with any extra hooks NGX needs before device creation."""
-    compiler_options = {"include_paths": get_slang_include_paths()}
     kwargs = {
         "type": device_type,
         "enable_debug_layers": True,
-        "compiler_options": compiler_options,
     }
 
     if device_type == spy.DeviceType.vulkan:
@@ -69,7 +70,7 @@ def create_ngx_ready_device(device_type: spy.DeviceType) -> spy.Device:
         kwargs["additional_vulkan_instance_extensions"] = info.required_vulkan_instance_extensions
         kwargs["additional_vulkan_device_extensions"] = info.required_vulkan_device_extensions
 
-    return spy.Device(**kwargs)
+    return f2.create_device(kwargs)
 
 
 def make_texture(
@@ -115,7 +116,9 @@ class DlssRrViewer:
         self._view_name = names[(index + 1) % len(names)]
         print(f"DLSS-RR view: {self._view_name}")
 
-    def render(self, scene: f2.Scene, *, delta_time: float) -> spy.Texture | None:
+    def render(self, scene: f2.Scene | None, *, delta_time: float) -> spy.Texture | None:
+        if scene is None:
+            return None
         camera = scene.active_camera
         if camera is None:
             return None
@@ -189,21 +192,13 @@ def main() -> None:
 
     editor = Editor.create(
         device,
-        config=EditorConfig(
-            width=args.width,
-            height=args.height,
-            title=DESCRIPTION,
-            vsync=False,
-        ),
+        config=args.editor_config,
         scene=scene,
     )
     editor._cycle_render_mode = viewer.cycle_view
     print(f"DLSS-RR view: {viewer.view_name}")
 
-    while editor.update():
-        if editor.needs_render:
-            image = viewer.render(scene, delta_time=editor.dt)
-            editor.present(image)
+    editor.run(lambda scene: viewer.render(scene, delta_time=editor.dt))
 
 
 if __name__ == "__main__":

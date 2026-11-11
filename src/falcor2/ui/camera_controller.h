@@ -102,6 +102,13 @@ public:
     /// Set the movement speed, clamped to [MIN_MOVE_SPEED, MAX_MOVE_SPEED].
     void set_move_speed(float speed);
 
+    /// Normalized world-space axis used for yaw and orbit.
+    float3 world_up() const { return m_world_up; }
+
+    /// Set the world-space axis used for yaw and orbit.
+    /// The direction must be non-zero and is normalized when stored.
+    void set_world_up(const float3& world_up);
+
     /// Whether smoothing/inertia is enabled for orbit and scroll.
     bool smoothing() const { return m_smoothing_enabled; }
 
@@ -198,6 +205,8 @@ private:
     State m_state{State::idle};
     /// First-person movement speed in world units per second.
     float m_move_speed{5.f};
+    /// Normalized world-space axis used for yaw and orbit.
+    float3 m_world_up{0.f, 1.f, 0.f};
     /// Mouse rotation sensitivity in radians per pixel.
     float m_rotate_speed{0.002f};
     /// World-space pivot point for orbit/dolly operations.

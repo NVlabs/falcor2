@@ -22,19 +22,19 @@ public float3 mx_retroreflect(const float3 w)
 }
 
 // BSDL: config.h:40 EPSILON = 1e-4f
-public static constexpr float BSDL_EPSILON = 1e-4;
+public static const float BSDL_EPSILON = 1e-4;
 // BSDL: config.h:41 PI = float(M_PI)
-public static constexpr float PI = 3.14159265358979323846;
+public static const float PI = 3.14159265358979323846;
 // BSDL: config.h:42 ONEOVERPI = 1/PI
-public static constexpr float INV_PI = 0.31830988618379067154;
+public static const float INV_PI = 0.31830988618379067154;
 // BSDL: config.h:45-46 FLOAT_MIN = 1.17549435e-38f (minimum normal float)
-public static constexpr float FLOAT_MIN = 1.17549435e-38;
+public static const float FLOAT_MIN = 1.17549435e-38;
 // BSDL: config.h:48 BIG = 1e12f
-public static constexpr float BIG = 1e12;
+public static const float BIG = 1e12;
 // BSDL: config.h:49 PDF_MIN = 1e-6f
-public static constexpr float PDF_MIN = 1e-6;
+public static const float PDF_MIN = 1e-6;
 // BSDL: config.h:43-44 ALMOSTONE = 0.999999940395355224609375f (max float < 1)
-public static constexpr float ALMOST_ONE = 0.999999940395355224609375;
+public static const float ALMOST_ONE = 0.999999940395355224609375;
 
 public float mx_hmax(float2 value)
 {

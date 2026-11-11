@@ -296,7 +296,7 @@ public struct MxChiangHairBSDF : ILayerableBSDF
         if (cos_theta_o <= HAIR_MIN_COS_THETA)
             return false;
 
-        float4 u = next_float4(sg);
+        float3 u = next_float3(sg);
         float ap_pdf[HAIR_P_MAX + 1];
         compute_ap_pdf(wi, ap_pdf);
 
@@ -313,16 +313,25 @@ public struct MxChiangHairBSDF : ILayerableBSDF
             }
         }
 
+        // Rounding at the end of the CDF must not select a zero-weight tail.
+        while (p > 0 && ap_pdf[p] <= 0.0) {
+            --p;
+            u_select = ap_pdf[p];
+        }
+        // The conditional residual is uniform within the chosen order, so it
+        // can also sample its azimuth without a fourth random coordinate.
+        float u_azimuth = clamp(u_select / ap_pdf[p], 0.0, 0x1.fffffep-1);
+
         float alpha = hair_alpha();
         float sin_theta_op;
         float cos_theta_op;
         hair_shift_view_theta(alpha, p, sin_theta_o, cos_theta_o, sin_theta_op, cos_theta_op);
 
         float vp = lobe_v(p);
-        float u_m = max(u.z, 1e-5);
+        float u_m = max(u.y, 1e-5);
         float cos_theta = 1.0 + vp * log(u_m + (1.0 - u_m) * exp(-2.0 / vp));
         float sin_theta = hair_safe_sqrt(1.0 - cos_theta * cos_theta);
-        float cos_phi = cos(u.w * float.TWO_PI);
+        float cos_phi = cos(u.z * float.TWO_PI);
         float sin_theta_i = -cos_theta * sin_theta_op + sin_theta * cos_phi * cos_theta_op;
         float cos_theta_i = hair_safe_sqrt(1.0 - sin_theta_i * sin_theta_i);
 
@@ -333,8 +342,8 @@ public struct MxChiangHairBSDF : ILayerableBSDF
         float gamma_t = hair_safe_asin(clamp(h / max(eta_p, float.MIN), -1.0, 1.0));
 
         float dphi = p < HAIR_P_MAX
-            ? hair_phi(p, gamma_o, gamma_t) + hair_sample_trimmed_logistic(u.y, lobe_s(p), -float.PI, float.PI)
-            : u.y * float.TWO_PI;
+            ? hair_phi(p, gamma_o, gamma_t) + hair_sample_trimmed_logistic(u_azimuth, lobe_s(p), -float.PI, float.PI)
+            : u_azimuth * float.TWO_PI;
         float phi_i = phi_o + dphi;
         sample.wo = float3(sin_theta_i, cos_theta_i * cos(phi_i), cos_theta_i * sin(phi_i));
 

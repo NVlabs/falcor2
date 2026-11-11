@@ -1,0 +1,61 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+mdl 1.10;
+
+import ::df::*;
+import ::scene::*;
+import ::state::*;
+
+float3 read_data(uniform string name) = scene::data_lookup_float3(name, float3(0.25));
+
+export material NoRead() = material(surface: material_surface(scattering: df::diffuse_reflection_bsdf()));
+
+export material Static() = material(ior: color(scene::data_lookup_float3("Pref", float3(1.0))));
+
+export material Helper() = material(ior: color(read_data("Pref")));
+
+export material DynamicName(uniform string name = "Pref") = material(ior: color(read_data(name)));
+
+export material Selector(uniform bool choose = true) = material(
+    ior: color(scene::data_lookup_float3(choose ? "Pref" : "other", float3(1.0)))
+);
+
+export material Uniform() = material(ior: color(scene::data_lookup_uniform_float3("Pref", float3(1.0))));
+
+export material State() = material(ior: color(state::texture_coordinate(1) + state::transform_point(
+    state::coordinate_world, state::coordinate_object, float3(1.0)
+)));
+
+export material Presence() = material(ior: color(scene::data_isvalid("other") ? 1.5 : 1.0));
+
+export material ExactNames() = material(ior: color(
+    scene::data_lookup_float3("pref", float3(0.21))
+    + scene::data_lookup_float3("texcoord_1", float3(0.31))
+));
+
+export material UnrelatedString() = material(
+    surface: material_surface(scattering: df::diffuse_reflection_bsdf(handle: "not_scene_data")),
+    ior: color(read_data("Pref"))
+);
+
+// Keep a helper with control flow to check the SDK's expression-inspection boundary.
+float3 read_loop(uniform int count)
+{
+    float3 result = float3(0.0);
+    for (int i = 0; i < count; ++i)
+        result += scene::data_lookup_float3("Pref", float3(1.0));
+    return result;
+}
+
+export material ControlFlow(uniform int count = 2) = material(ior: color(read_loop(count)));
+
+float3 read_named_loop(uniform int count, uniform string name)
+{
+    float3 result = float3(0.0);
+    for (int i = 0; i < count; ++i)
+        result += scene::data_lookup_float3(name, float3(name == "unrelated_in_helper" ? 0.5 : 1.0));
+    return result;
+}
+
+export material Conservative(uniform int count = 2) = material(ior: color(read_named_loop(count, "Pref")));

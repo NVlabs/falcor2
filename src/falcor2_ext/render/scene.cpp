@@ -14,12 +14,14 @@
 #include "falcor2/render/scene_config.h"
 #include "falcor2/render/scene_globals.h"
 #include "falcor2/render/scene_requirements.h"
-#include "falcor2/render/material_types.h"
+#include "falcor2/render/scene_types.h"
 #include "falcor2/render/animation.h"
 #include "falcor2/render/component/transform_animation.h"
 #include "falcor2/render/geometry/geometry_group.h"
 #include "falcor2/render/material/emission_only_material.h"
 #include "falcor2/render/material/standard_material.h"
+#include "falcor2/render/material/gltf_material.h"
+#include "falcor2/render/material/gltf_specgloss_material.h"
 #include "falcor2/render/material/standard_specgloss_material.h"
 #include "falcor2/render/material/unlit_material.h"
 #include "falcor2/render/material/mdl/mdl_material.h"
@@ -31,6 +33,7 @@
 #include "falcor2/importers/importer_types.h"
 
 #include "render/python_scene_object.h"
+#include "render/usd_stage_bridge.h"
 
 #include <utility>
 
@@ -118,7 +121,7 @@ void bind_collection_view(nb::module_& m, const char* name)
 
 class PyMaterial : public Material {
 public:
-    NB_TRAMPOLINE(Material, 10);
+    NB_TRAMPOLINE(Material, 11);
     virtual void set_properties(const Properties& props) override { NB_OVERRIDE(set_properties, props); }
     virtual void on_create(std::optional<const Properties> props) override { NB_OVERRIDE(on_create, props); }
     virtual void on_destroy() override { NB_OVERRIDE(on_destroy); }
@@ -143,6 +146,7 @@ public:
         NB_OVERRIDE(write_to_cursor, cursor);
     }
     virtual void write_to_cursor(sgl::ShaderCursor cursor) const override { NB_OVERRIDE(write_to_cursor, cursor); }
+    virtual SceneCapabilities required_capabilities() const override { NB_OVERRIDE(required_capabilities); }
     virtual ref<sgl::SlangModule> required_module() const override { NB_OVERRIDE(required_module); }
     using Material::mark_dirty;
 };
@@ -166,6 +170,15 @@ class PySceneGlobals : public SceneGlobals {
 FALCOR_PY_EXPORT(render_scene)
 {
     using namespace falcor;
+
+    nb::sgl_enum<LSSIntersectionMode>(m, "LSSIntersectionMode", D(LSSIntersectionMode));
+
+    nb::class_<HitGroupPolicy> hit_group_policy(m, "HitGroupPolicy", D(HitGroupPolicy));
+    hit_group_policy //
+        .def_ro("mode", &HitGroupPolicy::mode, D(HitGroupPolicy, mode))
+        .def_ro("ray_type_count", &HitGroupPolicy::ray_type_count, D(HitGroupPolicy, ray_type_count))
+        .def_ro("geometry_type_count", &HitGroupPolicy::geometry_type_count, D(HitGroupPolicy, geometry_type_count));
+    nb::sgl_enum<HitGroupPolicy::Mode>(hit_group_policy, "Mode", D(HitGroupPolicy, Mode));
 
     nb::sgl_enum_flags<SceneBindFlags>(m, "SceneBindFlags", D(SceneBindFlags));
     nb::sgl_enum_flags<SceneUpdateFlags>(m, "SceneUpdateFlags", D(SceneUpdateFlags));
@@ -194,11 +207,11 @@ FALCOR_PY_EXPORT(render_scene)
         .value("use_threshold", shared::OpacityFlags::use_threshold)
         .value("evaluate_material", shared::OpacityFlags::evaluate_material);
 
-    nb::sgl_enum<AlphaMode>(m, "AlphaMode", D(AlphaMode));
 
     nb::enum_<shared::GeometryType>(m, "GeometryType", D_NA(GeometryType), nb::is_arithmetic())
         .value("triangle", shared::GeometryType::triangle)
-        .value("lss", shared::GeometryType::lss);
+        .value("lss", shared::GeometryType::lss)
+        .value("area_light", shared::GeometryType::area_light);
 
     nb::class_<SceneUpdateContext>(m, "SceneUpdateContext", D(SceneUpdateContext))
         .def_prop_ro(
@@ -215,23 +228,54 @@ FALCOR_PY_EXPORT(render_scene)
         )
         .def("submit", &SceneUpdateContext::submit, D(SceneUpdateContext, submit));
 
-    nb::class_<SceneRequirements>(m, "SceneRequirements", D(SceneRequirements))
-        .def_ro("modules", &SceneRequirements::modules, D(SceneRequirements, modules))
-        .def_ro(
-            "type_conformances",
-            &SceneRequirements::type_conformances,
-            nb::rv_policy::copy,
-            D(SceneRequirements, type_conformances)
+    nb::sgl_enum_flags<SceneCapabilityFlags>(m, "SceneCapabilityFlags");
+    nb::sgl_enum<SceneCapabilityPolicy>(m, "SceneCapabilityPolicy", D(SceneCapabilityPolicy));
+    nb::class_<SceneCapabilities>(m, "SceneCapabilities", D(SceneCapabilities))
+        .def(nb::init<SceneCapabilityFlags>(), "flags"_a = SceneCapabilityFlags::none)
+        .DEF_RO(SceneCapabilities, flags)
+        .def_static("all", &SceneCapabilities::all, D(SceneCapabilities, all))
+        .def("covers", &SceneCapabilities::covers, "required"_a, D(SceneCapabilities, covers))
+        .def("has", &SceneCapabilities::has, "requested"_a, D(SceneCapabilities, has))
+        .def("merged", &SceneCapabilities::merged, "other"_a, D(SceneCapabilities, merged))
+        .def(
+            "__eq__",
+            [](const SceneCapabilities& self, const SceneCapabilities& other)
+            {
+                return self == other;
+            }
+        );
+
+    nb::class_<SceneRenderRequest>(m, "SceneRenderRequest", D(SceneRenderRequest))
+        .def(
+            nb::init<std::vector<std::string>, SceneCapabilities>(),
+            "material_aovs"_a = std::vector<std::string>{},
+            "required_capabilities"_a = SceneCapabilities{}
         )
-        .def_ro(
-            "ray_tracing_pipeline_flags",
-            &SceneRequirements::ray_tracing_pipeline_flags,
-            D(SceneRequirements, ray_tracing_pipeline_flags)
+        .DEF_RW(SceneRenderRequest, material_aovs)
+        .DEF_RW(SceneRenderRequest, required_capabilities);
+
+    nb::class_<SceneRequirements, Object>(m, "SceneRequirements", D(SceneRequirements))
+        .DEF_RO(SceneRequirements, capabilities, nb::rv_policy::copy)
+        .DEF_RO(SceneRequirements, modules)
+        .DEF_RO(SceneRequirements, type_conformances, nb::rv_policy::copy)
+        .DEF_RO(SceneRequirements, hit_group_policy, nb::rv_policy::copy)
+        .DEF_RO(SceneRequirements, geometry_type_mask)
+        .DEF_RO(SceneRequirements, lss_intersection_mode)
+        .DEF_RO(SceneRequirements, ray_tracing_pipeline_flags)
+        .def(
+            "matches_shader_inputs",
+            &SceneRequirements::matches_shader_inputs,
+            "other"_a.none(),
+            D(SceneRequirements, matches_shader_inputs)
         )
-        .def_ro(
-            "requires_opacity_evaluation",
-            &SceneRequirements::requires_opacity_evaluation,
-            D(SceneRequirements, requires_opacity_evaluation)
+        .def("matches", &SceneRequirements::matches, "other"_a.none(), D(SceneRequirements, matches))
+        .def(nb::self == nb::self)
+        .def(nb::self != nb::self)
+        .def(
+            "has_geometry_type",
+            &SceneRequirements::has_geometry_type,
+            "type"_a,
+            D(SceneRequirements, has_geometry_type)
         );
 
     nb::sgl_enum<SceneObjectKind>(m, "SceneObjectKind", D(SceneObjectKind));
@@ -247,6 +291,7 @@ FALCOR_PY_EXPORT(render_scene)
         .DEF_PROP_RO(SceneObject, kind)
         .DEF_PROP_RO(SceneObject, collection_index)
         .DEF_PROP_RW(SceneObject, name)
+        .DEF_PROP_RO(SceneObject, source_asset_ref, nb::rv_policy::copy)
         .def("remove", &SceneObject::remove, D(SceneObject, remove))
         .DEF_PROP_RO(SceneObject, is_valid)
         .def("on_create", &SceneObject::on_create, "props"_a.none() = nb::none(), D(SceneObject, on_create))
@@ -297,12 +342,13 @@ FALCOR_PY_EXPORT(render_scene)
             "cursor"_a,
             "Write this material to a ShaderCursor (Slang struct)."
         )
+        .def("required_capabilities", &Material::required_capabilities, D(Material, required_capabilities))
         .def(
             "required_module",
             &Material::required_module,
             "Returns the additional Slang module required by this material, or None."
         )
-        .def("mark_dirty", &PyMaterial::mark_dirty, "flags"_a, "Mark this material as dirty.");
+        .def("mark_dirty", &PyMaterial::mark_dirty, "flags"_a, D(Material, mark_dirty));
 
     m.attr("MaterialT") = nb::type_var("MaterialT", "bound"_a = nb::type<Material>());
 
@@ -318,23 +364,32 @@ FALCOR_PY_EXPORT(render_scene)
 
     nb::class_<SceneGlobals, PySceneGlobals, Object>(m, "SceneGlobals", D(SceneGlobals)).def(nb::init<>());
 
-    nb::class_<AnimationChannel>(m, "AnimationChannel", D(AnimationChannel))
+    nb::class_<AnimationTimeRange>(m, "AnimationTimeRange", D(AnimationTimeRange))
         .def(nb::init<>())
-        .DEF_RW(AnimationChannel, value_type)
-        .DEF_RW(AnimationChannel, interpolation_mode)
-        .DEF_RW(AnimationChannel, times)
-        .DEF_RW(AnimationChannel, values)
-        .DEF_RW(AnimationChannel, in_tangents)
-        .DEF_RW(AnimationChannel, out_tangents)
+        .def(nb::init<float, float>(), "start"_a, "end"_a)
+        .DEF_RW(AnimationTimeRange, start)
+        .DEF_RW(AnimationTimeRange, end)
+        .def("is_valid", &AnimationTimeRange::is_valid, D(AnimationTimeRange, is_valid))
+        .def("expand", &AnimationTimeRange::expand, "other"_a, D(AnimationTimeRange, expand));
+
+    // Float-array getters convert to Python lists; edits require property assignment.
+    nb::class_<AnimationChannel, Object>(m, "AnimationChannel", D(AnimationChannel))
+        .def(nb::init<>())
+        .DEF_PROP_RW(AnimationChannel, value_type)
+        .DEF_PROP_RW(AnimationChannel, interpolation_mode)
+        .DEF_PROP_RW(AnimationChannel, times)
+        .DEF_PROP_RW(AnimationChannel, values)
+        .DEF_PROP_RW(AnimationChannel, in_tangents)
+        .DEF_PROP_RW(AnimationChannel, out_tangents)
         .DEF_PROP_RO(AnimationChannel, components_per_value)
         .DEF_PROP_RO(AnimationChannel, keyframe_count);
 
     nb::class_<Animation, SceneObject>(m, "Animation", D(Animation))
-        .DEF_RW(Animation, channels)
-        .DEF_PROP_RO(Animation, duration);
+        .DEF_PROP_RW(Animation, channels)
+        .DEF_PROP_RO(Animation, key_range);
 
     nb::class_<TransformAnimation, Component>(m, "TransformAnimation", D(TransformAnimation))
-        .DEF_PROP_RW(TransformAnimation, animation)
+        .DEF_PROP_RW(TransformAnimation, animation, nb::for_setter(nb::arg().none()))
         .DEF_PROP_RW(TransformAnimation, translation_channel)
         .DEF_PROP_RW(TransformAnimation, rotation_channel)
         .DEF_PROP_RW(TransformAnimation, scale_channel)
@@ -376,9 +431,35 @@ FALCOR_PY_EXPORT(render_scene)
 
     bind_signal<SceneUpdatedSignal>(m, "SceneUpdatedSignal");
 
+    nb::class_<AOVDesc>(m, "AOVDesc", D(AOVDesc))
+        .def_ro("id", &AOVDesc::id)
+        .def_ro("name", &AOVDesc::name)
+        .def_ro("type", &AOVDesc::type)
+        .def_ro("component_count", &AOVDesc::component_count);
+
+    nb::class_<MaterialAOVRegistry, Object> material_aov_registry(m, "MaterialAOVRegistry");
+    material_aov_registry
+        .def_prop_ro(
+            "output_generation",
+            &MaterialAOVRegistry::output_generation,
+            D(MaterialAOVRegistry, output_generation)
+        )
+        .def(
+            "register_output",
+            &MaterialAOVRegistry::register_output,
+            "name"_a,
+            "type"_a,
+            "component_count"_a,
+            D(MaterialAOVRegistry, register_output)
+        )
+        .def("find_output", &MaterialAOVRegistry::find_output, "name"_a, D(MaterialAOVRegistry, find_output))
+        .def_prop_ro("outputs", &MaterialAOVRegistry::outputs, D(MaterialAOVRegistry, outputs))
+        .def("has_output", &MaterialAOVRegistry::has_output, "name"_a, D(MaterialAOVRegistry, has_output));
+
     nb::class_<SceneConfig>(m, "SceneConfig", D(SceneConfig))
-        .def(nb::init<UVOrigin>(), "uv_origin"_a = UVOrigin::upper_left)
-        .DEF_RO(SceneConfig, uv_origin);
+        .def(nb::init<UVOrigin, uint32_t>(), "uv_origin"_a = UVOrigin::upper_left, "max_mip_count"_a = 0)
+        .DEF_RO(SceneConfig, uv_origin)
+        .DEF_RO(SceneConfig, max_mip_count);
 
     nb::class_<Scene, Object>(m, "Scene", D(Scene))
         .def_static("create", &Scene::create, "device"_a, "config"_a = SceneConfig(), D(Scene, create))
@@ -390,6 +471,29 @@ FALCOR_PY_EXPORT(render_scene)
             "import_options"_a.none() = nb::none(),
             "config"_a.none() = nb::none(),
             D(Scene, load)
+        )
+        .def_static(
+            "from_stage",
+            [](ref<sgl::Device> device,
+               nb::object usd_stage,
+               std::optional<ImportOptions> import_options,
+               std::optional<SceneConfig> config)
+            {
+                const pxr::UsdStage* stage = usd_stage_bridge::try_extract(usd_stage.ptr());
+                if (!stage)
+                    throw nb::type_error("usd_stage must be a falcor2.pxr.Usd.Stage");
+                return Scene::from_stage(std::move(device), *stage, import_options, config);
+            },
+            "device"_a,
+            "usd_stage"_a,
+            "import_options"_a.none() = nb::none(),
+            "config"_a.none() = nb::none(),
+            nb::sig(
+                "def from_stage(device: slangpy.Device, usd_stage: falcor2.pxr.Usd.Stage, import_options: "
+                "ImportOptions "
+                "| None = None, config: SceneConfig | None = None) -> Scene"
+            ),
+            D(Scene, from_stage)
         )
         .def_static(
             "from_importer_scene",
@@ -419,6 +523,19 @@ FALCOR_PY_EXPORT(render_scene)
         .DEF_PROP_RO(Scene, device)
         .DEF_PROP_RO(Scene, config)
         .DEF_PROP_RO(Scene, texture_manager)
+        .def_prop_ro(
+            "material_aov_registry",
+            &Scene::material_aov_registry,
+            nb::rv_policy::reference,
+            "Scene-local catalog of permanent typed material AOV declarations."
+        )
+        .def(
+            "find_objects_by_source_asset_ref",
+            &Scene::find_objects_by_source_asset_ref,
+            "source_asset_ref"_a,
+            nb::rv_policy::reference,
+            D(Scene, find_objects_by_source_asset_ref)
+        )
         .def("add_scene_globals", &Scene::add_scene_globals, "globals"_a, D(Scene, add_scene_globals))
         .def("remove_scene_globals", &Scene::remove_scene_globals, "globals"_a, D(Scene, remove_scene_globals))
         .def(
@@ -478,7 +595,16 @@ FALCOR_PY_EXPORT(render_scene)
         .def_prop_ro("update_generation", &Scene::update_generation, D(Scene, update_generation))
         .def_prop_ro("updated", &Scene::updated, nb::rv_policy::reference_internal, D(Scene, updated))
         .def_prop_ro("render_module", &Scene::render_module, nb::rv_policy::reference_internal, D(Scene, render_module))
-        .def_prop_ro("requirements", &Scene::requirements, nb::rv_policy::reference_internal, D(Scene, requirements))
+        .DEF_PROP_RO(Scene, required_capabilities)
+        .DEF_PROP_RO(Scene, requirements)
+        .def(
+            "resolve_requirements",
+            &Scene::resolve_requirements,
+            "request"_a = SceneRenderRequest{},
+            "policy"_a = SceneCapabilityPolicy::all,
+            "specified_capabilities"_a = SceneCapabilities::all(),
+            D(Scene, resolve_requirements)
+        )
         .def_prop_ro("requirements_generation", &Scene::requirements_generation, D(Scene, requirements_generation))
         .def("bind", &Scene::bind, "globals"_a, "flags"_a = SceneBindFlags::all, D(Scene, bind))
         .def_prop_ro(
@@ -520,7 +646,7 @@ FALCOR_PY_EXPORT(render_scene)
             D(Scene, active_camera)
         )
         .DEF_PROP_RW(Scene, time)
-        .DEF_PROP_RO(Scene, animation_duration)
+        .DEF_PROP_RO(Scene, animation_range)
         .def("has_animation", &Scene::has_animation, D(Scene, has_animation));
 
     nb::class_<GeometryGroup, Geometry>(m, "GeometryGroup", D(GeometryGroup))
@@ -541,6 +667,15 @@ FALCOR_PY_EXPORT(render_scene)
 
     nb::class_<StandardMaterial, Material> standard_material(m, "StandardMaterial", D(StandardMaterial));
     reflection::bind<StandardMaterial>(standard_material);
+
+    nb::class_<GLTFMaterial, Material> gltf_material(m, "GLTFMaterial", D(GLTFMaterial));
+    reflection::bind<GLTFMaterial>(gltf_material);
+    nb::class_<GLTFSpecGlossMaterial, Material> gltf_specgloss_material(
+        m,
+        "GLTFSpecGlossMaterial",
+        D(GLTFSpecGlossMaterial)
+    );
+    reflection::bind<GLTFSpecGlossMaterial>(gltf_specgloss_material);
 
     nb::class_<UnlitMaterial, Material> unlit_material(m, "UnlitMaterial", D(UnlitMaterial));
     reflection::bind<UnlitMaterial>(unlit_material);
@@ -612,6 +747,7 @@ FALCOR_PY_EXPORT(render_scene)
     reflection::bind<DistantLight>(m);
     reflection::bind<PointLight>(m);
     reflection::bind<SphereLight>(m);
+    reflection::bind<CylinderLight>(m);
     reflection::bind<DiskLight>(m);
     reflection::bind<RectLight>(m);
     reflection::bind<EnvMapLight>(m);

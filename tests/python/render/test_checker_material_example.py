@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 import slangpy as spy
 from falcor2.editor import create_device
+from falcor2.testing.helpers import DEFAULT_DEVICE_TYPES
 
 
 DATA_SCENES_DIR = Path(__file__).resolve().parents[3] / "data" / "scenes"
@@ -25,12 +26,13 @@ def load_scene_sampling_module(device: spy.Device, scene: f2.Scene) -> tuple[spy
     from falcor2.editor import SceneShaderHelper
 
     helper = SceneShaderHelper(device)
-    module = helper.get_module(scene, "falcor2.tools.materials.scene_sampling_tools")
+    module, _ = helper.prepare(scene, "falcor2.tools.materials.scene_sampling_tools")
     return module, helper
 
 
-def test_checker_material_example() -> None:
-    device = create_device(enable_debug_layers=True)
+@pytest.mark.parametrize("device_type", DEFAULT_DEVICE_TYPES)
+def test_checker_material_example(device_type: spy.DeviceType) -> None:
+    device = create_device(device_type, enable_debug_layers=True)
     scene = f2.Scene.create(device)
 
     props = f2.Properties()

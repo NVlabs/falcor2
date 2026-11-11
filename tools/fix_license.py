@@ -28,6 +28,7 @@ INCLUDE_PATHS = [
 
 EXCLUDE_PATHS = [
     "src/falcor2_ext/py_doc.h",
+    "slang/falcor2/utils/geometry/precise_ray_spawn.slang",
 ]
 
 EXTENSIONS = ["h", "cpp", "slang", "slangh", "py"]

@@ -31,6 +31,8 @@ FALCOR_PY_EXPORT(render_texture_manager)
 {
     using namespace falcor;
 
+    nb::sgl_enum_flags<TextureLoadFlags>(m, "TextureLoadFlags", D(TextureLoadFlags));
+
     nb::class_<TextureHandle> texture_handle(m, "TextureHandle", D(TextureHandle));
     texture_handle //
         .def(nb::init<>(), D(TextureHandle, TextureHandle))
@@ -55,8 +57,14 @@ FALCOR_PY_EXPORT(render_texture_manager)
 
     nb::class_<TextureManager, Object> texture_manager(m, "TextureManager", D(TextureManager));
     texture_manager //
-        .def(nb::init<ref<sgl::Device>>(), "device"_a, D(TextureManager, TextureManager))
+        .def(
+            nb::init<ref<sgl::Device>, uint32_t>(),
+            "device"_a,
+            "max_mip_count"_a = 0,
+            D(TextureManager, TextureManager)
+        )
         .DEF_PROP_RO(TextureManager, device)
+        .DEF_PROP_RO(TextureManager, max_mip_count)
         .DEF_PROP_RO(TextureManager, default_sampler)
         .DEF_PROP_RO(TextureManager, stats)
         .def(
@@ -65,28 +73,28 @@ FALCOR_PY_EXPORT(render_texture_manager)
                std::filesystem::path path,
                ref<AssetResolver> resolver,
                std::variant<std::monostate, SamplerConfig, ref<sgl::Sampler>> sampler,
-               bool generate_mips,
-               bool srgb,
+               TextureLoadFlags flags,
                sgl::TextureUsage usage,
-               bool load_deferred)
+               bool load_deferred,
+               std::optional<uint32_t> max_mip_count)
             {
                 return self.load_texture({
                     .path = std::move(path),
                     .resolver = std::move(resolver),
                     .sampler = std::move(sampler),
-                    .generate_mips = generate_mips,
-                    .srgb = srgb,
+                    .flags = flags,
                     .usage = usage,
                     .load_deferred = load_deferred,
+                    .max_mip_count = max_mip_count,
                 });
             },
             "path"_a,
             "resolver"_a.none() = nb::none(),
             "sampler"_a.none() = nb::none(),
-            "generate_mips"_a = TextureManager::LoadTextureDesc().generate_mips,
-            "srgb"_a = TextureManager::LoadTextureDesc().srgb,
+            "flags"_a = TextureManager::LoadTextureDesc().flags,
             "usage"_a = TextureManager::LoadTextureDesc().usage,
             "load_deferred"_a = TextureManager::LoadTextureDesc().load_deferred,
+            "max_mip_count"_a = nb::none(),
             D(TextureManager, load_texture)
         )
         .def(

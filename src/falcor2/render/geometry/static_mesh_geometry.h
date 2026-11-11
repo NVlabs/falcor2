@@ -4,21 +4,17 @@
 #pragma once
 
 #include "falcor2/render/geometry.h"
+#include "falcor2/render/geometry/geometry_vertex_attribute.h"
 
 #include "falcor2/core/types.h"
 #include "falcor2/core/properties.h"
 
 #include <span>
+#include <vector>
 
 namespace falcor {
 
 struct StaticMeshGeometryDataDesc {
-    template<typename T>
-    struct VertexAttributeStream {
-        const T* data;
-        size_t stride;
-    };
-
     template<typename T>
     struct IndexStream {
         const T* data;
@@ -33,11 +29,7 @@ struct StaticMeshGeometryDataDesc {
 
     std::string_view name;
     uint32_t vertex_count;
-    VertexAttributeStream<float3> position_stream;
-    VertexAttributeStream<float3> normal_stream;
-    VertexAttributeStream<float3> tangent_stream;
-    VertexAttributeStream<float> handedness_stream;
-    VertexAttributeStream<float2> texcoord_stream;
+    std::span<const MeshVertexAttributeDesc> vertex_attributes;
 
     std::vector<SubMesh> sub_meshes;
 };
@@ -57,6 +49,8 @@ public:
     // SceneObject interface
 
     virtual void clear_invalid_references() override;
+    virtual void on_add_to_scene() override;
+    virtual void on_remove_from_scene() override { clear_render_state(); }
 
     // Geometry interface
 
@@ -89,6 +83,19 @@ public:
     /// Number of indices in the given sub-mesh.
     size_t index_count(size_t sub_mesh_index) const { return indices(sub_mesh_index).size(); }
 
+    /// Vertex attributes of the given sub-mesh in its remapped vertex order.
+    std::span<const MeshVertexAttribute> vertex_attributes(size_t sub_mesh_index) const
+    {
+        return m_sub_meshes.at(sub_mesh_index).vertex_attributes;
+    }
+
+    /// Find a vertex attribute of the given sub-mesh by semantic and index.
+    MeshVertexAttribute* find_vertex_attribute(size_t sub_mesh_index, MeshAttributeSemantic semantic, uint32_t index);
+
+    /// Find a vertex attribute of the given sub-mesh by semantic and index.
+    const MeshVertexAttribute*
+    find_vertex_attribute(size_t sub_mesh_index, MeshAttributeSemantic semantic, uint32_t index) const;
+
     /// Recompute local bounds from the CPU-side packed vertex positions.
     void recompute_local_aabb();
 
@@ -103,10 +110,14 @@ public:
     }
 
 private:
+    void clear_render_state();
+    void register_geometry_attributes();
+
     struct SubMesh {
         std::string name;
         std::vector<shared::PackedTriangleVertex> vertices;
         std::vector<uint32_t> indices;
+        std::vector<MeshVertexAttribute> vertex_attributes;
         Material* material{nullptr};
     };
 

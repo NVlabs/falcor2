@@ -10,6 +10,14 @@ namespaces, Slang modules, CMake targets, or runtime paths. A future MaterialX
 upgrade should update this note and compatibility tests without renaming the
 integration.
 
+## Default-first development and testing
+
+Read the [MaterialX default-backend and validation policy](../../../../../docs/design/materialx-integration.md#default-backend-and-validation-policy)
+before changing this integration. The primary consumer is the build's default backend. Make substantial work
+function on the default first, then verify the other supported backends. Primary tests and examples leave the
+layering mode at its default; explicit non-default modes are
+compatibility checks. Keep codegen-only tests CPU-only, and avoid duplicating an entire feature matrix across modes.
+
 The implementation is organized as follows:
 
 - `mtlx_material.*` contains the renderer-facing `MaterialXMaterial` class.

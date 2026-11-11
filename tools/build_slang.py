@@ -50,19 +50,23 @@ def clear_slang():
         shutil.rmtree(CUSTOM_SLANG_SOURCE_DIR, onerror=del_rw)
 
 
-def clone_slang(slang_repository: str, slang_branch: str):
+def clone_slang(slang_repository: str, slang_branch: str, *, checkout: bool = True):
+    """Resolve a branch, tag or commit once; optionally fetch only revision metadata."""
     env = get_build_env()
-
-    git_args = [
-        "clone",
-        "--recursive",
-        "--branch",
-        slang_branch,
-        slang_repository,
-        str(CUSTOM_SLANG_SOURCE_DIR),
+    subprocess.run(["git", "init", str(CUSTOM_SLANG_SOURCE_DIR)], env=env, check=True)
+    # Source builds need history/tags for Slang's generated version information.
+    fetch_options = ["--tags"] if checkout else ["--depth=1", "--filter=blob:none"]
+    commands = [
+        ["remote", "add", "origin", slang_repository],
+        ["fetch", *fetch_options, "origin", slang_branch],
     ]
-
-    subprocess.run(["git", *git_args], env=env, cwd=SOURCE_DIR, check=True)
+    if checkout:
+        commands += [
+            ["checkout", "--detach", "FETCH_HEAD"],
+            ["submodule", "update", "--init", "--recursive"],
+        ]
+    for command in commands:
+        subprocess.run(["git", *command], env=env, cwd=CUSTOM_SLANG_SOURCE_DIR, check=True)
 
 
 def configure_slang():

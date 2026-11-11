@@ -140,7 +140,7 @@ public struct DiffuseSpecularBRDF : IBSDF, IDifferentiable
         float alpha = roughness * roughness;
         float3 h = normalize(wi + wo);
         float wi_dot_h = dot(wi, h);
-        float D = evalNdfGGX(alpha, h.z);
+        float D = evalNdfGGX(alpha, h);
         float G = evalMaskingSmithGGXCorrelated(alpha, wi.z, wo.z);
         float3 F = eval_fresnel_schlick(albedo, float3(1.0), wi_dot_h);
         return F * (D * G * 0.25f / max(1e-6f, wi.z * wo.z));

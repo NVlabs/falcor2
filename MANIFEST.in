@@ -1,0 +1,4 @@
+include src/falcor2/falcor2.h
+recursive-include skills *
+global-exclude *.pyc
+global-exclude __pycache__

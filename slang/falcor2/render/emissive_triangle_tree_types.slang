@@ -1,15 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include "falcor2/shared_types_compat.slangh"
+
 #ifndef FALCOR_SHARED_HOST
 implementing render;
-#define FALCOR_EMISSIVE_TREE_CONST
-#define FALCOR_EMISSIVE_TREE_MUTATING [mutating]
-#define FALCOR_EMISSIVE_TREE_STATIC_CONST static const
-#else
-#define FALCOR_EMISSIVE_TREE_CONST const
-#define FALCOR_EMISSIVE_TREE_MUTATING
-#define FALCOR_EMISSIVE_TREE_STATIC_CONST inline static constexpr
 #endif
 
 namespace detail {
@@ -97,16 +92,16 @@ public struct EmissiveTriangleTreeNode
     public uint triangle_offset;
     public uint triangle_count;
 
-    public bool is_leaf() FALCOR_EMISSIVE_TREE_CONST { return triangle_count != 0; }
+    public bool is_leaf() FALCOR_SHARED_METHOD_CONST { return triangle_count != 0; }
 
-    public float3 get_bounds_min() FALCOR_EMISSIVE_TREE_CONST { return center - extent; }
+    public float3 get_bounds_min() FALCOR_SHARED_METHOD_CONST { return center - extent; }
 
-    public float3 get_bounds_max() FALCOR_EMISSIVE_TREE_CONST { return center + extent; }
+    public float3 get_bounds_max() FALCOR_SHARED_METHOD_CONST { return center + extent; }
 
     /// Stores a conservative center/extent representation of the source bounds.
     /// The extent is made exactly representable by the packed node format so
     /// subsequent pack/unpack operations are geometrically idempotent.
-    FALCOR_EMISSIVE_TREE_MUTATING public void set_bounds(float3 bounds_min, float3 bounds_max)
+    FALCOR_SHARED_MUTATING public void set_bounds(float3 bounds_min, float3 bounds_max)
     {
         center = 0.5f * bounds_min + 0.5f * bounds_max;
         extent = float3(
@@ -129,11 +124,11 @@ public struct EmissiveTriangleTreeNode
 /// triangle count minus one.
 public struct PackedEmissiveTriangleTreeNode
 {
-    public FALCOR_EMISSIVE_TREE_STATIC_CONST uint LEAF_BIT = 0x80000000;
-    public FALCOR_EMISSIVE_TREE_STATIC_CONST uint TRIANGLE_OFFSET_BITS = 25;
-    public FALCOR_EMISSIVE_TREE_STATIC_CONST uint TRIANGLE_OFFSET_MASK = (1 << TRIANGLE_OFFSET_BITS) - 1;
-    public FALCOR_EMISSIVE_TREE_STATIC_CONST uint TRIANGLE_COUNT_MASK = 0x3f;
-    public FALCOR_EMISSIVE_TREE_STATIC_CONST uint MAX_TRIANGLE_COUNT = TRIANGLE_COUNT_MASK + 1;
+    public FALCOR_SHARED_CONSTANT uint LEAF_BIT = 0x80000000;
+    public FALCOR_SHARED_CONSTANT uint TRIANGLE_OFFSET_BITS = 25;
+    public FALCOR_SHARED_CONSTANT uint TRIANGLE_OFFSET_MASK = (1 << TRIANGLE_OFFSET_BITS) - 1;
+    public FALCOR_SHARED_CONSTANT uint TRIANGLE_COUNT_MASK = 0x3f;
+    public FALCOR_SHARED_CONSTANT uint MAX_TRIANGLE_COUNT = TRIANGLE_COUNT_MASK + 1;
 
     public uint metadata;
     public float center_x;
@@ -145,13 +140,13 @@ public struct PackedEmissiveTriangleTreeNode
     public uint packed_cone_direction;
     public float flux;
 
-    public bool is_leaf() FALCOR_EMISSIVE_TREE_CONST { return (metadata & LEAF_BIT) != 0; }
+    public bool is_leaf() FALCOR_SHARED_METHOD_CONST { return (metadata & LEAF_BIT) != 0; }
 
-    public uint right_child() FALCOR_EMISSIVE_TREE_CONST { return metadata; }
+    public uint right_child() FALCOR_SHARED_METHOD_CONST { return metadata; }
 
-    public uint triangle_offset() FALCOR_EMISSIVE_TREE_CONST { return metadata & TRIANGLE_OFFSET_MASK; }
+    public uint triangle_offset() FALCOR_SHARED_METHOD_CONST { return metadata & TRIANGLE_OFFSET_MASK; }
 
-    public uint triangle_count() FALCOR_EMISSIVE_TREE_CONST
+    public uint triangle_count() FALCOR_SHARED_METHOD_CONST
     {
         return ((metadata >> TRIANGLE_OFFSET_BITS) & TRIANGLE_COUNT_MASK) + 1;
     }
@@ -216,6 +211,4 @@ public static EmissiveTriangleTreeNode unpack_emissive_triangle_tree_node(Packed
 
 } // namespace detail
 
-#undef FALCOR_EMISSIVE_TREE_CONST
-#undef FALCOR_EMISSIVE_TREE_MUTATING
-#undef FALCOR_EMISSIVE_TREE_STATIC_CONST
+#include "falcor2/shared_types_compat_undef.slangh"

@@ -243,8 +243,8 @@ def test_scene_to_dict_adds_environment_map_runtime_details(tmp_path: Path) -> N
             "active": False,
             "env_map_path": env_path,
             "exposure": 1.0,
-            "intensity": Vector([0.8, 0.7, 0.6]),
-            "tint": Vector([1.0, 0.5, 0.25]),
+            "intensity": 2.0,
+            "color": Vector([0.8, 0.7, 0.6]),
         },
     )
     env_node.components = [env_light]
@@ -268,9 +268,9 @@ def test_scene_to_dict_adds_environment_map_runtime_details(tmp_path: Path) -> N
     assert environment["lighting"] == {
         "active": False,
         "exposure": 1.0,
-        "intensity": [0.8, 0.7, 0.6],
-        "tint": [1.0, 0.5, 0.25],
-        "effective_intensity": [1.6, 0.7, 0.3],
+        "intensity": 2.0,
+        "color": [0.8, 0.7, 0.6],
+        "effective_intensity": [3.2, 2.8, 2.4],
     }
     assert environment["texture"] == {
         "width": 2048,

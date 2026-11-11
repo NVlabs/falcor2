@@ -4,6 +4,7 @@
 #pragma once
 
 #include "falcor2/core/asset_resolver.h"
+#include "falcor2/render/texture_load_flags.h"
 
 #include "falcor2/core/cursor_writer.h"
 #include "falcor2/core/object.h"
@@ -19,6 +20,7 @@
 #include <array>
 #include <atomic>
 #include <map>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -106,23 +108,23 @@ public:
         std::filesystem::path path;
         /// Asset resolver to use for resolving relative paths (optional).
         ref<AssetResolver> resolver;
-        /// Sampler or sampler configuration (optional).
+        /// Sampler or sampler configuration (optional; a null sampler uses the default).
         std::variant<std::monostate, SamplerConfig, ref<sgl::Sampler>> sampler;
-        /// Generate mipmaps for the texture.
-        bool generate_mips{true};
-        /// Treat the texture as sRGB.
-        bool srgb{true};
+        /// Texture transformations and preset (defaults to color).
+        TextureLoadFlags flags{TextureLoadFlags::color};
         /// Texture usage flags.
         sgl::TextureUsage usage{sgl::TextureUsage::shader_resource};
         /// Defer texture loading until `update()` is called.
         bool load_deferred{false};
+        /// Override the manager's mip count limit. Unset uses the manager's limit; zero disables it.
+        std::optional<uint32_t> max_mip_count;
     };
 
     /// Parameters for registering a texture.
     struct RegisterTextureDesc {
         /// Texture to register.
         ref<sgl::Texture> texture;
-        /// Sampler or sampler configuration (optional).
+        /// Sampler or sampler configuration (optional; a null sampler uses the default).
         std::variant<std::monostate, SamplerConfig, ref<sgl::Sampler>> sampler;
     };
 
@@ -144,11 +146,17 @@ public:
         uint32_t total_sampler_count{0};
     };
 
-    TextureManager(ref<sgl::Device> device);
+    /// Create a manager with a default texture loading cap. Zero means unrestricted; 13 allows 4096 for power-of-two
+    /// images. Registering already-created textures bypasses the cap. DDS without a fitting mip uses its smallest mip
+    /// and warns.
+    TextureManager(ref<sgl::Device> device, uint32_t max_mip_count = 0);
     ~TextureManager();
 
     /// Device associated with the texture manager.
     sgl::Device* device() const { return m_device; }
+
+    /// Full mip count limit used when loading textures.
+    uint32_t max_mip_count() const { return m_max_mip_count; }
 
     /// Default texture sampler.
     sgl::Sampler* default_sampler() const { return m_default_sampler; }
@@ -163,10 +171,10 @@ public:
     /// @param path Path to the texture file.
     /// @param resolver Asset resolver to use for resolving relative paths (optional).
     /// @param sampler Sampler or sampler configuration (optional).
-    /// @param generate_mips Generate mipmaps for the texture.
-    /// @param srgb Treat the texture as sRGB.
+    /// @param flags Texture transformations and preset (defaults to color).
     /// @param usage Texture usage flags.
     /// @param load_deferred Defer texture loading until `update()` is called.
+    /// @param max_mip_count Override the manager's mip count limit. Unset uses the manager's limit; zero disables it.
     /// @return Texture handle.
     TextureHandle load_texture(const LoadTextureDesc& desc);
 
@@ -198,9 +206,9 @@ private:
     };
 
     struct TextureOptions {
-        bool generate_mips{true};
-        bool srgb{true};
+        TextureLoadFlags flags{TextureLoadFlags::color};
         sgl::TextureUsage usage{sgl::TextureUsage::shader_resource};
+        uint32_t max_mip_count{0};
         auto operator<=>(const TextureOptions&) const = default;
     };
 
@@ -316,6 +324,7 @@ private:
     Stats collect_stats() const;
 
     ref<sgl::Device> m_device;
+    uint32_t m_max_mip_count{0};
     ref<sgl::TextureLoader> m_texture_loader;
     /// Default asset resolver. Used when no resolver is specified to resolve relative texture paths.
     ref<AssetResolver> m_default_asset_resolver;

@@ -251,6 +251,7 @@ def _create_slang_session(device: spy.Device) -> Any:
     return device.create_slang_session(
         {
             "include_paths": device.slang_session.desc.compiler_options.include_paths,
+            "floating_point_mode": device.slang_session.desc.compiler_options.floating_point_mode,
             "debug_info": (
                 spy.SlangDebugInfoLevel.standard
                 if device.info.type != spy.DeviceType.vulkan

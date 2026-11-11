@@ -16,6 +16,7 @@ target_sources(falcor2_tests PRIVATE
     native/core/test_properties.cpp
     native/core/test_python_interpreter.cpp
     native/core/test_signal.cpp
+    native/core/test_ustring.cpp
     native/core/reflection/test_dynamic_properties.cpp
     native/core/reflection/test_metadata.cpp
     native/core/reflection/test_reflection.cpp
@@ -27,28 +28,38 @@ target_sources(falcor2_tests PRIVATE
     native/gltf_importer/test_sampler_info.cpp
     native/importers/test_importer_animation.cpp
     native/importers/test_importer_edit_stream.cpp
+    native/importers/test_importer_vertex_stream.cpp
     native/importers/test_mesh_tessellator.cpp
+    native/importers/test_tangent_transfer.cpp
+    native/importers/test_ribbon_tessellator.cpp
     native/importers/test_mikkt_cache.cpp
     native/importers/test_vertex_deduplication.cpp
     native/render/test_scene.cpp
     native/render/test_animation.cpp
     native/render/test_emissive_triangle_tree.cpp
+    native/render/test_material_aov_registry.cpp
     native/render/test_materials.cpp
     native/render/test_scene_object.cpp
     native/render/test_static_curve_geometry.cpp
+    native/streaming/test_webrtc.cpp
     native/ui/test_editor_command.cpp
     native/ui/test_icon_library.cpp
     native/ui/test_property_layout.cpp
     native/ui/test_scene_editor.cpp
     native/usd_importer/test_usd_importer.cpp
+    native/usd_importer/test_usd_importer_tasks.cpp
     native/utils/test_color.cpp
     native/utils/test_offset_allocator.cpp
     native/utils/test_packing.cpp
+    native/utils/test_transform.cpp
 )
 
 target_include_directories(falcor2_tests PRIVATE ./native)
 target_compile_definitions(falcor2_tests PRIVATE FALCOR_ENABLE_MIKKT_COMPARISON)
-target_link_libraries(falcor2_tests PRIVATE falcor2 falcor2_header_only usd)
+target_link_libraries(falcor2_tests PRIVATE falcor2 falcor2_header_only falcor2_usd)
+if(FALCOR_ENABLE_STREAMING)
+    target_link_libraries(falcor2_tests PRIVATE LibDataChannel::LibDataChannel)
+endif()
 add_dependencies(falcor2_tests
     falcor2_ext
     falcor2_copy_mtlx

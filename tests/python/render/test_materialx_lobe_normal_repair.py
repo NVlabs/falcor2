@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
 from typing import Any
 
 import numpy as np
@@ -110,9 +111,35 @@ _MATERIALX_LOBE_NORMALS = """<materialx version="1.39" colorspace="lin_rec709">
   </surfacematerial>
 </materialx>"""
 
+
+def _normal_repair_document(hair: bool) -> str:
+    # Keep the authored parameter graphs, but test the fiber and surface domains separately.
+    document = ET.fromstring(_MATERIALX_LOBE_NORMALS)
+    surface = document.find("nested_surface")
+    assert surface is not None
+    if hair:
+        # A normal with a tangent component must not rotate the physical fiber axis.
+        normal = document.find("constant[@name='hair_normal']/input")
+        assert normal is not None
+        normal.set("value", "0.5, 0.04993762, 0.99875234")
+        surface.tag = "surface"
+        surface.remove(surface.find("input[@name='direct_normal']"))
+    surface.find("input[@name='bsdf']").set("nodename", "hair" if hair else "mixed_subsurface")
+    return ET.tostring(document, encoding="unicode")
+
+
+_COMPATIBILITY_LAYERING_MODE = f2.MaterialXLayeringMode.bsdf_mix
+
 _LAYERING_MODES = [
-    f2.MaterialXLayeringMode.closure_tree,
-    f2.MaterialXLayeringMode.bsdf_mix,
+    pytest.param(f2.MaterialXLayeringMode.closure_tree, marks=pytest.mark.nightly),
+    pytest.param(
+        f2.MaterialXLayeringMode.bsdf_mix,
+        marks=(
+            pytest.mark.nightly
+            if _COMPATIBILITY_LAYERING_MODE != f2.MaterialXLayeringMode.bsdf_mix
+            else ()
+        ),
+    ),
 ]
 
 _DEVICE_TYPES = [
@@ -126,16 +153,31 @@ def _float3(value: Any) -> np.ndarray:
     return np.array([float(value.x), float(value.y), float(value.z)], dtype=np.float32)
 
 
+@pytest.mark.parametrize("device_type", _DEVICE_TYPES[:1])
+def test_materialx_default_per_lobe_normal_repair(
+    device_type: spy.DeviceType, device: spy.Device
+) -> None:
+    """Exercise every normal/frame/sample assertion without overriding the default."""
+    _check_materialx_per_lobe_normal_repair(device, layering_mode=None)
+
+
 @pytest.mark.parametrize("device_type", _DEVICE_TYPES)
 @pytest.mark.parametrize("layering_mode", _LAYERING_MODES)
 def test_materialx_per_lobe_normal_repair(
     device_type: spy.DeviceType, device: spy.Device, layering_mode: f2.MaterialXLayeringMode
 ) -> None:
+    _check_materialx_per_lobe_normal_repair(device, layering_mode)
+
+
+def _check_materialx_per_lobe_normal_repair(
+    device: spy.Device, layering_mode: f2.MaterialXLayeringMode | None
+) -> None:
     scene = f2.Scene.create(device)
     props = f2.Properties()
-    props["mtlx_buffer"] = _MATERIALX_LOBE_NORMALS
+    props["mtlx_buffer"] = _normal_repair_document(hair=False)
     props["mtlx_node_name"] = "M"
-    props["mtlx_layering_mode"] = layering_mode
+    if layering_mode is not None:
+        props["mtlx_layering_mode"] = layering_mode
     material = scene.create_material(f2.MaterialXMaterial, props)
     scene.update()
 
@@ -145,10 +187,10 @@ def test_materialx_per_lobe_normal_repair(
     source_module = spy.Module.load_from_file(
         device, "render/test_materialx_lobe_normal_repair.slang"
     )
-    module = helper.get_module(scene, source_module)
+    module, requirements = helper.prepare(scene, source_module)
     probe = (
         module.materialx_lobe_normal_repair_probe.as_func()
-        .type_conformances(scene.requirements.type_conformances)
+        .type_conformances(requirements.type_conformances)
         .write(helper.bind_scene)
         .return_type(spy.Tensor)
     )
@@ -172,25 +214,22 @@ def test_materialx_per_lobe_normal_repair(
     results = [probe_cursor[index].read() for index in range(sample_count)]
     first_result = results[0]
 
-    assert first_result["no_hint_bsdf_count"] == 5
-    assert first_result["adjusted_bsdf_count"] == 5
+    assert first_result["no_hint_bsdf_count"] == 4
+    assert first_result["adjusted_bsdf_count"] == 4
     no_hint_normals = np.stack([_float3(value) for value in first_result["no_hint_bsdf_normal"]])
     adjusted_normals = np.stack([_float3(value) for value in first_result["adjusted_bsdf_normal"]])
 
     aligned = np.array([0.0, 0.0, 1.0], dtype=np.float32)
     grazing = np.array([0.99875234, 0.0, 0.04993762], dtype=np.float32)
     subsurface = np.array([-0.99875234, 0.0, 0.04993762], dtype=np.float32)
-    hair = np.array([0.0, -0.99875234, 0.04993762], dtype=np.float32)
     direct = np.array([0.0, 0.99875234, 0.04993762], dtype=np.float32)
 
     # Layering modes store lobes in different orders, so identify them by their authored frames.
     assert np.min(np.linalg.norm(no_hint_normals - aligned, axis=1)) < 1e-5
     assert np.min(np.linalg.norm(no_hint_normals - grazing, axis=1)) < 1e-5
     assert np.min(np.linalg.norm(no_hint_normals - subsurface, axis=1)) < 1e-5
-    assert np.min(np.linalg.norm(no_hint_normals - hair, axis=1)) < 1e-5
     assert np.min(np.linalg.norm(no_hint_normals - direct, axis=1)) < 1e-5
     assert np.min(np.linalg.norm(adjusted_normals - aligned, axis=1)) < 1e-5
-    assert np.min(np.linalg.norm(adjusted_normals - hair, axis=1)) < 1e-5
     assert np.min(np.linalg.norm(adjusted_normals - grazing, axis=1)) > 0.1
     assert np.min(np.linalg.norm(adjusted_normals - subsurface, axis=1)) > 0.1
     assert np.min(np.linalg.norm(adjusted_normals - direct, axis=1)) > 0.1
@@ -198,7 +237,7 @@ def test_materialx_per_lobe_normal_repair(
     repaired_indices = [
         index
         for index, normal in enumerate(adjusted_normals)
-        if np.linalg.norm(normal - aligned) > 0.1 and np.linalg.norm(normal - hair) > 0.1
+        if np.linalg.norm(normal - aligned) > 0.1
     ]
     assert len(repaired_indices) == 3
     for normal in adjusted_normals[repaired_indices]:
@@ -229,3 +268,40 @@ def test_materialx_per_lobe_normal_repair(
         assert np.all(np.isfinite(sampled_wo)) and np.isclose(
             np.linalg.norm(sampled_wo), 1.0, atol=1e-5
         )
+
+
+@pytest.mark.parametrize("device_type", _DEVICE_TYPES)
+def test_materialx_hair_preserves_frame(device: spy.Device) -> None:
+    scene = f2.Scene.create(device)
+    material = scene.create_material(
+        f2.MaterialXMaterial,
+        f2.Properties({"mtlx_buffer": _normal_repair_document(hair=True), "mtlx_node_name": "M"}),
+    )
+    scene.update()
+    from falcor2.editor import SceneShaderHelper
+
+    helper = SceneShaderHelper(device)
+    source = spy.Module.load_from_file(device, "render/test_materialx_lobe_normal_repair.slang")
+    module, requirements = helper.prepare(scene, source)
+    probe = (
+        module.materialx_lobe_normal_repair_probe.as_func()
+        .type_conformances(requirements.type_conformances)
+        .write(helper.bind_scene)
+        .return_type(spy.Tensor)
+    )
+    values = probe(
+        seeds=np.array([(7, 0, 7)], dtype=np.uint32),
+        material_id=int(material.material_id),
+        uv=np.array([(0.5, 0.5)], dtype=np.float32),
+        wi=np.array([(0, 1, 0)], dtype=np.float32),
+        wo=np.array([(0, 1, 0)], dtype=np.float32),
+    )
+    cursor = values.cursor()
+    cursor.load()
+    result = cursor[0].read()
+    assert result["no_hint_bsdf_count"] == result["adjusted_bsdf_count"] == 1
+    expected = np.array([0.0, -0.99875234, 0.04993762], dtype=np.float32)
+    np.testing.assert_allclose(_float3(result["no_hint_bsdf_normal"][0]), expected, atol=1e-5)
+    np.testing.assert_allclose(_float3(result["adjusted_bsdf_normal"][0]), expected, atol=1e-5)
+    tangent = _float3(result["adjusted_bsdf_tangent"][0])
+    assert abs(np.dot(tangent, expected)) < 1e-5

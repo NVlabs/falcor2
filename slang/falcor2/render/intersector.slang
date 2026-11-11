@@ -79,27 +79,43 @@ public struct MaterialOpacityEvaluator : IOpacityEvaluator
 
         uint hash = jenkins_hash(stochastic_seed ^ uint(hit.geometry_instance_id));
         hash = jenkins_hash(hash ^ hit.primitive_index);
+        // Nearby primitive IDs remain correlated after one Jenkins mix. A second
+        // mix avoids biased joint coverage where transparent triangles overlap.
+        hash = jenkins_hash(hash);
         float sample = (hash >> 8) * 0x1p-24;
         return sample < opacity;
     }
 };
 
-public extern struct OpacityEvaluator : IOpacityEvaluator = AcceptAllHitsEvaluator;
+public static const uint TRIANGLE_BACKFACE_CULLING_RAY_FLAG
+    = ENABLE_TRIANGLE_BACKFACE_CULLING ? RAY_FLAG_CULL_BACK_FACING_TRIANGLES : 0;
 
 
 public struct RayQuerySceneIntersector : ISceneIntersector
 {
     OpacityEvaluator opacity_evaluator;
+    uint instance_inclusion_mask;
 
-    public __init() { opacity_evaluator = OpacityEvaluator(0); }
-    public __init(OpacityEvaluator opacity_evaluator) { this.opacity_evaluator = opacity_evaluator; }
+    public __init()
+    {
+        opacity_evaluator = OpacityEvaluator(0);
+        instance_inclusion_mask = INSTANCE_INCLUSION_MASK_REGULAR_GEOMETRY;
+    }
+    public __init(
+        OpacityEvaluator opacity_evaluator,
+        uint instance_inclusion_mask = INSTANCE_INCLUSION_MASK_REGULAR_GEOMETRY
+    )
+    {
+        this.opacity_evaluator = opacity_evaluator;
+        this.instance_inclusion_mask = instance_inclusion_mask;
+    }
 
     public IHitInfo intersect(Ray ray) { return intersect(ray, MaterialInstanceHints::none); }
 
     public IHitInfo intersect(Ray ray, MaterialInstanceHints hints)
     {
-        RayQuery<OpacityEvaluator.RAY_FLAGS> q;
-        q.TraceRayInline(g_scene.tlas, 0, 0xff, ray.to_ray_desc());
+        RayQuery<TRIANGLE_BACKFACE_CULLING_RAY_FLAG | OpacityEvaluator.RAY_FLAGS> q;
+        q.TraceRayInline(g_scene.tlas, 0, instance_inclusion_mask, ray.to_ray_desc());
         while (q.Proceed()) {
             if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE) {
                 TriangleHitInfo temp_hit = TriangleHitInfo(
@@ -119,12 +135,27 @@ public struct RayQuerySceneIntersector : ISceneIntersector
                 switch (geometry_type) {
                 case GeometryType::lss: {
                     float t = {};
-                    if (intersect_procedural_lss(
+                    if (g_scene.intersect_lss(
+                            geometry_instance_id,
+                            q.CandidatePrimitiveIndex(),
                             q.CandidateObjectRayOrigin(),
                             q.CandidateObjectRayDirection(),
                             q.RayTMin(),
                             q.CommittedRayT(),
-                            g_scene.get_lss_segment(geometry_instance_id, q.CandidatePrimitiveIndex()),
+                            t
+                        )) {
+                        q.CommitProceduralPrimitiveHit(t);
+                    }
+                    continue;
+                }
+                case GeometryType::area_light: {
+                    float t = {};
+                    if (intersect_area_light(
+                            geometry_instance_id,
+                            ray.origin,
+                            ray.dir,
+                            q.RayTMin(),
+                            q.CommittedRayT(),
                             t
                         )) {
                         q.CommitProceduralPrimitiveHit(t);
@@ -171,6 +202,8 @@ public struct RayQuerySceneIntersector : ISceneIntersector
                     g_scene.get_lss_segment(geometry_instance_id, q.CommittedPrimitiveIndex())
                 );
             }
+            case GeometryType::area_light:
+                return AreaLightHitInfo(geometry_instance_id, q.CommittedRayT());
             default:
                 break;
             }
@@ -190,8 +223,10 @@ public struct RayQuerySceneIntersector : ISceneIntersector
 
     public bool is_occluded(Ray ray, MaterialInstanceHints hints)
     {
-        RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | OpacityEvaluator.RAY_FLAGS> q;
-        q.TraceRayInline(g_scene.tlas, 0, 0xff, ray.to_ray_desc());
+        RayQuery<
+            RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | TRIANGLE_BACKFACE_CULLING_RAY_FLAG | OpacityEvaluator.RAY_FLAGS>
+            q;
+        q.TraceRayInline(g_scene.tlas, 0, instance_inclusion_mask, ray.to_ray_desc());
         while (q.Proceed()) {
             if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE) {
                 TriangleHitInfo temp_hit = TriangleHitInfo(
@@ -211,12 +246,27 @@ public struct RayQuerySceneIntersector : ISceneIntersector
                 switch (geometry_type) {
                 case GeometryType::lss: {
                     float t = {};
-                    if (intersect_procedural_lss(
+                    if (g_scene.intersect_lss(
+                            geometry_instance_id,
+                            q.CandidatePrimitiveIndex(),
                             q.CandidateObjectRayOrigin(),
                             q.CandidateObjectRayDirection(),
                             q.RayTMin(),
                             q.CommittedRayT(),
-                            g_scene.get_lss_segment(geometry_instance_id, q.CandidatePrimitiveIndex()),
+                            t
+                        )) {
+                        q.CommitProceduralPrimitiveHit(t);
+                    }
+                    continue;
+                }
+                case GeometryType::area_light: {
+                    float t = {};
+                    if (intersect_area_light(
+                            geometry_instance_id,
+                            ray.origin,
+                            ray.dir,
+                            q.RayTMin(),
+                            q.CommittedRayT(),
                             t
                         )) {
                         q.CommitProceduralPrimitiveHit(t);

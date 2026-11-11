@@ -66,9 +66,11 @@ FALCOR_PY_EXPORT(render_ray_tracing_setup)
             nb::overload_cast<
                 const Scene*,
                 std::span<const SceneRayTracingSetup::RayDesc>,
+                const SceneRequirements*,
                 std::optional<SceneRayTracingSetup::Options>>(&SceneRayTracingSetup::create),
             "scene"_a,
             "ray_descs"_a,
+            "requirements"_a.none() = nb::none(),
             "options"_a.none() = nb::none(),
             D(SceneRayTracingSetup, create)
         )
@@ -77,11 +79,13 @@ FALCOR_PY_EXPORT(render_ray_tracing_setup)
             nb::overload_cast<
                 const Scene*,
                 std::span<const SceneRayTracingSetup::PerGeometryTypeRayDesc>,
+                const SceneRequirements*,
                 std::optional<SceneRayTracingSetup::Options>>(&SceneRayTracingSetup::create),
             "scene"_a,
             "ray_descs"_a,
+            "requirements"_a.none() = nb::none(),
             "options"_a.none() = nb::none(),
-            D(SceneRayTracingSetup, create)
+            D(SceneRayTracingSetup, create, 3)
         )
         .def_ro("entry_points", &SceneRayTracingSetup::entry_points, D(SceneRayTracingSetup, entry_points))
         .def_ro("hit_groups", &SceneRayTracingSetup::hit_groups, D(SceneRayTracingSetup, hit_groups))

@@ -1,22 +1,344 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include "mdl_context.h"
+
 #include "falcor2/core/error.h"
 #include "falcor2/core/logger.h"
+#include "falcor2/core/platform.h"
+#include "falcor2/render/material_aov_registry.h"
 #include "falcor2/utils/fnv_hash.h"
 #include "falcor2/falcor2.h"
 
 #include "mdl_sdk_wrapper.h"
-#include "mdl_context.h"
 #include "mdl_utils.h"
 
 #include <sgl/core/platform.h>
 #include <sgl/core/crypto.h>
 
 #include <algorithm>
+#include <array>
+#include <compare>
+#include <functional>
 #include <set>
+#include <string_view>
+#include <utility>
 
 namespace falcor {
+
+namespace {
+
+// Only inspect compiled constants. Class parameters must remain potentially emissive,
+// even when their current argument values are zero, because they can be edited at runtime.
+mi::base::Handle<const mi::neuraylib::IValue>
+constant_expression_value(const mi::neuraylib::ICompiled_material* material, const char* path)
+{
+    mi::base::Handle<const mi::neuraylib::IExpression> expression(material->lookup_sub_expression(path));
+    while (expression && expression->get_kind() == mi::neuraylib::IExpression::EK_TEMPORARY) {
+        mi::base::Handle<const mi::neuraylib::IExpression_temporary> temporary(
+            expression->get_interface<mi::neuraylib::IExpression_temporary>()
+        );
+        expression
+            = mi::base::Handle<const mi::neuraylib::IExpression>(material->get_temporary(temporary->get_index()));
+    }
+    mi::base::Handle<const mi::neuraylib::IExpression_constant> constant(
+        expression ? expression->get_interface<mi::neuraylib::IExpression_constant>() : nullptr
+    );
+    return mi::base::Handle<const mi::neuraylib::IValue>(constant ? constant->get_value() : nullptr);
+}
+
+bool constant_expression_is_zero(const mi::neuraylib::ICompiled_material* material, const char* path)
+{
+    const auto intensity = constant_expression_value(material, path);
+    mi::base::Handle<const mi::neuraylib::IValue_float> scalar(
+        intensity ? intensity->get_interface<mi::neuraylib::IValue_float>() : nullptr
+    );
+    if (scalar)
+        return scalar->get_value() == 0.f;
+    mi::base::Handle<const mi::neuraylib::IValue_color> color(
+        intensity ? intensity->get_interface<mi::neuraylib::IValue_color>() : nullptr
+    );
+    if (!color)
+        return false;
+    for (mi::Size i = 0; i < 3; ++i) {
+        mi::base::Handle<const mi::neuraylib::IValue_float> channel(color->get_value(i));
+        if (channel->get_value() != 0.f)
+            return false;
+    }
+    return true;
+}
+
+bool surface_emission_is_structurally_zero(const mi::neuraylib::ICompiled_material* material)
+{
+    const auto edf = constant_expression_value(material, "surface.emission.emission");
+    return (edf && edf->get_kind() == mi::neuraylib::IValue::VK_INVALID_DF)
+        || constant_expression_is_zero(material, "surface.emission.intensity");
+}
+
+bool argument_layouts_match(
+    const mi::neuraylib::ITarget_value_layout* a,
+    const mi::neuraylib::ITarget_value_layout* b,
+    mi::neuraylib::Target_value_layout_state a_state = {},
+    mi::neuraylib::Target_value_layout_state b_state = {}
+)
+{
+    if (!a || !b || a->get_size() != b->get_size())
+        return false;
+    mi::neuraylib::IValue::Kind a_kind, b_kind;
+    mi::Size a_size, b_size;
+    const auto a_offset = a->get_layout(a_kind, a_size, a_state);
+    const auto b_offset = b->get_layout(b_kind, b_size, b_state);
+    if (a_offset == mi::Size(~0) || b_offset == mi::Size(~0) || a_offset != b_offset || a_size != b_size
+        || a_kind != b_kind)
+        return false;
+    const auto count = a->get_num_elements(a_state);
+    if (count != b->get_num_elements(b_state))
+        return false;
+    for (mi::Size i = 0; i < count; ++i) {
+        if (!argument_layouts_match(a, b, a->get_nested_state(i, a_state), b->get_nested_state(i, b_state)))
+            return false;
+    }
+    return true;
+}
+
+// The SDK state mask omits scene-data callbacks. Reject scene/state intrinsics and
+// opaque calls before evaluating an expression without a hit.
+bool expression_is_state_independent(
+    const mi::neuraylib::ICompiled_material* material,
+    mi::neuraylib::ITransaction* transaction,
+    const char* path
+)
+{
+    using namespace mi::neuraylib;
+    using Expression = mi::base::Handle<const IExpression>;
+    std::vector<Expression> pending;
+    pending.emplace_back(material->lookup_sub_expression(path));
+    std::set<mi::Size> visited_temporaries;
+    while (!pending.empty()) {
+        Expression expression = std::move(pending.back());
+        pending.pop_back();
+        if (!expression)
+            return false;
+        switch (expression->get_kind()) {
+        case IExpression::EK_CONSTANT:
+        case IExpression::EK_PARAMETER:
+            break;
+        case IExpression::EK_TEMPORARY: {
+            mi::base::Handle<const IExpression_temporary> temporary(expression->get_interface<IExpression_temporary>());
+            if (visited_temporaries.insert(temporary->get_index()).second)
+                pending.emplace_back(material->get_temporary(temporary->get_index()));
+            break;
+        }
+        case IExpression::EK_DIRECT_CALL: {
+            mi::base::Handle<const IExpression_direct_call> call(expression->get_interface<IExpression_direct_call>());
+            mi::base::Handle<const IFunction_definition> definition(
+                transaction->access<IFunction_definition>(call->get_definition())
+            );
+            if (!definition)
+                return false;
+            const auto semantic = definition->get_semantic();
+            using FD = IFunction_definition;
+            if (semantic == FD::DS_UNKNOWN
+                || (semantic >= FD::DS_INTRINSIC_STATE_FIRST && semantic <= FD::DS_INTRINSIC_STATE_LAST)
+                || (semantic >= FD::DS_INTRINSIC_SCENE_FIRST && semantic <= FD::DS_INTRINSIC_SCENE_LAST))
+                return false;
+            mi::base::Handle<const IExpression_list> arguments(call->get_arguments());
+            for (mi::Size i = 0; i < arguments->get_size(); ++i)
+                pending.emplace_back(arguments->get_expression(i));
+            break;
+        }
+        default:
+            return false;
+        }
+    }
+    return true;
+}
+
+struct EmissionZeroCheck {
+    std::string value_path;
+    std::string condition_path;
+    bool condition_value;
+};
+
+std::vector<EmissionZeroCheck>
+emission_zero_checks(const mi::neuraylib::ICompiled_material* material, mi::neuraylib::ITransaction* transaction)
+{
+    using namespace mi::neuraylib;
+    using Expression = mi::base::Handle<const IExpression>;
+    std::vector<EmissionZeroCheck> checks;
+    auto add_check = [&](const std::string& path, const std::string& condition = "", bool condition_value = false)
+    {
+        Expression expression(material->lookup_sub_expression(path.c_str()));
+        if (!expression)
+            return false;
+        mi::base::Handle<const IType> type(expression->get_type());
+        mi::base::Handle<const IType> unaliased(type->skip_all_type_aliases());
+        if ((unaliased->get_kind() != IType::TK_FLOAT && unaliased->get_kind() != IType::TK_COLOR)
+            || !expression_is_state_independent(material, transaction, path.c_str()))
+            return false;
+        if (!constant_expression_value(material, path.c_str()) || constant_expression_is_zero(material, path.c_str()))
+            checks.push_back({path, condition, condition_value});
+        return true;
+    };
+
+    std::vector<std::pair<Expression, std::string>> pending;
+    pending.emplace_back(material->lookup_sub_expression("surface.emission.intensity"), "surface.emission.intensity");
+    std::set<mi::Size> visited_temporaries;
+    while (!pending.empty()) {
+        auto [expression, path] = std::move(pending.back());
+        pending.pop_back();
+        while (expression && expression->get_kind() == IExpression::EK_TEMPORARY) {
+            mi::base::Handle<const IExpression_temporary> temporary(expression->get_interface<IExpression_temporary>());
+            if (!visited_temporaries.insert(temporary->get_index()).second) {
+                expression.reset();
+                break;
+            }
+            expression = Expression(material->get_temporary(temporary->get_index()));
+        }
+        if (!expression || add_check(path))
+            continue;
+        mi::base::Handle<const IExpression_direct_call> call(expression->get_interface<IExpression_direct_call>());
+        if (!call)
+            continue;
+        mi::base::Handle<const IFunction_definition> definition(
+            transaction->access<IFunction_definition>(call->get_definition())
+        );
+        if (!definition)
+            continue;
+        mi::base::Handle<const IExpression_list> arguments(call->get_arguments());
+        if (definition->get_semantic() == IFunction_definition::DS_MULTIPLY) {
+            for (mi::Size i = 0; i < arguments->get_size(); ++i)
+                pending.emplace_back(arguments->get_expression(i), path + "." + arguments->get_name(i));
+        } else if (definition->get_semantic() == IFunction_definition::DS_TERNARY) {
+            const std::string condition_path = path + "." + arguments->get_name(0);
+            if (expression_is_state_independent(material, transaction, condition_path.c_str())) {
+                for (mi::Size i = 1; i < 3; ++i)
+                    add_check(path + "." + arguments->get_name(i), condition_path, i == 1);
+            }
+            // Do not descend into branches: their factors would need the enclosing guard.
+        }
+    }
+    return checks;
+}
+
+MDLContext::TextureSource::Type texture_type_from_mdl_shape(mi::neuraylib::IType_texture::Shape shape)
+{
+    using Shape = mi::neuraylib::IType_texture::Shape;
+    using Type = MDLContext::TextureSource::Type;
+    switch (shape) {
+    case Shape::TS_2D:
+        return Type::Texture2D;
+    case Shape::TS_3D:
+        return Type::Texture3D;
+    case Shape::TS_CUBE:
+        return Type::TextureCube;
+    case Shape::TS_PTEX:
+        return Type::TexturePtex;
+    case Shape::TS_BSDF_DATA:
+        return Type::TextureBSDFData;
+    default:
+        return Type::Unknown;
+    }
+}
+
+MDLContext::TextureSource::Type texture_type_from_mdl_shape(mi::neuraylib::ITarget_code::Texture_shape shape)
+{
+    using Shape = mi::neuraylib::ITarget_code::Texture_shape;
+    using Type = MDLContext::TextureSource::Type;
+    switch (shape) {
+    case Shape::Texture_shape_2d:
+        return Type::Texture2D;
+    case Shape::Texture_shape_3d:
+        return Type::Texture3D;
+    case Shape::Texture_shape_cube:
+        return Type::TextureCube;
+    case Shape::Texture_shape_ptex:
+        return Type::TexturePtex;
+    case Shape::Texture_shape_bsdf_data:
+        return Type::TextureBSDFData;
+    default:
+        return Type::Unknown;
+    }
+}
+
+// The SDK encodes captured strings as IDs, just like target-code string constants. Defaults may introduce
+// strings absent from that table; preserve its indices and append these before handing the table to the host.
+class ArgumentResourceCallback : public mi::base::Interface_implement<mi::neuraylib::ITarget_resource_callback> {
+public:
+    ArgumentResourceCallback(
+        mi::neuraylib::ITransaction* transaction,
+        const mi::neuraylib::ITarget_code* target_code,
+        std::vector<std::string>& strings,
+        std::vector<MDLContext::CompileResult::Texture>& textures
+    )
+        : m_transaction(transaction)
+        , m_target_code(target_code)
+        , m_strings(strings)
+        , m_textures(textures)
+    {
+        if (m_strings.empty())
+            m_strings.emplace_back(); // ID zero always denotes an unknown string.
+    }
+
+    // The SDK calls this while building each instance's argument block. A cached target only knows
+    // the defaults of the instance that created it: if A defaults to brick.png and B to wood.png,
+    // get_known_resource_index() returns 0 (invalid) for B's wood.png despite their identical shader graph.
+    // Reuse or append argument textures in the current instance's table instead. Even a known default
+    // cannot blindly reuse its cached ID, since unused defaults may have been trimmed from that table.
+    // Body textures are different: e.g. a fixed noise.png at ID 1 is referenced directly by generated
+    // shader code, so its ID must stay unchanged. The table is seeded to preserve these IDs before this
+    // callback runs. New entries record texture metadata here; image extraction/loading happens later.
+    mi::Uint32 get_resource_index(const mi::neuraylib::IValue_resource* resource) override
+    {
+        if (const auto index = m_target_code->get_known_resource_index(m_transaction, resource)) {
+            if (resource->get_kind() == mi::neuraylib::IValue::VK_TEXTURE
+                && m_target_code->get_texture_is_body_resource(index))
+                return index;
+        }
+        const char* name = resource->get_value();
+        if (!name || !*name)
+            return 0;
+
+        mi::base::Handle<const mi::neuraylib::IValue_texture> value(
+            resource->get_interface<mi::neuraylib::IValue_texture>()
+        );
+        FALCOR_CHECK(value, "Light profiles and BSDF measurements are not supported");
+        mi::base::Handle<const mi::neuraylib::IType_texture> type(value->get_type());
+        const auto shape = texture_type_from_mdl_shape(type->get_shape());
+        for (const auto& texture : m_textures) {
+            if (texture.name == name && texture.source.type == shape)
+                return texture.index;
+        }
+        const auto index = sgl::narrow_cast<mi::Uint32>(m_textures.size() + 1);
+        m_textures.push_back({
+            .index = index,
+            .name = name,
+            .source = {.type = shape, .srgb = value->get_gamma() == 2.2f},
+        });
+        return index;
+    }
+
+    mi::Uint32 get_string_index(const mi::neuraylib::IValue_string* value) override
+    {
+        const std::string_view name(value->get_value());
+        if (name.empty())
+            return 0;
+        const auto it = std::find(m_strings.begin() + 1, m_strings.end(), name);
+        if (it != m_strings.end())
+            return sgl::narrow_cast<mi::Uint32>(it - m_strings.begin());
+        const auto index = sgl::narrow_cast<mi::Uint32>(m_strings.size());
+        m_strings.emplace_back(name);
+        return index;
+    }
+
+private:
+    mi::neuraylib::ITransaction* m_transaction;
+    const mi::neuraylib::ITarget_code* m_target_code;
+    std::vector<std::string>& m_strings;
+    std::vector<MDLContext::CompileResult::Texture>& m_textures;
+};
+
+} // namespace
 
 struct Tagged_bsdf_info {
     struct Input {
@@ -38,9 +360,28 @@ struct Tagged_bsdf_info {
     Input tint;
 };
 
+// The SDK owns graph equivalence. Exact option/function records cover the remaining
+// translation inputs; do not duplicate CompileRequest fields in a second hash recipe.
+struct TargetCodeKey {
+    std::array<uint32_t, 4> material_hash;
+    std::vector<std::pair<std::string, std::string>> backend_options;
+    std::vector<std::vector<std::pair<std::string, std::string>>> function_groups;
+    auto operator<=>(const TargetCodeKey&) const = default;
+};
+struct TargetCodeEntry {
+    struct FunctionIndices {
+        mi::Size function_index;
+        mi::Size argument_block_index;
+    };
+    mi::base::Handle<const mi::neuraylib::ITarget_code> code;
+    std::vector<FunctionIndices> function_indices;
+};
+using TargetCodeCache = std::map<TargetCodeKey, TargetCodeEntry>;
+
 struct MDLContextImpl : public MDLContext::IImpl {
     ~MDLContextImpl() override
     {
+        target_code_cache.clear();
         if (neuray && neuray->shutdown(true) != 0)
             sgl::log_error("Failed to shutdown the MDL SDK.");
 
@@ -50,7 +391,9 @@ struct MDLContextImpl : public MDLContext::IImpl {
 
     MDLContextImpl()
     {
-        if (std::string error; !mdl_utils::load_mdl_and_get_ineuray(mdl, neuray, error) || !neuray.is_valid_interface())
+        const auto mdl_library = platform::runtime_directory() / ("libmdl_sdk" MI_BASE_DLL_FILE_EXT);
+        if (std::string error; !mdl_utils::load_mdl_and_get_ineuray(mdl, neuray, error, mdl_library.string().c_str())
+            || !neuray.is_valid_interface())
             FALCOR_THROW("Failed to load the MDL SDK:\n{}", error);
 
         // Currently textures will be loaded twice in system memory, once by the MDL plugin and again by the
@@ -64,12 +407,12 @@ struct MDLContextImpl : public MDLContext::IImpl {
         // 2) write a stub plugin which loads the image metadata but doesn't allocate and load the image data in memory.
         if (!mdl_utils::load_mdl_plugin(
                 neuray.get(),
-                (sgl::platform::runtime_directory() / ("nv_openimageio" MI_BASE_DLL_FILE_EXT)).string().c_str()
+                (platform::runtime_directory() / ("nv_openimageio" MI_BASE_DLL_FILE_EXT)).string().c_str()
             ))
             FALCOR_THROW("Failed to load the 'nv_openimageio' plugin.\n");
         if (!mdl_utils::load_mdl_plugin(
                 neuray.get(),
-                (sgl::platform::runtime_directory() / ("dds" MI_BASE_DLL_FILE_EXT)).string().c_str()
+                (platform::runtime_directory() / ("dds" MI_BASE_DLL_FILE_EXT)).string().c_str()
             ))
             FALCOR_THROW("Failed to load the 'dds' plugin.\n");
 
@@ -82,7 +425,10 @@ struct MDLContextImpl : public MDLContext::IImpl {
         //     configure_options.additional_mdl_paths.push_back(path.string());
 
         // Add search path to MDL core definitions.
-        configure_options.additional_mdl_paths.push_back((sgl::platform::runtime_directory() / "mdl").string());
+        configure_options.additional_mdl_paths.push_back((platform::runtime_directory() / "mdl").string());
+        configure_options.additional_mdl_paths.push_back(
+            (platform::runtime_directory() / "mdl_libraries/omni_pbr").string()
+        );
 
         if (std::string error; !mdl_utils::configure_mdl(neuray.get(), configure_options, error))
             FALCOR_THROW("Failed to configure the MDL SDK:\n{}", error);
@@ -94,46 +440,125 @@ struct MDLContextImpl : public MDLContext::IImpl {
 
     sgl::SharedLibraryHandle mdl;
     mi::base::Handle<mi::neuraylib::INeuray> neuray;
-    std::map<std::string, int> path_frequency;
     // Modified materials outlive individual compile requests in the MDL database, so their tagged-BSDF metadata must
     // have the same lifetime. The outer key is the generated material name; the inner key is the unique DF handle.
     std::map<std::string, std::map<std::string, Tagged_bsdf_info>> tagged_bsdf_info_cache;
+    TargetCodeCache target_code_cache;
 
     void* get_neuray() override { return neuray.get(); };
-    bool add_search_paths(const std::span<const std::filesystem::path>& paths) override
+};
+
+struct MDLSearchPathScope::Impl {
+    std::unique_lock<std::recursive_mutex> lock;
+    mi::base::Handle<mi::neuraylib::IMdl_configuration> config;
+    std::vector<std::string> module_paths;
+    std::vector<std::string> resource_paths;
+    bool changed = false;
+
+    explicit Impl(std::recursive_mutex& mutex)
+        : lock(mutex)
     {
-        if (!neuray)
-            return false;
-        mi::base::Handle<mi::neuraylib::IMdl_configuration> mdl_config(
-            neuray->get_api_component<mi::neuraylib::IMdl_configuration>()
-        );
-        std::vector<std::string> new_string_paths;
-        for (const auto& path : paths) {
-            const std::string& str_path = path.string();
-            if (path_frequency[str_path]++ == 0)
-                new_string_paths.push_back(str_path);
-        }
-        std::string outError;
-        return mdl_utils::add_search_paths(mdl_config.get(), new_string_paths, outError);
     }
 
-    bool remove_search_paths(const std::span<const std::filesystem::path>& paths) override
+    ~Impl() noexcept
     {
-        if (!neuray)
-            return false;
-        mi::base::Handle<mi::neuraylib::IMdl_configuration> mdl_config(
-            neuray->get_api_component<mi::neuraylib::IMdl_configuration>()
-        );
-        std::vector<std::string> removed_paths;
-        for (const auto& path : paths) {
-            const std::string& str_path = path.string();
-            if (--path_frequency[str_path] == 0)
-                removed_paths.push_back(str_path);
+        if (!changed)
+            return;
+        // SDK mutation does not throw. Try every restore even when one path disappeared.
+        config->clear_mdl_paths();
+        config->clear_resource_paths();
+        bool restored = true;
+        for (const auto& path : module_paths)
+            restored = (config->add_mdl_path(path.c_str()) == 0) && restored;
+        for (const auto& path : resource_paths)
+            restored = (config->add_resource_path(path.c_str()) == 0) && restored;
+        if (!restored) {
+            try {
+                sgl::log_error("Failed to restore an MDL search path; a directory may have disappeared.");
+            } catch (...) {
+            }
         }
-        std::string outError;
-        return mdl_utils::remove_search_paths(mdl_config.get(), removed_paths, outError);
     }
 };
+
+MDLSearchPathScope::MDLSearchPathScope(MDLContext& context, std::span<const std::filesystem::path> paths)
+    : m_impl(std::make_unique<Impl>(context.m_mutex))
+{
+    if (paths.empty())
+        return;
+    auto* neuray = static_cast<mi::neuraylib::INeuray*>(context.get_neuray());
+    FALCOR_CHECK(neuray, "MDL context has no SDK implementation.");
+    auto& state = *m_impl;
+    state.config = neuray->get_api_component<mi::neuraylib::IMdl_configuration>();
+    auto& config = *state.config;
+    for (mi::Size i = 0; i < config.get_mdl_paths_length(); ++i) {
+        mi::base::Handle<const mi::IString> path(config.get_mdl_path(i));
+        state.module_paths.emplace_back(path->get_c_str());
+    }
+    for (mi::Size i = 0; i < config.get_resource_paths_length(); ++i) {
+        mi::base::Handle<const mi::IString> path(config.get_resource_path(i));
+        state.resource_paths.emplace_back(path->get_c_str());
+    }
+    auto prepend = [&](const std::vector<std::string>& previous)
+    {
+        std::vector<std::filesystem::path> result;
+        auto append = [&](const std::filesystem::path& path)
+        {
+            FALCOR_CHECK(!path.empty(), "MDL search root must not be empty.");
+            const auto normalized = std::filesystem::weakly_canonical(std::filesystem::absolute(path));
+            FALCOR_CHECK(std::filesystem::is_directory(normalized), "MDL search root '{}' is not a directory.", path);
+            for (const auto& existing : result) {
+                if (std::filesystem::equivalent(existing, normalized))
+                    return;
+            }
+            result.push_back(normalized);
+        };
+        for (const auto& path : paths)
+            append(path);
+        for (const auto& path : previous)
+            append(path);
+        return result;
+    };
+    const auto modules = prepend(state.module_paths);
+    const auto resources = prepend(state.resource_paths);
+    state.changed = true;
+    config.clear_mdl_paths();
+    config.clear_resource_paths();
+    for (const auto& path : modules)
+        FALCOR_CHECK(config.add_mdl_path(path.string().c_str()) == 0, "Failed to add MDL search root '{}'.", path);
+    for (const auto& path : resources)
+        FALCOR_CHECK(
+            config.add_resource_path(path.string().c_str()) == 0,
+            "Failed to add MDL resource root '{}'.",
+            path
+        );
+}
+
+MDLSearchPathScope::~MDLSearchPathScope() noexcept = default;
+
+/// Return the float component count, or zero for unsupported AOV types.
+uint32_t get_material_aov_component_count(const mi::neuraylib::IType* source_type)
+{
+    mi::base::Handle<const mi::neuraylib::IType> type(source_type->skip_all_type_aliases());
+    switch (type->get_kind()) {
+    case mi::neuraylib::IType::TK_FLOAT:
+        return 1;
+    case mi::neuraylib::IType::TK_COLOR:
+        return 3;
+    case mi::neuraylib::IType::TK_VECTOR: {
+        mi::base::Handle<const mi::neuraylib::IType_vector> vector_type(
+            type->get_interface<mi::neuraylib::IType_vector>()
+        );
+        mi::base::Handle<const mi::neuraylib::IType> element_type(vector_type->get_element_type());
+        element_type = mi::base::Handle<const mi::neuraylib::IType>(element_type->skip_all_type_aliases());
+        if (element_type->get_kind() != mi::neuraylib::IType::TK_FLOAT)
+            return 0;
+        return uint32_t(vector_type->get_size());
+    }
+    default:
+        return 0;
+    }
+}
 
 inline sgl::LogLevel severity_to_log_level(mi::base::details::Message_severity severity)
 {
@@ -697,7 +1122,8 @@ inline MDLContext::CompileResult compileInternal(
     const MDLContext::CompileRequest& request,
     mi::neuraylib::INeuray* neuray,
     mi::neuraylib::ITransaction* trans,
-    std::map<std::string, std::map<std::string, Tagged_bsdf_info>>& tagged_bsdf_info_cache
+    std::map<std::string, std::map<std::string, Tagged_bsdf_info>>& tagged_bsdf_info_cache,
+    TargetCodeCache& target_code_cache
 )
 {
     auto createError = [](const std::string& msg)
@@ -735,7 +1161,11 @@ inline MDLContext::CompileResult compileInternal(
         return createError(error);
 
     // Load the selected module.
-    mdl_impexp_api->load_module(trans, module_name.c_str(), context.get());
+    if (request.module_source.empty())
+        mdl_impexp_api->load_module(trans, module_name.c_str(), context.get());
+    else
+        mdl_impexp_api
+            ->load_module_from_string(trans, module_name.c_str(), request.module_source.c_str(), context.get());
     if (log_messages_and_check_errors(context.get()))
         return createError("Failed to load the selected module.");
 
@@ -746,6 +1176,24 @@ inline MDLContext::CompileResult compileInternal(
     );
     if (!module)
         return createError("Failed to access the loaded module.");
+
+    // Include dependencies so diagnostics show which implementation won path lookup.
+    std::set<std::string> logged_modules;
+    auto log_origin = [&](auto&& self, const mi::neuraylib::IModule* loaded) -> void
+    {
+        if (!logged_modules.insert(loaded->get_mdl_name()).second)
+            return;
+        if (const char* filename = loaded->get_filename())
+            sgl::log_debug("MDL module origin: {} = {}", loaded->get_mdl_name(), filename);
+        for (mi::Size i = 0; i < loaded->get_import_count(); ++i) {
+            mi::base::Handle<const mi::neuraylib::IModule> imported(
+                trans->access<mi::neuraylib::IModule>(loaded->get_import(i))
+            );
+            if (imported)
+                self(self, imported.get());
+        }
+    };
+    log_origin(log_origin, module.get());
 
     // Access the material definition of the selected material.
     // A module can export multiple materials or none at all.
@@ -764,6 +1212,41 @@ inline MDLContext::CompileResult compileInternal(
     );
     if (!material_definition)
         return createError("Failed to access the material definition.");
+
+    mi::base::Handle<mi::neuraylib::IType_factory> type_factory(mdl_factory->create_type_factory(trans));
+    mi::base::Handle<const mi::neuraylib::IType_struct> effective_material_type;
+    if (!request.target_material_type.empty()) {
+        effective_material_type = mi::base::Handle<const mi::neuraylib::IType_struct>(
+            type_factory->create_struct(request.target_material_type.c_str())
+        );
+        if (!effective_material_type)
+            return createError(
+                fmt::format("Failed to resolve MDL target material type '{}'.", request.target_material_type)
+            );
+    } else {
+        mi::base::Handle<const mi::neuraylib::IType> return_type(material_definition->get_return_type());
+        mi::base::Handle<const mi::neuraylib::IType> unaliased_return_type(return_type->skip_all_type_aliases());
+        effective_material_type = mi::base::Handle<const mi::neuraylib::IType_struct>(
+            unaliased_return_type->get_interface<mi::neuraylib::IType_struct>()
+        );
+        if (!effective_material_type)
+            return createError("MDL material return type is not a struct.");
+    }
+
+    mi::base::Handle<const mi::neuraylib::IStruct_category> material_category(
+        effective_material_type->get_struct_category()
+    );
+    if (!material_category
+        || material_category->get_predefined_id() != mi::neuraylib::IStruct_category::CID_MATERIAL_CATEGORY)
+        return createError(
+            fmt::format(
+                "MDL target type '{}' is not a struct in material_category.",
+                effective_material_type->get_symbol()
+            )
+        );
+
+    if (!request.target_material_type.empty() && context->set_option("target_type", effective_material_type.get()) != 0)
+        return createError(fmt::format("Failed to set MDL target material type '{}'.", request.target_material_type));
 
     if (useExistingInstance) {
         // Use the existing instance, rather than creating a new one.
@@ -790,13 +1273,10 @@ inline MDLContext::CompileResult compileInternal(
     // The next step is to create a compiled material. This already applies some optimizations
     // depending on the following flags and context options.
     //
-    // When performing class compilation of material instances (i.e., ones that were USD-embedded), we always perform
-    // compilation, even if the underlying material definition has been previously compiled for another material
-    // instance. We rely on the fact that difference instances of the same material will have the same generated
-    // code, and create a single module that is shared between the different instances. Rather than compiling a
-    // material more than once, it would be better to use the pre-existing module directly and initialize the
-    // per-instance arguments and resources separately. But currently, the only easy way to generate the argument
-    // blocks and the like is through HLSL code generation.
+    // Compile each instance to obtain its optimized MDL graph and SDK hash.
+    // Equivalent graphs can reuse the cached HLSL target code below, while
+    // create_argument_block() initializes each instance's arguments separately.
+    // Graph compilation is still required; linking and HLSL generation can be skipped.
     const mi::Uint32 flags = request.use_class_compilation ? mi::neuraylib::IMaterial_instance::CLASS_COMPILATION
                                                            : mi::neuraylib::IMaterial_instance::DEFAULT_OPTIONS;
 
@@ -1027,6 +1507,60 @@ inline MDLContext::CompileResult compileInternal(
 
     function_call = {};
 
+    auto expression_has_kind = [&](const char* path, mi::neuraylib::IType::Kind kind)
+    {
+        mi::base::Handle<const mi::neuraylib::IExpression> expression(compiled_material->lookup_sub_expression(path));
+        if (!expression)
+            return false;
+        mi::base::Handle<const mi::neuraylib::IType> expression_type(expression->get_type());
+        mi::base::Handle<const mi::neuraylib::IType> unaliased_type(expression_type->skip_all_type_aliases());
+        return unaliased_type->get_kind() == kind;
+    };
+
+    std::string surface_scattering_path;
+    if (expression_has_kind("surface.scattering", mi::neuraylib::IType::TK_BSDF))
+        surface_scattering_path = "surface.scattering";
+    else if (expression_has_kind("scattering", mi::neuraylib::IType::TK_BSDF))
+        surface_scattering_path = "scattering";
+    else
+        return createError("MDL material does not provide a BSDF at 'surface.scattering' or top-level 'scattering'.");
+
+    std::vector<MDLContext::CompileResult::MaterialAOVOutput> material_aov_outputs;
+    if (request.material_aov_registry
+        && effective_material_type->get_predefined_id() == mi::neuraylib::IType_struct::SID_USER) {
+        material_aov_outputs.reserve(effective_material_type->get_size());
+        for (mi::Size i = 0; i < effective_material_type->get_size(); ++i) {
+            const std::string field_name = effective_material_type->get_field_name(i);
+            mi::base::Handle<const mi::neuraylib::IType> field_type(effective_material_type->get_field_type(i));
+
+            const bool is_render_contract_field = field_name == "thin_walled" || field_name == "surface"
+                || field_name == "backface" || field_name == "ior" || field_name == "volume" || field_name == "geometry"
+                || field_name == "hair" || (field_name == "scattering" && surface_scattering_path == "scattering");
+            if (is_render_contract_field)
+                continue;
+
+            const uint32_t component_count = get_material_aov_component_count(field_type.get());
+            if (!component_count) {
+                mi::base::Handle<const mi::IString> type_name(type_factory->dump(field_type.get()));
+                sgl::log_debug(
+                    "Ignoring unsupported MDL material AOV field '{}' of type '{}'.",
+                    field_name,
+                    type_name ? type_name->get_c_str() : "<unknown>"
+                );
+                continue;
+            }
+
+            const uint32_t id
+                = request.material_aov_registry->register_output(field_name, sgl::DataType::float32, component_count);
+            mi::base::Handle<const mi::neuraylib::IExpression> expression(
+                compiled_material->lookup_sub_expression(field_name.c_str())
+            );
+            if (!expression)
+                return createError(fmt::format("Failed to resolve MDL material AOV field '{}'.", field_name));
+            material_aov_outputs.push_back({field_name, component_count, id, fmt::format("material_aov_{}", id)});
+        }
+    }
+
     // Create a HLSL back-end for code generation.
     mi::base::Handle<mi::neuraylib::IMdl_backend_api> backend_api(
         neuray->get_api_component<mi::neuraylib::IMdl_backend_api>()
@@ -1037,85 +1571,86 @@ inline MDLContext::CompileResult compileInternal(
     if (!hlsl_backend)
         return createError("Failed to create the MDL HLSL backend.");
 
+    const auto material_hash = compiled_material->get_hash();
+    TargetCodeKey target_key{
+        .material_hash = {material_hash.m_id1, material_hash.m_id2, material_hash.m_id3, material_hash.m_id4},
+    };
+    auto set_backend_option = [&](const char* name, const char* value)
+    {
+        hlsl_backend->set_option(name, value);
+        target_key.backend_options.emplace_back(name, value);
+    };
+
     // Set code generation options.
-    hlsl_backend->set_option("internal_space", "coordinate_world");
-    hlsl_backend->set_option("compile_constants", request.options.compile_constants ? "on" : "off");
-    hlsl_backend->set_option("fast_math", request.options.fast_math ? "on" : "off");
-    hlsl_backend->set_option("opt_level", std::to_string(request.options.opt_level).c_str());
-    hlsl_backend->set_option("enable_auxiliary", request.options.enable_auxiliary ? "on" : "off");
-    hlsl_backend->set_option("use_renderer_adapt_normal", request.options.use_renderer_adapt_normal ? "on" : "off");
+    set_backend_option("internal_space", "coordinate_world");
+    set_backend_option("compile_constants", request.options.compile_constants ? "on" : "off");
+    set_backend_option("fast_math", request.options.fast_math ? "on" : "off");
+    set_backend_option("opt_level", std::to_string(request.options.opt_level).c_str());
+    set_backend_option("enable_auxiliary", request.options.enable_auxiliary ? "on" : "off");
+    set_backend_option("use_renderer_adapt_normal", request.options.use_renderer_adapt_normal ? "on" : "off");
     switch (request.options.df_handle_slot_mode) {
     case 0:
-        hlsl_backend->set_option("df_handle_slot_mode", "none");
+        set_backend_option("df_handle_slot_mode", "none");
         break;
     case 1:
     case 2:
     case 4:
     case 8:
-        hlsl_backend->set_option(
-            "df_handle_slot_mode",
-            fmt::format("fixed_{}", request.options.df_handle_slot_mode).c_str()
-        );
+        set_backend_option("df_handle_slot_mode", fmt::format("fixed_{}", request.options.df_handle_slot_mode).c_str());
         break;
     default:
         return createError("Invalid df_handle_slot_mode.");
     }
-    hlsl_backend->set_option("texture_runtime_with_derivs", request.options.texture_runtime_with_derivs ? "on" : "off");
-    hlsl_backend->set_option("num_texture_results", std::to_string(request.options.num_texture_results).c_str());
-    hlsl_backend->set_option("num_texture_spaces", std::to_string(request.options.num_texture_spaces).c_str());
-    hlsl_backend->set_option(
-        "jit_warn_spectrum_conversion",
-        request.options.jit_warn_spectrum_conversion ? "on" : "off"
-    );
-
-    // Create a link unit that will contain all the functions we want to generate code for.
-    mi::base::Handle<mi::neuraylib::ILink_unit> hlsl_link_unit(hlsl_backend->create_link_unit(trans, context.get()));
-    if (log_messages_and_check_errors(context.get()) || !hlsl_link_unit)
-        return createError("Failed to create a link unit");
-
-    enum FUNCTION_DESCRIPTOR_SLOTS {
-        FUNC_DESC_SLOT_INIT = 0,
-        FUNC_DESC_SLOT_IOR,
-        FUNC_DESC_SLOT_THIN_WALLED,
-        FUNC_DESC_SLOT_SURFACE_SCATTER,
-        FUNC_DESC_SLOT_EMISSION_EMISSION,
-        FUNC_DESC_SLOT_EMISSION_INTENSITY,
-        FUNC_DESC_SLOT_EMISSION_MODE,
-        FUNC_DESC_SLOT_BACKFACE_SCATERING,
-        FUNC_DESC_SLOT_BACKFACE_EMISSION_EMISSION,
-        FUNC_DESC_SLOT_BACKFACE_EMISSION_INTENSITY,
-        FUNC_DESC_SLOT_BACKFACE_EMISSION_MODE,
-        FUNC_DESC_SLOT_VOLUME_ABSORPTION_COEFFICIENT,
-        FUNC_DESC_SLOT_VOLUME_SCATTERING_COEFFICIENT,
-        FUNC_DESC_SLOT_GEOMETRY_NORMAL,
-        FUNC_DESC_SLOT_GEOMETRY_CUTOUT_OPACITY,
-        FUNC_DESC_SLOT_GEOMETRY_DISPLACEMENT,
-        FUNC_DESC_SLOT_LAMBDA_FIRST
-    };
+    set_backend_option("texture_runtime_with_derivs", request.options.texture_runtime_with_derivs ? "on" : "off");
+    set_backend_option("num_texture_results", std::to_string(request.options.num_texture_results).c_str());
+    set_backend_option("num_texture_spaces", std::to_string(request.options.num_texture_spaces).c_str());
+    set_backend_option("jit_warn_spectrum_conversion", request.options.jit_warn_spectrum_conversion ? "on" : "off");
 
     // Select the expressions to generate code for.
     using TD = mi::neuraylib::Target_function_description;
     std::vector<TD> descs;
-    descs.resize(FUNC_DESC_SLOT_LAMBDA_FIRST);
-    descs[FUNC_DESC_SLOT_INIT] = (TD("init", "init"));
-    descs[FUNC_DESC_SLOT_IOR] = (TD("ior", "ior"));
-    descs[FUNC_DESC_SLOT_THIN_WALLED] = (TD("thin_walled", "thin_walled"));
-    descs[FUNC_DESC_SLOT_SURFACE_SCATTER] = (TD("surface.scattering", "surface_scattering"));
-    descs[FUNC_DESC_SLOT_EMISSION_EMISSION] = (TD("surface.emission.emission", "surface_emission_emission"));
-    descs[FUNC_DESC_SLOT_EMISSION_INTENSITY] = (TD("surface.emission.intensity", "surface_emission_intensity"));
-    descs[FUNC_DESC_SLOT_EMISSION_MODE] = (TD("surface.emission.mode", "surface_emission_mode"));
-    descs[FUNC_DESC_SLOT_BACKFACE_SCATERING] = (TD("backface.scattering", "backface_scattering"));
-    descs[FUNC_DESC_SLOT_BACKFACE_EMISSION_EMISSION] = (TD("backface.emission.emission", "backface_emission_emission"));
-    descs[FUNC_DESC_SLOT_BACKFACE_EMISSION_INTENSITY]
-        = (TD("backface.emission.intensity", "backface_emission_intensity"));
-    descs[FUNC_DESC_SLOT_BACKFACE_EMISSION_MODE] = (TD("backface.emission.mode", "backface_emission_mode"));
-    descs[FUNC_DESC_SLOT_VOLUME_ABSORPTION_COEFFICIENT]
-        = (TD("volume.absorption_coefficient", "volume_absorption_coefficient"));
-    descs[FUNC_DESC_SLOT_VOLUME_SCATTERING_COEFFICIENT]
-        = (TD("volume.scattering_coefficient", "volume_scattering_coefficient"));
-    descs[FUNC_DESC_SLOT_GEOMETRY_NORMAL] = (TD("geometry.normal", "geometry_normal"));
-    descs[FUNC_DESC_SLOT_GEOMETRY_CUTOUT_OPACITY] = (TD("geometry.cutout_opacity", "geometry_cutout_opacity"));
-    descs[FUNC_DESC_SLOT_GEOMETRY_DISPLACEMENT] = (TD("geometry.displacement", "geometry_displacement"));
+    descs.reserve(16 + material_aov_outputs.size() + tagged_bsdf_infos.size() * 4);
+    descs.emplace_back("init", "init");
+
+    auto has_expression = [&](const char* path)
+    {
+        mi::base::Handle<const mi::neuraylib::IExpression> expression(compiled_material->lookup_sub_expression(path));
+        return bool(expression);
+    };
+    auto add_expression = [&](const char* path, const char* callable_name, const char* same_as = nullptr)
+    {
+        if (!has_expression(path))
+            return false;
+        if (same_as
+            && compiled_material->get_sub_expression_hash(path) == compiled_material->get_sub_expression_hash(same_as))
+            return false;
+        descs.emplace_back(path, callable_name);
+        return true;
+    };
+
+    const bool has_ior = add_expression("ior", "ior");
+    add_expression("thin_walled", "thin_walled");
+    const mi::Size surface_scatter_descriptor_index = descs.size();
+    descs.emplace_back(surface_scattering_path.c_str(), "surface_scattering");
+    const mi::Size surface_emission_descriptor_index = descs.size();
+    const bool has_surface_emission = add_expression("surface.emission.emission", "surface_emission_emission");
+    add_expression("surface.emission.intensity", "surface_emission_intensity");
+    add_expression("surface.emission.mode", "surface_emission_mode");
+    // Like the SDK DXR example, omit duplicate backface functions. The Falcor wrapper only
+    // calls surface functions, so no backface aliases are needed; distinct expressions remain.
+    add_expression("backface.scattering", "backface_scattering", surface_scattering_path.c_str());
+    add_expression("backface.emission.emission", "backface_emission_emission", "surface.emission.emission");
+    add_expression("backface.emission.intensity", "backface_emission_intensity", "surface.emission.intensity");
+    add_expression("backface.emission.mode", "backface_emission_mode", "surface.emission.mode");
+    const bool has_volume_absorption = add_expression("volume.absorption_coefficient", "volume_absorption_coefficient");
+    const bool has_volume_scattering = add_expression("volume.scattering_coefficient", "volume_scattering_coefficient");
+    add_expression("geometry.normal", "geometry_normal");
+    const bool has_cutout_opacity = add_expression("geometry.cutout_opacity", "geometry_cutout_opacity");
+    add_expression("geometry.displacement", "geometry_displacement");
+
+    for (const MDLContext::CompileResult::MaterialAOVOutput& output : material_aov_outputs) {
+        descs.emplace_back(output.name.c_str(), output.callable_name.c_str());
+    }
 
     // Select custom expressions for valid inputs to all tagged bsdfs
     for (const auto& [key, value] : tagged_bsdf_infos) {
@@ -1133,24 +1668,81 @@ inline MDLContext::CompileResult compileInternal(
         add_input_function(value.tint);
     }
 
-    mi::Sint32 add_material_result
-        = hlsl_link_unit->add_material(compiled_material.get(), descs.data(), descs.size(), context.get());
-    if (log_messages_and_check_errors(context.get()) || add_material_result != 0)
-        return createError(
-            fmt::format(
-                "Failed to select functions for code generation (ILink_unit::add_material returned {}).",
-                add_material_result
-            )
-        );
+    std::vector<std::span<TD>> function_groups{descs};
 
-    // Translating the link unit into the target language is the last step and the only one
-    // that can be time consuming. All the steps before are designed to be lightweight for
-    // interactively changing materials and parameters.
-    mi::base::Handle<const mi::neuraylib::ITarget_code> hlsl_target_code(
-        hlsl_backend->translate_link_unit(hlsl_link_unit.get(), context.get())
-    );
-    if (log_messages_and_check_errors(context.get()) || !hlsl_target_code)
-        return createError("Failed to translate the link unit to code.");
+    // Standalone expressions cannot depend on cached values from the shared shading init.
+    const bool potentially_emissive
+        = has_surface_emission && !surface_emission_is_structurally_zero(compiled_material.get());
+    const auto zero_checks = potentially_emissive ? emission_zero_checks(compiled_material.get(), trans)
+                                                  : std::vector<EmissionZeroCheck>{};
+    std::vector<MDLContext::CompileResult::EmissionZeroCheck> check_functions;
+    check_functions.reserve(zero_checks.size()); // Keep callable names stable until translation.
+    std::vector<std::array<TD, 2>> check_probes(zero_checks.size());
+    for (size_t i = 0; i < zero_checks.size(); ++i) {
+        const auto& check = zero_checks[i];
+        const auto& functions = check_functions.emplace_back(
+            fmt::format("emission_value_{}", i),
+            check.condition_path.empty() ? "" : fmt::format("emission_condition_{}", i),
+            check.condition_value
+        );
+        auto& probes = check_probes[i];
+        probes[0] = TD(check.value_path.c_str(), functions.value_function.c_str());
+        probes[1] = TD(check.condition_path.c_str(), functions.condition_function.c_str());
+        for (size_t j = 0; j < (check.condition_path.empty() ? 1u : 2u); ++j)
+            function_groups.emplace_back(&probes[j], 1);
+    }
+
+    // Key and submit the same groups: shared-init functions and standalone emission probes
+    // produce different code even when the flattened list of expressions is identical.
+    for (const auto functions : function_groups) {
+        auto& group = target_key.function_groups.emplace_back();
+        for (const auto& function : functions)
+            group.emplace_back(function.path, function.base_fname);
+    }
+
+    // Like the SDK DXR example, share target code but build each instance's arguments below.
+    // Retain the SDK's indices with the target so hits also skip expensive link-unit construction.
+    // Link/translation context options are fixed at their defaults. If made configurable,
+    // record them in the key too; the earlier context settings only affect graph compilation.
+    mi::base::Handle<const mi::neuraylib::ITarget_code> hlsl_target_code;
+    std::vector<TargetCodeEntry::FunctionIndices> function_indices;
+    const auto cached = target_code_cache.find(target_key);
+    if (cached != target_code_cache.end()) {
+        hlsl_target_code = cached->second.code;
+        size_t i = 0;
+        for (const auto functions : function_groups) {
+            for (auto& function : functions) {
+                const auto& indices = cached->second.function_indices.at(i++);
+                function.function_index = indices.function_index;
+                function.argument_block_index = indices.argument_block_index;
+            }
+        }
+        sgl::log_debug("Reusing MDL target code for {}", request.qualified_material_name);
+    } else {
+        sgl::log_info("Compiling MDL to HLSL for material {} ...", request.qualified_material_name);
+        mi::base::Handle<mi::neuraylib::ILink_unit> hlsl_link_unit(
+            hlsl_backend->create_link_unit(trans, context.get())
+        );
+        if (log_messages_and_check_errors(context.get()) || !hlsl_link_unit)
+            return createError("Failed to create a link unit");
+        for (const auto functions : function_groups) {
+            const mi::Sint32 status
+                = hlsl_link_unit
+                      ->add_material(compiled_material.get(), functions.data(), functions.size(), context.get());
+            if (log_messages_and_check_errors(context.get()) || status != 0)
+                return createError(
+                    fmt::format(
+                        "Failed to select functions for code generation (ILink_unit::add_material returned {}).",
+                        status
+                    )
+                );
+            for (const auto& function : functions)
+                function_indices.push_back({function.function_index, function.argument_block_index});
+        }
+        hlsl_target_code = hlsl_backend->translate_link_unit(hlsl_link_unit.get(), context.get());
+        if (log_messages_and_check_errors(context.get()) || !hlsl_target_code)
+            return createError("Failed to translate the link unit to code.");
+    }
 
     // Next, we query the generated target code and all the resources it needs.
     // We store all of that in a CompileResult object.
@@ -1160,7 +1752,83 @@ inline MDLContext::CompileResult compileInternal(
     if (compiled_material->get_cutout_opacity(&cutout_opacity))
         result.cutout_opacity = std::clamp(cutout_opacity, 0.f, 1.f);
 
+    mi::base::Handle<const mi::neuraylib::IExpression_constant> thin_walled(
+        compiled_material->lookup_sub_expression<mi::neuraylib::IExpression_constant>("thin_walled")
+    );
+    if (thin_walled) {
+        mi::base::Handle<const mi::neuraylib::IValue_bool> value(thin_walled->get_value<mi::neuraylib::IValue_bool>());
+        if (value)
+            result.thin_walled = value->get_value();
+    }
+
     result.code = hlsl_target_code->get_code();
+    result.material_aov_outputs = std::move(material_aov_outputs);
+
+    // Callable availability does not imply emission: even an empty EDF may have
+    // a zero-returning callable. Reject structurally dark materials before triangle allocation.
+    result.has_surface_emission
+        = has_surface_emission && descs[surface_emission_descriptor_index].function_index != mi::Size(~0);
+    result.potentially_emissive = result.has_surface_emission && potentially_emissive;
+    auto probe_is_compatible = [&](const TD& probe)
+    {
+        if (probe.function_index == mi::Size(~0)
+            || hlsl_target_code->get_callable_function_render_state_usage(probe.function_index) != 0)
+            return false;
+        if (probe.argument_block_index == mi::Size(~0)
+            || probe.argument_block_index == descs[surface_scatter_descriptor_index].argument_block_index)
+            return true;
+        // The SDK allocates another layout index for the same compiled material. Reuse the
+        // live argument buffer only when the complete nested layout agrees; otherwise fall back.
+        mi::base::Handle<const mi::neuraylib::ITarget_value_layout> material_layout(
+            hlsl_target_code->get_argument_block_layout(descs[surface_scatter_descriptor_index].argument_block_index)
+        );
+        mi::base::Handle<const mi::neuraylib::ITarget_value_layout> probe_layout(
+            hlsl_target_code->get_argument_block_layout(probe.argument_block_index)
+        );
+        return argument_layouts_match(material_layout.get(), probe_layout.get());
+    };
+    for (size_t i = 0; i < check_probes.size(); ++i) {
+        if (probe_is_compatible(check_probes[i][0])
+            && (check_functions[i].condition_function.empty() || probe_is_compatible(check_probes[i][1])))
+            result.emission_zero_checks.push_back(std::move(check_functions[i]));
+    }
+    if (result.has_surface_emission) {
+        const mi::Size edf_index = descs[surface_emission_descriptor_index].function_index;
+        mi::base::Handle<const mi::neuraylib::IExpression_constant> mode(
+            compiled_material->lookup_sub_expression<mi::neuraylib::IExpression_constant>("surface.emission.mode")
+        );
+        mi::base::Handle<const mi::neuraylib::IValue_enum> value(
+            mode ? mode->get_value<mi::neuraylib::IValue_enum>() : nullptr
+        );
+        // This adapter supports MDL radiant exitance (W/m^2). Total power (W)
+        // requires the emitting object's area, which this material interface does not provide.
+        if (!value || value->get_value() != 0)
+            return createError(
+                "MDL emission requires constant intensity_radiant_exitance; intensity_power and dynamic intensity "
+                "modes are not supported"
+            );
+        result.surface_emission_handle_count
+            = uint32_t(hlsl_target_code->get_callable_function_df_handle_count(edf_index));
+    }
+
+    if (!has_ior)
+        result.code += "\nfloat3 ior(in Shading_state_material state) { return float3(1.5f); }\n";
+    if (!has_volume_absorption)
+        result.code
+            += "\nfloat3 volume_absorption_coefficient(in Shading_state_material state) { return float3(0.0f); }\n";
+    if (!has_volume_scattering)
+        result.code
+            += "\nfloat3 volume_scattering_coefficient(in Shading_state_material state) { return float3(0.0f); }\n";
+    if (!has_cutout_opacity)
+        result.code += "\nfloat geometry_cutout_opacity(in Shading_state_material state) { return 1.0f; }\n";
+
+    for (mi::Size i = 0; i < compiled_material->get_referenced_scene_data_count(); ++i)
+        result.referenced_scene_data.emplace_back(compiled_material->get_referenced_scene_data_name(i));
+    result.render_state_usage = hlsl_target_code->get_render_state_usage();
+    for (mi::Size i = 0; i < hlsl_target_code->get_string_constant_count(); ++i) {
+        const char* value = hlsl_target_code->get_string_constant(i);
+        result.string_constants.emplace_back(value ? value : "");
+    }
 
     if (request.options.enable_tagged_df_properties) {
         // Generate lambda code for the tagged bsdf input expressions
@@ -1181,7 +1849,7 @@ inline MDLContext::CompileResult compileInternal(
                                            "   switch(bsdf_index) {\n";
 
         // Collect the function indices per tagged bsdf, using the material slot order for the bsdfs.
-        mi::Size surface_scatter_function_index = descs[FUNC_DESC_SLOT_SURFACE_SCATTER].function_index;
+        mi::Size surface_scatter_function_index = descs[surface_scatter_descriptor_index].function_index;
         result.surface_scatter_handle_count
             = (uint32_t)hlsl_target_code->get_callable_function_df_handle_count(surface_scatter_function_index);
         for (mi::Size i = 0; i < result.surface_scatter_handle_count; i++) {
@@ -1245,11 +1913,29 @@ inline MDLContext::CompileResult compileInternal(
 
     // Get argument block segments.
     {
+        // Keep body IDs unchanged and the table consecutive. Discard trailing instance defaults;
+        // any defaults before the last body resource must remain to preserve those IDs.
+        mi::Size texture_count = hlsl_target_code->get_texture_count();
+        while (texture_count > 1 && !hlsl_target_code->get_texture_is_body_resource(texture_count - 1))
+            --texture_count;
+        for (mi::Size i = 1; i < texture_count; ++i) {
+            result.textures.push_back({
+                .index = sgl::narrow_cast<uint32_t>(i),
+                .name = hlsl_target_code->get_texture(i),
+                .source = {
+                    .type = texture_type_from_mdl_shape(hlsl_target_code->get_texture_shape(i)),
+                    .srgb = hlsl_target_code->get_texture_gamma(i) == mi::neuraylib::ITarget_code::GM_GAMMA_SRGB,
+                },
+            });
+        }
+        ArgumentResourceCallback
+            resource_callback(trans, hlsl_target_code.get(), result.string_constants, result.textures);
         size_t count = hlsl_target_code->get_argument_block_count();
         for (size_t i = 0; i < count; ++i) {
             mi::base::Handle<const mi::neuraylib::ITarget_argument_block> argBlock(
-                hlsl_target_code->get_argument_block(i)
+                hlsl_target_code->create_argument_block(i, compiled_material.get(), &resource_callback)
             );
+            FALCOR_CHECK(argBlock, "Failed to initialize MDL argument block {}.", i);
             const uint8_t* data = reinterpret_cast<const uint8_t*>(argBlock->get_data());
             size_t size = argBlock->get_size();
 
@@ -1261,8 +1947,7 @@ inline MDLContext::CompileResult compileInternal(
     // Get parameters
     if (hlsl_target_code->get_argument_layout_count()) {
         result.arg_block_layout.clear();
-
-        mi::Size argument_block_index = descs[FUNC_DESC_SLOT_SURFACE_SCATTER].argument_block_index;
+        mi::Size argument_block_index = descs[surface_scatter_descriptor_index].argument_block_index;
         if (argument_block_index != ~0) {
             mi::base::Handle<const mi::neuraylib::ITarget_value_layout> layout(
                 hlsl_target_code->get_argument_block_layout(argument_block_index)
@@ -1291,6 +1976,7 @@ inline MDLContext::CompileResult compileInternal(
                         FALCOR_ASSERT(entry.size == 1);
                         break;
                     case mi::neuraylib::IValue::Kind::VK_INT:
+                    case mi::neuraylib::IValue::Kind::VK_ENUM:
                         entry.type = MDLContext::CompileResult::ArgumentLayout::Type::int_;
                         FALCOR_ASSERT(entry.size == 4);
                         break;
@@ -1320,11 +2006,18 @@ inline MDLContext::CompileResult compileInternal(
                         entry.type = MDLContext::CompileResult::ArgumentLayout::Type::float4x4_;
                         FALCOR_ASSERT(entry.size == 64);
                         break;
-                    case mi::neuraylib::IValue::Kind::VK_TEXTURE:
+                    case mi::neuraylib::IValue::Kind::VK_TEXTURE: {
                         entry.type = MDLContext::CompileResult::ArgumentLayout::Type::texture;
                         FALCOR_ASSERT(entry.size == 4);
+                        mi::base::Handle<const mi::neuraylib::IValue_texture> value(
+                            compiled_material->get_argument<mi::neuraylib::IValue_texture>(j)
+                        );
+                        mi::base::Handle<const mi::neuraylib::IType_texture> type(value->get_type());
+                        entry.texture_type = texture_type_from_mdl_shape(type->get_shape());
+                        if (entry.texture_type == MDLContext::TextureSource::Type::Unknown)
+                            return createError("Unsupported texture argument type");
                         break;
-                    case mi::neuraylib::IValue::Kind::VK_ENUM:
+                    }
                     case mi::neuraylib::IValue::Kind::VK_DOUBLE:
                     case mi::neuraylib::IValue::Kind::VK_STRING:
                     case mi::neuraylib::IValue::Kind::VK_ARRAY:
@@ -1349,9 +2042,9 @@ inline MDLContext::CompileResult compileInternal(
 
     // Get textures.
     {
-        size_t count = hlsl_target_code->get_texture_count();
-        for (size_t i = 1; i < count; ++i) {
-            const char* name = hlsl_target_code->get_texture(i);
+        for (auto& result_texture : result.textures) {
+            const uint32_t i = result_texture.index;
+            const char* name = result_texture.name.c_str();
             mi::base::Handle<const mi::neuraylib::ITexture> texture(trans->access<mi::neuraylib::ITexture>(name));
             mi::base::Handle<const mi::neuraylib::IImage> image(
                 trans->access<mi::neuraylib::IImage>(texture->get_image())
@@ -1372,7 +2065,7 @@ inline MDLContext::CompileResult compileInternal(
                 static std::regex udimRegex("\\.1[0-9]{3}(?!000)\\."); // Valid range 1001-1999
                 filename = std::regex_replace(filename, udimRegex, ".<UDIM>.", std::regex_constants::format_first_only);
             }
-            bool srgb = hlsl_target_code->get_texture_gamma(i) == mi::neuraylib::ITarget_code::GM_GAMMA_SRGB;
+            bool srgb = result_texture.source.srgb;
             uint32_t width = canvas->get_resolution_x();
             uint32_t height = canvas->get_resolution_y();
             uint32_t depth = canvas->get_layers_size();
@@ -1387,36 +2080,28 @@ inline MDLContext::CompileResult compileInternal(
                 depth
             );
 
-            MDLContext::CompileResult::Texture resultTexture;
-            resultTexture.index = (uint32_t)i;
-            resultTexture.name = name;
-            resultTexture.path = filename;
-            resultTexture.srgb = srgb;
-            resultTexture.format = sgl::Format::undefined;
-            resultTexture.width = width;
-            resultTexture.height = height;
-            resultTexture.depth = depth;
+            auto& source = result_texture.source;
+            source.path = filename;
+            source.width = width;
+            source.height = height;
+            source.depth = depth;
 
-            mi::neuraylib::ITarget_code::Texture_shape shape = hlsl_target_code->get_texture_shape(i);
-            switch (shape) {
-            case mi::neuraylib::ITarget_code::Texture_shape_2d:
-                resultTexture.type = MDLContext::CompileResult::Texture::Type::Texture2D;
+            // Shape conversion preserves all MDL shapes; extraction currently supports these two.
+            switch (source.type) {
+            case MDLContext::TextureSource::Type::Texture2D:
                 break;
-            case mi::neuraylib::ITarget_code::Texture_shape_bsdf_data:
-                resultTexture.type = MDLContext::CompileResult::Texture::Type::Texture3D;
-                resultTexture.format = sgl::Format::r32_float;
+            case MDLContext::TextureSource::Type::TextureBSDFData:
+                source.format = sgl::Format::r32_float;
                 {
                     mi::base::Handle<const mi::neuraylib::ITile> tile(canvas->get_tile(0));
                     const uint8_t* data = reinterpret_cast<const uint8_t*>(tile->get_data());
                     size_t size = width * height * depth * sizeof(float);
-                    resultTexture.data = std::vector<uint8_t>(data, data + size);
+                    source.data = std::vector<uint8_t>(data, data + size);
                 }
                 break;
             default:
                 return createError("Unsupported texture type");
             }
-
-            result.textures.push_back(resultTexture);
         }
     }
 
@@ -1446,6 +2131,11 @@ inline MDLContext::CompileResult compileInternal(
         }
     }
 
+    if (cached == target_code_cache.end())
+        target_code_cache.emplace(
+            std::move(target_key),
+            TargetCodeEntry{hlsl_target_code, std::move(function_indices)}
+        );
     result.success = true;
 
     return result;
@@ -1453,7 +2143,7 @@ inline MDLContext::CompileResult compileInternal(
 
 MDLContext::CompileResult MDLContext::compile(const CompileRequest& request)
 {
-    sgl::log_info("Compiling MDL to HLSL for material {} ...", request.qualified_material_name);
+    std::lock_guard lock(m_mutex);
 
     FALCOR_CHECK(m_impl, "MDLContext does not have an active implementation.");
     auto neuray = static_cast<mi::neuraylib::INeuray*>(m_impl->get_neuray());
@@ -1469,7 +2159,13 @@ MDLContext::CompileResult MDLContext::compile(const CompileRequest& request)
 
     // Compile the MDL material using the transaction we just created.
     auto& impl = static_cast<MDLContextImpl&>(*m_impl);
-    CompileResult result = compileInternal(request, neuray, trans.get(), impl.tagged_bsdf_info_cache);
+    CompileResult result;
+    try {
+        result = compileInternal(request, neuray, trans.get(), impl.tagged_bsdf_info_cache, impl.target_code_cache);
+    } catch (...) {
+        trans->abort();
+        throw;
+    }
 
     // Close the transaction.
     if (result.success)

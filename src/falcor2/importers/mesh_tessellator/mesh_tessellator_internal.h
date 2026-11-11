@@ -200,12 +200,17 @@ OutputBinding bind_output(ImporterMesh& result, ImporterMeshDefaultAttribute att
 void initialize_result(const TessellatorInputMesh& input, ImporterMesh& result, std::vector<int>& subgeometry_mapping);
 void exclude_holes_from_output(const TessellatorInputMesh& input, std::span<int> subgeometry_mapping);
 const MeshAttributeStream*
-find_stream(std::span<const MeshAttributeStream> streams, ImporterSemantic semantic, uint32_t index = 0);
+find_stream(std::span<const MeshAttributeStream> streams, ImporterMeshDefaultAttribute attribute);
+inline const MeshAttributeStream*
+find_stream(std::span<const MeshAttributeStream> streams, ImporterSemantic semantic, uint32_t index = 0)
+{
+    return find_stream(streams, {semantic, index});
+}
 std::vector<const MeshAttributeStream*>
 collect_streams(const TessellatorInputMesh& input, MeshAttributeStream& default_uv);
 
 ImporterMesh triangulate_mesh(const TessellatorInputMesh& input);
-ImporterMesh tessellate_subdivision_surface(const TessellatorInputMesh& input);
+ImporterMesh tessellate_subdivision_surface(const TessellatorInputMesh& input, int refinement_level);
 
 } // namespace detail
 } // namespace mesh_tessellator

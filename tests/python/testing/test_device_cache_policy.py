@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from falcor2.testing import helpers
 
 
@@ -51,18 +53,44 @@ def test_close_leaked_devices_reports_only_open_uncached_devices(monkeypatch: An
     assert already_closed.close_count == 0
 
 
-def test_get_device_enables_compilation_reports_for_telemetry(monkeypatch: Any) -> None:
-    created: list[dict[str, Any]] = []
+@pytest.mark.parametrize("cache_enabled", [False, True])
+@pytest.mark.parametrize(
+    "floating_point_mode",
+    [helpers.SlangFloatingPointMode.fast, helpers.SlangFloatingPointMode.precise],
+)
+def test_get_device_enables_compilation_reports_for_telemetry(
+    monkeypatch: Any,
+    tmp_path: Path,
+    cache_enabled: bool,
+    floating_point_mode: helpers.SlangFloatingPointMode,
+) -> None:
+    created: list[Any] = []
 
-    def create_device(**kwargs: Any) -> SimpleNamespace:
-        created.append(kwargs)
+    def create_device(desc: Any) -> SimpleNamespace:
+        created.append(desc)
         return SimpleNamespace()
 
-    monkeypatch.setattr(helpers, "Device", create_device)
-    helpers.configure_test_device_options(compilation_reports_enabled=True)
-    try:
-        helpers.get_device(helpers.DeviceType.d3d12, use_cache=False)
-    finally:
-        helpers.configure_test_device_options()
+    monkeypatch.setattr(helpers, "MODULE_CACHE_ENABLED", cache_enabled)
+    monkeypatch.setattr(helpers, "SHADER_CACHE_ENABLED", cache_enabled)
+    monkeypatch.setattr(helpers, "MODULE_AND_SHADER_CACHE_ROOT", tmp_path)
+    monkeypatch.setattr(helpers, "COMPILATION_REPORTS_ENABLED", False)
+    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+    with monkeypatch.context() as patch:
+        patch.setattr(helpers, "create_device", create_device)
+        patch.setattr(helpers, "COMPILATION_REPORTS_ENABLED", True)
+        helpers.get_device(
+            helpers.DeviceType.d3d12,
+            use_cache=False,
+            floating_point_mode=floating_point_mode,
+        )
 
-    assert created[0]["enable_compilation_reports"] is True
+    desc = created[0]
+    assert isinstance(desc, dict)
+    assert desc["enable_compilation_reports"] is True
+    assert desc["compiler_options"].floating_point_mode == floating_point_mode
+    assert helpers.MODULE_CACHE_ENABLED is cache_enabled
+    assert helpers.SHADER_CACHE_ENABLED is cache_enabled
+    assert helpers.MODULE_AND_SHADER_CACHE_ROOT == tmp_path
+    assert helpers.COMPILATION_REPORTS_ENABLED is False
+    assert desc["module_cache_path"] == (tmp_path / "python" / "module" if cache_enabled else None)
+    assert desc["shader_cache_path"] == (tmp_path / "python" / "shader" if cache_enabled else None)

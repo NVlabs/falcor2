@@ -27,15 +27,12 @@ namespace mtlx {
 namespace params {
 /// Contains all the settings MaterialX uses to describe desired texture loading.
 struct TextureInfo {
-    std::string mx_input_name;  ///< Name of the materialx input
-    std::string file_name;      ///< Filename of the texture to load
-    std::string layer;          ///< Layered within the texture. IGNORED
-    std::string uaddressmode;   ///< U-direction wrap mode used for texture sampler creation.
-    std::string vaddressmode;   ///< V-direction wrap mode used for texture sampler creation.
-    std::string filtertype;     ///< Filter mode used for texture sampler creation.
-    std::string framerange;     ///< Used for per-frame (animated) textures. IGNORED.
-    std::string frameoffset;    ///< Used for per-frame (animated) textures. IGNORED.
-    std::string frameendaction; ///< Used for per-frame (animated) textures. IGNORED.
+    std::string mx_input_name; ///< Name of the materialx input
+    std::string file_name;     ///< Filename of the texture to load
+    std::string layer;         ///< Layered within the texture. IGNORED
+    std::string uaddressmode;  ///< U-direction wrap mode used for texture sampler creation.
+    std::string vaddressmode;  ///< V-direction wrap mode used for texture sampler creation.
+    std::string filtertype;    ///< Filter mode used for texture sampler creation.
     /// MaterialX image default value, used as sampler border color for constant address mode.
     float4 border_color = float4(0.f, 0.f, 0.f, 1.f);
     // Updated after we load the texture

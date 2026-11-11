@@ -4,9 +4,11 @@
 #include "testing.h"
 
 #include "falcor2/render/scene.h"
+#include "falcor2/render/render_scene.h"
 #include "falcor2/render/ray_tracing_setup.h"
 #include "falcor2/render/emissive_geometry_system.h"
 #include "falcor2/render/light_system.h"
+#include "falcor2/render/geometry/static_curve_geometry.h"
 #include "falcor2/render/geometry/static_mesh_geometry.h"
 #include "falcor2/render/geometry/geometry_group.h"
 #include "falcor2/render/component/geometry_instance.h"
@@ -14,13 +16,18 @@
 #include "falcor2/render/component/light.h"
 #include "falcor2/render/material/emission_only_material.h"
 #include "falcor2/render/material/standard_material.h"
+#include "falcor2/render/material/unlit_material.h"
 #include "falcor2/importers/importer.h"
 #include "falcor2/importers/importer_types.h"
 #include "falcor2/core/python_interpreter.h"
 
 #include <sgl/math/vector.h>
+#include <sgl/device/cursor_utils.h>
 
+#include <algorithm>
 #include <array>
+#include <cstring>
+#include <limits>
 
 #include <filesystem>
 #include <fstream>
@@ -52,6 +59,326 @@ private:
 
 TEST_SUITE_BEGIN("Scene");
 
+TEST_CASE("scene pipeline equality covers every setup input independently of shaders")
+{
+    const SceneRequirements baseline;
+    CHECK(baseline.matches_shader_inputs(&baseline));
+    CHECK(baseline.matches(&baseline));
+    CHECK_FALSE(baseline.matches_shader_inputs(nullptr));
+    CHECK_FALSE(baseline.matches(nullptr));
+    const auto equivalent = baseline;
+    CHECK(baseline.matches(&equivalent));
+    CHECK(baseline == equivalent);
+    auto check_pipeline_change = [&](const SceneRequirements& changed)
+    {
+        CHECK(changed.matches_shader_inputs(&baseline));
+        CHECK_FALSE(changed.matches(&baseline));
+        CHECK(changed != baseline);
+    };
+    auto changed = baseline;
+    ++changed.geometry_type_mask;
+    check_pipeline_change(changed);
+    changed = baseline;
+    ++changed.hit_group_policy.ray_type_count;
+    check_pipeline_change(changed);
+    changed = baseline;
+    ++changed.hit_group_policy.geometry_type_count;
+    check_pipeline_change(changed);
+    changed = baseline;
+    changed.hit_group_policy.mode = HitGroupPolicy::Mode::per_geometry_instance_id;
+    check_pipeline_change(changed);
+    changed = baseline;
+    changed.lss_intersection_mode = LSSIntersectionMode::procedural;
+    check_pipeline_change(changed);
+    changed = baseline;
+    changed.ray_tracing_pipeline_flags = sgl::RayTracingPipelineFlags::enable_linear_swept_spheres;
+    check_pipeline_change(changed);
+}
+
+TEST_CASE("scene shader comparison includes conformances and capabilities")
+{
+    SceneRequirements baseline;
+    baseline.type_conformances = {{"IMaterial", "First", 1}, {"IMaterial", "Second", 2}};
+    auto changed = baseline;
+    auto check_shader_change = [&]()
+    {
+        CHECK_FALSE(changed.matches_shader_inputs(&baseline));
+        CHECK(changed != baseline);
+    };
+    changed.type_conformances[0].id = 3;
+    check_shader_change();
+    changed = baseline;
+    changed.type_conformances[0].type_name = "Third";
+    check_shader_change();
+    changed = baseline;
+    changed.type_conformances[0].interface_name = "IOther";
+    check_shader_change();
+    changed = baseline;
+    std::swap(changed.type_conformances[0], changed.type_conformances[1]);
+    check_shader_change();
+    for (auto flag :
+         {SceneCapabilityFlags::geometry_properties,
+          SceneCapabilityFlags::opacity_evaluation,
+          SceneCapabilityFlags::material_aovs}) {
+        changed = baseline;
+        changed.capabilities = {.flags = flag};
+        check_shader_change();
+    }
+}
+
+TEST_CASE_GPU("geometry capability requirements follow imported material usage")
+{
+    auto importer_scene = make_ref<ImporterScene>();
+    importer_scene->materials.emplace_back();
+    ImporterMesh mesh;
+    mesh.ensure_attributes({
+        {ImporterSemantic::position},
+        {ImporterSemantic::normal},
+        {ImporterSemantic::tangent},
+        {ImporterSemantic::handedness},
+        {ImporterSemantic::tex_coord},
+    });
+    mesh.allocate_vertices(3, true);
+    mesh.position_stream()[0] = float3(-1.f, 0.f, 0.f);
+    mesh.position_stream()[1] = float3(1.f, 0.f, 0.f);
+    mesh.position_stream()[2] = float3(0.f, 1.f, 0.f);
+    for (size_t i = 0; i < 3; ++i) {
+        mesh.normal_stream()[i] = float3(0.f, 0.f, 1.f);
+        mesh.tangent_stream()[i] = float3(1.f, 0.f, 0.f);
+        mesh.handedness_stream()[i] = 1.f;
+    }
+    mesh.subgeometries.push_back({.indices = {uint3(0, 1, 2)}, .material_index = 0});
+    mesh.calculate_local_aabb();
+    importer_scene->meshes.push_back(mesh);
+
+    auto basic = Scene::from_importer_scene(ref(ctx.device), *importer_scene);
+    basic->update();
+    CHECK_FALSE(basic->_render_scene()->has_additional_attributes());
+    CHECK_FALSE(basic->resolve_requirements({}, SceneCapabilityPolicy::required)
+                    ->capabilities.has(SceneCapabilityFlags::geometry_properties));
+    CHECK(basic->requirements()->capabilities.has(SceneCapabilityFlags::geometry_properties));
+
+    // Imported vertex colors enable material color use; unused streams do not require geometry access.
+    const ImporterMeshDefaultAttribute extra_streams[] = {
+        {.semantic = ImporterSemantic::tex_coord, .index = 1},
+        {.semantic = ImporterSemantic::tex_coord, .components = 3},
+        {.semantic = ImporterSemantic::color},
+        {.semantic = ImporterSemantic::unknown, .components = 1, .name = "custom_weight"},
+    };
+    for (const auto& extra : extra_streams) {
+        ImporterMesh with_extra;
+        with_extra.ensure_attributes({{ImporterSemantic::position}, extra});
+        with_extra.allocate_vertices(3, true);
+        for (size_t i = 0; i < 3; ++i)
+            with_extra.position_stream()[i] = mesh.position_stream()[i];
+        with_extra.subgeometries = mesh.subgeometries;
+        with_extra.calculate_local_aabb();
+        importer_scene->meshes = {mesh, with_extra};
+        auto detected = Scene::from_importer_scene(ref(ctx.device), *importer_scene);
+        detected->update();
+        CHECK(detected->_render_scene()->has_additional_attributes());
+        CHECK(detected->requirements()->capabilities.has(SceneCapabilityFlags::geometry_properties));
+        // Settings module names hash their source; separate scenes can have distinct module objects.
+        CHECK(detected->requirements()->modules[0]->name() == basic->requirements()->modules[0]->name());
+
+        const bool needs_geometry = extra.semantic == ImporterSemantic::color;
+        CHECK(detected->required_capabilities().has(SceneCapabilityFlags::geometry_properties) == needs_geometry);
+        CHECK(
+            detected->resolve_requirements({}, SceneCapabilityPolicy::required)
+                ->capabilities.has(SceneCapabilityFlags::geometry_properties)
+            == needs_geometry
+        );
+    }
+}
+
+TEST_CASE_GPU("triangle additional attribute enablement tracks nonempty geometries")
+{
+    ref<RenderScene> render_scene = RenderScene::create(ctx.device);
+
+    const RenderTriangleGeometryDesc desc{
+        .vertex_count = 3,
+        .index_count = 3,
+    };
+    const RenderTriangleGeometryHandle first = render_scene->create_triangle_geometry(desc);
+    const RenderTriangleGeometryHandle second = render_scene->create_triangle_geometry(desc);
+
+    const std::array<shared::PackedTriangleVertex, 3> vertices{};
+    const std::array<uint32_t, 3> indices{0, 1, 2};
+    const std::array<float, 6> texcoords{};
+    const RenderTriangleGeometryAdditionalAttributeData texcoord{
+        .mask_bit = 1,
+        .type = shared::AdditionalAttributeType::float32,
+        .component_count = 2,
+        .data = std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(texcoords.data()), sizeof(texcoords)),
+    };
+
+    auto update = [&](RenderTriangleGeometryHandle handle, bool with_additional_attribute)
+    {
+        RenderTriangleGeometryData data{
+            .vertices = vertices,
+            .indices = indices,
+        };
+        if (with_additional_attribute)
+            data.additional_attributes = std::span<const RenderTriangleGeometryAdditionalAttributeData>(&texcoord, 1);
+        render_scene->update_triangle_geometry(handle, data);
+    };
+
+    CHECK_EQ(render_scene->triangle_additional_attribute_geometry_count(), 0);
+
+    update(first, true);
+    CHECK_EQ(render_scene->triangle_additional_attribute_geometry_count(), 1);
+
+    update(second, true);
+    CHECK_EQ(render_scene->triangle_additional_attribute_geometry_count(), 2);
+
+    update(first, false);
+    CHECK_EQ(render_scene->triangle_additional_attribute_geometry_count(), 1);
+
+    render_scene->destroy_triangle_geometry(second);
+    CHECK_EQ(render_scene->triangle_additional_attribute_geometry_count(), 0);
+
+    render_scene->destroy_triangle_geometry(first);
+    CHECK_EQ(render_scene->triangle_additional_attribute_geometry_count(), 0);
+}
+
+TEST_CASE_GPU("scene geometry attribute registry")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    scene->update();
+    const uint64_t initial_requirements_generation = scene->requirements_generation();
+    const auto get_or_create_named
+        = [&](std::string_view name, shared::AdditionalAttributeType type, uint32_t component_count)
+    {
+        return scene
+            ->_get_or_create_geometry_attribute_id(MeshAttributeSemantic::unknown, 0, name, type, component_count);
+    };
+
+    CHECK_EQ(
+        scene->_get_or_create_geometry_attribute_id(
+            MeshAttributeSemantic::tex_coord,
+            0,
+            "",
+            shared::AdditionalAttributeType::float32,
+            2
+        ),
+        0u
+    );
+    CHECK_EQ(
+        scene->_get_or_create_geometry_attribute_id(
+            MeshAttributeSemantic::tex_coord,
+            7,
+            "",
+            shared::AdditionalAttributeType::float16,
+            3
+        ),
+        7u
+    );
+    CHECK_EQ(
+        scene->_get_or_create_geometry_attribute_id(
+            MeshAttributeSemantic::color,
+            0,
+            "",
+            shared::AdditionalAttributeType::float32,
+            4
+        ),
+        8u
+    );
+    CHECK_FALSE(scene->_get_geometry_attribute_id(MeshAttributeSemantic::tex_coord, 8, ""));
+    CHECK_FALSE(scene->_get_geometry_attribute_id(MeshAttributeSemantic::unknown, 0, "missing"));
+
+    CHECK_EQ(scene->_reserve_geometry_attribute_id("Pref"), 16u);
+    CHECK_EQ(scene->_reserve_geometry_attribute_id("Pref"), 16u);
+    CHECK_EQ(scene->_get_geometry_attribute_id(MeshAttributeSemantic::unknown, 0, "Pref"), 16u);
+    CHECK_EQ(get_or_create_named("Pref", shared::AdditionalAttributeType::float32, 3), 16u);
+    CHECK_EQ(get_or_create_named("Pref", shared::AdditionalAttributeType::float32, 3), 16u);
+    CHECK_THROWS_WITH(
+        get_or_create_named("Pref", shared::AdditionalAttributeType::float16, 3),
+        doctest::Contains("inconsistent source type or component count")
+    );
+    CHECK_THROWS_WITH(
+        get_or_create_named("Pref", shared::AdditionalAttributeType::float32, 2),
+        doctest::Contains("inconsistent source type or component count")
+    );
+
+    CHECK_EQ(get_or_create_named("shared", shared::AdditionalAttributeType::float32, 2), 17u);
+    CHECK_EQ(scene->_reserve_geometry_attribute_id("shared"), 17u);
+    CHECK_EQ(
+        scene->_get_or_create_geometry_attribute_id(
+            MeshAttributeSemantic::weights,
+            0,
+            "WEIGHTS_0",
+            shared::AdditionalAttributeType::float32,
+            4
+        ),
+        18u
+    );
+    CHECK_EQ(scene->_get_geometry_attribute_id(MeshAttributeSemantic::tex_coord, 0, ""), 0u);
+    CHECK_EQ(scene->_get_geometry_attribute_id(MeshAttributeSemantic::unknown, 0, "shared"), 17u);
+    CHECK_EQ(scene->_get_geometry_attribute_id(MeshAttributeSemantic::weights, 0, "WEIGHTS_0"), 18u);
+    CHECK_THROWS_WITH(
+        get_or_create_named("", shared::AdditionalAttributeType::float32, 1),
+        doctest::Contains("must have a name")
+    );
+    CHECK_THROWS_WITH(scene->_reserve_geometry_attribute_id(""), doctest::Contains("must have a name"));
+
+    const SceneUpdateFlags update_flags = scene->update();
+    CHECK_FALSE(is_set(update_flags, SceneUpdateFlags::requirements));
+    CHECK_EQ(scene->requirements_generation(), initial_requirements_generation);
+
+    CHECK_EQ(get_or_create_named("geometry_owned", shared::AdditionalAttributeType::int32, 1), 19u);
+    Geometry* removed_geometry = scene->create_geometry("StaticMeshGeometry");
+    removed_geometry->remove();
+    scene->update();
+    CHECK_EQ(scene->_reserve_geometry_attribute_id("geometry_owned"), 19u);
+    CHECK_EQ(scene->_reserve_geometry_attribute_id("after_removal"), 20u);
+
+    auto full_scene = Scene::create(ref(ctx.device));
+    const auto get_or_create_full_named = [&](std::string_view name)
+    {
+        return full_scene->_get_or_create_geometry_attribute_id(
+            MeshAttributeSemantic::unknown,
+            0,
+            name,
+            shared::AdditionalAttributeType::float32,
+            1
+        );
+    };
+    // MDL candidate reservation is host-side work: exercise it once, without updating/compiling the Scene shader.
+#if SGL_WINDOWS
+    const bool check_mdl_candidates = ctx.device->type() == sgl::DeviceType::d3d12;
+#else
+    const bool check_mdl_candidates = ctx.device->type() == sgl::DeviceType::vulkan;
+#endif
+    const uint32_t reserved_count
+        = Scene::NAMED_ATTRIBUTE_ID_END - Scene::NAMED_ATTRIBUTE_ID_BEGIN - uint32_t(check_mdl_candidates);
+    for (uint32_t index = 0; index < reserved_count; ++index) {
+        const std::string name = index == 0 ? "Pref" : fmt::format("custom_{}", index);
+        const uint32_t id = index % 2 == 0 ? full_scene->_reserve_geometry_attribute_id(name)
+                                           : get_or_create_full_named(name).value();
+        CHECK_EQ(id, 16 + index);
+        CHECK_EQ(full_scene->_reserve_geometry_attribute_id(name), id);
+    }
+    if (check_mdl_candidates) {
+        Properties props;
+        props.set(
+            "mdl_library_path",
+            (testing::project_directory() / "tests/python/render/data/mdl_generated_material_pipeline").string()
+        );
+        props.set("mdl_material_name", "scene_data_metadata::Conservative");
+        full_scene->create_material("MDLMaterial", props);
+        // Pref reuses an ID; the unused SDK candidate consumes the final slot. The checks below then overflow.
+        CHECK_EQ(full_scene->_reserve_geometry_attribute_id("unrelated_in_helper"), Scene::NAMED_ATTRIBUTE_ID_END - 1);
+    }
+    CHECK_THROWS_WITH(
+        get_or_create_full_named("overflow"),
+        doctest::Contains("more than 16 distinct named geometry attributes")
+    );
+    CHECK_THROWS_WITH(
+        full_scene->_reserve_geometry_attribute_id("reserved_overflow"),
+        doctest::Contains("more than 16 distinct named geometry attributes")
+    );
+}
+
 TEST_CASE_GPU("ray tracing setup pads three ray type slots")
 {
     auto scene = Scene::create(ref(ctx.device));
@@ -67,27 +394,80 @@ TEST_CASE_GPU("ray tracing setup pads three ray type slots")
         .has_closest_hit = true,
     };
     SceneRayTracingSetup::Options options{.skip_unused_geometry_types = false};
-    SceneRayTracingSetup setup = SceneRayTracingSetup::create(scene.get(), {primary, secondary}, options);
+    SceneRayTracingSetup setup = SceneRayTracingSetup::create(scene.get(), {primary, secondary}, nullptr, options);
 
     CHECK_EQ(setup.sbt_miss_entry_points.size(), 3);
     CHECK_EQ(setup.sbt_miss_entry_points[0], "_scene_primary_miss");
     CHECK_EQ(setup.sbt_miss_entry_points[1], "_scene_secondary_miss");
     CHECK(setup.sbt_miss_entry_points[2].empty());
 
-    REQUIRE_EQ(setup.sbt_hit_group_names.size(), 6);
+    REQUIRE_EQ(setup.sbt_hit_group_names.size(), 9);
     CHECK_EQ(setup.sbt_hit_group_names[0], "_scene_primary_triangle_hit_group");
     CHECK_EQ(setup.sbt_hit_group_names[1], "_scene_secondary_triangle_hit_group");
     CHECK_EQ(setup.sbt_hit_group_names[2], "__dummy_hit_group");
     CHECK_EQ(setup.sbt_hit_group_names[3], "_scene_primary_lss_hit_group");
     CHECK_EQ(setup.sbt_hit_group_names[4], "_scene_secondary_lss_hit_group");
     CHECK_EQ(setup.sbt_hit_group_names[5], "__dummy_hit_group");
+    CHECK_EQ(setup.sbt_hit_group_names[6], "_scene_primary_area_light_hit_group");
+    CHECK_EQ(setup.sbt_hit_group_names[7], "_scene_secondary_area_light_hit_group");
+    CHECK_EQ(setup.sbt_hit_group_names[8], "__dummy_hit_group");
 }
 
-TEST_CASE_GPU("ray tracing setup rejects more than three ray types")
+TEST_CASE_GPU("ray tracing setup rejects unsupported ray and geometry counts")
 {
     auto scene = Scene::create(ref(ctx.device));
     std::array<SceneRayTracingSetup::RayDesc, 4> ray_descs;
     CHECK_THROWS(SceneRayTracingSetup::create(scene.get(), ray_descs));
+    auto requirements = make_ref<SceneRequirements>(*scene->requirements());
+    requirements->hit_group_policy.geometry_type_count = 32;
+    CHECK_THROWS_WITH(
+        SceneRayTracingSetup::create(scene.get(), {ray_descs[0]}, requirements.get()),
+        doctest::Contains("unsupported geometry types")
+    );
+}
+
+TEST_CASE_GPU("scene requirements track geometry type changes")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    scene->update();
+
+    const uint64_t initial_generation = scene->requirements_generation();
+    const auto initial_requirements = scene->requirements();
+    const auto initial_selected = scene->resolve_requirements({}, SceneCapabilityPolicy::required);
+    CHECK_FALSE(scene->requirements()->has_geometry_type(shared::GeometryType::lss));
+
+    const float3 positions[] = {{0.f, 0.f, 0.f}, {0.f, 1.f, 0.f}};
+    const float radii[] = {0.1f, 0.1f};
+    const uint32_t indices[] = {0, 1};
+    StaticCurveGeometryDataDesc desc{
+        .name = "requirements-generation-test",
+        .vertex_count = 2,
+        .position_stream = {positions, sizeof(float3)},
+        .radius_stream = {radii, sizeof(float)},
+        .index_count = 2,
+        .index_stream = {indices, sizeof(uint32_t)},
+    };
+    StaticCurveGeometry* curve = scene->create_geometry<StaticCurveGeometry>();
+    curve->set_curve_data(desc);
+
+    const SceneUpdateFlags added_flags = scene->update();
+    CHECK(is_set(added_flags, SceneUpdateFlags::requirements));
+    CHECK_GT(scene->requirements_generation(), initial_generation);
+    CHECK(scene->requirements()->has_geometry_type(shared::GeometryType::lss));
+    CHECK(scene->requirements() != initial_requirements);
+    CHECK(scene->requirements()->matches_shader_inputs(initial_requirements.get()));
+    const auto selected = scene->resolve_requirements({}, SceneCapabilityPolicy::required);
+    CHECK(selected != initial_selected);
+    CHECK(selected->matches_shader_inputs(initial_selected.get()));
+    CHECK_FALSE(initial_requirements->has_geometry_type(shared::GeometryType::lss));
+
+    const uint64_t populated_generation = scene->requirements_generation();
+    curve->set_curve_data({});
+
+    const SceneUpdateFlags removed_flags = scene->update();
+    CHECK(is_set(removed_flags, SceneUpdateFlags::requirements));
+    CHECK_GT(scene->requirements_generation(), populated_generation);
+    CHECK_FALSE(scene->requirements()->has_geometry_type(shared::GeometryType::lss));
 }
 
 TEST_CASE_GPU("named refcounted scene globals garbage collection")
@@ -220,7 +600,7 @@ TEST_CASE_GPU("importer scene uv origin conversion and adoption")
         ImporterMesh::Subgeometry{
             .name = "uv_origin_test_submesh",
             .indices = {uint3(0, 1, 2)},
-            .material_name = "uv_origin_test_material",
+            .material_index = 0,
         }
     );
     mesh.calculate_local_aabb();
@@ -277,7 +657,8 @@ TEST_CASE_GPU("importer scene textured dome light preserves radiometry")
     dome_light.name = "Test Dome Light";
     dome_light.type = ImporterLight::Type::dome;
     dome_light.env_map_path = "data/assets/envmaps/aerodynamics_workshop_512.hdr";
-    dome_light.intensity = float3(0.25f, 0.5f, 0.75f);
+    dome_light.pole_axis = EnvMapPoleAxis::z;
+    dome_light.color = float3(0.25f, 0.5f, 0.75f);
     dome_light.exposure = 5.f;
     importer_scene->lights.push_back(dome_light);
 
@@ -293,8 +674,10 @@ TEST_CASE_GPU("importer scene textured dome light preserves radiometry")
     const auto* env_map_light = dynamic_cast<const EnvMapLight*>(scene->components()[0]);
     REQUIRE(env_map_light != nullptr);
     CHECK_EQ(env_map_light->env_map_path(), std::filesystem::path(dome_light.env_map_path));
-    CHECK_EQ(env_map_light->intensity(), dome_light.intensity);
+    CHECK_EQ(env_map_light->color(), dome_light.color);
+    CHECK_EQ(env_map_light->intensity(), doctest::Approx(dome_light.intensity));
     CHECK_EQ(env_map_light->exposure(), doctest::Approx(dome_light.exposure));
+    CHECK_EQ(env_map_light->pole_axis(), EnvMapPoleAxis::z);
 }
 
 TEST_CASE_GPU("importer scene textureless dome light becomes constant environment")
@@ -304,7 +687,7 @@ TEST_CASE_GPU("importer scene textureless dome light becomes constant environmen
     ImporterLight dome_light;
     dome_light.name = "Textureless Dome Light";
     dome_light.type = ImporterLight::Type::dome;
-    dome_light.intensity = float3(0.25f, 0.5f, 0.75f);
+    dome_light.color = float3(0.25f, 0.5f, 0.75f);
     dome_light.exposure = 2.f;
     importer_scene->lights.push_back(dome_light);
 
@@ -319,7 +702,8 @@ TEST_CASE_GPU("importer scene textureless dome light becomes constant environmen
     REQUIRE_EQ(scene->components().size(), 1);
     const auto* constant_light = dynamic_cast<const ConstantLight*>(scene->components()[0]);
     REQUIRE(constant_light != nullptr);
-    CHECK_EQ(constant_light->radiance(), dome_light.intensity);
+    CHECK_EQ(constant_light->color(), dome_light.color);
+    CHECK_EQ(constant_light->intensity(), doctest::Approx(dome_light.intensity));
     CHECK_EQ(constant_light->exposure(), doctest::Approx(dome_light.exposure));
 }
 
@@ -330,7 +714,7 @@ TEST_CASE_GPU("importer scene converts distant angular diameter to cone half ang
     ImporterLight importer_light;
     importer_light.name = "Distant Light";
     importer_light.type = ImporterLight::Type::distant;
-    importer_light.intensity = float3(2.f, 3.f, 4.f);
+    importer_light.color = float3(2.f, 3.f, 4.f);
     importer_light.exposure = 2.f;
     importer_light.degree_angular_diameter = 12.f;
     importer_scene->lights.push_back(importer_light);
@@ -346,7 +730,8 @@ TEST_CASE_GPU("importer scene converts distant angular diameter to cone half ang
     REQUIRE_EQ(scene->components().size(), 1);
     const auto* distant_light = dynamic_cast<const DistantLight*>(scene->components()[0]);
     REQUIRE(distant_light != nullptr);
-    CHECK_EQ(distant_light->radiance(), importer_light.intensity);
+    CHECK_EQ(distant_light->color(), importer_light.color);
+    CHECK_EQ(distant_light->intensity(), doctest::Approx(importer_light.intensity));
     CHECK_EQ(distant_light->exposure(), doctest::Approx(importer_light.exposure));
     CHECK_EQ(distant_light->cutoff_angle(), doctest::Approx(6.f));
 }
@@ -358,7 +743,7 @@ TEST_CASE_GPU("importer scene creates shaped point light")
     ImporterLight importer_light;
     importer_light.name = "Spot Light";
     importer_light.type = ImporterLight::Type::point;
-    importer_light.intensity = float3(2.f, 3.f, 4.f);
+    importer_light.color = float3(2.f, 3.f, 4.f);
     importer_light.exposure = 2.f;
     importer_light.enable_shaping = true;
     importer_light.shaping_cone_angle = 35.f;
@@ -379,7 +764,8 @@ TEST_CASE_GPU("importer scene creates shaped point light")
     REQUIRE(point_light != nullptr);
     REQUIRE(point_light->class_descriptor().base());
     CHECK_EQ(point_light->class_descriptor().base()->name(), "Light");
-    CHECK_EQ(point_light->intensity(), importer_light.intensity);
+    CHECK_EQ(point_light->color(), importer_light.color);
+    CHECK_EQ(point_light->intensity(), doctest::Approx(importer_light.intensity));
     CHECK_EQ(point_light->exposure(), doctest::Approx(importer_light.exposure));
     CHECK(point_light->enable_shaping());
     CHECK_EQ(point_light->shaping_cone_angle(), doctest::Approx(35.f));
@@ -394,7 +780,8 @@ TEST_CASE_GPU("importer scene preserves point light radiometry")
     ImporterLight importer_light;
     importer_light.name = "Point Light";
     importer_light.type = ImporterLight::Type::point;
-    importer_light.intensity = float3(2.f, 3.f, 4.f);
+    importer_light.color = float3(2.f, 3.f, 4.f);
+    importer_light.intensity = 5.f;
     importer_light.exposure = 2.f;
     importer_light.enable_color_temperature = true;
     importer_light.color_temperature = 3000.f;
@@ -411,20 +798,63 @@ TEST_CASE_GPU("importer scene preserves point light radiometry")
     REQUIRE_EQ(scene->components().size(), 1);
     const auto* point_light = dynamic_cast<const PointLight*>(scene->components()[0]);
     REQUIRE(point_light != nullptr);
-    CHECK_EQ(point_light->intensity(), importer_light.intensity);
+    CHECK_EQ(point_light->color(), importer_light.color);
+    CHECK_EQ(point_light->intensity(), doctest::Approx(importer_light.intensity));
     CHECK_EQ(point_light->exposure(), doctest::Approx(importer_light.exposure));
     CHECK(point_light->enable_color_temperature());
     CHECK_EQ(point_light->color_temperature(), doctest::Approx(importer_light.color_temperature));
 }
 
-TEST_CASE_GPU("importer scene creates shaped analytic sphere, disk, and rectangle lights")
+TEST_CASE_GPU("importer scene preserves treated sphere power when converting to a point light")
+{
+    auto importer_scene = make_ref<ImporterScene>();
+
+    ImporterLight importer_light;
+    importer_light.name = "Treated Point";
+    importer_light.type = ImporterLight::Type::sphere;
+    importer_light.intensity = 3.f;
+    importer_light.radius = 0.5f;
+    importer_light.treat_as_point = true;
+    float expected_point_intensity = 0.f;
+    SUBCASE("unnormalized")
+    {
+        importer_light.normalize = false;
+        expected_point_intensity = 3.f * static_cast<float>(M_PI);
+    }
+    SUBCASE("normalized")
+    {
+        importer_light.normalize = true;
+        expected_point_intensity = 0.75f;
+    }
+    importer_scene->lights.push_back(importer_light);
+
+    ImporterNode light_node;
+    light_node.name = importer_light.name;
+    light_node.light_index = 0;
+    light_node.transform = float4x4::identity();
+    light_node.transform[0][0] = 2.f;
+    light_node.transform[1][1] = 2.f;
+    light_node.transform[2][2] = 2.f;
+    importer_scene->nodes.push_back(light_node);
+    importer_scene->root_nodes.push_back(0);
+
+    auto scene = Scene::from_importer_scene(ref(ctx.device), *importer_scene);
+
+    REQUIRE_EQ(scene->components().size(), 1);
+    const auto* point_light = dynamic_cast<const PointLight*>(scene->components()[0]);
+    REQUIRE(point_light != nullptr);
+    CHECK_EQ(point_light->intensity(), doctest::Approx(expected_point_intensity));
+    CHECK_FALSE(point_light->normalize());
+}
+
+TEST_CASE_GPU("importer scene creates shaped analytic area lights")
 {
     auto importer_scene = make_ref<ImporterScene>();
 
     ImporterLight sphere;
     sphere.name = "Sphere Light";
     sphere.type = ImporterLight::Type::sphere;
-    sphere.intensity = float3(2.f, 3.f, 4.f);
+    sphere.color = float3(2.f, 3.f, 4.f);
     sphere.exposure = 1.f;
     sphere.radius = 0.75f;
     sphere.enable_shaping = true;
@@ -437,7 +867,7 @@ TEST_CASE_GPU("importer scene creates shaped analytic sphere, disk, and rectangl
     ImporterLight disk;
     disk.name = "Shaped Disk Light";
     disk.type = ImporterLight::Type::disk;
-    disk.intensity = float3(5.f, 6.f, 7.f);
+    disk.color = float3(5.f, 6.f, 7.f);
     disk.exposure = 2.f;
     disk.radius = 1.25f;
     disk.enable_shaping = true;
@@ -449,7 +879,8 @@ TEST_CASE_GPU("importer scene creates shaped analytic sphere, disk, and rectangl
     ImporterLight rect;
     rect.name = "Rectangle Light";
     rect.type = ImporterLight::Type::rectangular;
-    rect.intensity = float3(8.f, 9.f, 10.f);
+    rect.color = float3(8.f, 9.f, 10.f);
+    rect.normalize = true;
     rect.exposure = 3.f;
     rect.width = 2.5f;
     rect.height = 1.5f;
@@ -459,7 +890,21 @@ TEST_CASE_GPU("importer scene creates shaped analytic sphere, disk, and rectangl
     rect.shaping_focus = 1.5f;
     importer_scene->lights.push_back(rect);
 
-    for (int light_index = 0; light_index < 3; ++light_index) {
+    ImporterLight cylinder;
+    cylinder.name = "Cylinder Light";
+    cylinder.type = ImporterLight::Type::cylinder;
+    cylinder.color = float3(4.f, 3.f, 2.f);
+    cylinder.normalize = true;
+    cylinder.exposure = 0.5f;
+    cylinder.radius = 0.625f;
+    cylinder.length = 3.5f;
+    cylinder.enable_shaping = true;
+    cylinder.shaping_cone_angle = 45.f;
+    cylinder.shaping_cone_softness = 0.3f;
+    cylinder.shaping_focus = 2.5f;
+    importer_scene->lights.push_back(cylinder);
+
+    for (int light_index = 0; light_index < 4; ++light_index) {
         ImporterNode light_node;
         light_node.name = importer_scene->lights[light_index].name;
         light_node.light_index = light_index;
@@ -469,15 +914,17 @@ TEST_CASE_GPU("importer scene creates shaped analytic sphere, disk, and rectangl
 
     auto scene = Scene::from_importer_scene(ref(ctx.device), *importer_scene);
 
-    REQUIRE_EQ(scene->components().size(), 3);
+    REQUIRE_EQ(scene->components().size(), 4);
     const SphereLight* sphere_light = scene->components().find<SphereLight>();
     const DiskLight* disk_light = scene->components().find<DiskLight>();
     const RectLight* rect_light = scene->components().find<RectLight>();
+    const CylinderLight* cylinder_light = scene->components().find<CylinderLight>();
 
     REQUIRE(sphere_light);
     REQUIRE(sphere_light->class_descriptor().base());
     CHECK_EQ(sphere_light->class_descriptor().base()->name(), "Light");
-    CHECK_EQ(sphere_light->radiance(), sphere.intensity);
+    CHECK_EQ(sphere_light->color(), sphere.color);
+    CHECK_EQ(sphere_light->intensity(), doctest::Approx(sphere.intensity));
     CHECK_EQ(sphere_light->exposure(), doctest::Approx(sphere.exposure));
     CHECK_EQ(sphere_light->radius(), doctest::Approx(sphere.radius));
     CHECK(sphere_light->enable_virtual_sphere_shrinking());
@@ -489,7 +936,8 @@ TEST_CASE_GPU("importer scene creates shaped analytic sphere, disk, and rectangl
     REQUIRE(disk_light);
     REQUIRE(disk_light->class_descriptor().base());
     CHECK_EQ(disk_light->class_descriptor().base()->name(), "Light");
-    CHECK_EQ(disk_light->radiance(), disk.intensity);
+    CHECK_EQ(disk_light->color(), disk.color);
+    CHECK_EQ(disk_light->intensity(), doctest::Approx(disk.intensity));
     CHECK_EQ(disk_light->exposure(), doctest::Approx(disk.exposure));
     CHECK_EQ(disk_light->radius(), doctest::Approx(disk.radius));
     CHECK(disk_light->enable_shaping());
@@ -500,7 +948,9 @@ TEST_CASE_GPU("importer scene creates shaped analytic sphere, disk, and rectangl
     REQUIRE(rect_light);
     REQUIRE(rect_light->class_descriptor().base());
     CHECK_EQ(rect_light->class_descriptor().base()->name(), "Light");
-    CHECK_EQ(rect_light->radiance(), rect.intensity);
+    CHECK_EQ(rect_light->color(), rect.color);
+    CHECK_EQ(rect_light->intensity(), doctest::Approx(rect.intensity));
+    CHECK_EQ(rect_light->normalize(), rect.normalize);
     CHECK_EQ(rect_light->exposure(), doctest::Approx(rect.exposure));
     CHECK_EQ(rect_light->width(), doctest::Approx(rect.width));
     CHECK_EQ(rect_light->height(), doctest::Approx(rect.height));
@@ -509,8 +959,23 @@ TEST_CASE_GPU("importer scene creates shaped analytic sphere, disk, and rectangl
     CHECK_EQ(rect_light->shaping_cone_softness(), doctest::Approx(rect.shaping_cone_softness));
     CHECK_EQ(rect_light->shaping_focus(), doctest::Approx(rect.shaping_focus));
 
+    REQUIRE(cylinder_light);
+    REQUIRE(cylinder_light->class_descriptor().base());
+    CHECK_EQ(cylinder_light->class_descriptor().base()->name(), "Light");
+    CHECK_EQ(cylinder_light->color(), cylinder.color);
+    CHECK_EQ(cylinder_light->normalize(), cylinder.normalize);
+    CHECK_EQ(cylinder_light->exposure(), doctest::Approx(cylinder.exposure));
+    CHECK_EQ(cylinder_light->radius(), doctest::Approx(cylinder.radius));
+    CHECK_EQ(cylinder_light->length(), doctest::Approx(cylinder.length));
+    CHECK(cylinder_light->enable_shaping());
+    CHECK_EQ(cylinder_light->shaping_cone_angle(), doctest::Approx(cylinder.shaping_cone_angle));
+    CHECK_EQ(cylinder_light->shaping_cone_softness(), doctest::Approx(cylinder.shaping_cone_softness));
+    CHECK_EQ(cylinder_light->shaping_focus(), doctest::Approx(cylinder.shaping_focus));
+
     Properties properties = rect_light->properties();
-    CHECK_EQ(properties.get<float3>("radiance"), rect.intensity);
+    CHECK_EQ(properties.get<float3>("color"), rect.color);
+    CHECK_EQ(properties.get<float>("intensity"), doctest::Approx(rect.intensity));
+    CHECK_EQ(properties.get<bool>("normalize"), rect.normalize);
     CHECK(properties.get<bool>("enable_shaping"));
     CHECK_EQ(properties.get<float>("shaping_cone_angle"), doctest::Approx(rect.shaping_cone_angle));
     CHECK_EQ(properties.get<float>("shaping_focus"), doctest::Approx(rect.shaping_focus));
@@ -527,6 +992,13 @@ TEST_CASE_GPU("importer scene uses default material for missing assignments")
     ImporterMesh mesh;
     mesh.name = "materialless_mesh";
     mesh.ensure_attributes({{ImporterSemantic::position}});
+    bool use_vertex_color = false;
+    SUBCASE("without vertex colors") { }
+    SUBCASE("with vertex colors")
+    {
+        mesh.ensure_attributes({{ImporterSemantic::color}});
+        use_vertex_color = true;
+    }
     mesh.allocate_vertices(3, true);
     auto positions = mesh.position_stream();
     positions[0] = float3(-1.f, 0.f, 0.f);
@@ -542,7 +1014,7 @@ TEST_CASE_GPU("importer scene uses default material for missing assignments")
         ImporterMesh::Subgeometry{
             .name = "missing_material_submesh",
             .indices = {uint3(0, 1, 2)},
-            .material_name = "MissingMaterial",
+            .material_index = 0,
         }
     );
     mesh.calculate_local_aabb();
@@ -559,6 +1031,8 @@ TEST_CASE_GPU("importer scene uses default material for missing assignments")
     REQUIRE_EQ(scene->materials().size(), 1);
     CHECK(dynamic_cast<StandardMaterial*>(scene->materials()[0]) != nullptr);
     CHECK_EQ(scene->materials()[0]->name(), "DefaultMaterial");
+    const Any default_vertex_color = scene->materials()[0]->get_property("use_vertex_color");
+    CHECK_EQ(*any_cast<bool>(&default_vertex_color), use_vertex_color);
 
     REQUIRE_EQ(scene->components().size(), 1);
     auto* instance = dynamic_cast<GeometryInstance*>(scene->components()[0]);
@@ -593,6 +1067,53 @@ TEST_CASE_GPU("importer material constructor creates and names live material")
     CHECK_EQ(scene->materials()[0]->name(), "Constructed Material");
 }
 
+TEST_CASE_GPU("glTF unlit importer material creates direction-independent material")
+{
+    auto importer_scene = make_ref<ImporterScene>();
+    ImporterMaterial importer_material;
+    importer_material.name = "Unlit";
+    importer_material.params.set("_type", "gltf_unlit");
+    importer_material.params.set("baseColorFactor", float4(0.25f, 0.5f, 0.75f, 0.6f));
+    importer_material.params.set("metallicFactor", 0.2f);
+    importer_material.params.set("roughnessFactor", 0.3f);
+    importer_material.params.set("emissiveFactor", float3(8.f));
+    importer_material.params.set("alphaMode", AlphaMode::mask);
+    importer_material.params.set("alphaCutoff", 0.4f);
+    importer_material.params.set("doubleSided", true);
+    importer_scene->materials.push_back(std::move(importer_material));
+
+    auto scene = Scene::from_importer_scene(ref(ctx.device), *importer_scene);
+    REQUIRE_EQ(scene->materials().size(), 1);
+
+    auto* material = dynamic_cast<UnlitMaterial*>(scene->materials()[0]);
+    REQUIRE(material != nullptr);
+    CHECK_EQ(material->name(), "Unlit");
+    CHECK_EQ(material->_base_color_factor(), float3(0.25f, 0.5f, 0.75f));
+    CHECK_EQ(material->flags(), shared::MaterialFlags::unlit | shared::MaterialFlags::two_sided);
+    // This fixture contains no mesh or COLOR_0 stream to evaluate.
+    CHECK_FALSE(material->get_property<bool>("use_vertex_color"));
+
+    const Material::OpacityDesc opacity = material->opacity_desc();
+    CHECK_EQ(opacity.flags, shared::OpacityFlags::enabled | shared::OpacityFlags::use_threshold);
+    CHECK_EQ(opacity.factor, doctest::Approx(0.6f));
+    CHECK_EQ(opacity.threshold, doctest::Approx(0.4f));
+
+    // UV0-only opacity keeps the shared texture fast path. Other UV sets or
+    // vertex alpha require the material's own opacity evaluator.
+    material->set_property("base_color_texture_texcoord", 1u);
+    CHECK(is_set(material->opacity_desc().flags, shared::OpacityFlags::evaluate_material));
+    material->set_property("base_color_texture_texcoord", 0u);
+    CHECK_FALSE(is_set(material->opacity_desc().flags, shared::OpacityFlags::evaluate_material));
+    material->set_property("use_vertex_color", true);
+    CHECK(is_set(material->opacity_desc().flags, shared::OpacityFlags::evaluate_material));
+    material->set_property("alpha_mode", AlphaMode::opaque);
+    CHECK_EQ(material->opacity_desc().flags, shared::OpacityFlags::none);
+    material->set_property("alpha_mode", AlphaMode::blend);
+    CHECK_EQ(material->opacity_desc().flags, shared::OpacityFlags::enabled | shared::OpacityFlags::evaluate_material);
+    material->set_property("use_vertex_color", false);
+    CHECK_EQ(material->opacity_desc().flags, shared::OpacityFlags::enabled);
+}
+
 TEST_CASE_GPU("importer material constructor rejects null material")
 {
     auto importer_scene = make_ref<ImporterScene>();
@@ -623,6 +1144,98 @@ TEST_CASE_GPU("python importer material constructor runs from native scene load"
     Material* material = scene->materials().find("Red");
     REQUIRE(material != nullptr);
     CHECK_EQ(material->slang_type_name(), "CheckerMaterial");
+}
+
+TEST_CASE_GPU("scene retains imported USD additional geometry properties")
+{
+    const std::filesystem::path scene_path = testing::project_directory() / "data" / "assets" / "test_usd_importer"
+        / "test_additional_geometry_properties.usda";
+    SceneConfig config{
+        .uv_origin = UVOrigin::lower_left,
+    };
+    ref<Scene> scene = Scene::load(ref(ctx.device), scene_path, {}, config);
+
+    REQUIRE_EQ(scene->geometries().size(), 1);
+    auto* geometry = dynamic_cast<StaticMeshGeometry*>(scene->geometries()[0]);
+    REQUIRE(geometry != nullptr);
+    REQUIRE_EQ(geometry->sub_mesh_count(), 1);
+    REQUIRE_EQ(geometry->vertex_count(0), 6);
+    const std::array<uint32_t, 6> expected_indices{0, 1, 2, 3, 4, 5};
+    CHECK(std::equal(geometry->indices(0).begin(), geometry->indices(0).end(), expected_indices.begin()));
+
+    const std::array<std::array<float, 6>, 8> expected_u{
+        std::array{0.f, 1.f, 0.f, 2.f, 3.f, 2.f},
+        std::array{10.f, 11.f, 10.f, 11.f, 11.f, 10.f},
+        std::array{20.f, 21.f, 20.f, 22.f, 23.f, 22.f},
+        std::array{30.f, 31.f, 30.f, 32.f, 33.f, 32.f},
+        std::array{40.f, 41.f, 40.f, 42.f, 43.f, 42.f},
+        std::array{50.f, 51.f, 50.f, 52.f, 53.f, 52.f},
+        std::array{60.f, 61.f, 60.f, 62.f, 63.f, 62.f},
+        std::array{70.f, 71.f, 70.f, 72.f, 73.f, 72.f},
+    };
+    for (uint32_t slot = 0; slot < expected_u.size(); ++slot) {
+        const MeshVertexAttribute* attribute
+            = geometry->find_vertex_attribute(0, MeshAttributeSemantic::tex_coord, slot);
+        REQUIRE(attribute != nullptr);
+        CHECK_EQ(attribute->type, sgl::DataType::float32);
+        CHECK_EQ(attribute->component_count, 2);
+        REQUIRE_EQ(attribute->data.size(), geometry->vertex_count(0) * sizeof(float2));
+        for (size_t vertex = 0; vertex < geometry->vertex_count(0); ++vertex) {
+            float2 value;
+            std::memcpy(&value, attribute->data.data() + vertex * sizeof(float2), sizeof(value));
+            CHECK_EQ(value.x, expected_u[slot][vertex]);
+        }
+    }
+
+    const auto attributes = geometry->vertex_attributes(0);
+    const auto pref_it = std::find_if(
+        attributes.begin(),
+        attributes.end(),
+        [](const MeshVertexAttribute& attribute)
+        {
+            return attribute.semantic == MeshAttributeSemantic::unknown && attribute.name == "Pref";
+        }
+    );
+    REQUIRE(pref_it != attributes.end());
+    CHECK_EQ(pref_it->type, sgl::DataType::float32);
+    CHECK_EQ(pref_it->component_count, 3);
+    REQUIRE_EQ(pref_it->data.size(), geometry->vertex_count(0) * sizeof(float3));
+    CHECK(
+        std::none_of(
+            attributes.begin(),
+            attributes.end(),
+            [](const MeshVertexAttribute& attribute)
+            {
+                return attribute.name == "pref";
+            }
+        )
+    );
+    for (size_t vertex = 0; vertex < geometry->vertex_count(0); ++vertex) {
+        float3 value;
+        std::memcpy(&value, pref_it->data.data() + vertex * sizeof(float3), sizeof(value));
+        CHECK_EQ(value.x, expected_u[0][vertex]);
+        CHECK_EQ(value.z, 10.f);
+    }
+
+    scene->update();
+    for (uint32_t slot = 1; slot <= 7; ++slot)
+        CHECK_EQ(scene->_get_geometry_attribute_id(MeshAttributeSemantic::tex_coord, slot, ""), slot);
+    CHECK_EQ(scene->_get_geometry_attribute_id(MeshAttributeSemantic::unknown, 0, "Pref"), 16u);
+    CHECK_FALSE(scene->_get_geometry_attribute_id(MeshAttributeSemantic::unknown, 0, "pref"));
+
+    const RenderScene* render_scene = scene->_render_scene();
+    const RenderGeometryGroup& group = render_scene->get_geometry_group(geometry->_render_geometry_group());
+    REQUIRE_EQ(group.geometries.size(), 1);
+    const RenderTriangleGeometry& render_geometry
+        = render_scene->get_triangle_geometry(RenderTriangleGeometryHandle(group.geometries.front()));
+    REQUIRE_EQ(render_geometry.additional_attributes.size(), 8);
+    uint32_t presence_mask = 0;
+    for (const RenderGeometryAdditionalAttribute& attribute : render_geometry.additional_attributes) {
+        presence_mask |= 1u << attribute.mask_bit;
+        CHECK_EQ(attribute.type, shared::AdditionalAttributeType::float32);
+        CHECK_EQ(attribute.component_count, attribute.mask_bit == 16 ? 3u : 2u);
+    }
+    CHECK_EQ(presence_mask, 0x100feu);
 }
 
 TEST_CASE_GPU("native pyscene load resolves adjacent helper relative asset and callback")
@@ -807,7 +1420,7 @@ TEST_CASE_GPU("add remove compact entities")
 
     auto* e0 = scene->create_entity();
     auto* e1 = scene->create_entity();
-    auto* e2 = scene->create_entity();
+    ref<Entity> e2(scene->create_entity());
     e0->set_name("e0");
     e1->set_name("e1");
     e2->set_name("e2");
@@ -823,6 +1436,9 @@ TEST_CASE_GPU("add remove compact entities")
     CHECK_EQ(scene->entities().size(), 1);
     CHECK_EQ(scene->entities()[0]->name(), "e1");
     CHECK_EQ(scene->entities()[0]->collection_index(), 0);
+    REQUIRE_EQ(e2->scene(), nullptr);
+    CHECK_EQ(e2->collection_index(), INVALID_SCENE_OBJECT_COLLECTION_INDEX);
+    e2->remove();
 }
 
 TEST_CASE_GPU("add remove compact geometries")
@@ -877,7 +1493,8 @@ TEST_CASE_GPU("dirty flags on entity transform")
     // 'added' flag is set on creation.
     CHECK(scene->entity_collection().has_dirty(Entity::DirtyFlags::added));
 
-    scene->update();
+    const SceneUpdateFlags added_flags = scene->update();
+    CHECK_FALSE(is_set(added_flags, SceneUpdateFlags::render_state));
     CHECK_FALSE(scene->entity_collection().is_dirty());
 
     // Modify transform.
@@ -888,7 +1505,8 @@ TEST_CASE_GPU("dirty flags on entity transform")
     CHECK(scene->entity_collection().is_dirty());
     CHECK(scene->entity_collection().has_dirty(Entity::DirtyFlags::transform));
 
-    scene->update();
+    const SceneUpdateFlags transform_flags = scene->update();
+    CHECK_FALSE(is_set(transform_flags, SceneUpdateFlags::render_state));
     CHECK_FALSE(scene->entity_collection().is_dirty());
 }
 
@@ -1167,15 +1785,53 @@ static StaticMeshGeometry* create_triangle_geometry(Scene* scene, const float3& 
     static float handedness[3] = {1.f, 1.f, 1.f};
     static float2 texcoords[3] = {{0, 0}, {1, 0}, {0, 1}};
     static uint32_t indices[3] = {0, 1, 2};
+    const MeshVertexAttributeDesc vertex_attributes[]{
+        {"POSITION",
+         MeshAttributeSemantic::position,
+         0,
+         sgl::DataType::float32,
+         3,
+         positions,
+         sizeof(float3),
+         sizeof(positions)},
+        {"NORMAL",
+         MeshAttributeSemantic::normal,
+         0,
+         sgl::DataType::float32,
+         3,
+         normals,
+         sizeof(float3),
+         sizeof(normals)},
+        {"TANGENT",
+         MeshAttributeSemantic::tangent,
+         0,
+         sgl::DataType::float32,
+         3,
+         tangents,
+         sizeof(float3),
+         sizeof(tangents)},
+        {"HANDEDNESS",
+         MeshAttributeSemantic::handedness,
+         0,
+         sgl::DataType::float32,
+         1,
+         handedness,
+         sizeof(float),
+         sizeof(handedness)},
+        {"TEXCOORD_0",
+         MeshAttributeSemantic::tex_coord,
+         0,
+         sgl::DataType::float32,
+         2,
+         texcoords,
+         sizeof(float2),
+         sizeof(texcoords)},
+    };
 
     StaticMeshGeometryDataDesc desc = {};
     desc.name = "triangle";
     desc.vertex_count = 3;
-    desc.position_stream = {positions, sizeof(float3)};
-    desc.normal_stream = {normals, sizeof(float3)};
-    desc.tangent_stream = {tangents, sizeof(float3)};
-    desc.handedness_stream = {handedness, sizeof(float)};
-    desc.texcoord_stream = {texcoords, sizeof(float2)};
+    desc.vertex_attributes = vertex_attributes;
     desc.sub_meshes.push_back({
         .name = "sub0",
         .index_count = 3,
@@ -1190,6 +1846,55 @@ static StaticMeshGeometry* create_triangle_geometry(Scene* scene, const float3& 
 // ---------------------------------------------------------------------------
 // Geometry local AABB
 // ---------------------------------------------------------------------------
+
+TEST_CASE_GPU("material backface culling setter updates existing geometry instances")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    auto* geometry = create_triangle_geometry(scene.get(), {0, 0, 0}, {1, 0, 0}, {0, 1, 0});
+    auto* material = scene->create_material<StandardMaterial>();
+    auto* instance = scene->create_entity()->create_component<GeometryInstance>();
+    instance->set_geometry(geometry);
+    instance->set_materials({material});
+    scene->update();
+    const auto instance_id = instance->geometry_instance_id();
+
+    for (bool enabled : {true, false}) {
+        material->set_enable_backface_culling(enabled);
+        CHECK(scene->material_collection().has_dirty(Material::DirtyFlags::backface_culling));
+        CHECK(is_set(scene->update(), SceneUpdateFlags::render_state));
+        CHECK_EQ(instance->geometry_instance_id(), instance_id);
+
+        material->set_enable_backface_culling(enabled);
+        CHECK_FALSE(scene->material_collection().has_dirty(Material::DirtyFlags::backface_culling));
+        CHECK_FALSE(is_set(scene->update(), SceneUpdateFlags::render_state));
+    }
+}
+
+TEST_CASE_GPU("removed dirty geometry instances do not recreate render state")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    auto geometry = create_triangle_geometry(scene, float3(0.f), float3(1.f, 0.f, 0.f), float3(0.f, 1.f, 0.f));
+    auto entity = scene->create_entity();
+    ref<GeometryInstance> instance(entity->create_component<GeometryInstance>());
+    instance->set_geometry(geometry);
+    instance->set_material(0, scene->create_material<StandardMaterial>());
+    scene->update();
+    REQUIRE_NE(instance->geometry_instance_id(), shared::GeometryInstanceID::invalid);
+
+    instance->set_material(0, nullptr);
+    SUBCASE("remove component")
+    {
+        instance->remove();
+    }
+    SUBCASE("remove entity")
+    {
+        entity->remove();
+    }
+    scene->update();
+
+    CHECK_EQ(instance->geometry_instance_id(), shared::GeometryInstanceID::invalid);
+    CHECK_EQ(scene->components().size(), 0u);
+}
 
 TEST_CASE_GPU("geometry local aabb")
 {
@@ -1241,6 +1946,444 @@ TEST_CASE_GPU("geometry instance material slots can be assigned and cleared")
     CHECK_EQ(instance->materials().size(), 3);
 }
 
+static GeometryInstance* create_emissive_triangle(Scene* scene, Entity* entity)
+{
+    Properties properties;
+    properties.set("emissive_factor", float3(1.f));
+    auto* material = scene->create_material<StandardMaterial>(properties);
+    auto* geometry = create_triangle_geometry(scene, float3(0.f), float3(1.f, 0.f, 0.f), float3(0.f, 1.f, 0.f));
+    auto* instance = entity->create_component<GeometryInstance>();
+    instance->set_geometry(geometry);
+    instance->set_materials({material});
+    return instance;
+}
+
+TEST_CASE_GPU("emissive transform stretch classification")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    auto* parent = scene->create_entity();
+    auto* entity = scene->create_entity();
+    entity->set_parent(parent);
+    create_emissive_triangle(scene, entity);
+    scene->update();
+
+    const auto* emissive = scene->_emissive_geometry_system();
+    REQUIRE_EQ(emissive->active_triangle_count(), 1u);
+    const float initial_flux = emissive->active_triangle_flux()[0];
+    REQUIRE_GT(initial_flux, 0.f);
+    auto generations = emissive->generations();
+    const auto synchronize = [&](bool expected_stretch_change)
+    {
+        const float previous_flux = emissive->active_triangle_flux()[0];
+        // Reading the lazy matrix must not consume the classification's previous state.
+        (void)entity->world_from_object_matrix();
+        scene->update();
+        CHECK_EQ(emissive->generations().topology, generations.topology);
+        CHECK_EQ(emissive->generations().geometry, generations.geometry + 1);
+        CHECK_EQ(emissive->generations().flux, generations.flux + uint64_t(expected_stretch_change));
+        if (!expected_stretch_change)
+            CHECK_EQ(emissive->active_triangle_flux()[0], previous_flux);
+        generations = emissive->generations();
+        CHECK_FALSE(scene->component_collection().is_dirty());
+    };
+    const auto check_area_and_flux = [&](float area_ratio)
+    {
+        REQUIRE_EQ(emissive->active_triangle_count(), 1u);
+        CHECK(emissive->triangles()[0].area_ws == doctest::Approx(0.5f * area_ratio));
+        CHECK(emissive->active_triangle_flux()[0] == doctest::Approx(initial_flux * area_ratio));
+        CHECK_EQ(emissive->triangle_flux()[0], emissive->active_triangle_flux()[0]);
+    };
+
+    SUBCASE("rigid motion preserves nonuniform stretch")
+    {
+        Transform transform;
+        transform.set_translation(float3(1.f, 2.f, 3.f));
+        entity->set_transform(transform);
+        synchronize(false);
+        check_area_and_flux(1.f);
+        CHECK_EQ(emissive->triangles()[0].pos_ws[0], transform.translation());
+        transform.set_scale(float3(2.f, 3.f, 4.f));
+        entity->set_transform(transform);
+        synchronize(true);
+        check_area_and_flux(6.f);
+        transform.set_rotation_xyz(float3(0.3f, 0.6f, 0.9f));
+        entity->set_transform(transform);
+        synchronize(false);
+        check_area_and_flux(6.f);
+
+        Transform parent_transform;
+        parent_transform.set_rotation_xyz(float3(0.7f, -0.3f, 0.5f));
+        parent_transform.set_translation(float3(-3.f, 4.f, 1.f));
+        parent->set_transform(parent_transform);
+        synchronize(false);
+        check_area_and_flux(6.f);
+        entity->set_parent(nullptr);
+        synchronize(false);
+        check_area_and_flux(6.f);
+
+        // A world reflection preserves area but still requires geometry/normal updates.
+        parent_transform.set_scale(float3(-1.f, 1.f, 1.f));
+        parent->set_transform(parent_transform);
+        entity->set_parent(parent);
+        synchronize(false);
+        check_area_and_flux(6.f);
+    }
+
+    SUBCASE("child rotation beneath nonuniform scale changes stretch")
+    {
+        Transform transform;
+        transform.set_scale(float3(2.f, 3.f, 4.f));
+        entity->set_transform(transform);
+        synchronize(true);
+        // Moving the same scale from child to parent preserves world stretch.
+        entity->set_transform(Transform());
+        Transform parent_transform;
+        parent_transform.set_scale(float3(2.f, 3.f, 4.f));
+        parent->set_transform(parent_transform);
+        synchronize(false);
+        check_area_and_flux(6.f);
+        transform = Transform();
+        // Rotating the XY triangle into XZ changes area from 2*3 to 2*4.
+        transform.set_rotation_xyz(float3(float(M_PI) / 2.f, 0.f, 0.f));
+        entity->set_transform(transform);
+        synchronize(true);
+        check_area_and_flux(8.f);
+        entity->set_parent(nullptr);
+        synchronize(true);
+        check_area_and_flux(1.f);
+    }
+
+    SUBCASE("rotation before scale changes stretch")
+    {
+        Transform transform;
+        transform.set_composition_order(Transform::CompositionOrder::rst);
+        transform.set_scale(float3(2.f, 3.f, 4.f));
+        entity->set_transform(transform);
+        synchronize(true);
+        check_area_and_flux(6.f);
+        transform.set_rotation_xyz(float3(float(M_PI) / 2.f, 0.f, 0.f));
+        entity->set_transform(transform);
+        synchronize(true);
+        check_area_and_flux(8.f);
+    }
+
+    SUBCASE("small scale changes accumulate against a retained reference")
+    {
+        bool detected = false;
+        for (uint32_t i = 1; i <= 32; ++i) {
+            Transform transform;
+            transform.set_scale(float3(1.f + float(i) * std::numeric_limits<float>::epsilon()));
+            entity->set_transform(transform);
+            (void)entity->world_from_object_matrix();
+            scene->update();
+            detected |= emissive->generations().flux != generations.flux;
+        }
+        CHECK(detected);
+    }
+
+    SUBCASE("small and anisotropic scales retain relative precision")
+    {
+        for (const float3 scale : {float3(1e-10f), float3(1e-10f, 1e10f, 1.f)}) {
+            Transform transform;
+            transform.set_scale(scale);
+            entity->set_transform(transform);
+            synchronize(true);
+            transform.set_rotation_xyz(float3(0.3f, 0.6f, 0.9f));
+            entity->set_transform(transform);
+            synchronize(false);
+            transform.set_scale(scale * 1.01f);
+            entity->set_transform(transform);
+            synchronize(true);
+        }
+    }
+
+    SUBCASE("singular transforms conservatively invalidate stretch")
+    {
+        Transform transform;
+        transform.set_scale(float3(0.f, 1.f, 1.f));
+        entity->set_transform(transform);
+        synchronize(true);
+        check_area_and_flux(0.f);
+        transform.set_translation(float3(1.f));
+        entity->set_transform(transform);
+        synchronize(true);
+        check_area_and_flux(0.f);
+        transform.set_scale(float3(1.f));
+        entity->set_transform(transform);
+        synchronize(true);
+        check_area_and_flux(1.f);
+    }
+}
+
+TEST_CASE_GPU("emissive material edits and motion share one update")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    auto* entity = scene->create_entity();
+    auto* instance = create_emissive_triangle(scene, entity);
+    auto* material = instance->materials()[0];
+    scene->update();
+
+    const auto* emissive = scene->_emissive_geometry_system();
+    REQUIRE_EQ(emissive->active_triangle_count(), 1u);
+    const float initial_flux = emissive->active_triangle_flux()[0];
+    REQUIRE_GT(initial_flux, 0.f);
+    auto generations = emissive->generations();
+
+    // Material-only rebuilds must not report a geometry change.
+    material->set_property("emissive_factor", float3(2.f));
+    scene->update();
+    CHECK_EQ(emissive->generations().topology, generations.topology + 1);
+    CHECK_EQ(emissive->generations().geometry, generations.geometry);
+    CHECK_EQ(emissive->generations().flux, generations.flux + 1);
+    CHECK(emissive->active_triangle_flux()[0] == doctest::Approx(2.f * initial_flux));
+    generations = emissive->generations();
+
+    Transform transform;
+    transform.set_translation(float3(3.f, 2.f, 1.f));
+    transform.set_scale(float3(2.f, 3.f, 4.f));
+    const float area_ratio = transform.scale().x * transform.scale().y;
+    material->set_property("emissive_factor", float3(3.f));
+    entity->set_transform(transform);
+    (void)entity->world_from_object_matrix();
+    const auto flags = scene->update();
+    CHECK(is_set(flags, SceneUpdateFlags::emissive_geometry));
+    CHECK_EQ(emissive->generations().topology, generations.topology + 1);
+    CHECK_EQ(emissive->generations().geometry, generations.geometry + 1);
+    CHECK_EQ(emissive->generations().flux, generations.flux + 1);
+    REQUIRE_EQ(emissive->triangle_count(), 1u);
+    REQUIRE_EQ(emissive->active_triangle_count(), 1u);
+    CHECK_EQ(emissive->triangles()[0].pos_ws[0], transform.translation());
+    CHECK(emissive->triangles()[0].area_ws == doctest::Approx(0.5f * area_ratio));
+    CHECK(emissive->active_triangle_flux()[0] == doctest::Approx(3.f * area_ratio * initial_flux));
+    CHECK_EQ(emissive->triangle_flux()[0], emissive->active_triangle_flux()[0]);
+    generations = emissive->generations();
+    const float flux = emissive->active_triangle_flux()[0];
+
+    // Rebuilding membership must anchor the reference at the new scale.
+    transform.set_translation(float3(4.f, 2.f, 1.f));
+    entity->set_transform(transform);
+    scene->update();
+    CHECK_EQ(emissive->generations().topology, generations.topology);
+    CHECK_EQ(emissive->generations().geometry, generations.geometry + 1);
+    CHECK_EQ(emissive->generations().flux, generations.flux);
+    CHECK_EQ(emissive->triangles()[0].pos_ws[0], transform.translation());
+    CHECK_EQ(emissive->active_triangle_flux()[0], flux);
+    generations = emissive->generations();
+    CHECK_FALSE(is_set(scene->update(), SceneUpdateFlags::emissive_geometry));
+    CHECK(emissive->generations() == generations);
+}
+
+TEST_CASE_GPU("emissive flux detects area changes in a nearly parallel world basis")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    auto* parent = scene->create_entity();
+    auto* entity = scene->create_entity();
+    entity->set_parent(parent);
+    create_emissive_triangle(scene, entity);
+    Transform transform;
+    transform.set_rotation_xyz(float3(0.f, 0.f, float(M_PI) / 4.f));
+    entity->set_transform(transform);
+
+    // Exercise both conservative fallback and a skewed but still comparable metric.
+    for (const auto [scale, multiplier] : {std::array{1e-4f, 2.f}, std::array{1e-2f, 1.001f}}) {
+        CAPTURE(scale);
+        CAPTURE(multiplier);
+        Transform parent_transform;
+        parent_transform.set_scale(float3(1.f, scale, 1.f));
+        parent->set_transform(parent_transform);
+        scene->update();
+        const auto* emissive = scene->_emissive_geometry_system();
+        REQUIRE_EQ(emissive->active_triangle_count(), 1u);
+        const auto generations = emissive->generations();
+        const float flux = emissive->active_triangle_flux()[0];
+        REQUIRE_GT(flux, 0.f);
+        parent_transform.set_scale(float3(1.f, multiplier * scale, 1.f));
+        parent->set_transform(parent_transform);
+        (void)entity->world_from_object_matrix();
+        scene->update();
+        CHECK_EQ(emissive->generations().topology, generations.topology);
+        CHECK_EQ(emissive->generations().geometry, generations.geometry + 1);
+        CHECK_EQ(emissive->generations().flux, generations.flux + 1);
+        CHECK(emissive->triangles()[0].area_ws == doctest::Approx(0.5f * multiplier * scale));
+        CHECK(emissive->active_triangle_flux()[0] == doctest::Approx(multiplier * flux));
+        CHECK_EQ(emissive->triangle_flux()[0], emissive->active_triangle_flux()[0]);
+    }
+}
+
+TEST_CASE_GPU("emissive flux detects changed basis angles with unchanged basis lengths")
+{
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+        CAPTURE(axis);
+        auto scene = Scene::create(ref(ctx.device));
+        Properties properties;
+        properties.set("emissive_factor", float3(1.f));
+        auto* material = scene->create_material<StandardMaterial>(properties);
+        const uint32_t i = (axis + 1) % 3;
+        const uint32_t j = (axis + 2) % 3;
+        float3 edge0(0.f);
+        edge0[i] = edge0[j] = 1.f;
+        float3 edge1(0.f);
+        edge1[axis] = 1.f;
+        auto* geometry = create_triangle_geometry(scene, float3(0.f), edge0, edge1);
+        auto* parent = scene->create_entity();
+        const float3 scale(2.f, 3.f, 4.f);
+        Transform parent_transform;
+        parent_transform.set_scale(scale);
+        parent->set_transform(parent_transform);
+        auto* entity = scene->create_entity();
+        entity->set_parent(parent);
+        auto* instance = entity->create_component<GeometryInstance>();
+        instance->set_geometry(geometry);
+        instance->set_materials({material});
+        float3 angles(0.f);
+        angles[axis] = float(M_PI) / 4.f;
+        Transform transform;
+        transform.set_rotation_xyz(angles);
+        entity->set_transform(transform);
+        scene->update();
+        const auto* emissive = scene->_emissive_geometry_system();
+        REQUIRE_EQ(emissive->active_triangle_count(), 1u);
+        const float flux = emissive->active_triangle_flux()[0];
+        REQUIRE_GT(flux, 0.f);
+        const auto generations = emissive->generations();
+
+        // Opposite 45-degree rotations preserve the metric diagonal but reverse its off-diagonal entry.
+        // The triangle's diagonal edge moves between the two differently scaled parent axes.
+        transform.set_rotation_xyz(-angles);
+        entity->set_transform(transform);
+        scene->update();
+        CHECK_EQ(emissive->generations().topology, generations.topology);
+        CHECK_EQ(emissive->generations().geometry, generations.geometry + 1);
+        CHECK_EQ(emissive->generations().flux, generations.flux + 1);
+        CHECK(emissive->active_triangle_flux()[0] == doctest::Approx(flux * scale[i] / scale[j]));
+        CHECK_EQ(emissive->triangle_flux()[0], emissive->active_triangle_flux()[0]);
+    }
+}
+
+TEST_CASE_GPU("emissive transform cache follows contributing entities")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    Properties properties;
+    properties.set("emissive_factor", float3(1.f));
+    auto* material = scene->create_material<StandardMaterial>(properties);
+    auto* dark_material = scene->create_material<StandardMaterial>();
+    auto* geometry = create_triangle_geometry(scene, float3(0.f), float3(1.f, 0.f, 0.f), float3(0.f, 1.f, 0.f));
+    auto* dark_entity = scene->create_entity();
+    auto* dark_instance = dark_entity->create_component<GeometryInstance>();
+    dark_instance->set_geometry(geometry);
+    dark_instance->set_materials({dark_material});
+    auto* entity = scene->create_entity();
+    // Membership must search past non-geometry, empty and non-emissive components on the same entity.
+    entity->create_component<Camera>();
+    entity->create_component<GeometryInstance>();
+    auto* non_emissive_instance = entity->create_component<GeometryInstance>();
+    non_emissive_instance->set_geometry(geometry);
+    non_emissive_instance->set_materials({dark_material});
+    auto* instance = entity->create_component<GeometryInstance>();
+    instance->set_geometry(geometry);
+    instance->set_materials({material});
+    scene->update();
+    const auto* emissive = scene->_emissive_geometry_system();
+
+    SUBCASE("non-emissive motion leaves all emissive generations unchanged")
+    {
+        const auto generations = emissive->generations();
+        Transform transform;
+        transform.set_scale(float3(2.f, 3.f, 4.f));
+        dark_entity->set_transform(transform);
+        const auto flags = scene->update();
+        CHECK(is_set(flags, SceneUpdateFlags::transforms));
+        CHECK_FALSE(is_set(flags, SceneUpdateFlags::emissive_geometry));
+        CHECK(emissive->generations() == generations);
+    }
+
+    SUBCASE("material reassignment refreshes membership")
+    {
+        instance->set_materials({dark_material});
+        dark_instance->set_materials({material});
+        scene->update();
+        auto generations = emissive->generations();
+        Transform transform;
+        transform.set_scale(float3(2.f));
+        entity->set_transform(transform);
+        scene->update();
+        CHECK(emissive->generations() == generations);
+        dark_entity->set_transform(transform);
+        scene->update();
+        CHECK_EQ(emissive->generations().flux, generations.flux + 1);
+        CHECK(emissive->triangles()[0].area_ws == doctest::Approx(2.f));
+    }
+
+    SUBCASE("multiple components retain membership until the last emitter is removed")
+    {
+        auto* second_instance = entity->create_component<GeometryInstance>();
+        second_instance->set_geometry(geometry);
+        second_instance->set_materials({material});
+        scene->update();
+        REQUIRE_EQ(emissive->triangle_count(), 2u);
+        instance->remove();
+        scene->update();
+        REQUIRE_EQ(emissive->triangle_count(), 1u);
+        auto generations = emissive->generations();
+        Transform transform;
+        transform.set_scale(float3(2.f));
+        entity->set_transform(transform);
+        scene->update();
+        CHECK_EQ(emissive->generations().flux, generations.flux + 1);
+        second_instance->remove();
+        scene->update();
+        REQUIRE_EQ(emissive->triangle_count(), 0u);
+        CHECK(emissive->triangles().empty());
+        CHECK(emissive->triangle_flux().empty());
+        CHECK(emissive->active_triangle_ids().empty());
+        CHECK(emissive->active_triangle_flux().empty());
+        generations = emissive->generations();
+        transform.set_scale(float3(3.f));
+        entity->set_transform(transform);
+        scene->update();
+        CHECK(emissive->generations() == generations);
+    }
+
+    SUBCASE("entity removal and collection compaction preserve surviving membership")
+    {
+        dark_instance->set_materials({material});
+        scene->update();
+        dark_entity->remove();
+        scene->update();
+        REQUIRE_EQ(emissive->triangle_count(), 1u);
+        const auto generations = emissive->generations();
+        Transform transform;
+        transform.set_scale(float3(2.f));
+        entity->set_transform(transform);
+        scene->update();
+        CHECK_EQ(emissive->generations().flux, generations.flux + 1);
+        entity->remove();
+        scene->update();
+        REQUIRE_EQ(emissive->triangle_count(), 0u);
+        scene->create_entity();
+        scene->update();
+    }
+
+    SUBCASE("initially zero-area emitters recover after scaling")
+    {
+        Transform transform;
+        transform.set_scale(float3(0.f, 1.f, 1.f));
+        entity->set_transform(transform);
+        // Force emission setup while the emitter is degenerate.
+        instance->set_materials({dark_material});
+        instance->set_materials({material});
+        scene->update();
+        REQUIRE_EQ(emissive->triangle_count(), 1u);
+        REQUIRE_EQ(emissive->active_triangle_count(), 1u);
+        CHECK_EQ(emissive->active_triangle_flux()[0], 0.f);
+        const auto generations = emissive->generations();
+        entity->set_transform(Transform());
+        scene->update();
+        CHECK_EQ(emissive->generations().flux, generations.flux + 1);
+        CHECK_GT(emissive->active_triangle_flux()[0], 0.f);
+    }
+}
+
 TEST_CASE_GPU("emissive triangle sampling spans sample batches")
 {
     auto scene = Scene::create(ref(ctx.device));
@@ -1286,6 +2429,9 @@ TEST_CASE_GPU("imported planar area light geometry faces local negative Z")
     {
         std::ofstream file(path);
         file << R"usd(#usda 1.0
+(
+    metersPerUnit = 1
+)
 
 def RectLight "VisibleRect"
 {
@@ -1293,7 +2439,10 @@ def RectLight "VisibleRect"
     float inputs:colorTemperature = 3000
     float inputs:height = 2
     float inputs:intensity = 4
+    bool inputs:normalize = 1
     float inputs:width = 3
+    float3 xformOp:scale = (2, 3, 1)
+    uniform token[] xformOpOrder = ["xformOp:scale"]
 }
 
 def DiskLight "VisibleDisk"
@@ -1311,6 +2460,17 @@ def DiskLight "VisibleDisk"
     REQUIRE(imported_scene);
     REQUIRE(imported_scene->lights.empty());
     REQUIRE_EQ(imported_scene->meshes.size(), 2);
+    REQUIRE_EQ(imported_scene->materials.size(), 2);
+    const auto rect_material = std::find_if(
+        imported_scene->materials.begin(),
+        imported_scene->materials.end(),
+        [](const ImporterMaterial& material)
+        {
+            return material.name.find("VisibleRect") != std::string::npos;
+        }
+    );
+    REQUIRE(rect_material != imported_scene->materials.end());
+    CHECK_EQ(rect_material->params.get<float>("emission_luminance"), doctest::Approx(1.f / 9.f));
 
     for (const ImporterMesh& mesh : imported_scene->meshes) {
         const auto positions = mesh.position_stream();
@@ -1434,6 +2594,70 @@ TEST_CASE_GPU("entity world aabb with translation")
     CHECK(center.x == doctest::Approx(10.5f));
     CHECK(center.y == doctest::Approx(20.5f));
     CHECK(center.z == doctest::Approx(30.f));
+}
+
+// ---------------------------------------------------------------------------
+// Scene source asset reference lookup tests
+// ---------------------------------------------------------------------------
+
+TEST_CASE_GPU("scene source lookup survives renaming and removal")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    auto* first = scene->create_material<StandardMaterial>();
+    auto* second = scene->create_material<StandardMaterial>();
+    const SourceAssetRef source("usd", "asset.usda", "/Paint");
+    first->_set_source_asset_ref(source);
+    second->_set_source_asset_ref(source);
+    CHECK_EQ(scene->find_objects_by_source_asset_ref(source).size(), 2);
+    first->set_name("Renamed");
+    CHECK_EQ(scene->find_objects_by_source_asset_ref(source).size(), 2);
+    first->remove();
+    CHECK(scene->find_objects_by_source_asset_ref(source) == std::vector<SceneObject*>{second});
+    scene->update();
+    CHECK(scene->find_objects_by_source_asset_ref(source) == std::vector<SceneObject*>{second});
+    second->remove();
+    CHECK(scene->find_objects_by_source_asset_ref(source).empty());
+}
+
+TEST_CASE_GPU("scene source lookup scans all object kinds and reflects source changes")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    auto* material = scene->create_material<StandardMaterial>();
+    auto* geometry = scene->create_geometry<StaticMeshGeometry>();
+    auto* animation = scene->create_animation();
+    auto* entity = scene->create_entity();
+    auto* camera = entity->create_component<Camera>();
+    const std::vector<SceneObject*> objects{material, geometry, animation, entity, camera};
+    const SourceAssetRef source("usd", "asset.usda", "/Shared");
+    const SourceAssetRef other_source("usd", "other.usda", "/Shared");
+    CHECK(scene->find_objects_by_source_asset_ref({}).empty());
+    for (auto* object : objects) {
+        CHECK(object->source_asset_ref() == nullptr);
+        object->_set_source_asset_ref(source);
+    }
+    const auto found = scene->find_objects_by_source_asset_ref(source);
+    CHECK_EQ(found.size(), objects.size());
+    for (auto* object : objects)
+        CHECK(std::find(found.begin(), found.end(), object) != found.end());
+    CHECK(scene->find_objects_by_source_asset_ref(other_source).empty());
+
+    material->_set_source_asset_ref(other_source);
+    CHECK(scene->find_objects_by_source_asset_ref(other_source) == std::vector<SceneObject*>{material});
+    CHECK_EQ(scene->find_objects_by_source_asset_ref(source).size(), 4);
+    material->_set_source_asset_ref(std::nullopt);
+    CHECK(material->source_asset_ref() == nullptr);
+    CHECK(scene->find_objects_by_source_asset_ref(other_source).empty());
+    geometry->_set_source_asset_ref(SourceAssetRef{});
+    REQUIRE(geometry->source_asset_ref());
+    CHECK(*geometry->source_asset_ref() == SourceAssetRef{});
+    CHECK(scene->find_objects_by_source_asset_ref({}) == std::vector<SceneObject*>{geometry});
+    geometry->_set_source_asset_ref(std::nullopt);
+    CHECK(geometry->source_asset_ref() == nullptr);
+    CHECK(scene->find_objects_by_source_asset_ref({}).empty());
+
+    // Removing an entity immediately excludes both it and its components, before update/compaction.
+    entity->remove();
+    CHECK(scene->find_objects_by_source_asset_ref(source) == std::vector<SceneObject*>{animation});
 }
 
 TEST_SUITE_END();

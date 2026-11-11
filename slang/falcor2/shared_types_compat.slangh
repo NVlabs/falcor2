@@ -1,0 +1,24 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+// Compatibility macros for Slang source files that are also included from C++.
+// This file is intentionally re-entrant. Include shared_types_compat_undef.slangh
+// after the shared declarations to keep the macros local to the included file.
+
+#ifdef FALCOR_SHARED_HOST
+#define FALCOR_SHARED_METHOD_CONST const
+#define FALCOR_SHARED_MUTATING
+#define FALCOR_SHARED_CONSTANT static constexpr
+#define FALCOR_SHARED_PUBLIC_CONSTANT static constexpr
+#define FALCOR_SHARED_INLINE_FUNCTION inline
+#define FALCOR_SHARED_INOUT_ARRAY_PARAM(type, name, count) type(&name) [count]
+#define FALCOR_SHARED_CONST_ARRAY_PARAM(type, name, count) const type(&name) [count]
+#else
+#define FALCOR_SHARED_METHOD_CONST
+#define FALCOR_SHARED_MUTATING [mutating]
+#define FALCOR_SHARED_CONSTANT static const
+#define FALCOR_SHARED_PUBLIC_CONSTANT public static const
+#define FALCOR_SHARED_INLINE_FUNCTION public static
+#define FALCOR_SHARED_INOUT_ARRAY_PARAM(type, name, count) inout type name[count]
+#define FALCOR_SHARED_CONST_ARRAY_PARAM(type, name, count) const type name[count]
+#endif

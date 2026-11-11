@@ -113,7 +113,15 @@ void setup_triangle(
     triangles[triangle_index] = detail::pack_emissive_triangle(triangle);
 }
 
-static constexpr uint64_t SAMPLE_BUCKET_SIZE = 32;
+static const uint64_t SAMPLE_BUCKET_SIZE = 32;
+
+SurfaceInteraction make_emission_surface_interaction(EmissiveTriangleID triangle_id, float3 barycentrics)
+{
+    SurfaceInteraction si = make_emissive_triangle_surface_interaction(triangle_id, barycentrics, float3(0.0));
+    si.wi_ws = si.normal_ws;
+    si.front_facing = true;
+    return si;
+}
 
 [shader("compute")]
 [numthreads(128, 1, 1)]
@@ -178,8 +186,7 @@ void compute_triangle_max_emission(
             float2 sample_uv = (float2(sample_coord) + 0.5) / float2(grid);
             float3 sample_bary = sample_triangle(sample_uv);
             IMaterial material = g_scene.get_material(triangle.material_id);
-            SurfaceInteraction si = {};
-            si.uv = triangle.get_uv(sample_bary);
+            SurfaceInteraction si = make_emission_surface_interaction(EmissiveTriangleID(triangle_index), sample_bary);
             float3 emission = material.eval_emission(si, ExplicitLodSampler());
             max_emission_component = max(emission.x, max(emission.y, emission.z));
         }
@@ -257,8 +264,7 @@ void accumulate_triangle_emission(
             float2 sample_uv = (float2(sample_coord) + 0.5) / float2(grid);
             float3 sample_bary = sample_triangle(sample_uv);
             IMaterial material = g_scene.get_material(triangle.material_id);
-            SurfaceInteraction si = {};
-            si.uv = triangle.get_uv(sample_bary);
+            SurfaceInteraction si = make_emission_surface_interaction(EmissiveTriangleID(triangle_index), sample_bary);
             float3 emission = material.eval_emission(si, ExplicitLodSampler());
             emission_fixed_point = uint64_t3(emission * emission_factor[triangle_index]);
         }
@@ -349,7 +355,8 @@ public void update_triangle(
     StructuredBuffer<ActiveEmissiveTriangleID> triangle_id_to_active_triangle_id,
     StructuredBuffer<EmissiveTriangleID> geometry_instance_to_triangle_id,
     StructuredBuffer<float4> triangle_emission,
-    uniform uint triangle_count
+    uniform uint triangle_count,
+    uniform bool update_flux
 )
 {
     if (triangle_index >= triangle_count)
@@ -378,12 +385,17 @@ public void update_triangle(
         triangle.normal_ws = float3(0.0, 0.0, 0.0);
     } else {
         triangle.area_ws = length(cross(edge0, edge1)) / 2;
-        // A one-sided Lambertian emitter's total flux is its area times radiant exitance.
-        float3 emission = triangle_emission[triangle_index].xyz;
-        flux = triangle.area_ws * luminance(emission);
+        if (update_flux) {
+            // A one-sided Lambertian emitter's total flux is its area times radiant exitance.
+            float3 emission = triangle_emission[triangle_index].xyz;
+            flux = triangle.area_ws * luminance(emission);
+        }
     }
 
     triangles[triangle_index] = detail::pack_emissive_triangle(triangle);
+    if (!update_flux)
+        return;
+
     triangle_flux[triangle_index] = flux;
 
     ActiveEmissiveTriangleID active_triangle_id = triangle_id_to_active_triangle_id[triangle_index];

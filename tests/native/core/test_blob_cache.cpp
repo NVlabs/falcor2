@@ -520,6 +520,7 @@ TEST_CASE("eviction triggers after writes")
     opts.max_size = 1000;
     opts.eviction_threshold_pct = 80;
     opts.eviction_target_pct = 60;
+    opts.eviction_check_bytes = 0;
     BlobCache cache(opts);
 
     for (int i = 0; i < 10; ++i) {
@@ -530,6 +531,69 @@ TEST_CASE("eviction triggers after writes")
 
     auto s = cache.stats();
     CHECK(s.total_size <= 600);
+}
+
+TEST_CASE("automatic eviction batches published bytes across write APIs")
+{
+    auto opts = make_test_options();
+    opts.max_size = 100;
+    opts.eviction_target_pct = 0;
+    opts.eviction_check_interval_ms = 24 * 60 * 60 * 1000;
+    opts.eviction_check_bytes = 100;
+    BlobCache cache(opts);
+    auto key = make_digest("byte_gate");
+    std::vector<uint8_t> data(50, 1);
+
+    cache.write(key, data); // Initial scan, below the eviction threshold.
+    cache.write(key, data); // Replacements count, even without net growth.
+    auto pending = cache.write_stream(key, "pending");
+    pending.stream()->write(data.data(), data.size());
+    pending.abort(); // Unpublished bytes must not count.
+    cache.write(key, std::vector<uint8_t>(40, 2), "other");
+    CHECK(cache.stats().total_size == 90); // Above threshold, but only 90 published bytes since the scan.
+
+    auto write = cache.write_stream(key, "stream");
+    std::vector<uint8_t> tail(10, 3);
+    write.stream()->write(tail.data(), tail.size());
+    write.commit(); // Exactly reaches the byte budget.
+    CHECK(cache.stats().total_size == 0);
+
+    cache.write(key, data);
+    cache.write(key, std::vector<uint8_t>(40, 2), "other");
+    CHECK(cache.stats().total_size == 90); // The budget reset after maintenance.
+    cache.evict();                         // Explicit maintenance bypasses both gates.
+    CHECK(cache.stats().total_size == 0);
+}
+
+TEST_CASE("automatic eviction checks existing cache on first write")
+{
+    auto opts = make_test_options();
+    BlobCache writer(opts);
+    auto key = make_digest("existing_cache");
+    writer.write(key, std::vector<uint8_t>(90, 1));
+    opts.max_size = 100;
+    opts.eviction_target_pct = 0;
+    BlobCache cache(opts);
+    cache.write(key, std::vector<uint8_t>(1, 2), "new");
+    CHECK(cache.stats().total_size == 0);
+}
+
+TEST_CASE("automatic eviction checks elapsed time even with a small write")
+{
+    auto opts = make_test_options();
+    opts.max_size = 100;
+    opts.eviction_target_pct = 0;
+    opts.eviction_check_interval_ms = 100;
+    BlobCache cache(opts);
+    auto key = make_digest("time_gate");
+    cache.write(key, std::vector<uint8_t>(1, 1));
+
+    auto writer_opts = make_test_options();
+    BlobCache writer(writer_opts);
+    writer.write(key, std::vector<uint8_t>(90, 2), "external");
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    cache.write(key, std::vector<uint8_t>(1, 3));
+    CHECK(cache.stats().total_size == 0);
 }
 
 TEST_CASE("stats ignores temp files and unrelated files")

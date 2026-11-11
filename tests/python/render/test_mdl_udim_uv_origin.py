@@ -247,6 +247,7 @@ def _write_png(data: FloatArray, path: Path) -> None:
     print(f"Wrote debug PNG: {path}")
 
 
+@pytest.mark.nightly_if_not_vk
 @pytest.mark.slow
 @pytest.mark.parametrize(
     "case",
@@ -273,7 +274,7 @@ def test_mdl_udim_manual_quad_uses_recorded_origin_conventions(
     mesh.add_tangents_from_uvs()
     subgeometries = list(mesh.subgeometries)
     subgeometries[0].name = "manual_udim_quad"
-    subgeometries[0].material_name = "mdl_sdk_example_tiled"
+    subgeometries[0].material_index = 0
     mesh.subgeometries = subgeometries
 
     material = f2.ImporterMaterial()
@@ -321,12 +322,12 @@ def test_mdl_udim_manual_quad_uses_recorded_origin_conventions(
         "material_color": ContainerSpec.texture2d(spy.Format.rgba32_float),
         "geometry_id": ContainerSpec.texture2d(spy.Format.rgba32_uint),
     }
+    path_tracer.pixel_filter = f2.BoxReconstructionFilter(width=0)
     _, guides = path_tracer(
         scene,
         camera,
         iteration=0,
-        subpixel_offset=spy.float2(0.0, 0.0),
-        subpixel_random_jitter=0.0,
+        pixel_offset=spy.float2(0.0, 0.0),
     )
     material_color = guides["material_color"]
     geometry_id = guides["geometry_id"]

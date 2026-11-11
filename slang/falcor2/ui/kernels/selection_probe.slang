@@ -74,7 +74,12 @@ public void selection_probe(
     }
 
     RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> q;
-    q.TraceRayInline(g_scene.tlas, RAY_FLAG_FORCE_NON_OPAQUE, 0xff, ray.to_ray_desc());
+    q.TraceRayInline(
+        g_scene.tlas,
+        RAY_FLAG_FORCE_NON_OPAQUE,
+        INSTANCE_INCLUSION_MASK_REGULAR_GEOMETRY,
+        ray.to_ray_desc()
+    );
     while (q.Proceed()) {
         uint id = q.CandidateInstanceID() + q.CandidateGeometryIndex();
         if (is_selected(id, selection_bitmap, selection_bitmap_bit_count)) {
@@ -172,7 +177,7 @@ public void selection_probe_ray_gen()
     TraceRay(
         g_scene.tlas,
         RAY_FLAG_FORCE_NON_OPAQUE,
-        0xff,
+        INSTANCE_INCLUSION_MASK_REGULAR_GEOMETRY,
         0 /* RayContributionToHitGroupIndex */,
         0 /* MultiplierForGeometryContributionHitGroupIndex */,
         0 /* MissShaderIndex */,

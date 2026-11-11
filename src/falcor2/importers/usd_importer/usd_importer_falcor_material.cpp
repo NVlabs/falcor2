@@ -7,7 +7,7 @@
 #include "falcor2/core/error.h"
 #include "falcor2/importers/importer_types.h"
 #include "falcor2/importers/material_conversions.h"
-#include "falcor2/render/material_types.h"
+#include "falcor2/render/scene_types.h"
 
 #include <fmt/format.h>
 
@@ -184,6 +184,7 @@ Properties convert_terminal(const ImporterMaterial& material, const Terminal& te
         result.set("alpha_mode", parse_alpha_mode(material, *value));
     copy_optional_input<float3>(inputs, result, "base_color_factor");
     copy_optional_input<bool>(inputs, result, "double_sided");
+    copy_optional_input<uint>(inputs, result, "nested_priority");
     set_texture_path(result, terminal_node, "base_color_texture_path");
 
     if (is_standard) {
@@ -197,6 +198,8 @@ Properties convert_terminal(const ImporterMaterial& material, const Terminal& te
         copy_optional_input<float>(inputs, result, "specular_transmission_factor");
         copy_optional_input<bool>(inputs, result, "thin_walled");
         copy_optional_input<float3>(inputs, result, "transmission_factor");
+        copy_optional_input<float3>(inputs, result, "volume_sigma_a");
+        copy_optional_input<float3>(inputs, result, "volume_sigma_s");
         set_texture_path(result, terminal_node, "emissive_texture_path");
         set_texture_path(result, terminal_node, "metallic_roughness_texture_path", false);
         set_texture_path(result, terminal_node, "normal_texture_path", false);

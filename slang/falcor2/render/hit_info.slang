@@ -20,14 +20,20 @@ public interface IHitInfo
 
 public struct PackedHitInfo
 {
-    public uint data[5] = { uint(GeometryType::invalid), 0, 0, 0, 0 };
+    public GeometryType geometry_type = GeometryType::invalid;
+    /// Instance identity is meaningful only for a valid hit.
+    public GeometryInstanceID geometry_instance_id = GeometryInstanceID(0);
+    /// Geometry-owned encoding; shared readers must not interpret these words.
+    public uint payload[3] = { 0, 0, 0 };
 
     public IHitInfo unpack()
     {
-        if (data[0] == uint(GeometryType::triangle)) {
+        if (geometry_type == GeometryType::triangle) {
             return TriangleHitInfo(this);
-        } else if (data[0] == uint(GeometryType::lss)) {
+        } else if (geometry_type == GeometryType::lss) {
             return LSSHitInfo(this);
+        } else if (geometry_type == GeometryType::area_light) {
+            return AreaLightHitInfo(this);
         } else {
             return InvalidHitInfo();
         }

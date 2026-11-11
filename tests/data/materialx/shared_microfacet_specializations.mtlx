@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<materialx version="1.39" colorspace="lin_rec709">
+  <nodedef name="ND_shared_dielectric" node="shared_dielectric" nodegroup="pbr">
+    <input name="scatter_mode" type="string" value="R" />
+    <input name="tint" type="color3" value="1, 1, 1" />
+    <output name="out" type="BSDF" />
+  </nodedef>
+  <nodegraph name="IM_shared_dielectric" nodedef="ND_shared_dielectric">
+    <dielectric_bsdf name="dielectric" type="BSDF">
+      <input name="scatter_mode" type="string" interfacename="scatter_mode" />
+      <input name="tint" type="color3" interfacename="tint" />
+    </dielectric_bsdf>
+    <output name="out" type="BSDF" nodename="dielectric" />
+  </nodegraph>
+  <shared_dielectric name="reflection" type="BSDF">
+    <input name="scatter_mode" type="string" value="R" />
+    <input name="tint" type="color3" value="0.8, 0.2, 0.1" />
+  </shared_dielectric>
+  <shared_dielectric name="transmission" type="BSDF">
+    <input name="scatter_mode" type="string" value="T" />
+    <input name="tint" type="color3" value="0.1, 0.4, 0.8" />
+  </shared_dielectric>
+  <add name="combined" type="BSDF">
+    <input name="in1" type="BSDF" nodename="reflection" />
+    <input name="in2" type="BSDF" nodename="transmission" />
+  </add>
+  <surface name="surface" type="surfaceshader">
+    <input name="bsdf" type="BSDF" nodename="combined" />
+  </surface>
+  <surfacematerial name="SharedMicrofacetSpecializations" type="material">
+    <input name="surfaceshader" type="surfaceshader" nodename="surface" />
+  </surfacematerial>
+</materialx>
