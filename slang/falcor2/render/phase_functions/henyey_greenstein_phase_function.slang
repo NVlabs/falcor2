@@ -21,20 +21,18 @@ public struct HenyeyGreensteinPhaseFunction : IPhaseFunction
 
     public float3 eval(const float3 wi, const float3 wo) { return eval_henyey_greenstein(dot(wi, wo), g); }
 
-    public bool sample<S : ISampleGenerator>(const float3 wi, inout S sg, out PhaseFunctionSample sample)
+    public bool sample(const float3 wi, const PhaseFunctionSampleInput input, out PhaseFunctionSample sample)
     {
-        const float2 u = next_float2(sg);
-
         float cos_theta;
         if (abs(g) < HENYEY_GREENSTEIN_ISOTROPIC_THRESHOLD) {
-            cos_theta = 1.0 - 2.0 * u.x;
+            cos_theta = 1.0 - 2.0 * input.u_dir.x;
         } else {
-            const float sqr = (1.0 - g * g) / (1.0 - g + 2.0 * g * u.x);
+            const float sqr = (1.0 - g * g) / (1.0 - g + 2.0 * g * input.u_dir.x);
             cos_theta = (1.0 + g * g - sqr * sqr) / (2.0 * g);
         }
 
         const float sin_theta = sqrt(max(0.0, 1.0 - cos_theta * cos_theta));
-        const float phi = float.TWO_PI * u.y;
+        const float phi = float.TWO_PI * input.u_dir.y;
         const float3 w = float3(sin_theta * cos(phi), sin_theta * sin(phi), cos_theta);
 
         const float3 dir = -wi;

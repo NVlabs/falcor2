@@ -14,6 +14,9 @@ Purpose:
 
 Focus:
 - C++ naming conventions, Python typing conventions, and nearby style.
+- Function placement under FILE.3: inspect neighboring functions beyond the diff to check logical grouping and
+  the local order of abstraction. Report misplaced additions; preserve established API/declaration order and avoid
+  unrelated reordering. Formatter success does not establish correct function placement.
 - Unnecessary abstractions, duplicated logic, misplaced helpers, and ownership boundary confusion.
 - Overuse of short, single statement functions
 - Redundant attempts to remain backwards compatible with retired features/functions
@@ -31,4 +34,4 @@ Output format:
 1. Findings ordered by severity, with file and line/function where possible.
 2. Suggested simplifications.
 3. Residual maintainability risk.
-4. Abbreviation naming and coding style: report each result, inspected scope, evidence, exceptions, and unverified checks.
+4. Function ordering, abbreviation naming, and coding style: report each result, inspected scope, evidence, exceptions, and unverified checks.

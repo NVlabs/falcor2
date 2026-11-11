@@ -18,6 +18,9 @@ FALCOR_PY_EXPORT(utils_buffer_handle)
     nb::class_<BufferHandle>(m, "BufferHandle", D(BufferHandle))
         .def_prop_ro("data", &BufferHandle::data, D(BufferHandle, data));
 
+    nb::class_<RWBufferHandle>(m, "RWBufferHandle", D(RWBufferHandle))
+        .def_prop_ro("data", &RWBufferHandle::data, D(RWBufferHandle, data));
+
     m.def(
         "to_handle",
         [](const ref<sgl::Buffer>& buffer)
@@ -26,4 +29,5 @@ FALCOR_PY_EXPORT(utils_buffer_handle)
         },
         "buffer"_a
     );
+    m.def("to_rw_handle", &to_rw_handle, "buffer"_a, D(to_rw_handle));
 }

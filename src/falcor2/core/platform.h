@@ -80,6 +80,36 @@ private:
 };
 
 // -------------------------------------------------------------------------------------------------
+// GPU scheduling
+// -------------------------------------------------------------------------------------------------
+
+/// Temporarily request process-wide GPU REALTIME scheduling priority on Windows.
+/// Applies to CUDA, Vulkan and D3D12 under WDDM; it does not guarantee uninterrupted execution.
+/// Construction requests the priority immediately and throws if reading or setting it fails. Other platforms silently
+/// leave scheduling unchanged. Keep the guard's lifetime short: realtime priority can make
+/// the desktop unresponsive.
+///
+/// This guard is single-use. Nested guards must be closed in reverse order; do not overlap guards
+/// across threads or change the process GPU priority while a guard is alive.
+/// Restoration failures are logged without throwing.
+/// In Python, use with falcor2.platform.set_gpu_realtime_priority() for deterministic restoration.
+class FALCOR_API ScopedGPURealtimePriority {
+public:
+    ScopedGPURealtimePriority();
+    /// Restore the previous priority. Restoration failures are logged without throwing.
+    ~ScopedGPURealtimePriority() noexcept;
+
+    /// Restore the previous priority, logging failures without throwing. Repeated calls after success do nothing.
+    void close() noexcept;
+
+private:
+    int m_previous_priority{-1};
+
+    FALCOR_NON_COPYABLE(ScopedGPURealtimePriority);
+    FALCOR_NON_MOVABLE(ScopedGPURealtimePriority);
+};
+
+// -------------------------------------------------------------------------------------------------
 // Utilities
 // -------------------------------------------------------------------------------------------------
 

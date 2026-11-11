@@ -1,8 +1,7 @@
 # Contributing to Falcor2
 
 Read the [coding-style guide](docs/contributing/coding-style.md) for formatting, naming, properties, and binding
-documentation requirements. See [Building from source](README.md#building-from-source) for setup and build
-instructions.
+documentation requirements. See [AGENTS.md](AGENTS.md) for repository build and test commands.
 
 ## Signing Your Work
 

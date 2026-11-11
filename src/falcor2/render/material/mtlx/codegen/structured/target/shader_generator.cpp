@@ -179,8 +179,10 @@ public:
             return;
 
         // Closure-valued compounds reach the graph-storage mutators and must
-        // say so at their MaterialX-owned declaration. Record the boundary
-        // policy now; applying it after all nested definitions have been emitted
+        // say so at their MaterialX-owned declaration. Scalarized complex mix
+        // additionally forces this boundary inline to avoid CUDA local
+        // memory materialization of the scalar graph state. Record both facts
+        // now; applying them after all nested definitions have been emitted
         // avoids copying the accumulated module once per compound.
         user_data->emission_scratch().compound_annotations.push_back(
             CompoundFunctionAnnotation{_functionName, mutating, force_inline}

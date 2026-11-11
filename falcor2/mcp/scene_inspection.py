@@ -441,6 +441,7 @@ def _camera_summary(
         "optics": {
             "focal_length": float(camera.focal_length),
             "fstop": float(camera.fstop),
+            "exposure": float(camera.exposure),
             "sensor_height": float(camera.sensor_height),
             "fov_y": float(camera.fov_y),
             "enable_depth_of_field": bool(camera.enable_depth_of_field),

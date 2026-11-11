@@ -138,6 +138,7 @@ public:
                 &Light::set_exposure,
                 "Exposure value in stops.",
                 reflection::default_value(0.f),
+                reflection::value_range(MIN_EXPOSURE, MAX_EXPOSURE),
                 reflection::ui_label("Exposure")
             )
             .def_prop_rw(
@@ -178,6 +179,8 @@ public:
 protected:
     static constexpr float MIN_LIGHT_ANGLE = 0.f;
     static constexpr float MAX_LIGHT_ANGLE = 180.f;
+    static constexpr float MIN_EXPOSURE = -32.f;
+    static constexpr float MAX_EXPOSURE = 32.f;
 
     float3 evaluate_emission(float size_factor = 1.f) const;
 

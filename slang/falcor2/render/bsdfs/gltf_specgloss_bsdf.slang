@@ -66,27 +66,25 @@ public struct GLTFSpecGlossBSDF : IBSDF, IDifferentiable
     public BSDFFlags get_lobe_types() { return lobe_types; }
 
     [Differentiable]
-    public override
-        float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        return eval_with_pdf(wi, wo, sg, bc).value;
+        return eval_with_pdf(wi, wo, bc).value;
     }
 
     [Differentiable]
-    public BSDFEval
-    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
         BSDFEval result = {};
 
         // Add physical lobe values, but mix their PDFs by selection probability.
         // The leaf values already include the outgoing cosine.
         if (p_diffuse > 0.0) {
-            const BSDFEval lobe = diffuse.eval_with_pdf(wi, wo, sg, bc);
+            const BSDFEval lobe = diffuse.eval_with_pdf(wi, wo, bc);
             result.value += lobe.value;
             result.pdf += p_diffuse * lobe.pdf;
         }
         if (p_specular > 0.0) {
-            const BSDFEval lobe = specular.eval_with_pdf(wi, wo, sg, bc);
+            const BSDFEval lobe = specular.eval_with_pdf(wi, wo, bc);
             result.value += lobe.value;
             result.pdf += p_specular * lobe.pdf;
         }
@@ -94,23 +92,23 @@ public struct GLTFSpecGlossBSDF : IBSDF, IDifferentiable
         return result;
     }
 
-    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
-        float u_select = next_float(sg);
 
         // As in Standard, weight estimates the chosen physical component divided
         // by its selection probability. Non-delta pdf reports the marginal mixture.
         // It is intentionally not a full-mixture eval/pdf weight.
-        if (u_select < p_diffuse) {
-            if (!diffuse.sample(wi, sample, sg, bc))
+        // Neither child consumes u_lobe, so the input does not need remapping.
+        if (input.u_lobe < p_diffuse) {
+            if (!diffuse.sample(wi, input, bc, sample))
                 return false;
             sample.weight *= 1.0 / p_diffuse;
             sample.pdf *= p_diffuse;
             if (p_specular > 0.0)
                 sample.pdf += p_specular * specular.eval_pdf(wi, sample.wo, bc);
-        } else if (u_select < p_diffuse + p_specular) {
-            if (!specular.sample(wi, sample, sg, bc))
+        } else if (input.u_lobe < p_diffuse + p_specular) {
+            if (!specular.sample(wi, input, bc, sample))
                 return false;
             sample.weight *= 1.0 / p_specular;
             sample.pdf *= p_specular;

@@ -59,6 +59,27 @@ private:
 
 TEST_SUITE_BEGIN("Scene");
 
+TEST_CASE("GeometryMotionFlags packing")
+{
+    for (auto type :
+         {shared::GeometryType::triangle,
+          shared::GeometryType::lss,
+          shared::GeometryType::area_light,
+          shared::GeometryType::invalid}) {
+        for (auto flags : {shared::GeometryInstanceFlags::none, shared::GeometryInstanceFlags::vertex_motion}) {
+            shared::GeometryInstanceDescHeader header = {};
+            header.type_and_flags = shared::detail::pack_geometry_instance_type_and_flags(type, flags);
+            CHECK_EQ(shared::detail::get_geometry_instance_type(header), type);
+            CHECK_EQ(shared::detail::get_geometry_instance_flags(header), flags);
+        }
+    }
+    CHECK_EQ(sizeof(shared::GeometryInstanceDescHeader), 16);
+    CHECK_EQ(sizeof(shared::GeometryInstanceDesc), 32);
+    CHECK_EQ(sizeof(shared::TriangleGeometryInstanceDesc), sizeof(shared::GeometryInstanceDesc));
+    CHECK_EQ(sizeof(shared::LSSGeometryInstanceDesc), sizeof(shared::GeometryInstanceDesc));
+    CHECK_EQ(sizeof(shared::AreaLightGeometryInstanceDesc), sizeof(shared::GeometryInstanceDesc));
+}
+
 TEST_CASE("scene pipeline equality covers every setup input independently of shaders")
 {
     const SceneRequirements baseline;
@@ -156,7 +177,7 @@ TEST_CASE_GPU("geometry capability requirements follow imported material usage")
     CHECK_FALSE(basic->_render_scene()->has_additional_attributes());
     CHECK_FALSE(basic->resolve_requirements({}, SceneCapabilityPolicy::required)
                     ->capabilities.has(SceneCapabilityFlags::geometry_properties));
-    CHECK(basic->requirements()->capabilities.has(SceneCapabilityFlags::geometry_properties));
+    CHECK_FALSE(basic->requirements()->capabilities.has(SceneCapabilityFlags::geometry_properties));
 
     // Imported vertex colors enable material color use; unused streams do not require geometry access.
     const ImporterMeshDefaultAttribute extra_streams[] = {
@@ -177,11 +198,13 @@ TEST_CASE_GPU("geometry capability requirements follow imported material usage")
         auto detected = Scene::from_importer_scene(ref(ctx.device), *importer_scene);
         detected->update();
         CHECK(detected->_render_scene()->has_additional_attributes());
-        CHECK(detected->requirements()->capabilities.has(SceneCapabilityFlags::geometry_properties));
-        // Settings module names hash their source; separate scenes can have distinct module objects.
-        CHECK(detected->requirements()->modules[0]->name() == basic->requirements()->modules[0]->name());
-
         const bool needs_geometry = extra.semantic == ImporterSemantic::color;
+        CHECK(detected->requirements()->capabilities.has(SceneCapabilityFlags::geometry_properties) == needs_geometry);
+        // Settings module names hash their source; separate scenes can have distinct module objects.
+        CHECK(
+            (detected->requirements()->modules[0]->name() == basic->requirements()->modules[0]->name())
+            == !needs_geometry
+        );
         CHECK(detected->required_capabilities().has(SceneCapabilityFlags::geometry_properties) == needs_geometry);
         CHECK(
             detected->resolve_requirements({}, SceneCapabilityPolicy::required)
@@ -1325,6 +1348,7 @@ TEST_CASE_GPU("importer scene camera becomes active and preserves projection pro
     importer_camera.name = "Test Camera";
     importer_camera.focal_length = 50.f;
     importer_camera.fstop = 8.f;
+    importer_camera.exposure = -2.f;
     importer_camera.sensor_size_mm = 24.f;
     importer_camera.enable_depth_of_field = true;
     importer_camera.focus_distance = 0.f;
@@ -1346,6 +1370,8 @@ TEST_CASE_GPU("importer scene camera becomes active and preserves projection pro
     REQUIRE(active_camera != nullptr);
     CHECK_EQ(active_camera->focal_length(), importer_camera.focal_length);
     CHECK_EQ(active_camera->fstop(), 8.f);
+    CHECK_EQ(active_camera->exposure(), -2.f);
+    CHECK_EQ(active_camera->calc_uniforms().exposure_scale, 0.25f);
     CHECK_EQ(active_camera->sensor_height(), importer_camera.sensor_size_mm);
     CHECK(active_camera->enable_depth_of_field());
     CHECK_EQ(active_camera->focus_distance(), 0.f);

@@ -10,6 +10,7 @@
 #include "falcor2/core/enum.h"
 
 #include "falcor2/utils/managed_vector.h"
+#include "falcor2/utils/managed_buffer_pool.h"
 #include "falcor2/utils/buffer_suballocator.h"
 #include "falcor2/utils/offset_allocator.h"
 
@@ -375,8 +376,8 @@ struct RenderTriangleGeometry {
     uint32_t vertex_offset;
     uint32_t index_count;
     uint32_t index_offset;
-    OffsetAllocator::Allocation vertex_allocation;
-    OffsetAllocator::Allocation index_allocation;
+    ManagedBufferPool<shared::PackedTriangleVertex>::Allocation vertex_allocation;
+    ManagedBufferPool<uint32_t>::Allocation index_allocation;
     std::vector<RenderGeometryAdditionalAttribute> additional_attributes;
     /// List of geometry groups referencing this geometry.
     std::vector<RenderGeometryGroupHandle> geometry_groups;
@@ -391,13 +392,11 @@ struct RenderTriangleGeometryData {
 struct RenderTriangleGeometries {
     RenderObjectPool<RenderTriangleGeometry, RenderTriangleGeometryHandle> m_pool;
     ManagedVector<shared::TriangleGeometryDesc> m_descs;
-    ManagedVector<shared::PackedTriangleVertex> m_vertices;
-    ManagedVector<uint32_t> m_indices;
-    OffsetAllocator m_vertex_allocator;
-    OffsetAllocator m_index_allocator;
+    ManagedBufferPool<shared::PackedTriangleVertex> m_vertices;
+    ManagedBufferPool<uint32_t> m_indices;
     RenderGeometryAdditionalAttributeStorage m_additional_attributes;
 
-    RenderTriangleGeometries(sgl::Device* device);
+    RenderTriangleGeometries(BufferHandleTable& handles);
 
     RenderTriangleGeometryHandle create(const RenderTriangleGeometryDesc& desc);
     void destroy(RenderTriangleGeometryHandle handle);
@@ -430,8 +429,8 @@ struct RenderLSSGeometry {
     uint32_t vertex_offset;
     uint32_t index_count;
     uint32_t index_offset;
-    OffsetAllocator::Allocation vertex_allocation;
-    OffsetAllocator::Allocation index_allocation;
+    ManagedBufferPool<shared::PackedLSSVertex>::Allocation vertex_allocation;
+    ManagedBufferPool<uint32_t>::Allocation index_allocation;
     std::vector<RenderGeometryAdditionalAttribute> additional_attributes;
     /// List of geometry groups referencing this geometry.
     std::vector<RenderGeometryGroupHandle> geometry_groups;
@@ -446,17 +445,17 @@ struct RenderLSSGeometryData {
 struct RenderLSSGeometries {
     RenderObjectPool<RenderLSSGeometry, RenderLSSGeometryHandle> m_pool;
     ManagedVector<shared::LSSGeometryDesc> m_descs;
-    ManagedVector<shared::PackedLSSVertex> m_vertices;
-    ManagedVector<uint32_t> m_indices;
-    OffsetAllocator m_vertex_allocator;
-    OffsetAllocator m_index_allocator;
+    ManagedBufferPool<shared::PackedLSSVertex> m_vertices;
+    ManagedBufferPool<uint32_t> m_indices;
     RenderGeometryAdditionalAttributeStorage m_additional_attributes;
 
     LSSIntersectionMode m_intersection_mode{LSSIntersectionMode::hardware};
-    ref<sgl::Buffer> m_aabb_buffer;
+    // One AABB per index-capacity entry, with identical slot indices and element offsets.
+    std::vector<ref<sgl::Buffer>> m_aabb_buffers;
     ref<sgl::ComputeKernel> m_compute_aabbs_kernel;
+    ManagedVector<shared::LSSAABBWork> m_aabb_work{{.label = "LSSGeometryData::aabb_work"}};
 
-    RenderLSSGeometries(sgl::Device* device, LSSIntersectionMode intersection_mode);
+    RenderLSSGeometries(sgl::Device* device, BufferHandleTable& handles, LSSIntersectionMode intersection_mode);
 
     LSSIntersectionMode intersection_mode() const { return m_intersection_mode; }
 
@@ -693,6 +692,7 @@ private:
 
     // DirtyFlags m_dirty_flags{DirtyFlags::none};
 
+    BufferHandleTable m_geometry_buffers;
     RenderTriangleGeometries m_triangle_geometries;
     RenderLSSGeometries m_lss_geometries;
     RenderAreaLightGeometries m_area_light_geometries;

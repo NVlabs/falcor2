@@ -3,12 +3,15 @@
 
 #pragma once
 
-#include "falcor2/core/error.h"
 #include "falcor2/core/types.h"
+#include "falcor2/core/error.h"
 #include "falcor2/render/scene_types.h"
 #include <sgl/device/buffer_cursor.h>
 #include <cmath>
+#include <functional>
 #include <span>
+#include <type_traits>
+#include <utility>
 
 namespace falcor {
 
@@ -25,28 +28,49 @@ struct GLTFTextureTransform {
     }
 };
 
-inline uint32_t gltf_texture_transform_mask(std::span<const GLTFTextureTransform> transforms)
+// A transform accessor lets materials keep bindings in separate core/extension
+// structures while visiting them in stable texture-slot order. It must return
+// a reference; no temporary array of transforms is needed during an update.
+template<typename TransformAt>
+inline uint32_t gltf_texture_transform_mask(size_t transform_count, TransformAt&& transform_at)
 {
-    FALCOR_CHECK(transforms.size() <= 32, "Too many glTF texture bindings for the transform mask.");
+    static_assert(std::is_lvalue_reference_v<std::invoke_result_t<TransformAt&, size_t>>);
+    FALCOR_CHECK(transform_count <= 32, "Too many glTF texture bindings for the transform mask.");
     uint32_t mask = 0;
-    for (size_t i = 0; i < transforms.size(); ++i)
-        if (!transforms[i].is_identity())
+    for (size_t i = 0; i < transform_count; ++i)
+        if (!std::invoke(transform_at, i).is_identity())
             mask |= 1u << i;
     return mask;
 }
 
+inline uint32_t gltf_texture_transform_mask(std::span<const GLTFTextureTransform> transforms)
+{
+    return gltf_texture_transform_mask(
+        transforms.size(),
+        [&](size_t index) -> const GLTFTextureTransform&
+        {
+            return transforms[index];
+        }
+    );
+}
+
 // Writes only active records, in binding order. The caller owns the shared Material allocation.
 // Converts authored upper-left transforms to scene_uv_origin for upload without modifying transforms.
+template<typename TransformAt>
 inline void write_gltf_texture_transforms(
     sgl::BufferCursor& cursor,
-    std::span<const GLTFTextureTransform> transforms,
+    size_t transform_count,
+    TransformAt&& transform_at,
+    uint32_t active_mask,
     UVOrigin scene_uv_origin
 )
 {
+    static_assert(std::is_lvalue_reference_v<std::invoke_result_t<TransformAt&, size_t>>);
     uint32_t index = 0;
-    for (const auto& transform : transforms) {
-        if (transform.is_identity())
+    for (size_t slot = 0; slot < transform_count; ++slot) {
+        if ((active_mask & (1u << slot)) == 0)
             continue;
+        const auto& transform = std::invoke(transform_at, slot);
         const float c = std::cos(transform.rotation);
         const float s = std::sin(transform.rotation);
         // Match glTF's Y-down rotation and Khronos Sample Renderer. The README's
@@ -64,6 +88,41 @@ inline void write_gltf_texture_transforms(
         ++index;
     }
     cursor.apply();
+}
+
+template<typename TransformAt>
+inline void write_gltf_texture_transforms(
+    sgl::BufferCursor& cursor,
+    size_t transform_count,
+    TransformAt&& transform_at,
+    UVOrigin scene_uv_origin
+)
+{
+    const uint32_t active_mask = gltf_texture_transform_mask(transform_count, transform_at);
+    write_gltf_texture_transforms(
+        cursor,
+        transform_count,
+        std::forward<TransformAt>(transform_at),
+        active_mask,
+        scene_uv_origin
+    );
+}
+
+inline void write_gltf_texture_transforms(
+    sgl::BufferCursor& cursor,
+    std::span<const GLTFTextureTransform> transforms,
+    UVOrigin scene_uv_origin
+)
+{
+    write_gltf_texture_transforms(
+        cursor,
+        transforms.size(),
+        [&](size_t index) -> const GLTFTextureTransform&
+        {
+            return transforms[index];
+        },
+        scene_uv_origin
+    );
 }
 
 } // namespace falcor

@@ -22,6 +22,7 @@ material-aovs.md
 lighting-and-sampling.md
 python-native-integration.md
 bsdf-correctness-and-testing.md
+hydra-integration.md
 ```
 
 ## Document states
@@ -43,7 +44,7 @@ bsdf-correctness-and-testing.md
    `ImporterScene`, USD, glTF, USDZ, asset resolution, PyScene, append, and callbacks interact.
 5. [Geometry and ray tracing](geometry-and-ray-tracing.md) - **`current`**. How geometry, typed vertex attributes,
    instances, `RenderScene`, device buffers, per-hit property access, acceleration structures, hit groups, and
-   ray-tracing setup relate.
+   ray-tracing setup relate, including current-hit endpoint reuse and buffer-backed reconstruction.
 6. [Material system](material-system.md) - **`draft`**. How materials, `MaterialSystem`, `TextureManager`, device
    records, shader requirements, opacity, and native, MDL, and MaterialX implementations fit together, including
    MDL's production geometry inputs.
@@ -62,6 +63,8 @@ bsdf-correctness-and-testing.md
     combine to establish confidence in BSDF behavior.
 12. [Named material outputs](material-aovs.md) - **`draft`**. How permanent typed declarations, consumer-independent
     MaterialX/MDL generation, material-level evaluation, lookup-only binding, and guide-buffer delivery fit together.
+13. [Hydra integration](hydra-integration.md) - **`draft`**. How host capture, native scene replication, Falcor
+    reconciliation, and caller-owned rendering cooperate across the HydraIPC process boundary.
 
 13. [USD curve attribute counts and interpolation](usd-curve-attributes.md) - **`draft`**. How authored varying
     counts, pinned topology, strand offsets, and round-curve sampling stay consistent despite upstream differences.

@@ -264,7 +264,7 @@ def test_material_aov_writes_without_instance_setup(
     instance = scene.components.find(type=f2.GeometryInstance)
     helper = SceneShaderHelper(device)
     source_module = spy.Module.load_from_file(device, "pathtracer/test_material_aovs.slang")
-    module, requirements = helper.prepare(scene, source_module)
+    module, requirements = helper.prepare(scene, source_module, material_aovs=(name,))
     probe = (
         module.probe.as_func()
         .type_conformances(requirements.type_conformances)
@@ -290,8 +290,8 @@ def test_material_aov_writes_without_instance_setup(
         scene,
         source_module,
         policy=f2.SceneCapabilityPolicy.specified,
-        specified_capabilities=f2.SceneCapabilities(
-            f2.SceneCapabilityFlags.geometry_properties | f2.SceneCapabilityFlags.opacity_evaluation
+        specified_capabilities=scene.required_capabilities.merged(
+            f2.SceneCapabilities(f2.SceneCapabilityFlags.geometry_properties)
         ),
     )
     disabled_probe = (

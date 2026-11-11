@@ -18,6 +18,11 @@ public struct AcesFilmOperator : ITonemappingOperator
     public static override float3 apply(float3 color) { return tonemap_aces_film(color); }
 };
 
+public struct AgXOperator : ITonemappingOperator
+{
+    public static override float3 apply(float3 color) { return tonemap_agx(color); }
+};
+
 public struct ReinhardOperator : ITonemappingOperator
 {
     public static override float3 apply(float3 color) { return tonemap_reinhard(color); }
@@ -65,6 +70,152 @@ public half4 tonemapper_apply_auto<TOperator : ITonemappingOperator>(
 )
 {
     return half4(half3(tonemapper_apply_auto<TOperator>(float3(color.xyz), adapted_exposure_ev)), color.w);
+}
+
+float3 tonemapper_sample_lut3d(
+    float3 color,
+    uniform Texture3D<float4> lut,
+    uniform SamplerState lut_sampler,
+    uniform float lut_min_ev,
+    uniform float lut_max_ev,
+    uniform float lut_middle_gray
+)
+{
+    float3 channel_ev = log2(max(color / lut_middle_gray, 1e-20));
+    float3 coordinate = saturate((channel_ev - lut_min_ev) / (lut_max_ev - lut_min_ev));
+    uint3 size;
+    lut.GetDimensions(size.x, size.y, size.z);
+    float3 uvw = (coordinate * (float3(size) - 1.0) + 0.5) / float3(size);
+    return lut.SampleLevel(lut_sampler, uvw, 0.0).rgb;
+}
+
+public float3 tonemapper_apply_lut3d(
+    float3 color,
+    uniform float exposure_ev,
+    uniform Texture3D<float4> lut,
+    uniform SamplerState lut_sampler,
+    uniform float lut_min_ev,
+    uniform float lut_max_ev,
+    uniform float lut_middle_gray
+)
+{
+    return tonemapper_sample_lut3d(
+        exp2(exposure_ev) * color,
+        lut,
+        lut_sampler,
+        lut_min_ev,
+        lut_max_ev,
+        lut_middle_gray
+    );
+}
+
+public float4 tonemapper_apply_lut3d(
+    float4 color,
+    uniform float exposure_ev,
+    uniform Texture3D<float4> lut,
+    uniform SamplerState lut_sampler,
+    uniform float lut_min_ev,
+    uniform float lut_max_ev,
+    uniform float lut_middle_gray
+)
+{
+    return float4(
+        tonemapper_apply_lut3d(color.xyz, exposure_ev, lut, lut_sampler, lut_min_ev, lut_max_ev, lut_middle_gray),
+        color.w
+    );
+}
+
+public half4 tonemapper_apply_lut3d(
+    half4 color,
+    uniform float exposure_ev,
+    uniform Texture3D<float4> lut,
+    uniform SamplerState lut_sampler,
+    uniform float lut_min_ev,
+    uniform float lut_max_ev,
+    uniform float lut_middle_gray
+)
+{
+    return half4(
+        half3(tonemapper_apply_lut3d(
+            float3(color.xyz),
+            exposure_ev,
+            lut,
+            lut_sampler,
+            lut_min_ev,
+            lut_max_ev,
+            lut_middle_gray
+        )),
+        color.w
+    );
+}
+
+public float3 tonemapper_apply_lut3d_auto(
+    float3 color,
+    uniform StructuredBuffer<float> adapted_exposure_ev,
+    uniform Texture3D<float4> lut,
+    uniform SamplerState lut_sampler,
+    uniform float lut_min_ev,
+    uniform float lut_max_ev,
+    uniform float lut_middle_gray
+)
+{
+    return tonemapper_apply_lut3d(
+        color,
+        adapted_exposure_ev[0],
+        lut,
+        lut_sampler,
+        lut_min_ev,
+        lut_max_ev,
+        lut_middle_gray
+    );
+}
+
+public float4 tonemapper_apply_lut3d_auto(
+    float4 color,
+    uniform StructuredBuffer<float> adapted_exposure_ev,
+    uniform Texture3D<float4> lut,
+    uniform SamplerState lut_sampler,
+    uniform float lut_min_ev,
+    uniform float lut_max_ev,
+    uniform float lut_middle_gray
+)
+{
+    return float4(
+        tonemapper_apply_lut3d_auto(
+            color.xyz,
+            adapted_exposure_ev,
+            lut,
+            lut_sampler,
+            lut_min_ev,
+            lut_max_ev,
+            lut_middle_gray
+        ),
+        color.w
+    );
+}
+
+public half4 tonemapper_apply_lut3d_auto(
+    half4 color,
+    uniform StructuredBuffer<float> adapted_exposure_ev,
+    uniform Texture3D<float4> lut,
+    uniform SamplerState lut_sampler,
+    uniform float lut_min_ev,
+    uniform float lut_max_ev,
+    uniform float lut_middle_gray
+)
+{
+    return half4(
+        half3(tonemapper_apply_lut3d_auto(
+            float3(color.xyz),
+            adapted_exposure_ev,
+            lut,
+            lut_sampler,
+            lut_min_ev,
+            lut_max_ev,
+            lut_middle_gray
+        )),
+        color.w
+    );
 }
 
 /// Add one pixel's luminance to the shared auto-exposure histogram.

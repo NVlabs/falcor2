@@ -5,13 +5,13 @@
 #include "falcor2/ui/icon_library.h"
 #include "falcor2/ui/scene_editor_gizmos.h"
 #include "falcor2/ui/scene_editor_outliner.h"
+#include "falcor2/ui/scene_object_templates.h"
 #include "falcor2/ui/scene_picker.h"
 #include "falcor2/ui/camera_controller.h"
 
 #include "falcor2/render/scene.h"
 #include "falcor2/render/component/geometry_instance.h"
 #include "falcor2/render/component/camera.h"
-#include "falcor2/render/component/light.h"
 #include "falcor2/ui/widgets.h"
 #include "falcor2/core/reflection/type_registry.h"
 
@@ -22,8 +22,10 @@
 #include <sgl/device/resource.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
+#include <string_view>
 #include <vector>
 
 namespace falcor::ui {
@@ -37,13 +39,10 @@ const CommandId TOOL_SCALE{"scene_editor.tool.scale"};
 const CommandId TOGGLE_TRANSFORM_SPACE{"scene_editor.transform.toggle_space"};
 const CommandId CLEAR_SELECTION{"scene_editor.edit.clear_selection"};
 const CommandId DELETE_SELECTED{"scene_editor.edit.delete_selected"};
-const CommandId CREATE_ENTITY{"scene_editor.create.entity"};
-const CommandId CREATE_GEOMETRY{"scene_editor.create.geometry"};
-const CommandId CREATE_MATERIAL{"scene_editor.create.material"};
 const CommandId FRAME_SELECTED{"scene_editor.view.frame_selected"};
 const CommandId TOGGLE_PLAYBACK{"scene_editor.animation.toggle_playback"};
 const CommandId RESET_PLAYBACK{"scene_editor.animation.reset_playback"};
-const CommandId TOGGLE_HELP{"scene_editor.help.toggle"};
+const CommandId OPEN_HELP{"scene_editor.help.open"};
 const CommandId TOGGLE_CAMERA_GIZMOS{"scene_editor.viewport.toggle_camera_gizmos"};
 const CommandId TOGGLE_LIGHT_GIZMOS{"scene_editor.viewport.toggle_light_gizmos"};
 const CommandId TOGGLE_OUTLINER{"scene_editor.window.toggle_outliner"};
@@ -52,6 +51,16 @@ const CommandId TOGGLE_INSPECTOR{"scene_editor.window.toggle_inspector"};
 const CommandId TOGGLE_TRANSPORT{"scene_editor.window.toggle_transport"};
 const CommandId RESET_LAYOUT{"scene_editor.window.reset_layout"};
 } // namespace command_ids
+
+int resize_input_text(ImGuiInputTextCallbackData* data)
+{
+    if (data->EventFlag == ImGuiInputTextFlags_CallbackResize) {
+        auto* value = static_cast<std::string*>(data->UserData);
+        value->resize(static_cast<size_t>(data->BufTextLen));
+        data->Buf = value->data();
+    }
+    return 0;
+}
 
 CommandShortcut key_shortcut(sgl::KeyCode key, const char* display_name)
 {
@@ -196,6 +205,19 @@ void SceneEditor::validate_selection()
 {
     if (m_selected_object && (!m_selected_object->is_valid() || m_selected_object->scene() != m_scene.get()))
         set_selected_object(nullptr);
+}
+
+SceneObject* SceneEditor::create_object(std::string_view template_key)
+{
+    const auto templates = scene_object_templates();
+    const auto it = std::ranges::find(templates, template_key, &SceneObjectTemplate::key);
+    FALCOR_CHECK(it != templates.end(), "Unknown scene object template '{}'.", template_key);
+    FALCOR_CHECK(m_scene, "Cannot create an object without a scene.");
+    SceneObject* object = it->create(*m_scene);
+    object->set_name(it->label);
+    set_selected_object(object);
+    m_reveal_selection_in_outliner = m_outliner_search[0] == '\0';
+    return object;
 }
 
 void SceneEditor::remove_selected_object()
@@ -560,22 +582,6 @@ void SceneEditor::register_commands()
         });
     };
 
-    const auto add_create_popup_command
-        = [this, scene_loaded](const CommandId& id, std::string label, CreatePopup popup)
-    {
-        m_commands.register_command({
-            .id = id,
-            .label = std::move(label),
-            .execute =
-                [this, popup]
-            {
-                m_show_outliner = true;
-                m_pending_create_popup = popup;
-            },
-            .can_execute = scene_loaded,
-        });
-    };
-
     add_tool_command(command_ids::TOOL_SELECT, "Select mode", key_shortcut(sgl::KeyCode::q, "Q"), ToolMode::select);
     add_tool_command(command_ids::TOOL_MOVE, "Move mode", key_shortcut(sgl::KeyCode::w, "W"), ToolMode::move);
     add_tool_command(command_ids::TOOL_ROTATE, "Rotate mode", key_shortcut(sgl::KeyCode::e, "E"), ToolMode::rotate);
@@ -630,18 +636,19 @@ void SceneEditor::register_commands()
             return m_scene && selected_object();
         },
     });
-    m_commands.register_command({
-        .id = command_ids::CREATE_ENTITY,
-        .label = "Entity",
-        .execute =
-            [this]
-        {
-            m_scene->create_entity();
-        },
-        .can_execute = scene_loaded,
-    });
-    add_create_popup_command(command_ids::CREATE_GEOMETRY, "Geometry...", CreatePopup::geometry);
-    add_create_popup_command(command_ids::CREATE_MATERIAL, "Material...", CreatePopup::material);
+    for (const auto& entry : scene_object_templates()) {
+        m_commands.register_command({
+            .id = entry.command_id(),
+            .label = std::string(entry.label),
+            .execute =
+                [this, key = entry.key]
+            {
+                create_object(key);
+            },
+            .can_execute = scene_loaded,
+        });
+        m_create_menu.add_command(entry.category, entry.command_id());
+    }
     m_commands.register_command({
         .id = command_ids::FRAME_SELECTED,
         .label = "Frame Selected",
@@ -695,18 +702,12 @@ void SceneEditor::register_commands()
         },
     });
     m_commands.register_command({
-        .id = command_ids::TOGGLE_HELP,
-        .label = "Toggle controls and shortcuts",
+        .id = command_ids::OPEN_HELP,
+        .label = "Controls and Shortcuts...",
         .shortcut = key_shortcut(sgl::KeyCode::f1, "F1"),
-        .execute =
-            [this]
+        .execute = [this]
         {
-            m_show_help = !m_show_help;
-        },
-        .is_checked =
-            [this]
-        {
-            return m_show_help;
+            m_show_help = true;
         },
     });
     m_commands.register_command({
@@ -774,9 +775,7 @@ void SceneEditor::main_menu_ui()
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Create")) {
-            command_menu_item(command_ids::CREATE_ENTITY);
-            command_menu_item(command_ids::CREATE_GEOMETRY);
-            command_menu_item(command_ids::CREATE_MATERIAL);
+            create_menu_ui(m_create_menu);
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("View")) {
@@ -796,10 +795,22 @@ void SceneEditor::main_menu_ui()
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Help")) {
-            command_menu_item(command_ids::TOGGLE_HELP);
+            command_menu_item(command_ids::OPEN_HELP);
             ImGui::EndMenu();
         }
         ImGui::EndMainMenuBar();
+    }
+}
+
+void SceneEditor::create_menu_ui(const EditorMenuItem& menu)
+{
+    for (const auto& item : menu.children) {
+        if (!item.command.empty()) {
+            command_menu_item(item.command);
+        } else if (ImGui::BeginMenu(item.label.c_str(), m_scene != nullptr)) {
+            create_menu_ui(item);
+            ImGui::EndMenu();
+        }
     }
 }
 
@@ -891,11 +902,6 @@ void SceneEditor::viewport_header_ui()
                 ImGui::EndPopup();
             }
         }
-
-        ImGui::SameLine();
-        ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
-        ImGui::SameLine();
-        viewport_display_menu_ui();
     }
     ImGui::EndChild();
     ImGui::PopStyleVar();
@@ -910,22 +916,45 @@ void SceneEditor::active_camera_ui()
 {
     Camera* active_camera = m_scene ? m_scene->active_camera() : nullptr;
     const char* active_name
-        = active_camera && active_camera->entity() ? active_camera->entity()->name().c_str() : "No camera";
+        = active_camera && active_camera->entity() ? active_camera->entity()->name().c_str() : "No active camera";
 
     ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Camera");
+    ImGui::TextUnformatted("Active Camera");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(160.f);
     if (ImGui::BeginCombo("##ActiveCamera", active_name)) {
+        std::vector<Camera*> cameras;
         if (m_scene) {
             for (Component* component : m_scene->components()) {
                 Camera* camera = component->as<Camera>();
-                if (!camera || !camera->is_valid() || !camera->entity() || !camera->entity()->is_valid())
-                    continue;
+                if (camera && camera->is_valid() && camera->entity() && camera->entity()->is_valid())
+                    cameras.push_back(camera);
+            }
+        }
 
+        const auto camera_label = [&cameras](const Camera* camera)
+        {
+            const std::string& name = camera->entity()->name();
+            const size_t duplicate_count = std::ranges::count_if(
+                cameras,
+                [&name](const Camera* candidate)
+                {
+                    return candidate->entity()->name() == name;
+                }
+            );
+            if (duplicate_count > 1)
+                return fmt::format("{} (entity.{})", name, camera->entity()->collection_index());
+            return name;
+        };
+
+        if (cameras.empty()) {
+            ImGui::TextDisabled("No cameras in scene");
+        } else {
+            for (Camera* camera : cameras) {
                 const bool selected = camera == active_camera;
+                const std::string label = camera_label(camera);
                 ImGui::PushID(camera);
-                if (ImGui::Selectable(camera->entity()->name().c_str(), selected) && !selected)
+                if (ImGui::Selectable(label.c_str(), selected) && !selected)
                     m_scene->set_active_camera(camera);
                 if (selected)
                     ImGui::SetItemDefaultFocus();
@@ -937,25 +966,11 @@ void SceneEditor::active_camera_ui()
 
     ImGui::SameLine();
     ImGui::BeginDisabled(!active_camera || !active_camera->entity());
-    if (ImGui::Button("Select##ActiveCamera"))
-        select_and_reveal(active_camera->entity());
+    if (ImGui::Button("Reveal##ActiveCamera"))
+        select_and_reveal(active_camera->entity(), true, true);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("Select and reveal the active camera entity");
     ImGui::EndDisabled();
-}
-
-void SceneEditor::viewport_display_menu_ui()
-{
-    constexpr const char* POPUP_LABEL = "Viewport Display";
-    if (ImGui::Button("Display"))
-        ImGui::OpenPopup(POPUP_LABEL);
-
-    if (ImGui::BeginPopup(POPUP_LABEL)) {
-        ImGui::SeparatorText("Gizmos");
-        command_menu_item(command_ids::TOGGLE_CAMERA_GIZMOS);
-        command_menu_item(command_ids::TOGGLE_LIGHT_GIZMOS);
-        ImGui::EndPopup();
-    }
 }
 
 void SceneEditor::graph_ui()
@@ -973,9 +988,6 @@ void SceneEditor::outliner_ui()
     if (!m_show_outliner)
         return;
 
-    if (m_pending_create_popup != CreatePopup::none)
-        ImGui::SetNextWindowFocus();
-
     SceneObject* clicked_object = nullptr;
     if (ImGui::Begin("Outliner", &m_show_outliner)) {
         if (!m_scene) {
@@ -984,26 +996,12 @@ void SceneEditor::outliner_ui()
             return;
         }
 
-        if (ImGui::Button("Add Geometry"))
-            m_commands.execute(command_ids::CREATE_GEOMETRY);
-        if (m_pending_create_popup == CreatePopup::geometry) {
-            ImGui::OpenPopup("Add Geometry");
-            m_pending_create_popup = CreatePopup::none;
+        if (ImGui::Button("Create"))
+            ImGui::OpenPopup("Outliner Create");
+        if (ImGui::BeginPopup("Outliner Create")) {
+            create_menu_ui(m_create_menu);
+            ImGui::EndPopup();
         }
-        add_scene_object_popup<Geometry>("Add Geometry");
-
-        ImGui::SameLine();
-        if (ImGui::Button("Add Material"))
-            m_commands.execute(command_ids::CREATE_MATERIAL);
-        if (m_pending_create_popup == CreatePopup::material) {
-            ImGui::OpenPopup("Add Material");
-            m_pending_create_popup = CreatePopup::none;
-        }
-        add_scene_object_popup<Material>("Add Material");
-
-        ImGui::SameLine();
-        if (ImGui::Button("Add Entity"))
-            m_commands.execute(command_ids::CREATE_ENTITY);
 
         ImGui::Checkbox("Sort A-Z", &m_sort_outliner);
         ImGui::SameLine();
@@ -1165,11 +1163,14 @@ bool SceneEditor::inspector_navigation_ui()
     return false;
 }
 
-void SceneEditor::select_and_reveal(SceneObject* object)
+void SceneEditor::select_and_reveal(SceneObject* object, bool show_outliner, bool clear_filter)
 {
+    if (show_outliner)
+        m_show_outliner = true;
+    if (clear_filter)
+        m_outliner_search.fill('\0');
     set_selected_object(object);
-    m_outliner_search.fill('\0');
-    m_reveal_selection_in_outliner = object != nullptr;
+    m_reveal_selection_in_outliner = object && m_outliner_search[0] == '\0';
 }
 
 void SceneEditor::inspect_referenced_object(SceneObject* object, Entity* return_entity)
@@ -1360,20 +1361,6 @@ void SceneEditor::reveal_outliner_item(SceneObject* object)
     }
 }
 
-template<typename T>
-void SceneEditor::add_scene_object_popup(const char* label)
-{
-    if (ImGui::BeginPopup(label)) {
-        for (const auto& class_info : SceneObjectFactory<T>::get().class_infos()) {
-            if (ImGui::Selectable(class_info.name.c_str())) {
-                m_scene->_create_object<T>(class_info.name);
-                ImGui::CloseCurrentPopup();
-            }
-        }
-        ImGui::EndPopup();
-    }
-}
-
 void SceneEditor::add_component_popup(const char* label)
 {
     SceneObject* selected = selected_object();
@@ -1432,10 +1419,20 @@ template<typename T, typename Func>
 void SceneEditor::scene_object_ui(SceneObject* object, Func func)
 {
     if (T* typed_object = object->as<T>()) {
-        ImGui::Text("%s: %s", object->class_name(), object->name().c_str());
+        scene_object_name_ui(object);
+        ImGui::TextDisabled("Type: %s", object->class_name());
         ImGui::Separator();
         (this->*func)(typed_object);
     }
+}
+
+void SceneEditor::scene_object_name_ui(SceneObject* object)
+{
+    std::string name = object->name();
+    name.reserve(std::max<size_t>(name.size(), 255));
+    const ImGuiInputTextFlags flags = ImGuiInputTextFlags_CallbackResize | ImGuiInputTextFlags_AutoSelectAll;
+    if (ImGui::InputText("Name", name.data(), name.capacity() + 1, flags, resize_input_text, &name))
+        object->set_name(name.c_str());
 }
 
 void SceneEditor::viewport_gizmo()
@@ -1517,13 +1514,14 @@ void SceneEditor::help_ui()
         &command_ids::FRAME_SELECTED,
         &command_ids::CLEAR_SELECTION,
         &command_ids::DELETE_SELECTED,
-        &command_ids::TOGGLE_HELP,
+        &command_ids::TOGGLE_PLAYBACK,
     };
     for (const CommandId* id : editor_help_commands) {
         const EditorCommand* command = m_commands.find(*id);
         FALCOR_ASSERT(command && command->shortcut);
         editor_help_section.entries.push_back({command->shortcut->display_name, command->label});
     }
+    editor_help_section.entries.push_back({"F1", "Open or close controls and shortcuts"});
 
     auto help_entry = [](const char* key, const char* description)
     {
@@ -1549,13 +1547,14 @@ void SceneEditor::help_ui()
         ImGui::PopID();
     };
 
-    ImGui::OpenPopup("Help");
+    constexpr const char* POPUP_TITLE = "Controls and Shortcuts";
+    ImGui::OpenPopup(POPUP_TITLE);
 
     ImVec2 center = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
 
     ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings;
-    if (ImGui::BeginPopupModal("Help", &m_show_help, flags)) {
+    if (ImGui::BeginPopupModal(POPUP_TITLE, &m_show_help, flags)) {
         // Keep F1 in sync with the command shortcut. The modal captures keyboard input, so close it locally while
         // ignoring the F1 press used to open it on its appearing frame.
         if (!ImGui::IsWindowAppearing() && (ImGui::IsKeyPressed(ImGuiKey_F1) || ImGui::IsKeyPressed(ImGuiKey_Escape)))

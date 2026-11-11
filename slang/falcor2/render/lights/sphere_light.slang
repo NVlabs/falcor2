@@ -48,13 +48,12 @@ public struct SphereLight : ILight
         return true;
     }
 
-    public bool sample<SampleGenerator : ISampleGenerator>(
-        const LightSampleContext ctx,
-        inout SampleGenerator sg,
-        out LightSample sample
-    )
+    public bool
+    sample(const LightSampleContext ctx, const float2 u, out LightSample sample, out LightSampleRef sample_ref)
     {
         sample = {};
+        sample_ref = {};
+
         if (radius_ws <= 0.0)
             return false;
 
@@ -78,7 +77,7 @@ public struct SphereLight : ILight
         if (!get_sampling_cone(ctx.pos_ws, effective_radius_ws, cone_axis_ws, cos_cone_angle))
             return false;
 
-        const float3 sample_dir_local = square_to_uniform_cone_concentric(next_float2(sg), cos_cone_angle);
+        const float3 sample_dir_local = square_to_uniform_cone_concentric(u, cos_cone_angle);
         sample.dir_ws = Frame(cone_axis_ws).to_global(sample_dir_local);
         if (!intersect_ray_sphere(ctx.pos_ws, sample.dir_ws, center_ws, effective_radius_ws, sample.distance))
             return false;
@@ -90,14 +89,30 @@ public struct SphereLight : ILight
             return false;
 
         sample.pdf = square_to_uniform_cone_concentric_pdf(sample_dir_local, cos_cone_angle);
-        sample.weight = effective_radiance * shaping_factor / sample.pdf;
+        sample.radiance = effective_radiance * shaping_factor;
+        sample.weight = sample.radiance / sample.pdf;
         // Only the shrunken proxy lacks a matching surface-hit strategy. Samples
         // on the authored sphere participate in MIS with eval_surface_sampling_pdf().
         sample.flags = LightSampleFlags::has_surface_point;
         if (uses_virtual_proxy)
             sample.flags |= LightSampleFlags::nee_only;
         sample.emitter_type = EmitterType::analytic;
+
+        if (!uses_virtual_proxy) {
+            sample_ref.emitter_type = EmitterType::analytic;
+            sample_ref.parameters = ndir_to_oct_unorm(sample.normal_ws);
+        }
+
         return true;
+    }
+
+    public bool eval_sample(const LightSampleContext ctx, const LightSampleRef sample_ref, out LightSample sample)
+    {
+        sample = {};
+        if (uses_virtual_sampling_proxy(ctx.pos_ws))
+            return false;
+        const float3 normal = oct_to_ndir_unorm(sample_ref.parameters);
+        return eval_analytic_light_sample(this, ctx, sample_ref, center_ws + radius_ws * normal, normal, sample);
     }
 
     public override bool intersect_surface(const Ray ray, out float t)

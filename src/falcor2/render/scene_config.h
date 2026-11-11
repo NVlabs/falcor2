@@ -4,6 +4,7 @@
 #pragma once
 
 #include "falcor2/core/macros.h"
+#include "falcor2/render/material/gltf_specialization.h"
 #include "falcor2/render/scene_types.h"
 
 namespace falcor {
@@ -21,6 +22,13 @@ struct FALCOR_API SceneConfig {
     /// wins. Applies to subsequent loads and appends, including embedded images, but not already-created GPU textures.
     /// Appended assets do not change the cap. DDS without a fitting mip uses its smallest available mip and warns.
     uint32_t max_mip_count{0};
+
+    /// Select how native glTF materials are specialized. Default of balanced builds a small number
+    /// of specializations to cover all requirements.
+    GLTFSpecializationMode gltf_specialization_mode{GLTFSpecializationMode::balanced};
+
+    /// Hard feature cap for native glTF materials.
+    GLTFFeatureFlags gltf_allowed_features{GLTFFeatureFlags::all};
 };
 
 } // namespace falcor

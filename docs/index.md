@@ -13,6 +13,7 @@ contributor guides define coding conventions and how architectural explanations 
 - [API reference](api/index.md)
 - [Streaming](streaming.md)
 - [Sample generation](sample-generation.md)
+- [Blender Hydra integration](blender-hydra.md)
 - [Building documentation](contributing/building-documentation.md)
 
 ```{toctree}
@@ -25,7 +26,13 @@ contributing/coding-style.md
 contributing/design-documents.md
 api/index.md
 contributing/building-documentation.md
+imagetests.md
 sample-generation.md
 ai-skills.md
 streaming.md
+blender-hydra.md
 ```
+
+## Legacy guides
+
+- [Image testing](imagetests.md) describes the existing image-comparison workflow.

@@ -1,0 +1,38 @@
+--- a/tools/ci.py
++++ b/tools/ci.py
+@@ -457,6 +457,15 @@
+     path = REPOSITORY_ROOT / "reports/benchmark-provenance.json"
+     path.unlink(missing_ok=True)
+     harness = os.environ.get("CI_PERF_HARNESS_COMMIT")
++    exclusions = {}
++    data_pin = git(REPOSITORY_ROOT, "rev-parse", "HEAD:data")
++    exclusions["benchmarks/internal/test_dpel_materials.py"] = (
++        f"DPEL scenes absent in original data pin {data_pin}"
++    )
++    exclusions["benchmarks/test_benchmark_scenes.py"] = (
++        f"Scene scripts absent in original data pin {data_pin}"
++    )
++    native_reporting_backport = None
+     if not (harness or args.use_custom_slang or args.slang_version):
+         return
+     falcor = git(REPOSITORY_ROOT, "rev-parse", "HEAD")
+@@ -483,6 +492,12 @@
+                 "falcor_commit": falcor,
+                 "harness_commit": harness or falcor,
+                 "compiler": compiler,
++                **({"excluded_benchmarks": exclusions} if exclusions else {}),
++                **(
++                    {"native_reporting_backport": native_reporting_backport}
++                    if native_reporting_backport
++                    else {}
++                ),
+             },
+             indent=2,
+         )
+@@ -641,8 +656,10 @@
+         command.append(f"--module-and-shader-cache-dir={args.module_and_shader_cache_dir}")
+     if bool(getattr(args, "nightly", False)):
+         command.append("--nightly")
+     return command
+ 
+ 

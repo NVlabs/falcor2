@@ -2,8 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from enum import IntEnum
+import math
 from typing import Any, Optional
 
+import numpy as np
 import slangpy as spy
 from slangpy import CommandEncoder, Device, Module
 
@@ -15,6 +17,8 @@ HISTOGRAM_BIN_COUNT = 64
 HISTOGRAM_MAX_WEIGHT_SCALE = 64
 UINT32_MAX = (1 << 32) - 1
 TONEMAPPER_MODULE = "falcor2.rendernodes.tonemapper"
+MIN_EXPOSURE_COMPENSATION = -32.0
+MAX_EXPOSURE_COMPENSATION = 32.0
 
 
 def _resolve_histogram_weight_scale(pixel_count: int) -> int:
@@ -44,12 +48,15 @@ class TonemappingOperator(IntEnum):
     aces_film = 0
     reinhard = 1
     clamp = 2
+    agx = 3
+    lut3d = 4
 
 
 _OPERATOR_TYPE_NAMES = {
     TonemappingOperator.aces_film: "AcesFilmOperator",
     TonemappingOperator.reinhard: "ReinhardOperator",
     TonemappingOperator.clamp: "ClampOperator",
+    TonemappingOperator.agx: "AgXOperator",
 }
 
 
@@ -67,6 +74,18 @@ class TonemapperNode(RenderNode):
         self._operator_functions: dict[TonemappingOperator, tuple[Any, Any, Any]] = {}
         self._operator = TonemappingOperator.aces_film
         self._set_operator(operator)
+        self._lut: Optional[spy.Texture] = None
+        self._lut_sampler: spy.Sampler = device.create_sampler(
+            min_filter=spy.TextureFilteringMode.linear,
+            mag_filter=spy.TextureFilteringMode.linear,
+            mip_filter=spy.TextureFilteringMode.point,
+            address_u=spy.TextureAddressingMode.clamp_to_edge,
+            address_v=spy.TextureAddressingMode.clamp_to_edge,
+            address_w=spy.TextureAddressingMode.clamp_to_edge,
+        )
+        self._lut_min_ev = -10.0
+        self._lut_max_ev = 6.5
+        self._lut_middle_gray = 0.18
         self._auto_exposure = False
         self._auto_exposure_mode = AutoExposureMode.previous_frame
         self._exposure_compensation = 0.0
@@ -104,12 +123,19 @@ class TonemapperNode(RenderNode):
         operator = TonemappingOperator(value)
         functions = self._operator_functions.get(operator)
         if functions is None:
-            type_name = _OPERATOR_TYPE_NAMES[operator]
-            functions = (
-                self._module.require_function(f"tonemapper_apply<{type_name}>"),
-                self._module.require_function(f"tonemapper_apply_auto<{type_name}>"),
-                self._module.require_function(f"tonemapper_apply_auto_histogram<{type_name}>"),
-            )
+            if operator == TonemappingOperator.lut3d:
+                functions = (
+                    self._module.require_function("tonemapper_apply_lut3d"),
+                    self._module.require_function("tonemapper_apply_lut3d_auto"),
+                    None,
+                )
+            else:
+                type_name = _OPERATOR_TYPE_NAMES[operator]
+                functions = (
+                    self._module.require_function(f"tonemapper_apply<{type_name}>"),
+                    self._module.require_function(f"tonemapper_apply_auto<{type_name}>"),
+                    self._module.require_function(f"tonemapper_apply_auto_histogram<{type_name}>"),
+                )
             self._operator_functions[operator] = functions
 
         self._operator = operator
@@ -119,8 +145,90 @@ class TonemapperNode(RenderNode):
             self._tonemap_auto_histogram_func,
         ) = functions
 
+    @property
+    def lut(self) -> Optional[spy.Texture]:
+        """Current linear-RGB 3D LUT, with red, green, blue mapped to X, Y, Z."""
+        return self._lut
+
+    @lut.setter
+    def lut(self, value: np.ndarray | spy.Texture | None) -> None:
+        """Set a cubic LUT from an array in (blue, green, red, channel) order or a texture."""
+        if value is None:
+            self._lut = None
+            return
+        if isinstance(value, np.ndarray):
+            if value.ndim != 4 or value.shape[0] < 2 or value.shape[:3] != (value.shape[0],) * 3:
+                raise ValueError("lut must have shape (N, N, N, 3 or 4) with N >= 2.")
+            if value.shape[3] not in (3, 4):
+                raise ValueError("lut must have three or four channels.")
+            if not np.issubdtype(value.dtype, np.floating) or not np.isfinite(value).all():
+                raise ValueError("lut must contain finite floating-point values.")
+            if np.max(np.abs(value)) > np.finfo(np.float32).max:
+                raise ValueError("lut values must fit in float32.")
+            rgba = np.empty((*value.shape[:3], 4), dtype=np.float32)
+            rgba[..., :3] = value[..., :3]
+            rgba[..., 3] = value[..., 3] if value.shape[3] == 4 else 1.0
+            size = value.shape[0]
+            value = self._device.create_texture(
+                type=spy.TextureType.texture_3d,
+                format=spy.Format.rgba32_float,
+                width=size,
+                height=size,
+                depth=size,
+                mip_count=1,
+                usage=spy.TextureUsage.shader_resource,
+                data=rgba,
+            )
+        if not isinstance(value, spy.Texture):
+            raise TypeError("lut must be a NumPy array, a 3D texture, or None.")
+        if (
+            value.device != self._device
+            or value.type != spy.TextureType.texture_3d
+            or value.format != spy.Format.rgba32_float
+            or value.width < 2
+            or value.width != value.height
+            or value.width != value.depth
+        ):
+            raise ValueError(
+                "lut texture must be a same-device cubic rgba32_float 3D texture with N >= 2."
+            )
+        self._lut = value
+
+    @reflected_property(value_range=(-64.0, 64.0), ui_label="LUT minimum EV", ui_group="3D LUT")
+    def lut_min_ev(self) -> float:
+        """Log2 exposure relative to middle gray at the first LUT voxel."""
+        return self._lut_min_ev
+
+    @lut_min_ev.setter
+    def lut_min_ev(self, value: float) -> None:
+        if not math.isfinite(value) or value < -64.0 or value >= self._lut_max_ev:
+            raise ValueError("lut_min_ev must be finite, at least -64, and below lut_max_ev.")
+        self._lut_min_ev = value
+
+    @reflected_property(value_range=(-64.0, 64.0), ui_label="LUT maximum EV", ui_group="3D LUT")
+    def lut_max_ev(self) -> float:
+        """Log2 exposure relative to middle gray at the last LUT voxel."""
+        return self._lut_max_ev
+
+    @lut_max_ev.setter
+    def lut_max_ev(self, value: float) -> None:
+        if not math.isfinite(value) or value > 64.0 or value <= self._lut_min_ev:
+            raise ValueError("lut_max_ev must be finite, at most 64, and above lut_min_ev.")
+        self._lut_max_ev = value
+
+    @reflected_property(value_range=(0.001, 1.0), ui_label="LUT middle gray", ui_group="3D LUT")
+    def lut_middle_gray(self) -> float:
+        """Positive scene-linear value used as the zero-EV LUT pivot."""
+        return self._lut_middle_gray
+
+    @lut_middle_gray.setter
+    def lut_middle_gray(self, value: float) -> None:
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError("lut_middle_gray must be finite and positive.")
+        self._lut_middle_gray = value
+
     @reflected_property(
-        value_range=(-16.0, 16.0),
+        value_range=(MIN_EXPOSURE_COMPENSATION, MAX_EXPOSURE_COMPENSATION),
         ui_label="Exposure compensation (EV)",
         ui_drag_speed=0.1,
     )
@@ -130,7 +238,9 @@ class TonemapperNode(RenderNode):
 
     @exposure_compensation.setter
     def exposure_compensation(self, value: float) -> None:
-        self._exposure_compensation = value
+        self._exposure_compensation = min(
+            max(value, MIN_EXPOSURE_COMPENSATION), MAX_EXPOSURE_COMPENSATION
+        )
 
     @reflected_property(ui_label="Auto exposure")
     def auto_exposure(self) -> bool:
@@ -410,28 +520,44 @@ class TonemapperNode(RenderNode):
             _append_to=cmd,
         )
 
+    def _lut_parameters(self) -> dict[str, Any]:
+        if self._lut is None:
+            raise ValueError("lut must be set before rendering with the lut3d operator.")
+        return {
+            "lut": self._lut,
+            "lut_sampler": self._lut_sampler,
+            "lut_min_ev": self._lut_min_ev,
+            "lut_max_ev": self._lut_max_ev,
+            "lut_middle_gray": self._lut_middle_gray,
+        }
+
     def _append_tonemap(
         self,
         runtime_input: Any,
         runtime_output: Any,
         cmd: Optional[CommandEncoder],
     ) -> None:
+        lut_parameters = (
+            self._lut_parameters() if self._operator == TonemappingOperator.lut3d else {}
+        )
+
         if self._auto_exposure:
             assert self._adapted_exposure_ev is not None
             self._tonemap_auto_func(
                 color=runtime_input,
                 adapted_exposure_ev=self._adapted_exposure_ev,
+                **lut_parameters,
                 _result=runtime_output,
                 _append_to=cmd,
             )
-            return
-
-        self._tonemap_func(
-            color=runtime_input,
-            exposure_ev=self._exposure_compensation,
-            _result=runtime_output,
-            _append_to=cmd,
-        )
+        else:
+            self._tonemap_func(
+                color=runtime_input,
+                exposure_ev=self._exposure_compensation,
+                **lut_parameters,
+                _result=runtime_output,
+                _append_to=cmd,
+            )
 
     def _append_fused_tonemap_and_meter(
         self,
@@ -442,6 +568,10 @@ class TonemapperNode(RenderNode):
     ) -> None:
         assert self._luminance_histogram is not None
         assert self._adapted_exposure_ev is not None
+        if self._operator == TonemappingOperator.lut3d:
+            self._append_tonemap(runtime_input, runtime_output, cmd)
+            self._append_meter(runtime_input, histogram_weight_scale, cmd)
+            return
         self._tonemap_auto_histogram_func(
             color=runtime_input,
             adapted_exposure_ev=self._adapted_exposure_ev,

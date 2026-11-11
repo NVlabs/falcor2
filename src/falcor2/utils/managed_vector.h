@@ -23,6 +23,8 @@ struct ManagedVectorDesc {
     sgl::MemoryType memory_type{sgl::MemoryType::device_local};
     /// Device buffer usage.
     sgl::BufferUsage usage{sgl::BufferUsage::shader_resource};
+    /// State restored by RHI at command-buffer boundaries; undefined derives it from usage.
+    sgl::ResourceState default_state{sgl::ResourceState::undefined};
     /// Device buffer label.
     std::string label;
 };
@@ -47,6 +49,9 @@ public:
     /// Current number of elements in the buffer.
     size_t size() const { return m_data.size(); }
 
+    /// Host capacity in elements, independent of the device buffer allocation.
+    size_t capacity() const { return m_data.capacity(); }
+
     /// Device buffer.
     /// This is only available if not empty and after calling `update_buffer`.
     const ref<sgl::Buffer>& buffer() const { return m_buffer; }
@@ -55,7 +60,16 @@ public:
     const T* data() const { return m_data.data(); }
     T* data() { return m_data.data(); }
 
-    /// Resize buffer to a new size. Size must not exceed capacity.
+    /// Reserve host capacity without changing size, dirty state, or device storage.
+    /// Reallocation invalidates host pointers and references. The requested capacity
+    /// must fit within max_buffer_size bytes.
+    void reserve(size_t capacity)
+    {
+        FALCOR_CHECK_LE(capacity, m_desc.max_buffer_size / sizeof(T));
+        m_data.reserve(capacity);
+    }
+
+    /// Resize buffer to a new size within the configured maximum byte size.
     /// @param size New size.
     void resize(size_t size)
     {
@@ -64,7 +78,7 @@ public:
         m_dirty_range[1] = std::min(m_dirty_range[1], size);
     }
 
-    /// Ensure the buffer has a minimum size. Size must not exceed capacity.
+    /// Ensure the buffer has a minimum size within the configured maximum byte size.
     /// @param size New minimum size.
     void ensure_size(size_t size)
     {
@@ -134,6 +148,7 @@ public:
                 .size = new_buffer_size,
                 .memory_type = m_desc.memory_type,
                 .usage = m_desc.usage,
+                .default_state = m_desc.default_state,
                 .label = m_desc.label,
             });
         }

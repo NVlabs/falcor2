@@ -1,0 +1,11 @@
+--- a/falcor2/testing/benchmark/fixtures.py
++++ b/falcor2/testing/benchmark/fixtures.py
+@@ -33,7 +33,7 @@
+ import slangpy as spy
+ from slangpy import Bitmap, Tensor
+ 
+-from slangpy.testing.benchmark import BenchViewMetric, build_metric
++from falcor2.testing.benchmark.reporting import BenchViewMetric, build_metric
+ 
+ from .plugin import (
+     BENCHMARK_CONTEXT_KEY,

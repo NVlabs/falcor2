@@ -63,14 +63,14 @@ public:
 
         auto extracted = detail::extract_all<V>(std::forward<Extras>(extras)...);
 
-        // Wrap member function pointers into std::function.
+        // Wrap member function pointers or callable accessors into std::function.
         std::function<V(const T&)> get_fn = [getter](const T& obj) -> V
         {
-            return (obj.*getter)();
+            return std::invoke(getter, obj);
         };
         std::function<void(T&, const V&)> set_fn = [setter](T& obj, const V& val)
         {
-            (obj.*setter)(val);
+            std::invoke(setter, obj, val);
         };
 
         // Wrap setter with OnChange callback if present.
@@ -98,10 +98,10 @@ public:
         using ReturnType = std::invoke_result_t<Getter, const T&>;
         using V = std::remove_cv_t<std::remove_reference_t<ReturnType>>;
 
-        // Wrap member function pointer into std::function.
+        // Wrap member function pointer or callable accessor into std::function.
         std::function<V(const T&)> get_fn = [getter](const T& obj) -> V
         {
-            return (obj.*getter)();
+            return std::invoke(getter, obj);
         };
 
         m_desc->add_property(new TypedPropertyDescriptor<V, T>(

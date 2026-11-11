@@ -32,27 +32,25 @@ public struct DualHenyeyGreensteinPhaseFunction : IPhaseFunction
             + eval_henyey_greenstein(dot(wi, wo), mean_cosine[1]) * (1.0 - w0);
     }
 
-    public bool sample<S : ISampleGenerator>(const float3 wi, inout S sg, out PhaseFunctionSample sample)
+    public bool sample(const float3 wi, const PhaseFunctionSampleInput input, out PhaseFunctionSample sample)
     {
-        const float3 u = next_float3(sg);
-
         const float average_w0 = (w0[0] + w0[1] + w0[2]) / 3.0;
-        const float3 selected_mean_cosine = u.z <= average_w0 ? mean_cosine[0] : mean_cosine[1];
+        const float3 selected_mean_cosine = input.u_lobe < average_w0 ? mean_cosine[0] : mean_cosine[1];
         // Use a scalar lobe distribution obtained by averaging its spectral mean cosine.
         const float average_mean_cosine
             = (selected_mean_cosine[0] + selected_mean_cosine[1] + selected_mean_cosine[2]) / 3.0;
 
         float cos_theta;
         if (abs(average_mean_cosine) < HENYEY_GREENSTEIN_ISOTROPIC_THRESHOLD) {
-            cos_theta = 1.0 - 2.0 * u.x;
+            cos_theta = 1.0 - 2.0 * input.u_dir.x;
         } else {
             const float sqr = (1.0 - average_mean_cosine * average_mean_cosine)
-                / (1.0 - average_mean_cosine + 2.0 * average_mean_cosine * u.x);
+                / (1.0 - average_mean_cosine + 2.0 * average_mean_cosine * input.u_dir.x);
             cos_theta = (1.0 + average_mean_cosine * average_mean_cosine - sqr * sqr) / (2.0 * average_mean_cosine);
         }
 
         const float sin_theta = sqrt(max(0.0, 1.0 - cos_theta * cos_theta));
-        const float phi = float.TWO_PI * u.y;
+        const float phi = float.TWO_PI * input.u_dir.y;
         const float3 w = float3(sin_theta * cos(phi), sin_theta * sin(phi), cos_theta);
 
         const float3 dir = -wi;

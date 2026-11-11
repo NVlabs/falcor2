@@ -21,27 +21,19 @@ public SurfaceInteraction setup_surface_interaction(float2 uv, float3 wi)
     return result;
 }
 
-public float3
-material_eval<SampleGenerator : ISampleGenerator>(uint3 seeds, IMaterial material, SurfaceInteraction si, float3 wo)
+public float3 material_eval(IMaterial material, SurfaceInteraction si, float3 wo)
 {
-    var sg = SampleGenerator(seeds.xy, seeds.z);
     let lod_sampler = ExplicitLodSampler(0);
     let material_instance = material.setup_material_instance(si, lod_sampler, MaterialInstanceHints::none);
-    return material_instance.eval(si, wo, sg);
+    return material_instance.eval(si, wo);
 }
 
 /// Evaluate the material value and PDF together, sharing work between the two results.
-public BSDFEval material_eval_with_pdf<SampleGenerator : ISampleGenerator>(
-    uint3 seeds,
-    IMaterial material,
-    SurfaceInteraction si,
-    float3 wo
-)
+public BSDFEval material_eval_with_pdf(IMaterial material, SurfaceInteraction si, float3 wo)
 {
-    var sg = SampleGenerator(seeds.xy, seeds.z);
     let lod_sampler = ExplicitLodSampler(0);
     let material_instance = material.setup_material_instance(si, lod_sampler, MaterialInstanceHints::none);
-    return material_instance.eval_with_pdf(si, wo, sg);
+    return material_instance.eval_with_pdf(si, wo);
 }
 
 public MaterialSample
@@ -52,7 +44,7 @@ material_sample<SampleGenerator : ISampleGenerator>(uint3 seeds, IMaterial mater
     let material_instance = material.setup_material_instance(si, lod_sampler, MaterialInstanceHints::none);
 
     MaterialSample sample;
-    bool ok = material_instance.sample(si, sg, sample);
+    bool ok = material_instance.sample(si, make_material_sample_input(sg), sample);
     if (!ok)
         sample.pdf = 0;
     return sample;
@@ -124,16 +116,14 @@ public ExtraBsdfProperties material_collect_extra_bsdf_properties(IMaterial mate
 
 // _simple variants: work on individual materials via cursor-writer binding.
 
-public float3 material_eval_simple<
-    SampleGenerator : ISampleGenerator>(uint3 seeds, IMaterial material, float2 uv, float3 wi, float3 wo)
+public float3 material_eval_simple(IMaterial material, float2 uv, float3 wi, float3 wo)
 {
-    return material_eval<SampleGenerator>(seeds, material, setup_surface_interaction(uv, wi), wo);
+    return material_eval(material, setup_surface_interaction(uv, wi), wo);
 }
 
-public BSDFEval material_eval_with_pdf_simple<
-    SampleGenerator : ISampleGenerator>(uint3 seeds, IMaterial material, float2 uv, float3 wi, float3 wo)
+public BSDFEval material_eval_with_pdf_simple(IMaterial material, float2 uv, float3 wi, float3 wo)
 {
-    return material_eval_with_pdf<SampleGenerator>(seeds, material, setup_surface_interaction(uv, wi), wo);
+    return material_eval_with_pdf(material, setup_surface_interaction(uv, wi), wo);
 }
 
 public MaterialSample
@@ -199,20 +189,18 @@ public uint material_get_lobe_types_simple<SampleGenerator : ISampleGenerator>(I
 
 // _system variants: work on batches of materials via material_system
 
-public float3 material_eval_system<
-    SampleGenerator : ISampleGenerator>(uint3 seeds, uint32_t material_id, float2 uv, float3 wi, float3 wo)
+public float3 material_eval_system(uint32_t material_id, float2 uv, float3 wi, float3 wo)
 {
     // material_id must be within buffer boundaries
     let material = g_scene.get_material(MaterialID(material_id));
-    return material_eval<SampleGenerator>(seeds, material, setup_surface_interaction(uv, wi), wo);
+    return material_eval(material, setup_surface_interaction(uv, wi), wo);
 }
 
-public BSDFEval material_eval_with_pdf_system<
-    SampleGenerator : ISampleGenerator>(uint3 seeds, uint32_t material_id, float2 uv, float3 wi, float3 wo)
+public BSDFEval material_eval_with_pdf_system(uint32_t material_id, float2 uv, float3 wi, float3 wo)
 {
     // material_id must be within buffer boundaries
     let material = g_scene.get_material(MaterialID(material_id));
-    return material_eval_with_pdf<SampleGenerator>(seeds, material, setup_surface_interaction(uv, wi), wo);
+    return material_eval_with_pdf(material, setup_surface_interaction(uv, wi), wo);
 }
 
 public MaterialSample

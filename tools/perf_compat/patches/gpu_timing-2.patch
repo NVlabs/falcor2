@@ -1,0 +1,77 @@
+--- a/falcor2/testing/benchmark/gpu_timing.py
++++ b/falcor2/testing/benchmark/gpu_timing.py
+@@ -14,7 +14,7 @@
+     import falcor2 as f2
+     from falcor2.rendergraph import RenderNode
+     from falcor2.rendernodes.pathtracer_pipeline_node import PathTracerPipeline
+-    from slangpy.testing.benchmark import BenchViewMetric
++    from falcor2.testing.benchmark.reporting import BenchViewMetric
+ 
+ 
+ class GPUPhase(NamedTuple):
+@@ -121,6 +121,46 @@
+             del node.forward
+ 
+ 
++@contextmanager
++def _time_reweighting(
++    node: RenderNode,
++    encoder: spy.CommandEncoder,
++    query_pool: spy.QueryPool,
++    query_index: int,
++    calls: list[int],
++) -> Iterator[None]:
++    """Bracket the historical accumulator's append and resolve as one phase."""
++    originals = {name: getattr(node, name) for name in ("accumulate", "resolve")}
++    overrides = {name: vars(node)[name] for name in originals if name in vars(node)}
++    started = False
++
++    def accumulate(*args: Any, **kwargs: Any) -> Any:
++        nonlocal started
++        if kwargs.get("cmd") is not encoder or started:
++            raise ValueError("Accumulation must execute once on the frame encoder")
++        started = True
++        encoder.write_timestamp(query_pool, query_index)
++        return originals["accumulate"](*args, **kwargs)
++
++    def resolve(*args: Any, **kwargs: Any) -> Any:
++        if kwargs.get("cmd") is not encoder or not started or calls[0]:
++            raise ValueError("Accumulation must resolve once after append on the frame encoder")
++        value = originals["resolve"](*args, **kwargs)
++        encoder.write_timestamp(query_pool, query_index + 1)
++        calls[0] += 1
++        return value
++
++    node.accumulate, node.resolve = accumulate, resolve
++    try:
++        yield
++    finally:
++        for name in originals:
++            if name in overrides:
++                setattr(node, name, overrides[name])
++            else:
++                delattr(node, name)
++
++
+ def measure_frame(
+     device: spy.Device,
+     pipeline: PathTracerPipeline,
+@@ -146,9 +186,15 @@
+         if phases:
+             for index, phase in enumerate(phases):
+                 node = getattr(pipeline, phase.node_attribute)
+-                stack.enter_context(
+-                    _time_node(node, encoder, query_pool, 1 + 2 * index, calls[index])
+-                )
++                timer = _time_node
++                if (
++                    phase.node_attribute == "accumulator"
++                    and getattr(getattr(pipeline, "accumulation_mode", None), "name", None)
++                    == "reweighting"
++                ):
++                    node = pipeline.reweighting_accumulator
++                    timer = _time_reweighting
++                stack.enter_context(timer(node, encoder, query_pool, 1 + 2 * index, calls[index]))
+         encoder.write_timestamp(query_pool, 0)
+         pipeline(scene, camera, cmd=encoder)
+         encoder.write_timestamp(query_pool, count - 1)

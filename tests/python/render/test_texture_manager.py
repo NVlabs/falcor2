@@ -714,5 +714,45 @@ def test_raw_texture_retains_authored_mips(device_type: spy.DeviceType) -> None:
     assert raw.texture.mip_count == authored_mips
 
 
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.parametrize("dimension", [2, 3])
+def test_divergent_texture_and_sampler_handles(device_type: spy.DeviceType, dimension: int) -> None:
+    device = helpers.get_device(device_type)
+    manager = TextureManager(device)
+    module = spy.Module.load_from_file(device, "render/test_texture_manager.slang")
+    samplers = [
+        device.create_sampler(min_filter=mode, mag_filter=mode, mip_filter=mode)
+        for mode in (spy.TextureFilteringMode.linear, spy.TextureFilteringMode.point)
+    ]
+    handles = []
+    expected = []
+    for index in range(8):
+        width = 2 if index % 2 == 0 else 4
+        values = np.broadcast_to(
+            np.arange(width, dtype=np.float32)[..., None] + index * 10,
+            (1,) * (dimension - 1) + (width, 4),
+        ).copy()
+        texture = device.create_texture(
+            type=spy.TextureType.texture_2d if dimension == 2 else spy.TextureType.texture_3d,
+            format=spy.Format.rgba32_float,
+            width=width,
+            height=1,
+            depth=1,
+            usage=spy.TextureUsage.shader_resource,
+            data=values,
+        )
+        for sampler_index, sampler in enumerate(samplers):
+            handles.append(manager.register_texture(texture, sampler))
+            sampled = 0.375 * width - 0.5 if sampler_index == 0 else int(0.375 * width)
+            expected.append([index * 10 + sampled, index * 10])
+    manager.update()
+    # Adjacent lanes vary both texture and sampler, including repeated nonadjacent handles.
+    indices = np.random.default_rng(42).integers(0, len(handles), size=1024)
+    packed = np.array([handles[index].data for index in indices], dtype=np.uint32)
+    function = module.test_divergent_2d if dimension == 2 else module.test_divergent_3d
+    result = function(packed_handle=spy.Tensor.from_numpy(device, packed), _result="numpy")
+    np.testing.assert_array_equal(result, np.asarray(expected, dtype=np.float32)[indices])
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s"])

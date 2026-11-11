@@ -20,6 +20,9 @@ public extern static const bool ENABLE_GEOMETRY_PROPERTIES = true;
 /// Scene shader capability; output writers still select which offered AOVs are consumed.
 public extern static const bool ENABLE_MATERIAL_AOVS = true;
 
+/// Allow renderers to track interiors required by solid-surface transmission.
+public extern static const bool ENABLE_SOLID_TRANSMISSION = true;
+
 /// Scene settings select material opacity evaluation from the resolved opacity capability.
 public extern struct OpacityEvaluator : IOpacityEvaluator = AcceptAllHitsEvaluator;
 

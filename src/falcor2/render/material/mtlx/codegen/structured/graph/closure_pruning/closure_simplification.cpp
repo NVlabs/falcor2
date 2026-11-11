@@ -237,7 +237,8 @@ bool rewrite_to_input(
     return true;
 }
 
-// A RewireToInput rewrite on a weighted_layer
+// Complex mix rejects graphs where the same closure output is reachable
+// via more than one live path. A RewireToInput rewrite on a weighted_layer
 // replaces wl.out with the kept input's upstream, then prunes wl; the
 // upstream ends up with (existing_consumers - 1 for wl) + wl.out_consumers
 // live refs. Skip if that sum >= 2 -- a later iteration may collapse one

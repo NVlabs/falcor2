@@ -13,6 +13,8 @@
 #include "falcor2/core/object.h"
 
 BEGIN_DISABLE_USD_WARNINGS
+#include <pxr/base/gf/matrix3d.h>
+#include <pxr/base/gf/matrix4d.h>
 #include <pxr/base/vt/array.h>
 #include <pxr/base/vt/value.h>
 #include <pxr/base/tf/stringUtils.h>
@@ -21,6 +23,7 @@ BEGIN_DISABLE_USD_WARNINGS
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usdGeom/basisCurves.h>
 #include <pxr/usd/usdGeom/mesh.h>
+#include <pxr/usd/usdGeom/xformCommonAPI.h>
 END_DISABLE_USD_WARNINGS
 
 #include <sgl/core/platform.h>
@@ -1134,6 +1137,31 @@ def Xform "HiddenGroup"
     CHECK(scene->lights.empty());
 }
 
+TEST_CASE("UsdImporter - purpose filtering respects inheritance and authored child overrides")
+{
+    auto stage = pxr::UsdStage::CreateInMemory();
+    REQUIRE(stage->GetRootLayer()->ImportFromString(R"usd(#usda 1.0
+def Scope "Proxy"
+{
+    uniform token purpose = "proxy"
+    def Mesh "Inherited"
+    {
+        uniform token subdivisionScheme = "none"
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+    }
+    def Mesh "Override" (prepend references = </Proxy/Inherited>)
+    {
+        uniform token purpose = "default"
+    }
+}
+)usd"));
+    const auto scene = UsdImporter().import_stage(*stage);
+    REQUIRE_EQ(scene->meshes.size(), 1);
+    CHECK_EQ(scene->meshes[0].name, "/Proxy/Override");
+}
+
 TEST_CASE("UsdImporter - native instance reuses prim transform node")
 {
     const std::filesystem::path scene_path = testing::get_case_temp_directory() / "native_instance.usda";
@@ -1189,6 +1217,126 @@ def Xform "Instance" (
         ),
         1
     );
+}
+
+TEST_CASE("UsdImporter - point instances preserve masked placement and prune ordinary children")
+{
+    auto stage = pxr::UsdStage::CreateInMemory();
+    REQUIRE(stage->GetRootLayer()->ImportFromString(R"usd(#usda 1.0
+(
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+def PointInstancer "Instances"
+{
+    double3 xformOp:translate = (100, 200, 300)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+    rel prototypes = [</Instances/A>, </Instances/B>]
+    int[] protoIndices = [0, 0, 1]
+    int64[] ids = [101, 205, 999]
+    int64[] invisibleIds = [205]
+    point3f[] positions = [(10, 20, 30), (50, 60, 70), (-1, -2, -3)]
+    quath[] orientations = [(0, 0, 0, 1), (1, 0, 0, 0), (1, 0, 0, 0)]
+    float3[] scales = [(2, 3, 4), (1, 1, 1), (1, 1, 1)]
+    def Mesh "A"
+    {
+        double3 xformOp:translate = (1, 2, 3)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        uniform token subdivisionScheme = "none"
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+    }
+    def Mesh "B" (prepend references = </Instances/A>) {}
+    def Mesh "Ordinary" (prepend references = </Instances/A>) {}
+}
+def Camera "AfterInstancer" {}
+)usd"));
+    auto scene = UsdImporter().import_stage(*stage);
+    std::vector<std::string> instance_names;
+    for (const auto& node : scene->nodes) {
+        if (node.prototype_index >= 0)
+            instance_names.push_back(node.name);
+    }
+    CHECK_EQ(instance_names, (std::vector<std::string>{"/Instances_0", "/Instances_2"}));
+    scene->flatten_node_hierarchy();
+    REQUIRE_EQ(scene->nodes.size(), 3);
+    CHECK_EQ(scene->nodes[0].name, "/Instances/A");
+    CHECK_EQ(scene->nodes[1].name, "/Instances/B");
+    CHECK_EQ(scene->nodes[0].transform.get_col(0).xyz(), float3(-2.f, 0.f, 0.f));
+    CHECK_EQ(scene->nodes[0].transform.get_col(1).xyz(), float3(0.f, -3.f, 0.f));
+    CHECK_EQ(scene->nodes[0].transform.get_col(2).xyz(), float3(0.f, 0.f, 4.f));
+    CHECK_EQ(scene->nodes[0].transform.get_col(3).xyz(), float3(108.f, 214.f, 342.f));
+    CHECK_EQ(scene->nodes[1].transform.get_col(3).xyz(), float3(100.f, 200.f, 300.f));
+    CHECK_EQ(scene->nodes[2].name, "/AfterInstancer");
+    CHECK_EQ(scene->nodes[2].transform, float4x4::identity());
+}
+
+TEST_CASE("UsdImporter - external point prototypes retain ordinary scene placement and shared animation")
+{
+    auto stage = pxr::UsdStage::CreateInMemory();
+    REQUIRE(stage->GetRootLayer()->ImportFromString(R"usd(#usda 1.0
+(
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+def PointInstancer "Instances"
+{
+    rel prototypes = </Triangle>
+    int[] protoIndices = [0]
+    point3f[] positions = [(5, 0, 0)]
+}
+def Mesh "Triangle"
+{
+    double3 xformOp:translate.timeSamples = {0: (1, 0, 0), 24: (3, 0, 0)}
+    float3 xformOp:rotateXYZ.timeSamples = {0: (0, 0, 0), 24: (0, 0, 90)}
+    float3 xformOp:scale.timeSamples = {0: (1, 1, 1), 24: (2, 3, 4)}
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+    uniform token subdivisionScheme = "none"
+    int[] faceVertexCounts = [3]
+    int[] faceVertexIndices = [0, 1, 2]
+    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+}
+)usd"));
+    bool has_pivot = false;
+    SUBCASE("without pivot") { }
+    SUBCASE("with animated pivot")
+    {
+        has_pivot = true;
+        const pxr::UsdGeomXformCommonAPI xform(stage->GetPrimAtPath(pxr::SdfPath("/Triangle")));
+        REQUIRE(xform.SetPivot(pxr::GfVec3f(0.f), pxr::UsdTimeCode(0)));
+        REQUIRE(xform.SetPivot(pxr::GfVec3f(1.f, 2.f, 3.f), pxr::UsdTimeCode(24)));
+    }
+    auto scene = UsdImporter().import_stage(*stage);
+    std::vector<const ImporterNode*> copies;
+    for (const auto& node : scene->nodes) {
+        if (node.name == "/Triangle")
+            copies.push_back(&node);
+    }
+    REQUIRE_EQ(copies.size(), 2);
+    REQUIRE_EQ(scene->animation.channels.size(), has_pivot ? 5 : 3);
+    REQUIRE_GE(copies[0]->animation_translation, 0);
+    REQUIRE_GE(copies[0]->animation_rotation, 0);
+    REQUIRE_GE(copies[0]->animation_scale, 0);
+    CHECK_EQ(copies[0]->animation_translation, copies[1]->animation_translation);
+    CHECK_EQ(copies[0]->animation_rotation, copies[1]->animation_rotation);
+    CHECK_EQ(copies[0]->animation_scale, copies[1]->animation_scale);
+    if (has_pivot) {
+        for (const auto& name : {"/Triangle_pivot", "/Triangle_pivot_inverse"}) {
+            std::vector<int> channels;
+            for (const auto& node : scene->nodes) {
+                if (node.name == name)
+                    channels.push_back(node.animation_translation);
+            }
+            REQUIRE_EQ(channels.size(), 2);
+            REQUIRE_GE(channels[0], 0);
+            CHECK_EQ(channels[0], channels[1]);
+        }
+    }
+    scene->flatten_node_hierarchy();
+    REQUIRE_EQ(scene->nodes.size(), 2);
+    CHECK_EQ(scene->nodes[0].transform.get_col(3).xyz(), float3(6.f, 0.f, 0.f));
+    CHECK_EQ(scene->nodes[1].transform.get_col(3).xyz(), float3(1.f, 0.f, 0.f));
 }
 
 TEST_CASE("UsdImporter - non-transformable native instances retain separate prototype nodes")
@@ -2785,7 +2933,15 @@ TEST_CASE("convert_material_usdpreviewsurface_to_standardmaterial")
     expected.set("emissive_factor", float3(0.0f, 0.0f, 0.0f));
     expected.set("metallic_factor", 0.0f);
     expected.set("roughness_factor", 0.4f);
+    expected.set("ior", 1.5f);
     CHECK_EQ(*result, expected);
+
+    auto& terminal = scene->materials[0].output_to_material_network.at("_terminal:surface").back();
+    terminal.set("ior", 2.f);
+    terminal.set("ior:typename", "float");
+    result = convert_material(scene->materials[0], {"UsdPreviewSurface"}, {"StandardMaterial"});
+    REQUIRE(result);
+    CHECK_EQ(result->get<float>("ior"), 2.f);
 }
 
 TEST_CASE("convert_material_usdpreviewsurface_emissive_texture_uses_unit_factor")
@@ -3097,37 +3253,125 @@ TEST_CASE("convert_material_materialx_to_materialxmaterial_mtlx_reference")
     CHECK_FALSE(generated->module_source.empty());
 }
 
+TEST_CASE("convert_material_materialx_matrix_inputs")
+{
+    for (int size : {3, 4}) {
+        CAPTURE(size);
+        const pxr::VtValue value = size == 3
+            ? pxr::VtValue(pxr::GfMatrix3d(1, 2, 3, 4, 5, 6, 7, 8, 9))
+            : pxr::VtValue(pxr::GfMatrix4d(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16));
+
+        Properties determinant;
+        determinant.set("_path", "/Material/Determinant");
+        determinant.set("info:id", size == 3 ? "ND_determinant_matrix33" : "ND_determinant_matrix44");
+        determinant.set("in:typename", size == 3 ? "matrix3d" : "matrix4d");
+        REQUIRE(usd_importer::set_from_value(determinant, "in", value));
+
+        Properties terminal;
+        terminal.set("_path", "/Material/Surface");
+        terminal.set("info:id", "ND_standard_surface_surfaceshader");
+        terminal.set("info:implementationSource", "id");
+        terminal.set("emission:connect", "/Material/Determinant.out");
+        terminal.set("emission:typename", "float");
+
+        ImporterMaterial material;
+        material.name = "/Material";
+        material.output_to_material_network["_terminal:mtlx:surface"] = {determinant, terminal};
+        auto result = convert_material(material, {"MaterialX"}, {"MaterialXMaterial"});
+        REQUIRE(result.has_value());
+
+        // Asymmetric coefficients also catch accidental use of the geometric transform transpose.
+        const std::string_view expected = size == 3
+            ? R"(type="matrix33" value="1, 2, 3, 4, 5, 6, 7, 8, 9")"
+            : R"(type="matrix44" value="1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16")";
+        CHECK(result->get<std::string>("mtlx_buffer").find(expected) != std::string::npos);
+    }
+}
+
 TEST_CASE("convert_material_materialx_id_network_to_materialxmaterial")
 {
     ImporterMaterial material;
-    material.name = "/Root/Looks/GeneratedMtlx";
+    material.name = "/Material";
+    auto& network = material.output_to_material_network["_terminal:mtlx:surface"];
+    const std::array paths = {"/Material/A/Color", "/Material/B/Color"};
+    for (size_t i = 0; i < paths.size(); ++i) {
+        Properties node;
+        node.set("_path", paths[i]);
+        node.set("info:id", "ND_constant_color3");
+        node.set("value", float3(float(i + 1)));
+        node.set("value:typename", "color3f");
+        network.push_back(node);
+    }
 
     Properties terminal;
-    terminal.set("_path", "/Root/Looks/GeneratedMtlx/Surface");
-    terminal.set("_type", "Shader");
+    terminal.set("_path", "/Material/Surface");
+    terminal.set("info:id", "ND_standard_surface_surfaceshader_100");
+    terminal.set("info:implementationSource", "id");
+    const std::array inputs = {"base_color", "emission_color"};
+    for (size_t i = 0; i < inputs.size(); ++i) {
+        terminal.set(std::string(inputs[i]) + ":connect", std::string(paths[i]) + ".out");
+        terminal.set(std::string(inputs[i]) + ":typename", "color3f");
+    }
+    network.push_back(terminal);
+
+    const auto result = convert_material(material, {"MaterialX"}, {"MaterialXMaterial"});
+    REQUIRE(result);
+    CHECK_EQ(result->get<std::string_view>("_scene_material_type"), "MaterialXMaterial");
+    CHECK_FALSE(result->get<std::string>("mtlx_node_name").empty());
+    const std::string xml = result->get<std::string>("mtlx_buffer");
+    // Retain main's regression for the requested non-default node definition.
+    CHECK(xml.find(R"(nodedef="ND_standard_surface_surfaceshader_100")") != std::string::npos);
+    CHECK(xml.find("<implementation") == std::string::npos);
+    CHECK(xml.find("<nodedef") == std::string::npos);
+    CHECK(xml.find("xi:include") == std::string::npos);
+    const std::array names = {"Color", "Color2"};
+
+    for (size_t i = 0; i < inputs.size(); ++i) {
+        const std::string output = std::string(names[i]) + "_out";
+        CHECK(
+            xml.find(fmt::format("name=\"{}\" type=\"color3\" nodename=\"{}\"", output, names[i])) != std::string::npos
+        );
+        CHECK(
+            xml.find(fmt::format("name=\"{}\" type=\"color3\" output=\"{}\" nodegraph=\"NG\"", inputs[i], output))
+            != std::string::npos
+        );
+    }
+}
+
+TEST_CASE("convert_material_materialx_named_outputs")
+{
+    ImporterMaterial material;
+    material.name = "/Material";
+
+    Properties channels;
+    channels.set("_path", "/Material/Channels");
+    channels.set("info:id", "ND_separate3_color3");
+    channels.set("in", float3(0.2f, 0.5f, 0.8f));
+    channels.set("in:typename", "color3f");
+
+    Properties multiply;
+    multiply.set("_path", "/Material/Multiply");
+    multiply.set("info:id", "ND_multiply_float");
+    multiply.set("in1:connect", "/Material/Channels.outr");
+    multiply.set("in1:typename", "float");
+
+    Properties terminal;
+    terminal.set("_path", "/Material/Surface");
     terminal.set("info:id", "ND_standard_surface_surfaceshader");
     terminal.set("info:implementationSource", "id");
-    terminal.set("base_color", float3(0.2f, 0.7f, 0.3f));
-    terminal.set("base_color:typename", "color3f");
-    terminal.set("roughness", 0.4f);
-    terminal.set("roughness:typename", "float");
-
-    material.output_to_material_network["_terminal:mtlx:surface"] = {terminal};
+    terminal.set("specular_roughness:connect", "/Material/Channels.outg");
+    terminal.set("specular_roughness:typename", "float");
+    terminal.set("metalness:connect", "/Material/Multiply.out");
+    terminal.set("metalness:typename", "float");
+    material.output_to_material_network["_terminal:mtlx:surface"] = {channels, multiply, terminal};
 
     auto result = convert_material(material, {"MaterialX"}, {"MaterialXMaterial"});
     REQUIRE(result.has_value());
+    const std::string xml = result->get<std::string>("mtlx_buffer");
 
-    CHECK_EQ(result->get<std::string_view>("_scene_material_type"), "MaterialXMaterial");
-    CHECK_FALSE(result->get<std::string>("mtlx_node_name").empty());
-
-    const std::string mtlx_buffer = result->get<std::string>("mtlx_buffer");
-    CHECK_FALSE(mtlx_buffer.empty());
-    // Verify that the buffer contains MaterialX XML structure
-    CHECK(mtlx_buffer.find("<?xml") != std::string::npos);
-    CHECK(mtlx_buffer.find("<materialx") != std::string::npos);
-    CHECK(mtlx_buffer.find("<implementation") == std::string::npos);
-    CHECK(mtlx_buffer.find("<nodedef") == std::string::npos);
-    CHECK(mtlx_buffer.find("xi:include") == std::string::npos);
+    // The internal edge and the published graph output must retain their selected port and concrete type.
+    CHECK(xml.find(R"(name="in1" type="float" nodename="Channels" output="outr")") != std::string::npos);
+    CHECK(xml.find(R"(type="float" nodename="Channels" output="outg")") != std::string::npos);
 }
 
 TEST_CASE("convert_material_mtlx_openpbr_id_network_to_materialxmaterial")

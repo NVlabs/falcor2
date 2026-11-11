@@ -3,6 +3,7 @@
 
 #include "material_system.h"
 
+#include "falcor2/render/material/gltf_context.h"
 #include "falcor2/render/scene.h"
 #include "falcor2/render/texture_manager.h"
 
@@ -11,6 +12,8 @@
 #include <sgl/device/shader.h>
 #include <sgl/device/shader_cursor.h>
 
+#include <algorithm>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -19,12 +22,17 @@ namespace falcor {
 MaterialSystem::MaterialSystem(Scene* scene)
     : SceneSystem{scene}
     , m_materials(scene->material_collection())
+    , m_gltf_context(
+          std::make_unique<GLTFContext>(scene->config().gltf_specialization_mode, scene->config().gltf_allowed_features)
+      )
     , m_material_data({
           .label = "MaterialSystem::material_data",
       })
     , m_data_storage("MaterialSystem::data_storage")
 {
 }
+
+MaterialSystem::~MaterialSystem() = default;
 
 SceneUpdateFlags MaterialSystem::update(SceneUpdateContext& ctx)
 {
@@ -38,6 +46,8 @@ SceneUpdateFlags MaterialSystem::update(SceneUpdateContext& ctx)
             continue;
         material->update(ctx);
     }
+
+    m_gltf_context->update(m_materials);
 
     // Assign material ids.
     for (size_t i = 0; i < m_materials.size(); ++i) {

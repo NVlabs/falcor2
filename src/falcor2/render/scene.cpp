@@ -62,6 +62,9 @@ create_settings_module(sgl::Device* device, const SceneConfig& config, SceneCapa
     source += capabilities.has(SceneCapabilityFlags::material_aovs)
         ? "export static const bool ENABLE_MATERIAL_AOVS = true;\n"
         : "export static const bool ENABLE_MATERIAL_AOVS = false;\n";
+    source += capabilities.has(SceneCapabilityFlags::solid_transmission)
+        ? "export static const bool ENABLE_SOLID_TRANSMISSION = true;\n"
+        : "export static const bool ENABLE_SOLID_TRANSMISSION = false;\n";
     source += "export struct OpacityEvaluator : IOpacityEvaluator = ";
     source += capabilities.has(SceneCapabilityFlags::opacity_evaluation) ? "MaterialOpacityEvaluator;\n"
                                                                          : "AcceptAllHitsEvaluator;\n";
@@ -633,7 +636,7 @@ SceneUpdateFlags Scene::_update_animations(SceneUpdateContext& ctx)
 ref<const SceneRequirements> Scene::resolve_requirements(
     const SceneRenderRequest& request,
     SceneCapabilityPolicy policy,
-    SceneCapabilities specified_capabilities
+    std::optional<SceneCapabilities> specified_capabilities
 ) const
 {
     auto requested_capabilities = request.required_capabilities;
@@ -664,15 +667,16 @@ ref<const SceneRequirements> Scene::resolve_requirements(
         selected_capabilities = required_capabilities;
         break;
     case SceneCapabilityPolicy::specified:
+        FALCOR_CHECK(specified_capabilities.has_value(), "Specified policy requires specified_capabilities.");
         FALCOR_CHECK(
-            SceneCapabilities::all().covers(specified_capabilities),
+            SceneCapabilities::all().covers(*specified_capabilities),
             "Specified selection contains unsupported capabilities."
         );
         FALCOR_CHECK(
-            specified_capabilities.covers(required_capabilities),
+            specified_capabilities->covers(required_capabilities),
             "Specified selection omits required capabilities."
         );
-        selected_capabilities = specified_capabilities;
+        selected_capabilities = *specified_capabilities;
         break;
     default:
         FALCOR_THROW("Invalid scene capability policy.");

@@ -1,0 +1,21 @@
+--- a/tests/python/benchmarks/test_render_benchmarks.py
++++ b/tests/python/benchmarks/test_render_benchmarks.py
+@@ -132,7 +132,8 @@
+     env_entity = scene.create_entity()
+     env_map = env_entity.create_component(f2.EnvMapLight)
+     env_map["env_map_path"] = str(path)
+-    env_map.intensity = intensity
++    # Historical baselines use RGB intensity; newer baselines use a scalar.
++    env_map.intensity = type(env_map.intensity)(intensity)
+ 
+ 
+ @pytest.mark.benchmark
+@@ -164,7 +165,7 @@
+     # with earlier cases has already paid for the shared renderer shaders, and
+     # compile_time would then describe the case that happened to run first.
+     device = helpers.get_device(device_type, use_cache=False)
+-    scene = f2.Scene.load(device, str(case.scene))
++    scene = f2.load_scene(device, str(case.scene))
+     if case.envmap_intensity is not None:
+         _add_env_map(scene, ENVMAP_ASSET, case.envmap_intensity)
+     scene.update()

@@ -7,6 +7,7 @@
 #include "falcor2/core/format.h"
 
 #include <algorithm>
+#include <iterator>
 #include <utility>
 
 namespace falcor::ui {
@@ -74,6 +75,38 @@ const EditorCommand& EditorCommandRegistry::require(const CommandId& id) const
     const EditorCommand* command = find(id);
     FALCOR_CHECK(command, "Unknown editor command '{}'.", id);
     return *command;
+}
+
+void EditorMenuItem::add_command(std::string_view category, const CommandId& id)
+{
+    FALCOR_CHECK(command.empty(), "Cannot add children to a command menu item.");
+    FALCOR_CHECK(!id.empty(), "Menu command ID cannot be empty.");
+    FALCOR_CHECK(
+        category.empty()
+            || (!category.starts_with('/') && !category.ends_with('/')
+                && category.find("//") == std::string_view::npos),
+        "Menu category '{}' contains an empty path segment.",
+        category
+    );
+    if (category.empty()) {
+        children.push_back({.command = id});
+        return;
+    }
+
+    const size_t separator = category.find('/');
+    const std::string_view category_label = category.substr(0, separator);
+    auto it = std::ranges::find_if(
+        children,
+        [category_label](const EditorMenuItem& item)
+        {
+            return item.command.empty() && item.label == category_label;
+        }
+    );
+    if (it == children.end()) {
+        children.push_back({.label = std::string(category_label)});
+        it = std::prev(children.end());
+    }
+    it->add_command(separator == std::string_view::npos ? std::string_view{} : category.substr(separator + 1), id);
 }
 
 } // namespace falcor::ui

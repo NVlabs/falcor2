@@ -18,13 +18,10 @@ public struct RefractiveSpecularMicrofacetBTDF : IBSDF, IDifferentiable
     }
 
     [Differentiable]
-    public override float3 eval<S : ISampleGenerator>(float3 wi, float3 wo, inout S sg, BSDFContext bc)
-    {
-        return eval_with_pdf(wi, wo, sg, bc).value;
-    }
+    public override float3 eval(float3 wi, float3 wo, BSDFContext bc) { return eval_with_pdf(wi, wo, bc).value; }
 
     [Differentiable]
-    public BSDFEval eval_with_pdf<S : ISampleGenerator>(float3 wi, float3 wo, inout S sg, BSDFContext bc)
+    public BSDFEval eval_with_pdf(float3 wi, float3 wo, BSDFContext bc)
     {
         if (alpha == 0.0 || min(wi.z, -wo.z) < BSDF_MIN_COS_THETA)
             return BSDFEval();
@@ -37,7 +34,7 @@ public struct RefractiveSpecularMicrofacetBTDF : IBSDF, IDifferentiable
         return BSDFEval(float3(pdf * weight), pdf);
     }
 
-    public bool sample<S : ISampleGenerator>(float3 wi, out BSDFSample sample, inout S sg, BSDFContext bc)
+    public bool sample(float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
         if (wi.z < BSDF_MIN_COS_THETA)
@@ -51,7 +48,7 @@ public struct RefractiveSpecularMicrofacetBTDF : IBSDF, IDifferentiable
             return true;
         }
         float half_pdf;
-        float3 h = alpha == 0.0 ? float3(0.0, 0.0, 1.0) : sampleGGX_VNDF(alpha, wi, next_float2(sg), half_pdf);
+        float3 h = alpha == 0.0 ? float3(0.0, 0.0, 1.0) : sampleGGX_VNDF(alpha, wi, input.u_dir, half_pdf);
         float ct2 = microfacet_refraction::transmitted_cosine_squared(dot(wi, h), eta);
         if (ct2 <= 0.0)
             return false;
@@ -63,7 +60,7 @@ public struct RefractiveSpecularMicrofacetBTDF : IBSDF, IDifferentiable
             sample.flags = BSDFFlags::delta_transmission;
             return true;
         }
-        sample.pdf = eval_with_pdf(wi, sample.wo, sg, bc).pdf;
+        sample.pdf = eval_pdf(wi, sample.wo, bc);
         sample.weight *= evalG1GGX(alpha * alpha, -sample.wo.z);
         sample.flags = BSDFFlags::glossy_transmission;
         return sample.pdf > 0.0;
@@ -104,13 +101,10 @@ public struct ThinSpecularMicrofacetBTDF : IBSDF, IDifferentiable
     }
 
     [Differentiable]
-    public override float3 eval<S : ISampleGenerator>(float3 wi, float3 wo, inout S sg, BSDFContext bc)
-    {
-        return eval_with_pdf(wi, wo, sg, bc).value;
-    }
+    public override float3 eval(float3 wi, float3 wo, BSDFContext bc) { return eval_with_pdf(wi, wo, bc).value; }
 
     [Differentiable]
-    public BSDFEval eval_with_pdf<S : ISampleGenerator>(float3 wi, float3 wo, inout S sg, BSDFContext bc)
+    public BSDFEval eval_with_pdf(float3 wi, float3 wo, BSDFContext bc)
     {
         if (alpha == 0.0 || min(wi.z, -wo.z) < BSDF_MIN_COS_THETA)
             return BSDFEval();
@@ -122,7 +116,7 @@ public struct ThinSpecularMicrofacetBTDF : IBSDF, IDifferentiable
         return BSDFEval(float3(pdf * G2), pdf);
     }
 
-    public bool sample<S : ISampleGenerator>(float3 wi, out BSDFSample sample, inout S sg, BSDFContext bc)
+    public bool sample(float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
         if (wi.z < BSDF_MIN_COS_THETA)
@@ -134,10 +128,11 @@ public struct ThinSpecularMicrofacetBTDF : IBSDF, IDifferentiable
             return true;
         }
         float half_pdf;
-        float3 h = sampleGGX_VNDF(alpha, wi, next_float2(sg), half_pdf);
+        float3 h = sampleGGX_VNDF(alpha, wi, input.u_dir, half_pdf);
         float3 reflected = 2.0 * dot(wi, h) * h - wi;
         sample.wo = float3(reflected.x, reflected.y, -reflected.z);
-        BSDFEval evaluated = eval_with_pdf(wi, sample.wo, sg, bc);
+
+        BSDFEval evaluated = eval_with_pdf(wi, sample.wo, bc);
         if (evaluated.pdf <= 0.0)
             return false;
         sample.pdf = evaluated.pdf;

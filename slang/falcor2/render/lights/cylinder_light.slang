@@ -26,23 +26,23 @@ public struct CylinderLight : ILight
         return luminance(radiance) * float.PI * surface_area * shaping.full_sphere_power_factor();
     }
 
-    public bool sample<SampleGenerator : ISampleGenerator>(
-        const LightSampleContext ctx,
-        inout SampleGenerator sg,
-        out LightSample sample
-    )
+    public bool
+    sample(const LightSampleContext ctx, const float2 u, out LightSample sample, out LightSampleRef sample_ref)
     {
         sample = {};
+        sample_ref = {};
+
         if (radius_ws <= 0.0 || half_length_ws <= 0.0 || surface_area <= 0.0)
             return false;
 
-        const float2 u = next_float2(sg);
         float sin_phi;
         float cos_phi;
         sincos(float.TWO_PI* u.x, sin_phi, cos_phi);
         const float3 sampled_normal_ws = (cos_phi * radius_u_ws + sin_phi * radius_v_ws) / radius_ws;
         const float3 sampled_pos_ws
             = center_ws + (2.0 * u.y - 1.0) * half_length_ws * axis_ws + radius_ws * sampled_normal_ws;
+        sample_ref.emitter_type = EmitterType::analytic;
+        sample_ref.parameters = u;
         return finalize_analytic_area_light_sample(
             ctx.pos_ws,
             sampled_pos_ws,
@@ -51,6 +51,24 @@ public struct CylinderLight : ILight
             radiance,
             shaping,
             dir_ws,
+            sample
+        );
+    }
+
+    public bool eval_sample(const LightSampleContext ctx, const LightSampleRef sample_ref, out LightSample sample)
+    {
+        sample = {};
+        const float2 p = sample_ref.parameters;
+        float sin_phi;
+        float cos_phi;
+        sincos(float.TWO_PI* p.x, sin_phi, cos_phi);
+        const float3 normal = (cos_phi * radius_u_ws + sin_phi * radius_v_ws) / radius_ws;
+        return eval_analytic_light_sample(
+            this,
+            ctx,
+            sample_ref,
+            center_ws + (2.0 * p.y - 1.0) * half_length_ws * axis_ws + radius_ws * normal,
+            normal,
             sample
         );
     }

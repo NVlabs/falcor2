@@ -8,16 +8,13 @@ public struct EmissionOnlyMaterialInstance : IMaterialInstance
     public float3 emissive_radiance;
 
 
-    public BSDFEval eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both, S : ISampleGenerator>(
-        const SurfaceInteraction si,
-        const float3 wo_ws,
-        inout S sg
-    )
+    public BSDFEval
+    eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both>(const SurfaceInteraction si, const float3 wo_ws)
     {
         return BSDFEval();
     }
 
-    public bool sample<S : ISampleGenerator>(const SurfaceInteraction si, inout S sg, out MaterialSample sample)
+    public bool sample(const SurfaceInteraction si, const MaterialSampleInput input, out MaterialSample sample)
     {
         sample = {};
         return false;

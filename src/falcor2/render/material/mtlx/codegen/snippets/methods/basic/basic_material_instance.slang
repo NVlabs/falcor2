@@ -8,22 +8,20 @@ public struct $MxMaterialInstanceName : IMaterialInstance
     public Frame shading_frame_ws;
     public mtlx_ns::RootBSDF bsdf;
     public float3 emissive_radiance = {};
-    public BSDFEval eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both, S : ISampleGenerator>(
+    public BSDFEval eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both>(
         const SurfaceInteraction si,
-        const float3 wo_ws,
-        inout S sg
+        const float3 wo_ws
     )
     {
         float3 wi_ls = shading_frame_ws.to_local(si.wi_ws);
         float3 wo_ls = shading_frame_ws.to_local(wo_ws);
-        return bsdf.eval_with_pdf(wi_ls, wo_ls, sg, BSDFContext());
+        return bsdf.eval_with_pdf(wi_ls, wo_ls, BSDFContext());
     }
-    public bool sample<S : ISampleGenerator>(const SurfaceInteraction si, inout S sg, out MaterialSample sample)
-    {
+    public bool sample(const SurfaceInteraction si, const MaterialSampleInput input, out MaterialSample sample) {
         sample = {};
         float3 wi_ls = shading_frame_ws.to_local(si.wi_ws);
         BSDFSample bsdf_sample;
-        bool valid = bsdf.sample(wi_ls, bsdf_sample, sg, BSDFContext());
+        bool valid = bsdf.sample(wi_ls, input, BSDFContext(), bsdf_sample);
         sample.wo_ws = shading_frame_ws.to_global(bsdf_sample.wo);
         sample.pdf = bsdf_sample.pdf;
         sample.weight = bsdf_sample.weight;

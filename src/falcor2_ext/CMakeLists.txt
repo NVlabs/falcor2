@@ -59,6 +59,9 @@ set(falcor2_ext_sources
     utils/sampling/distribution_1d.cpp
 )
 
+if(FALCOR_ENABLE_HYDRAIPC)
+    list(APPEND falcor2_ext_sources hydra/controller.cpp)
+endif()
 
 if(FALCOR_BUILD_TESTS)
     list(APPEND falcor2_ext_sources
@@ -124,6 +127,9 @@ postprocess_stub(${FALCOR_PACKAGE_DIR}/__init__.pyi  "--submodule")
 
 # Generate submodule stub files.
 set(FALCOR2_STUB_SUBMODULES ngx platform reflection streaming ui)
+if(FALCOR_ENABLE_HYDRAIPC)
+    list(APPEND FALCOR2_STUB_SUBMODULES hydra)
+endif()
 set(FALCOR2_STUB_TARGETS falcor2_stub)
 foreach(submodule IN LISTS FALCOR2_STUB_SUBMODULES)
     string(REPLACE "." "/" submodule_path ${submodule})
@@ -254,18 +260,12 @@ list(FILTER FALCOR_HEADER_FILES EXCLUDE REGEX ".*/mdl/.*\.h")
 # clang python package to add the following lines:
 # > # A concept declaration
 # > CursorKind.CONCEPT_DECL = CursorKind(604)
-set(MKDOC_COMMAND_ARGS
-    -std=c++20 -stdlib=libc++
+add_custom_target(falcor2_pydoc COMMAND
+    COMMAND ${Python_EXECUTABLE} -m pybind11_mkdoc -std=c++20 -stdlib=libc++
     ${MKDOC_ARGS}
     -I${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include
     ${FALCOR_HEADER_FILES}
     -o ${CMAKE_CURRENT_SOURCE_DIR}/py_doc.h
-)
-string(JOIN "\n" MKDOC_COMMAND_ARGS_TEXT ${MKDOC_COMMAND_ARGS})
-set(MKDOC_ARGS_FILE "${CMAKE_CURRENT_BINARY_DIR}/mkdoc-$<CONFIG>.args")
-file(GENERATE OUTPUT "${MKDOC_ARGS_FILE}" CONTENT "${MKDOC_COMMAND_ARGS_TEXT}\n")
-add_custom_target(falcor2_pydoc
-    COMMAND ${Python_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/run_pydoc.py "${MKDOC_ARGS_FILE}"
 )
 
 install(

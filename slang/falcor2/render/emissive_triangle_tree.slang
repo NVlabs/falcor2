@@ -158,6 +158,8 @@ public struct EmissiveTriangleTree
         );
     }
 
+    /// Selects a leaf by traversing the tree's importance-weighted branches.
+    /// @param[inout] u Uniform sample in [0, 1), remapped within each selected branch.
     private bool traverse(const LightSampleContext ctx, inout float u, out float pdf, out uint node_index)
     {
         pdf = 1.0;
@@ -186,6 +188,8 @@ public struct EmissiveTriangleTree
         return true;
     }
 
+    /// Selects a triangle within a leaf.
+    /// @param u Uniform sample in [0, 1), conditioned on selection of this leaf.
     private bool sample_leaf(
         const LightSampleContext ctx,
         const uint node_index,
@@ -284,6 +288,9 @@ public struct EmissiveTriangleTree
         return nodes[node_index].is_leaf() ? pdf : 0.0;
     }
 
+    /// Selects an emissive triangle through hierarchical importance sampling.
+    /// @param[inout] u Uniform sample in [0, 1), remapped during traversal to the selected leaf.
+    /// Triangle selection within the leaf does not further remap u.
     public bool
     sample(const LightSampleContext ctx, inout float u, out float selection_pdf, out EmissiveTriangleID triangle_id)
     {

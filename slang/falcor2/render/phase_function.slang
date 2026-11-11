@@ -5,6 +5,24 @@ implementing render;
 
 import falcor2.utils;
 
+/// Uniform sample coordinates for phase-function sampling.
+public struct PhaseFunctionSampleInput
+{
+    /// Uniform sample in [0, 1) for selecting a phase-function lobe.
+    public float u_lobe;
+    /// Uniform sample in [0, 1)^2 for sampling a direction within the selected lobe.
+    public float2 u_dir;
+}
+
+/// Consume exactly three scalar dimensions in field order, even for a single lobe.
+public PhaseFunctionSampleInput make_phase_function_sample_input<S : ISampleGenerator>(inout S sg)
+{
+    PhaseFunctionSampleInput input;
+    input.u_lobe = next_float(sg);
+    input.u_dir = next_float2(sg);
+    return input;
+}
+
 /// Result of sampling a phase function.
 public struct PhaseFunctionSample
 {
@@ -34,10 +52,10 @@ public interface IPhaseFunction
 
     /// Samples an outgoing direction from the phase function.
     /// @param wi_ws Incident direction, pointing away from the scattering point.
-    /// @param[inout] sg Sample generator.
+    /// @param input Uniform sample coordinates for lobe and direction sampling; see PhaseFunctionSampleInput.
     /// @param[out] sample Phase-function sample. Only valid if the function returns true.
     /// @return Returns true if successful.
-    public bool sample<S : ISampleGenerator>(const float3 wi_ws, inout S sg, out PhaseFunctionSample sample);
+    public bool sample(const float3 wi_ws, const PhaseFunctionSampleInput input, out PhaseFunctionSample sample);
 
     /// Evaluates the probability density used to sample an outgoing direction.
     /// @param wi_ws Incident direction, pointing away from the scattering point.

@@ -16,13 +16,12 @@ public struct PointLight : ILight
         return float.FOUR_PI * luminance(radiant_intensity) * shaping.full_sphere_power_factor();
     }
 
-    public bool sample<SampleGenerator : ISampleGenerator>(
-        const LightSampleContext ctx,
-        inout SampleGenerator sg,
-        out LightSample sample
-    )
+    public bool
+    sample(const LightSampleContext ctx, const float2 u, out LightSample sample, out LightSampleRef sample_ref)
     {
         sample = {};
+        sample_ref = {};
+
         const float3 to_light = pos_ws - ctx.pos_ws;
         const float distance_squared = dot(to_light, to_light);
         if (distance_squared <= 0.0)
@@ -37,10 +36,32 @@ public struct PointLight : ILight
         sample.dir_ws = sample_dir_ws;
         sample.distance = distance;
         sample.pdf = 1.0;
-        sample.weight = radiant_intensity * shaping_factor / distance_squared;
+        sample.radiance = radiant_intensity * shaping_factor / distance_squared;
+        sample.weight = sample.radiance;
         sample.flags = LightSampleFlags::nee_only;
         sample.emitter_type = EmitterType::analytic;
         sample.pos_ws = pos_ws;
+
+        sample_ref.emitter_type = EmitterType::analytic;
+
+        return true;
+    }
+    public bool eval_sample(const LightSampleContext ctx, const LightSampleRef sample_ref, out LightSample sample)
+    {
+        sample = {};
+        const float3 to_light = pos_ws - ctx.pos_ws;
+        const float distance_squared = dot(to_light, to_light);
+        if (distance_squared <= 0.0)
+            return false;
+        sample.distance = sqrt(distance_squared);
+        sample.dir_ws = to_light / sample.distance;
+        sample.pos_ws = pos_ws;
+        sample.pdf = 1.0;
+        sample.radiance = radiant_intensity * shaping.eval(dir_ws, -sample.dir_ws) / distance_squared;
+        sample.weight = sample.radiance;
+        sample.flags = LightSampleFlags::nee_only;
+        sample.emitter_type = EmitterType::analytic;
+        sample.emitter_id = sample_ref.emitter_id;
         return true;
     }
 };

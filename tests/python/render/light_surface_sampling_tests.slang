@@ -23,7 +23,7 @@ public struct AreaLightDirectionTarget : chi2::ITarget
         LightSampleContext ctx = {};
         ctx.pos_ws = receiver_pos_ws;
         LightSample sample = {};
-        const bool valid = g_scene.light_system.get_light(LightID(light_id)).sample(ctx, sg, sample);
+        const bool valid = g_scene.light_system.get_light(LightID(light_id)).sample(ctx, next_float2(sg), sample);
         p = sample.dir_ws;
         return valid;
     }
@@ -64,7 +64,7 @@ public struct CylinderLightSurfaceTarget : chi2::ITarget
         LightSampleContext ctx = {};
         ctx.pos_ws = receiver_pos_ws;
         LightSample sample = {};
-        const bool valid = g_scene.light_system.get_light(LightID(light_id)).sample(ctx, sg, sample);
+        const bool valid = g_scene.light_system.get_light(LightID(light_id)).sample(ctx, next_float2(sg), sample);
         const float3 offset = sample.pos_ws - center_ws;
         const float3 radial = offset - dot(offset, axis_ws) * axis_ws;
         p = float2(atan2(dot(radial, radius_v_ws), dot(radial, radius_u_ws)), dot(offset, axis_ws));
@@ -129,7 +129,7 @@ public void test_eval_sample_consistency(
             break;
 
         LightSample sample = {};
-        if (!light.sample(ctx, sg, sample)) {
+        if (!light.sample(ctx, next_float2(sg), sample)) {
             counters.add(1, 1);
             continue;
         }
@@ -216,7 +216,8 @@ public uint sample_flags(uint light_id, float3 receiver_pos_ws)
     ctx.pos_ws = receiver_pos_ws;
     UniformSampleGenerator sg = UniformSampleGenerator(1234);
     LightSample sample = {};
-    return g_scene.light_system.get_light(LightID(light_id)).sample(ctx, sg, sample) ? uint(sample.flags) : uint(-1);
+    return g_scene.light_system.get_light(LightID(light_id)).sample(ctx, next_float2(sg), sample) ? uint(sample.flags)
+                                                                                                  : uint(-1);
 }
 
 } // namespace light_surface_sampling_tests

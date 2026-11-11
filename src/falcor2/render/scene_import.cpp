@@ -584,7 +584,11 @@ static void append_importer_scene(Scene* scene, const ImporterScene& importer_sc
         if (importer_node.mesh_index >= 0) {
             FALCOR_ASSERT_LT(static_cast<size_t>(importer_node.mesh_index), mesh_geometries.size());
             GeometryInstance* instance = entity->create_component<GeometryInstance>();
-            instance->_set_source_asset_ref(importer_node.source_asset_ref);
+            // Generated transform helpers have no source identity of their own.
+            instance->_set_source_asset_ref(
+                importer_node.source_asset_ref ? importer_node.source_asset_ref
+                                               : importer_scene.meshes[importer_node.mesh_index].source_asset_ref
+            );
             StaticMeshGeometry* mesh_geometry = mesh_geometries[importer_node.mesh_index];
             instance->set_geometry(mesh_geometry);
             auto it = mesh_geometry_to_materials.find(mesh_geometry);
@@ -594,7 +598,10 @@ static void append_importer_scene(Scene* scene, const ImporterScene& importer_sc
         if (importer_node.curve_index >= 0) {
             FALCOR_ASSERT_LT(static_cast<size_t>(importer_node.curve_index), curve_geometries.size());
             GeometryInstance* instance = entity->create_component<GeometryInstance>();
-            instance->_set_source_asset_ref(importer_node.source_asset_ref);
+            instance->_set_source_asset_ref(
+                importer_node.source_asset_ref ? importer_node.source_asset_ref
+                                               : importer_scene.curves[importer_node.curve_index].source_asset_ref
+            );
             StaticCurveGeometry* curve_geometry = curve_geometries[importer_node.curve_index];
             instance->set_geometry(curve_geometry);
             auto it = curve_geometry_to_material.find(curve_geometry);
@@ -621,6 +628,7 @@ static void append_importer_scene(Scene* scene, const ImporterScene& importer_sc
             // Normalize directional importer data to Camera's vertical film-fit model.
             camera->set_focal_length(importer_camera.focal_length);
             camera->set_fstop(importer_camera.fstop);
+            camera->set_exposure(importer_camera.exposure);
             camera->set_sensor_height(importer_camera.vertical_sensor_size_mm());
             camera->set_enable_depth_of_field(importer_camera.enable_depth_of_field);
             camera->set_focus_distance(importer_camera.focus_distance);

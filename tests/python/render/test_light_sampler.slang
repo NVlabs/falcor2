@@ -139,6 +139,7 @@ public float hierarchical_emissive_pdf(uint triangle_id)
         .eval_emissive_pdf(ctx, EmissiveTriangleID(triangle_id), float3(0.0), float3(0.0, 0.0, 1.0));
 }
 
+/// @param u Uniform sample in [0, 1) for selecting an emissive triangle.
 public float4 hierarchical_emissive_triangle_tree_sample_pdf(float u)
 {
     LightSampleContext ctx = {};

@@ -923,7 +923,8 @@ void emit_materialx_graph(
     target.emitLine("eval_shader_graph()", stage);
     target.emitFunctionBodyEnd(graph, context, stage);
 
-    // Inlining the graph boundary avoids materializing its state in CUDA local memory.
+    // Scalarized complex mix requires this boundary to disappear. Otherwise
+    // CUDA may take the graph's address and materialize its state in local memory.
     if (force_inline_graph_boundaries)
         target.emitLine("[ForceInline]", stage, false);
     target.emitLine("[mutating] void eval_shader_graph()", stage, false);
@@ -1049,9 +1050,6 @@ CodeGenCache::Key make_cache_key(
     number(mx::Value::getFloatPrecision());
     const auto value = [&](const mx::ShaderPort* port)
     {
-        // Only value serialization needs round-trip precision; resolved geometry
-        // expressions must use the same formatting as ordinary emission.
-        mx::ScopedFloatFormatting formatting(mx::Value::FloatFormatDefault, std::numeric_limits<float>::max_digits10);
         add(port->getValueString());
     };
     // MaterialX emits all registered type definitions, including authored structs.
@@ -1676,8 +1674,8 @@ std::unique_ptr<CodeGenResult> generate_impl(const CodeGenDesc& desc, CodeGenCac
     std::unique_ptr<ILayeringPolicy> policy = has_hair ? create_hair_policy() : create_layering_policy(desc);
     resources.pixel_stage->setFunctionName(names.graph_name);
 
-    // Give every non-empty policy an opportunity to inspect the graph before
-    // common weighted-layer lowering erases its structure. A
+    // Complex mix may inspect facts that common weighted-layer lowering would
+    // erase. Give every non-empty policy that pre-lowering opportunity. A
     // policy that owns a different structural lowering may complete it there;
     // otherwise retain the common lowering exactly once.
     // Empty surfaces deliberately bypass both policy work and lowering.
@@ -1719,6 +1717,9 @@ std::unique_ptr<CodeGenResult> generate_impl(const CodeGenDesc& desc, CodeGenCac
 
 std::unique_ptr<CodeGenResult> generate_internal(const CodeGenDesc& desc, CodeGenCache* cache)
 {
+    // Keep emitted constants consistent with the float values used by static
+    // analysis. Scope this over cache keys and emission, restoring caller settings.
+    mx::ScopedFloatFormatting formatting(mx::Value::FloatFormatDefault, std::numeric_limits<float>::max_digits10);
     return generate_impl(desc, cache);
 }
 

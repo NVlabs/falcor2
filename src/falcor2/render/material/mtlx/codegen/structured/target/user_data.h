@@ -44,7 +44,8 @@ public:
     const MaterialX::Document& document() const { return *m_document; }
     const NodeEmissionFacts& node_emission_facts() const { return *m_node_emission_facts; }
     EmissionScratch& emission_scratch() const { return *m_emission_scratch; }
-    /// Whether graph boundaries must be inlined before CUDA lowering.
+    /// Whether scalarized complex-mix graph boundaries must disappear before
+    /// CUDA lowering to avoid materializing graph state in local memory.
     bool force_inline_graph_boundaries() const { return m_force_inline_graph_boundaries; }
 
 private:

@@ -53,6 +53,9 @@ FALCOR_PY_DECLARE(ui_widgets);
 
 FALCOR_PY_DECLARE(streaming_video_encoder);
 FALCOR_PY_DECLARE(streaming_webrtc);
+#if FALCOR_ENABLE_HYDRAIPC
+FALCOR_PY_DECLARE(hydra_controller);
+#endif
 
 #if FALCOR_BUILD_TESTS
 FALCOR_PY_DECLARE(testing_nanobind_reflector);
@@ -123,6 +126,9 @@ NB_MODULE(falcor2_ext, m_)
 
     FALCOR_PY_IMPORT(streaming_video_encoder);
     FALCOR_PY_IMPORT(streaming_webrtc);
+#if FALCOR_ENABLE_HYDRAIPC
+    FALCOR_PY_IMPORT(hydra_controller);
+#endif
 
 #if FALCOR_BUILD_TESTS
     FALCOR_PY_IMPORT(testing_nanobind_reflector);

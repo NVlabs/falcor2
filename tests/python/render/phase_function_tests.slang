@@ -16,9 +16,9 @@ public struct TestIsotropicPhaseFunction : IPhaseFunction
 
     public float3 eval(const float3 wi, const float3 wo) { return IsotropicPhaseFunction().eval(wi, wo); }
 
-    public bool sample<SG : ISampleGenerator>(const float3 wi, inout SG sg, out PhaseFunctionSample sample)
+    public bool sample(const float3 wi, const PhaseFunctionSampleInput input, out PhaseFunctionSample sample)
     {
-        return IsotropicPhaseFunction().sample(wi, sg, sample);
+        return IsotropicPhaseFunction().sample(wi, input, sample);
     }
 
     public float eval_pdf(const float3 wi, const float3 wo) { return IsotropicPhaseFunction().eval_pdf(wi, wo); }
@@ -37,7 +37,7 @@ public struct PhaseFunctionTarget<P : IPhaseFunction> : chi2::ITarget
     public bool sample<SG : ISampleGenerator>(inout SG sg, out float3 p)
     {
         PhaseFunctionSample sample = {};
-        bool valid = phase_function.sample(wi, sg, sample);
+        bool valid = phase_function.sample(wi, make_phase_function_sample_input(sg), sample);
         p = sample.wo_ws;
         return valid;
     }
@@ -49,7 +49,7 @@ public float4 test_null_phase_function_sample(float3 wi)
 {
     UniformSampleGenerator sg = UniformSampleGenerator(1);
     PhaseFunctionSample sample;
-    bool valid = NullPhaseFunction().sample(wi, sg, sample);
+    bool valid = NullPhaseFunction().sample(wi, make_phase_function_sample_input(sg), sample);
     return float4(valid ? 1.0 : 0.0, sample.pdf, sample.weight.x, length(sample.wo_ws));
 }
 
@@ -81,7 +81,7 @@ public void test_eval_sample_consistency<P : IPhaseFunction>(
             break;
 
         PhaseFunctionSample sample = {};
-        if (!phase_function.sample(wi, sg, sample)) {
+        if (!phase_function.sample(wi, make_phase_function_sample_input(sg), sample)) {
             counters.add(1, 1);
             continue;
         }

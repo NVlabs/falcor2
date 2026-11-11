@@ -3,6 +3,7 @@
 
 import hashlib
 
+import numpy as np
 import pytest
 import slangpy as spy
 
@@ -12,6 +13,7 @@ import falcor2.testing.helpers as helpers
 
 GEOMETRY = f2.SceneCapabilityFlags.geometry_properties
 OPACITY = f2.SceneCapabilityFlags.opacity_evaluation
+SOLID_TRANSMISSION = f2.SceneCapabilityFlags.solid_transmission
 
 
 def test_capability_values() -> None:
@@ -24,6 +26,7 @@ def test_capability_values() -> None:
     assert not geometry.covers(f2.SceneCapabilities(OPACITY))
     assert geometry == f2.SceneCapabilities(GEOMETRY)
     assert geometry != both
+    assert f2.SceneCapabilities.all().has(SOLID_TRANSMISSION)
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
@@ -72,13 +75,16 @@ class _GeometryMaterial(_CustomMaterial):
 
 class _OpacityMaterial(_CustomMaterial):
     def required_capabilities(self) -> f2.SceneCapabilities:
-        return f2.SceneCapabilities(OPACITY)
+        return super().required_capabilities().merged(f2.SceneCapabilities(OPACITY))
 
 
 @pytest.mark.parametrize("device_type", [helpers.DEFAULT_DEVICE_TYPES[0]])
 @pytest.mark.parametrize(
     "material_type,flags",
-    [(_GeometryMaterial, GEOMETRY), (_OpacityMaterial, OPACITY)],
+    [
+        (_GeometryMaterial, GEOMETRY | SOLID_TRANSMISSION),
+        (_OpacityMaterial, OPACITY | SOLID_TRANSMISSION),
+    ],
 )
 def test_custom_material_capability_opt_in(
     device: spy.Device, material_type: type[f2.Material], flags: f2.SceneCapabilityFlags
@@ -86,17 +92,18 @@ def test_custom_material_capability_opt_in(
     scene = f2.Scene.create(device)
     material = scene.create_material(_CustomMaterial)
     scene.update()
-    assert material.required_capabilities() == f2.SceneCapabilities()
-    assert scene.required_capabilities == f2.SceneCapabilities()
+    conservative = f2.SceneCapabilities(SOLID_TRANSMISSION)
+    assert material.required_capabilities() == conservative
+    assert scene.required_capabilities == conservative
 
     custom = scene.create_material(material_type)
-    assert scene.required_capabilities == f2.SceneCapabilities()
+    assert scene.required_capabilities == conservative
     scene.update()
     assert custom.required_capabilities().flags == flags
     assert scene.required_capabilities.flags == flags
     custom.remove()
     scene.update()
-    assert scene.required_capabilities == f2.SceneCapabilities()
+    assert scene.required_capabilities == conservative
 
 
 def _mtlx_document(space: str) -> str:
@@ -119,6 +126,8 @@ def test_materialx_capabilities_update_with_generated_code(device: spy.Device) -
     scene.update()
     assert not material.required_capabilities().has(GEOMETRY)
     assert not scene.required_capabilities.has(GEOMETRY)
+    assert material.required_capabilities().has(SOLID_TRANSMISSION)
+    assert scene.required_capabilities.has(SOLID_TRANSMISSION)
     material.mtlx_buffer = _mtlx_document("object")
     assert not scene.required_capabilities.has(GEOMETRY)
     scene.update()
@@ -166,6 +175,8 @@ def test_mdl_capabilities_from_sdk_metadata(
     scene.update()
     assert material.required_capabilities().has(GEOMETRY) == needs_geometry
     assert scene.required_capabilities.has(GEOMETRY) == needs_geometry
+    assert material.required_capabilities().has(SOLID_TRANSMISSION)
+    assert scene.required_capabilities.has(SOLID_TRANSMISSION)
     material.remove()
     scene.update()
     assert scene.required_capabilities == f2.SceneCapabilities()
@@ -258,14 +269,20 @@ def test_builtin_geometry_capabilities(
     assert material.required_capabilities() == empty
     assert scene.required_capabilities == empty
 
-    # Configured UV selectors are conservative requirements even for unbound textures.
+    # glTF only needs geometry for selectors on effective (bound) textures.
+    gltf_material = material_type in ("GLTFMaterial", "GLTFSpecGlossMaterial")
+    unbound_selector_needs_geometry = not gltf_material
     for slot in texture_slots:
         property_name = f"{slot}_texture_texcoord"
         material[property_name] = 1
         assert scene.required_capabilities == empty
         scene.update()
-        assert material.required_capabilities().has(GEOMETRY), property_name
-        assert scene.required_capabilities.has(GEOMETRY), property_name
+        assert (
+            material.required_capabilities().has(GEOMETRY) == unbound_selector_needs_geometry
+        ), property_name
+        assert (
+            scene.required_capabilities.has(GEOMETRY) == unbound_selector_needs_geometry
+        ), property_name
         material[property_name] = 0
         scene.update()
         assert material.required_capabilities() == empty, property_name
@@ -274,6 +291,20 @@ def test_builtin_geometry_capabilities(
     property_name = f"{texture_slots[0]}_texture_texcoord"
     material[property_name] = 7
     scene.update()
+    assert scene.required_capabilities.has(GEOMETRY) == unbound_selector_needs_geometry
+    if gltf_material:
+        texture = device.create_texture(
+            type=spy.TextureType.texture_2d,
+            format=spy.Format.rgba32_float,
+            width=1,
+            height=1,
+            usage=spy.TextureUsage.shader_resource,
+            data=np.ones((1, 1, 4), dtype=np.float32),
+        )
+        material[f"{texture_slots[0]}_texture"] = texture
+        assert scene.required_capabilities == empty
+        scene.update()
+        assert material.required_capabilities().has(GEOMETRY)
     assert scene.required_capabilities.has(GEOMETRY)
     material["use_vertex_color"] = True
     material[property_name] = 0
@@ -294,3 +325,116 @@ def test_builtin_geometry_capabilities(
     material.remove()
     scene.update()
     assert scene.required_capabilities == empty
+
+
+@pytest.mark.parametrize("device_type", [helpers.DEFAULT_DEVICE_TYPES[0]])
+@pytest.mark.parametrize("material_type", [f2.StandardMaterial, f2.StandardSpecGlossMaterial])
+def test_standard_solid_transmission_capability_follows_material_edits(
+    device: spy.Device, material_type: type[f2.Material]
+) -> None:
+    scene = f2.Scene.create(device)
+    material = scene.create_material(material_type)
+    scene.update()
+    assert not scene.required_capabilities.has(SOLID_TRANSMISSION)
+
+    material.specular_transmission_factor = 1.0
+    scene.update()
+    assert material.required_capabilities().has(SOLID_TRANSMISSION)
+    assert scene.required_capabilities.has(SOLID_TRANSMISSION)
+
+    material.thin_walled = True
+    scene.update()
+    assert not scene.required_capabilities.has(SOLID_TRANSMISSION)
+
+    material.thin_walled = False
+    material.specular_transmission_factor = 0.0
+    material.diffuse_transmission_factor = 1.0
+    scene.update()
+    assert scene.required_capabilities.has(SOLID_TRANSMISSION)
+
+    material.transmission_factor = spy.float3(0.0)
+    scene.update()
+    assert not scene.required_capabilities.has(SOLID_TRANSMISSION)
+
+    material.specular_transmission_factor = 1.0
+    scene.update()
+    assert scene.required_capabilities.has(SOLID_TRANSMISSION)
+
+
+@pytest.mark.parametrize("device_type", [helpers.DEFAULT_DEVICE_TYPES[0]])
+def test_gltf_solid_transmission_requires_thickness_and_transmission(device: spy.Device) -> None:
+    scene = f2.Scene.create(device)
+    material = scene.create_material(f2.GLTFMaterial)
+    scene.update()
+    assert not scene.required_capabilities.has(SOLID_TRANSMISSION)
+
+    material.thickness_factor = 1.0
+    scene.update()
+    assert not scene.required_capabilities.has(SOLID_TRANSMISSION)
+
+    material.transmission_factor = 1.0
+    scene.update()
+    assert scene.required_capabilities.has(SOLID_TRANSMISSION)
+
+    material.transmission_factor = 0.0
+    material.diffuse_transmission_factor = 1.0
+    scene.update()
+    assert scene.required_capabilities.has(SOLID_TRANSMISSION)
+
+    material.thickness_factor = 0.0
+    scene.update()
+    assert not scene.required_capabilities.has(SOLID_TRANSMISSION)
+
+    material.thickness_factor = 1.0
+    material.feature_mask_filter = int(material.feature_mask_filter) & ~(1 << 7)  # VOLUME
+    scene.update()
+    assert not scene.required_capabilities.has(SOLID_TRANSMISSION)
+
+
+@pytest.mark.parametrize("device_type", [helpers.DEFAULT_DEVICE_TYPES[0]])
+def test_openpbr_solid_transmission_requires_weight_and_non_thin_geometry(
+    device: spy.Device,
+) -> None:
+    scene = f2.Scene.create(device)
+    material = scene.create_material("OpenPBRMaterial")
+    scene.update()
+    assert not scene.required_capabilities.has(SOLID_TRANSMISSION)
+
+    material["transmission_weight"] = 1.0
+    scene.update()
+    assert scene.required_capabilities.has(SOLID_TRANSMISSION)
+
+    material["geometry_thin_walled"] = True
+    scene.update()
+    assert not scene.required_capabilities.has(SOLID_TRANSMISSION)
+
+    material["geometry_thin_walled"] = False
+    material["transmission_weight"] = 0.0
+    scene.update()
+    assert not scene.required_capabilities.has(SOLID_TRANSMISSION)
+
+
+@pytest.mark.parametrize("device_type", [helpers.DEFAULT_DEVICE_TYPES[0]])
+@pytest.mark.parametrize(
+    "material_type", [f2.UnlitMaterial, f2.GLTFSpecGlossMaterial, f2.EmissionOnlyMaterial]
+)
+def test_non_transmitting_materials_do_not_require_solid_transmission(
+    device: spy.Device, material_type: type[f2.Material]
+) -> None:
+    scene = f2.Scene.create(device)
+    material = scene.create_material(material_type)
+    scene.update()
+    assert not material.required_capabilities().has(SOLID_TRANSMISSION)
+    assert not scene.required_capabilities.has(SOLID_TRANSMISSION)
+
+
+@pytest.mark.parametrize("device_type", [helpers.DEFAULT_DEVICE_TYPES[0]])
+def test_unknown_material_conservatively_requires_solid_transmission(device: spy.Device) -> None:
+    scene = f2.Scene.create(device)
+    material = scene.create_material(_CustomMaterial)
+    scene.update()
+    assert material.required_capabilities().has(SOLID_TRANSMISSION)
+    assert scene.required_capabilities.has(SOLID_TRANSMISSION)
+    material.remove()
+    scene.update()
+    assert not scene.required_capabilities.has(SOLID_TRANSMISSION)

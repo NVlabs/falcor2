@@ -60,8 +60,7 @@ public struct SheenBSDF : IBSDF
     }
 
 
-    public BSDFEval
-    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
         if (min(wi.z, wo.z) < BSDF_MIN_COS_THETA)
             return BSDFEval();
@@ -76,7 +75,7 @@ public struct SheenBSDF : IBSDF
         return BSDFEval(Fr, float.INV_PI* wo.z);
     }
 
-    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         // Default initialization to avoid divergence at returns.
         sample = {};
@@ -88,7 +87,7 @@ public struct SheenBSDF : IBSDF
         /*
         float3 albedo_t = eval_albedo(wi).transmission;
         const float selection_weight = luminance(albedo_t);
-        if (next_float(sg) < selection_weight)
+        if (input.u_lobe < selection_weight)
         {
             sample.wo = float3(-wi.x, -wi.y, -wi.z);
             sample.pdf = 0.0;
@@ -99,14 +98,15 @@ public struct SheenBSDF : IBSDF
 
         // Estevez and Kulla found uniform hemisphere sampling more effective for this grazing distribution. Preserve
         // the legacy cosine-weighted proposal here; eval_pdf() must match it.
-        sample.wo = square_to_cosine_hemisphere_concentric(next_float2(sg));
+        sample.wo = square_to_cosine_hemisphere_concentric(input.u_dir);
         sample.pdf = square_to_cosine_hemisphere_concentric_pdf(sample.wo);
 
         if (min(wi.z, sample.wo.z) < BSDF_MIN_COS_THETA)
             return false;
 
         sample.flags = BSDFFlags::glossy_reflection;
-        sample.weight = (eval(wi, sample.wo, sg, bc) / (float.INV_PI* sample.wo.z));
+
+        sample.weight = (eval(wi, sample.wo, bc) / (float.INV_PI* sample.wo.z));
         return true;
     }
 

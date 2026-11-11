@@ -28,21 +28,6 @@ float eval_at_angle(LightShaping shaping, float angle)
     return shaping.eval(float3(0.0, 0.0, 1.0), float3(sin(angle_radians), 0.0, cos(angle_radians)));
 }
 
-public struct CountingSampleGenerator : ISampleGenerator
-{
-    public uint sample_count;
-
-    public __init(uint seed, uint scrambling_seed = 0) { sample_count = 0; }
-    public __init(uint2 pixel, uint sample_index) { sample_count = 0; }
-
-    [mutating]
-    public uint next_uint()
-    {
-        sample_count++;
-        return 0;
-    }
-};
-
 TEST_CASE(light_shaping_eval)
 {
     const LightShaping disabled = make_light_shaping(false, 30.0, 0.5, 2.0);
@@ -90,7 +75,7 @@ TEST_CASE(point_light_sample)
     LightSampleContext ctx = {};
     UniformSampleGenerator sg = UniformSampleGenerator(1);
     LightSample sample;
-    CHECK(light.sample(ctx, sg, sample));
+    CHECK(light.sample(ctx, next_float2(sg), sample));
     CHECK_APPROX(sample.dir_ws, float3(0.0, 0.0, 1.0), 1e-6);
     CHECK_APPROX(sample.distance, 2.0, 1e-6);
     CHECK_APPROX(sample.pdf, 1.0, 1e-6);
@@ -98,7 +83,7 @@ TEST_CASE(point_light_sample)
 
     light.dir_ws = float3(1.0, 0.0, 0.0);
     light.shaping = make_light_shaping(true, 30.0, 0.0, 0.0);
-    CHECK_FALSE(light.sample(ctx, sg, sample));
+    CHECK_FALSE(light.sample(ctx, next_float2(sg), sample));
 }
 
 TEST_CASE(analytic_area_light_sample)
@@ -149,7 +134,7 @@ TEST_CASE(analytic_area_light_sample)
     ));
 }
 
-TEST_CASE(planar_lights_reject_backfacing_receiver_before_sampling)
+TEST_CASE(planar_lights_reject_backfacing_receiver_and_zero_area)
 {
     LightSampleContext ctx = {};
     LightSample sample;
@@ -165,14 +150,13 @@ TEST_CASE(planar_lights_reject_backfacing_receiver_before_sampling)
         1.0,
         make_light_shaping(false, 30.0, 0.0, 0.0)
     );
-    CountingSampleGenerator disk_sg = CountingSampleGenerator(1);
-    CHECK_FALSE(disk.sample(ctx, disk_sg, sample));
-    CHECK_EQ(disk_sg.sample_count, 0);
+    const float2 u_light = float2(0.375, 0.625);
+    CHECK_FALSE(disk.sample(ctx, u_light, sample));
+    CHECK_EQ(sample.pdf, 0.0);
     disk.normal_ws = float3(0.0, 0.0, -1.0);
     disk.surface_area = 0.0;
-    disk_sg = CountingSampleGenerator(1);
-    CHECK_FALSE(disk.sample(ctx, disk_sg, sample));
-    CHECK_EQ(disk_sg.sample_count, 0);
+    CHECK_FALSE(disk.sample(ctx, u_light, sample));
+    CHECK_EQ(sample.pdf, 0.0);
 
     RectLight rect = RectLight(
         header,
@@ -184,12 +168,10 @@ TEST_CASE(planar_lights_reject_backfacing_receiver_before_sampling)
         1.0,
         make_light_shaping(false, 30.0, 0.0, 0.0)
     );
-    CountingSampleGenerator rect_sg = CountingSampleGenerator(1);
-    CHECK_FALSE(rect.sample(ctx, rect_sg, sample));
-    CHECK_EQ(rect_sg.sample_count, 0);
+    CHECK_FALSE(rect.sample(ctx, u_light, sample));
+    CHECK_EQ(sample.pdf, 0.0);
     rect.normal_ws = float3(0.0, 0.0, -1.0);
     rect.surface_area = 0.0;
-    rect_sg = CountingSampleGenerator(1);
-    CHECK_FALSE(rect.sample(ctx, rect_sg, sample));
-    CHECK_EQ(rect_sg.sample_count, 0);
+    CHECK_FALSE(rect.sample(ctx, u_light, sample));
+    CHECK_EQ(sample.pdf, 0.0);
 }

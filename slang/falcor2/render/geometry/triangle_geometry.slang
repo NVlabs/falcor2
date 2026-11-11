@@ -6,42 +6,59 @@ implementing render;
 public struct TriangleGeometryData
 {
     public StructuredBuffer<TriangleGeometryDesc> descs;
-    public StructuredBuffer<PackedTriangleVertex> vertices;
-    public StructuredBuffer<uint> indices;
     public StructuredBuffer<PackedAdditionalAttribute> additional_attributes;
     public ByteAddressBuffer additional_attribute_data;
 }
 
 public extension Scene
 {
-    public TriangleVertex get_triangle_vertex(uint vertex_index)
+    public TriangleVertex get_triangle_vertex(uint buffer_index, uint vertex_index)
     {
-        return detail::unpack_triangle_vertex(triangle_geometry.vertices[vertex_index]);
+        return detail::unpack_triangle_vertex(geometry[buffer_index].as_buffer<PackedTriangleVertex>()[vertex_index]);
     }
 
-    /// Get the three vertex indices for a triangle primitive.
+    /// Get vertex indices within the instance's selected vertex buffer.
     public uint[3] get_triangle_indices(GeometryInstanceID geometry_instance_id, uint primitive_index)
     {
         TriangleGeometryInstanceDesc instance_desc
             = reinterpret<TriangleGeometryInstanceDesc>(get_geometry_instance_desc(geometry_instance_id));
         uint vertex_offset = instance_desc.vertex_offset;
         uint index_offset = instance_desc.index_offset + primitive_index * 3;
+        let indices = geometry[instance_desc.index_buffer].as_buffer<uint>();
         return uint[3](
-            vertex_offset + triangle_geometry.indices[index_offset],
-            vertex_offset + triangle_geometry.indices[index_offset + 1],
-            vertex_offset + triangle_geometry.indices[index_offset + 2]
+            vertex_offset + indices[index_offset],
+            vertex_offset + indices[index_offset + 1],
+            vertex_offset + indices[index_offset + 2]
         );
     }
 
     /// Get the three vertices for a triangle primitive.
     public TriangleVertex[3] get_triangle_vertices(GeometryInstanceID geometry_instance_id, uint primitive_index)
     {
+        TriangleGeometryInstanceDesc instance_desc
+            = reinterpret<TriangleGeometryInstanceDesc>(get_geometry_instance_desc(geometry_instance_id));
         uint[3] vertex_indices = get_triangle_indices(geometry_instance_id, primitive_index);
+        let vertices = geometry[instance_desc.vertex_buffer].as_buffer<PackedTriangleVertex>();
         return {
-            get_triangle_vertex(vertex_indices[0]),
-            get_triangle_vertex(vertex_indices[1]),
-            get_triangle_vertex(vertex_indices[2])
+            detail::unpack_triangle_vertex(vertices[vertex_indices[0]]),
+            detail::unpack_triangle_vertex(vertices[vertex_indices[1]]),
+            detail::unpack_triangle_vertex(vertices[vertex_indices[2]])
         };
+    }
+
+    /// Previous vertices occupy vertex_buffer + 1 and share the current topology and vertex offsets.
+    /// Requires vertex_motion and a two-buffer vertex tuple with previous-frame data populated.
+    public float3 get_previous_position_os(TriangleHitInfo hit)
+    {
+        TriangleGeometryInstanceDesc instance_desc
+            = reinterpret<TriangleGeometryInstanceDesc>(get_geometry_instance_desc(hit.geometry_instance_id));
+        let vertex_indices = get_triangle_indices(hit.geometry_instance_id, hit.primitive_index);
+        let vertices = geometry[instance_desc.vertex_buffer + 1].as_buffer<PackedTriangleVertex>();
+        let v0 = detail::unpack_triangle_vertex(vertices[vertex_indices[0]]);
+        let v1 = detail::unpack_triangle_vertex(vertices[vertex_indices[1]]);
+        let v2 = detail::unpack_triangle_vertex(vertices[vertex_indices[2]]);
+        let weights = float3(1.0 - hit.barycentrics.x - hit.barycentrics.y, hit.barycentrics);
+        return weights.x * v0.position + weights.y * v1.position + weights.z * v2.position;
     }
 }
 
@@ -112,11 +129,8 @@ public struct TriangleGeomPropAccessor : IGeomPropAccessor
         additional_attribute_mask
             = g_scene.triangle_geometry.additional_attributes[additional_attribute_desc_offset].byte_offset;
         const uint index_offset = triangle_geometry_instance.index_offset + hit.primitive_index * 3;
-        local_vertex_indices = uint3(
-            g_scene.triangle_geometry.indices[index_offset],
-            g_scene.triangle_geometry.indices[index_offset + 1],
-            g_scene.triangle_geometry.indices[index_offset + 2]
-        );
+        let indices = g_scene.geometry[triangle_geometry_instance.index_buffer].as_buffer<uint>();
+        local_vertex_indices = uint3(indices[index_offset], indices[index_offset + 1], indices[index_offset + 2]);
         barycentric_weights
             = float3(1.f - hit.barycentrics.x - hit.barycentrics.y, hit.barycentrics.x, hit.barycentrics.y);
     }
@@ -434,13 +448,16 @@ public extension Scene
         let vertex_offset = geometry_instance_data.vertex_offset;
         let index_offset = geometry_instance_data.index_offset + hit.primitive_index * 3;
 
-        let i0 = triangle_geometry.indices[index_offset];
-        let i1 = triangle_geometry.indices[index_offset + 1];
-        let i2 = triangle_geometry.indices[index_offset + 2];
+        let indices = geometry[geometry_instance_data.index_buffer].as_buffer<uint>();
+        let vertices = geometry[geometry_instance_data.vertex_buffer].as_buffer<PackedTriangleVertex>();
 
-        let v0 = detail::unpack_triangle_vertex(triangle_geometry.vertices[vertex_offset + i0]);
-        let v1 = detail::unpack_triangle_vertex(triangle_geometry.vertices[vertex_offset + i1]);
-        let v2 = detail::unpack_triangle_vertex(triangle_geometry.vertices[vertex_offset + i2]);
+        let i0 = indices[index_offset];
+        let i1 = indices[index_offset + 1];
+        let i2 = indices[index_offset + 2];
+
+        let v0 = detail::unpack_triangle_vertex(vertices[vertex_offset + i0]);
+        let v1 = detail::unpack_triangle_vertex(vertices[vertex_offset + i1]);
+        let v2 = detail::unpack_triangle_vertex(vertices[vertex_offset + i2]);
 
         // barycentric weights
         let bw = float3(1.0 - hit.barycentrics.x - hit.barycentrics.y, hit.barycentrics.x, hit.barycentrics.y);

@@ -50,6 +50,16 @@ void Camera::set_fstop(float fstop)
     }
 }
 
+void Camera::set_exposure(float exposure)
+{
+    exposure = std::clamp(exposure, MIN_EXPOSURE, MAX_EXPOSURE);
+    if (exposure != m_exposure) {
+        m_exposure = exposure;
+        needs_recompute();
+        mark_dirty(DirtyFlags::render_state);
+    }
+}
+
 void Camera::set_sensor_height(float height)
 {
     height = std::clamp(height, std::numeric_limits<float>::min(), std::numeric_limits<float>::max());
@@ -152,6 +162,7 @@ void Camera::recompute() const
     m_uniforms.image_w = fwd;
     m_uniforms.aperture_radius = m_enable_depth_of_field ? 0.5f * m_focal_length * 0.001f / m_fstop : 0.f;
     m_uniforms.focus_distance = m_focus_distance;
+    m_uniforms.exposure_scale = std::exp2(m_exposure);
 
     m_needs_recompute = false;
 }

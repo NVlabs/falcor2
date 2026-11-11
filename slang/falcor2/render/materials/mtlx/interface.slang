@@ -33,15 +33,6 @@ public float4 sample_texture<TLodSampler : ILodSampler>(
 
 public interface ILayerableBSDF : IBSDF
 {
-    /// Sample using a conditionally uniform closure-tree selector in [0, 1).
-    /// Composition nodes remap and forward it; leaves draw their ordinary
-    /// sampling coordinates from sg, without consuming the selector.
-    public bool sample_with_selector<
-        S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc, float selector)
-    {
-        return this.sample(wi, sample, sg, bc);
-    }
-
     // Slang 2026.14.1 miscompiles IBSDF default methods inherited through this
     // derived interface, so conformers repeat the two thin aliases explicitly.
     // The static specialization failure is tracked in

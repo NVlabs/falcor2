@@ -1,0 +1,58 @@
+--- a/falcor2/testing/helpers.py
++++ b/falcor2/testing/helpers.py
+@@ -71,11 +71,17 @@
+ 
+ 
+ def test_module_cache_enabled() -> bool:
+-    return os.environ.get("FALCOR_TEST_MODULE_CACHE", "1").strip().lower() != "0"
++    return (
++        not BENCHMARK_COMPILATION_REPORTS_ENABLED
++        and os.environ.get("FALCOR_TEST_MODULE_CACHE", "1").strip().lower() != "0"
++    )
+ 
+ 
+ def test_shader_cache_enabled() -> bool:
+-    return os.environ.get("FALCOR_TEST_SHADER_CACHE", "1").strip().lower() != "0"
++    return (
++        not BENCHMARK_COMPILATION_REPORTS_ENABLED
++        and os.environ.get("FALCOR_TEST_SHADER_CACHE", "1").strip().lower() != "0"
++    )
+ 
+ 
+ def get_test_cache_root() -> Path:
+@@ -186,7 +192,10 @@
+     floating_point_mode: SlangFloatingPointMode = SlangFloatingPointMode.default,
+     existing_device_handles: Optional[Sequence[NativeHandle]] = None,
+     enable_print: bool = False,
++    enable_compilation_reports: bool | None = None,
+ ) -> Device:
++    if enable_compilation_reports is None:
++        enable_compilation_reports = BENCHMARK_COMPILATION_REPORTS_ENABLED
+     module_cache_path, shader_cache_path = test_cache_paths()
+     cache_key = (
+         type,
+@@ -194,6 +203,7 @@
+         floating_point_mode,
+         tuple(existing_device_handles) if existing_device_handles else (),
+         enable_print,
++        enable_compilation_reports,
+         module_cache_path,
+         shader_cache_path,
+     )
+@@ -221,6 +231,7 @@
+         type=type,
+         enable_debug_layers=True,
+         enable_print=enable_print,
++        enable_compilation_reports=enable_compilation_reports,
+         compiler_options=SlangCompilerOptions(
+             {
+                 "include_paths": [
+@@ -428,3 +439,8 @@
+     return boto3.client(
+         "s3", endpoint_url=ENDPOINT, aws_access_key_id=ACCESS_KEY, aws_secret_access_key=SECRET_KEY
+     )
++
++
++BENCHMARK_COMPILATION_REPORTS_ENABLED = False
++MODULE_CACHE_ENABLED = False
++SHADER_CACHE_ENABLED = False

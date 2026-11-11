@@ -53,31 +53,33 @@ public struct MxCompensatedDielectricBSDF<
 
     // TODO: Remove the eval()/eval_pdf() overrides below when
     // https://github.com/shader-slang/slang/issues/12814 is fixed.
-    public override
-        float3 eval<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        return eval_with_pdf(wi, wo, sg, bc).value;
+        return eval_with_pdf(wi, wo, bc).value;
     }
 
     public override float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
-        EvalPdfFallbackSampleGenerator sg = EvalPdfFallbackSampleGenerator(0u);
-        return eval_with_pdf(wi, wo, sg, bc).pdf;
+        return eval_with_pdf(wi, wo, bc).pdf;
     }
 
-    public BSDFEval
-    eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
     {
         // MaterialX retroreflection affects reflection events only; transmission directions remain unchanged.
         const float3 eval_wi = retroreflective && wi.z * wo.z > 0.0 ? mx_retroreflect(wi) : wi;
         MxBsdfSample r = eval_bsdf_sample(eval_wi, wo);
-        return BSDFEval(r.pdf > 0.0 ? r.weight * r.pdf : float3(0.0), r.pdf);
+        // The hint conditions the proposal density, including for directions with a
+        // nonzero physical value that the restricted sampler cannot produce.
+        const float pdf = bc.sample_lobe_types_hint == BSDFFlags::all
+            ? r.pdf
+            : spec_eval(eval_wi, wo, bc.sample_lobe_types_hint).pdf;
+        return BSDFEval(r.pdf > 0.0 ? r.weight * r.pdf : float3(0.0), pdf);
     }
 
-    public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const BSDFContext bc)
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
-        MxBsdfSample r = sample_bsdf_sample(wi, next_float3(sg));
+        MxBsdfSample r = sample_bsdf_sample(wi, float3(input.u_dir, input.u_lobe), bc.sample_lobe_types_hint);
         if (r.pdf <= 0.0)
             return false;
         sample.wo = retroreflective && wi.z * r.wo.z > 0.0 ? mx_retroreflect(r.wo) : r.wo;
@@ -165,8 +167,13 @@ public struct MxCompensatedDielectricBSDF<
     }
 
     // BSDL: bsdf_dielectric_impl.h:110-177 DielectricBSDF::eval (BVN branch)
-    private MxBsdfSample spec_eval(const float3 wi, const float3 wo)
+    private MxBsdfSample spec_eval(const float3 wi, const float3 wo, BSDFFlags sample_lobe_types_hint)
     {
+        // Restrict the sampling distribution, not the physical scatter mode used by compensation.
+        const bool do_reflect = dorefl() && is_set(sample_lobe_types_hint, BSDFFlags::reflection);
+        const bool do_refract = dorefr() && is_set(sample_lobe_types_hint, BSDFFlags::transmission);
+        if ((!do_reflect && wo.z >= 0.0) || (!do_refract && wo.z <= 0.0))
+            return MxBsdfSample();
         MxGGXDist dist = make_ggx_dist(roughness_xy);
         const float roughness = microfacet_roughness(roughness_xy);
         if (!dorefr()) {
@@ -176,8 +183,6 @@ public struct MxCompensatedDielectricBSDF<
 
         const float cos_NO = wi.z;
         const float cos_NI = wo.z;
-        const bool do_reflect = dorefl();
-        const bool do_refract = dorefr();
         const bool both_scatter = do_reflect && do_refract;
         if (cos_NI > 0.0) {
             if (!do_reflect)
@@ -231,8 +236,12 @@ public struct MxCompensatedDielectricBSDF<
     }
 
     // BSDL: bsdf_dielectric_impl.h:179-206 DielectricBSDF::sample (BVN branch)
-    private MxBsdfSample spec_sample(const float3 wi, const float3 rnd)
+    private MxBsdfSample spec_sample(const float3 wi, const float3 rnd, BSDFFlags sample_lobe_types_hint)
     {
+        const bool do_reflect = dorefl() && is_set(sample_lobe_types_hint, BSDFFlags::reflection);
+        const bool do_refract = dorefr() && is_set(sample_lobe_types_hint, BSDFFlags::transmission);
+        if (!do_reflect && !do_refract)
+            return MxBsdfSample();
         if (!dorefr()) {
             return sample_ggx_reflection_lobe<TFresnel, TCompensation>(
                 make_ggx_dist(roughness_xy),
@@ -250,18 +259,16 @@ public struct MxCompensatedDielectricBSDF<
             return MxBsdfSample();
         const float3 F = fresnel.eval(cos_MO);
         const float Fmax = mx_hmax(F);
-        const bool do_reflect = dorefl();
-        const bool both_scatter = do_reflect && dorefr();
-        // T-only advanced BSDFs must spend all samples on refraction. The
-        // Fresnel roulette is only the branch probability when reflection and
-        // refraction are both present in this BSDF.
+        const bool both_scatter = do_reflect && do_refract;
+        // Fresnel roulette applies only when both physical branches remain in the
+        // sampling mask. A single allowed branch receives all samples.
         const float reflect_probability
             = both_scatter ? balance_probability(F, float3(1.0) - F) : (do_reflect ? 1.0 : 0.0);
         const bool choose_reflect = rnd.z < reflect_probability;
         const float3 wo = choose_reflect ? reflect(-wi, m) : mx_refract(wi, m, fresnel.refraction_eta());
         if ((choose_reflect && wo.z <= 0.0) || (!choose_reflect && wo.z >= 0.0))
             return MxBsdfSample();
-        return spec_eval(wi, wo);
+        return spec_eval(wi, wo, sample_lobe_types_hint);
     }
 
     // tint(s.wo.z) is safe when s.wo == (0,0,0) (sample failure) because the
@@ -269,11 +276,12 @@ public struct MxCompensatedDielectricBSDF<
     private float3 tint(float cos_NI) { return cos_NI > 0.0 ? reflection_tint : transmission_tint; }
 
     // BSDL: bsdf_dielectric_impl.h:285-299 DielectricLobe::eval_impl
-    private MxBsdfSample eval_bsdf_sample(const float3 wi, const float3 wo)
+    private MxBsdfSample
+    eval_bsdf_sample(const float3 wi, const float3 wo, BSDFFlags sample_lobe_types_hint = BSDFFlags::all)
     {
         if (!dorefl() && !dorefr())
             return MxBsdfSample();
-        MxBsdfSample s = spec_eval(wi, wo);
+        MxBsdfSample s = spec_eval(wi, wo, sample_lobe_types_hint);
         if (dorefr()) {
             s.weight *= TCompensation::refraction_scale(
                 dorefl(),
@@ -290,11 +298,11 @@ public struct MxCompensatedDielectricBSDF<
     }
 
     // BSDL: bsdf_dielectric_impl.h:301-319 DielectricLobe::sample_impl
-    private MxBsdfSample sample_bsdf_sample(const float3 wi, const float3 rnd)
+    private MxBsdfSample sample_bsdf_sample(const float3 wi, const float3 rnd, BSDFFlags sample_lobe_types_hint)
     {
         if (!dorefl() && !dorefr())
             return MxBsdfSample();
-        MxBsdfSample s = spec_sample(wi, rnd);
+        MxBsdfSample s = spec_sample(wi, rnd, sample_lobe_types_hint);
         if (dorefr()) {
             s.weight *= TCompensation::refraction_scale(
                 dorefl(),

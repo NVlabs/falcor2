@@ -501,8 +501,8 @@ void emit_sample_probabilities(SlangEmitter& e, const MxFlatRootDesc& desc)
 void emit_bsdf_dispatch(SlangEmitter& e, const MxFlatRootDesc& desc)
 {
     e.begin(
-        "bool sample_bsdf<S : ISampleGenerator>(int bsdf_index, const float3 wi, out BSDFSample sample, inout S sg, "
-        "const BSDFContext bc)"
+        "bool sample_bsdf(int bsdf_index, const float3 wi, const BSDFSampleInput input, "
+        "const BSDFContext bc, out BSDFSample sample)"
     );
     e.line("switch (bsdf_index)", false);
     e.line("{", false);
@@ -510,7 +510,7 @@ void emit_bsdf_dispatch(SlangEmitter& e, const MxFlatRootDesc& desc)
         const int bsdf_index = int(i);
         e.line(
             "case " + std::to_string(i) + ": return flat::sample_bsdf(" + desc.bsdfs[i].field_name + ", "
-            + bsdf_weight_field(bsdf_index) + ", " + bsdf_frame_field(bsdf_index) + ", wi, sample, sg, bc)"
+            + bsdf_weight_field(bsdf_index) + ", " + bsdf_frame_field(bsdf_index) + ", wi, input, bc, sample)"
         );
     }
     e.line("default: break");
@@ -523,7 +523,7 @@ void emit_bsdf_dispatch(SlangEmitter& e, const MxFlatRootDesc& desc)
 void emit_eval_with_pdf(SlangEmitter& e, const MxFlatRootDesc& desc)
 {
     e.begin(
-        "public BSDFEval eval_with_pdf<S : ISampleGenerator>(const float3 wi, const float3 wo, inout S sg, const "
+        "public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const "
         "BSDFContext bc)"
     );
     e.line("BSDFEval result = {}");
@@ -532,7 +532,7 @@ void emit_eval_with_pdf(SlangEmitter& e, const MxFlatRootDesc& desc)
         const std::string lobe = "lobe_" + std::to_string(i);
         e.line(
             "BSDFEval " + lobe + " = flat::eval_bsdf_with_pdf(" + desc.bsdfs[i].field_name + ", "
-            + bsdf_weight_field(bsdf_index) + ", " + bsdf_frame_field(bsdf_index) + ", wi, wo, sg, bc)"
+            + bsdf_weight_field(bsdf_index) + ", " + bsdf_frame_field(bsdf_index) + ", wi, wo, bc)"
         );
         e.line("result.value += " + lobe + ".value");
         e.line("result.pdf += bsdf_sample_probabilities[" + std::to_string(i) + "] * " + lobe + ".pdf");
@@ -543,9 +543,7 @@ void emit_eval_with_pdf(SlangEmitter& e, const MxFlatRootDesc& desc)
 
 void emit_cdf_sample_bsdf_selector(SlangEmitter& e, const MxFlatRootDesc& desc)
 {
-    e.begin(
-        "bool select_cdf_sample_bsdf<S : ISampleGenerator>(inout S sg, out int bsdf_index, out float path_probability)"
-    );
+    e.begin("bool select_cdf_sample_bsdf(inout BSDFSampleInput input, out int bsdf_index, out float path_probability)");
     e.line("bsdf_index = 0");
     e.line("path_probability = 0.0");
     if (desc.bsdfs.size() == 1) {
@@ -554,15 +552,17 @@ void emit_cdf_sample_bsdf_selector(SlangEmitter& e, const MxFlatRootDesc& desc)
         e.end();
         return;
     }
-    e.line("float selector = next_float(sg)");
+    e.line("float selector = input.u_lobe");
     e.line("float cdf = 0.0");
     e.line("[ForceUnroll]", false);
     e.begin("for (int i = 0; i < " + std::to_string(desc.bsdfs.size()) + "; ++i)");
     e.line("float p = bsdf_sample_probabilities[i]");
     e.line("if (p <= 0.0)", false);
     e.line("    continue");
+    e.line("float interval_begin = cdf");
     e.line("cdf += p");
     e.begin("if (selector < cdf)");
+    e.line("input.u_lobe = remap_sample_selector(selector, interval_begin, p)");
     e.line("bsdf_index = i");
     e.line("path_probability = p");
     e.line("return true");
@@ -575,16 +575,17 @@ void emit_cdf_sample_bsdf_selector(SlangEmitter& e, const MxFlatRootDesc& desc)
 void emit_sample(SlangEmitter& e)
 {
     e.begin(
-        "public bool sample<S : ISampleGenerator>(const float3 wi, out BSDFSample sample, inout S sg, const "
-        "BSDFContext bc)"
+        "public bool sample(const float3 wi, const BSDFSampleInput input, const "
+        "BSDFContext bc, out BSDFSample sample)"
     );
     e.comment("MTLX bsdf_mix sample selector: direct CDF over final BSDF probabilities.");
     e.line("sample = {}");
     e.line_break();
     e.line("int bsdf_index = 0");
     e.line("float path_probability = 0.0");
-    e.line("if (!select_cdf_sample_bsdf(sg, bsdf_index, path_probability)) return false");
-    e.line("bool valid = sample_bsdf(bsdf_index, wi, sample, sg, bc)");
+    e.line("BSDFSampleInput child_input = input");
+    e.line("if (!select_cdf_sample_bsdf(child_input, bsdf_index, path_probability)) return false");
+    e.line("bool valid = sample_bsdf(bsdf_index, wi, child_input, bc, sample)");
     e.begin("if (!valid)");
     e.line("sample = {}");
     e.line("return false");
@@ -599,7 +600,7 @@ void emit_sample(SlangEmitter& e)
     e.line("sample = {}");
     e.line("return false");
     e.end();
-    e.line("sample.weight = eval(wi, sample.wo, sg, bc) / sample.pdf");
+    e.line("sample.weight = eval(wi, sample.wo, bc) / sample.pdf");
     e.line("return true");
     e.end();
 }

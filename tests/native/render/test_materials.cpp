@@ -3,8 +3,10 @@
 
 #include "testing.h"
 
+#include "falcor2/core/platform.h"
 #include "falcor2/core/properties.h"
 #include "falcor2/core/asset_resolver.h"
+#include "falcor2/core/reflection/class_descriptor.h"
 #include "falcor2/render/material/mdl/mdl_material.h"
 #include "falcor2/render/geometry/geometry_vertex_attribute.h"
 #include "falcor2/render/material/emission_only_material.h"
@@ -15,17 +17,20 @@
 #include "falcor2/render/material/standard_specgloss_material.h"
 #include "falcor2/render/material/gltf_material.h"
 #include "falcor2/render/material/gltf_specgloss_material.h"
+#include "falcor2/render/material/shared_gltf_texture_selectors.h"
 #include "falcor2/render/material/unlit_material.h"
 #include "falcor2/render/material_aov_registry.h"
 #include "falcor2/render/scene.h"
 #include "falcor2/utils/buffer_offset_pair.h"
 
+#include <fmt/format.h>
 #include <sgl/device/device.h>
 #include <sgl/device/kernel.h>
 
 #include <algorithm>
 #include <array>
 #include <barrier>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -42,6 +47,8 @@
 using namespace falcor;
 
 namespace {
+namespace F = shared::gltfmat::FeatureBits;
+
 class DataTestMaterial final : public Material {
     FALCOR_SCENE_OBJECT(DataTestMaterial, Material)
 public:
@@ -50,11 +57,43 @@ public:
     using Material::data_ref;
     using Material::ensure_data_size;
 
+    void set_probe_module(ref<sgl::SlangModule> module)
+    {
+        m_probe_module = std::move(module);
+        set_slang_type_name("DataPoolProbeMaterial");
+        mark_dirty_properties();
+    }
+
+    ref<sgl::SlangModule> required_module() const override { return m_probe_module; }
+
+    void write_to_cursor(sgl::BufferElementCursor cursor) const override
+    {
+        if (m_probe_module) {
+            cursor["extra_data"] = data_ref();
+            cursor["has_data"] = uint32_t(!data().empty());
+        }
+    }
+
     void set_value(size_t size, uint32_t value)
     {
         ensure_data_size(size);
         std::memcpy(mutable_data().data(), &value, sizeof(value));
     }
+
+private:
+    ref<sgl::SlangModule> m_probe_module;
+};
+
+class UpdateProbeMaterial final : public Material {
+    FALCOR_SCENE_OBJECT(UpdateProbeMaterial, Material)
+public:
+    UpdateProbeMaterial() { set_slang_type_name("InvalidMaterial"); }
+
+    void update(SceneUpdateContext&) override { ++m_update_count; }
+    uint32_t update_count() const { return m_update_count; }
+
+private:
+    uint32_t m_update_count{0};
 };
 
 class GLTFDataTestMaterial final : public GLTFMaterial {
@@ -69,6 +108,190 @@ public:
     using Material::data_ref;
 };
 } // namespace
+
+TEST_CASE_GPU("material_system_updates_clean_non_gltf_materials")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    auto* probe = scene->create_material<UpdateProbeMaterial>();
+    auto* gltf = scene->create_material<GLTFMaterial>();
+    scene->update();
+    const uint32_t before = probe->update_count();
+    REQUIRE_GT(before, 0u);
+
+    // Editing a different material dirties the collection, while this probe
+    // remains clean. Non-glTF update hooks must still run in that pass.
+    gltf->set_property<float16_t>("roughness_factor", float16_t(0.5f));
+    scene->update();
+    CHECK_GT(probe->update_count(), before);
+}
+
+TEST_CASE("glTF material reflected property inventory")
+{
+    GLTFMaterial metallic_roughness;
+    GLTFSpecGlossMaterial specular_glossiness;
+    const std::array<const Material*, 2> materials{&metallic_roughness, &specular_glossiness};
+
+    std::string output_env;
+    bool output_requested = false;
+#ifdef _WIN32
+    char* output_env_buffer = nullptr;
+    size_t output_env_length = 0;
+    if (_dupenv_s(&output_env_buffer, &output_env_length, "FALCOR2_GLTF_PROPERTY_INVENTORY_PATH") == 0
+        && output_env_buffer) {
+        output_env = output_env_buffer;
+        output_requested = true;
+        std::free(output_env_buffer);
+    }
+#else
+    if (const char* value = std::getenv("FALCOR2_GLTF_PROPERTY_INVENTORY_PATH")) {
+        output_env = value;
+        output_requested = true;
+    }
+#endif
+    std::ofstream output;
+    if (output_requested) {
+        const std::filesystem::path default_path
+            = testing::project_directory() / ".tmp/gltf-material-specialization/property-inventory-before.tsv";
+        const std::filesystem::path output_path
+            = output_env.empty() || output_env == "default" ? default_path : std::filesystem::path(output_env);
+        if (!output_path.parent_path().empty())
+            std::filesystem::create_directories(output_path.parent_path());
+        output.open(output_path, std::ios::binary | std::ios::trunc);
+        REQUIRE(output.is_open());
+        output << "class\towner\tindex\tname\tcpp_type\tstorage_type\tread_only\tserializable\thas_default\t"
+                  "is_default\tinitial_value\tui_flags\trange\tenum_is_flags\tenum_items\tdoc\n";
+    }
+
+    const auto escape_tsv = [](std::string_view value)
+    {
+        std::string result;
+        for (char character : value) {
+            switch (character) {
+            case '\\':
+                result += "\\\\";
+                break;
+            case '\t':
+                result += "\\t";
+                break;
+            case '\n':
+                result += "\\n";
+                break;
+            case '\r':
+                result += "\\r";
+                break;
+            default:
+                result += character;
+                break;
+            }
+        }
+        return result;
+    };
+
+    for (const Material* material : materials) {
+        const auto& class_desc = material->class_descriptor();
+        const Properties values = material->properties();
+        size_t property_count = 0;
+        size_t serializable_count = 0;
+        for (const auto* property : class_desc.all_property_range()) {
+            CHECK(class_desc.find_property(property->name()) == property);
+            if (property->is_serializable_to_properties()) {
+                ++serializable_count;
+                CHECK(values.has_property(property->name()));
+            }
+
+            if (output.is_open()) {
+                std::string owner;
+                for (const auto* level = &class_desc; level; level = level->base()) {
+                    const auto own_properties = level->properties();
+                    if (std::find(own_properties.begin(), own_properties.end(), property) != own_properties.end()) {
+                        owner = std::string(level->name());
+                        break;
+                    }
+                }
+
+                std::string storage_type;
+                std::string initial_value;
+                if (property->is_serializable_to_properties()) {
+                    storage_type = sgl::enum_to_string(values.type(property->name()));
+                    initial_value = values.as_string(property->name());
+                }
+
+                std::string range;
+                if (const auto* value_range = property->value_range())
+                    range = fmt::format("{},{}", value_range->min, value_range->max);
+
+                std::string enum_items;
+                bool enum_is_flags = false;
+                if (const auto* enum_desc = property->enum_descriptor()) {
+                    enum_is_flags = enum_desc->is_flags;
+                    for (const auto& item : enum_desc->items)
+                        enum_items += fmt::format("{}:{};", item.value, item.name);
+                }
+
+                output << escape_tsv(class_desc.name()) << '\t' << escape_tsv(owner) << '\t' << property_count << '\t'
+                       << escape_tsv(property->name()) << '\t'
+                       << escape_tsv(platform::demangle_type_name(property->type())) << '\t' << escape_tsv(storage_type)
+                       << '\t' << property->is_read_only() << '\t' << property->is_serializable_to_properties() << '\t'
+                       << property->has_default_value() << '\t'
+                       << (property->has_default_value() && property->is_default(material)) << '\t'
+                       << escape_tsv(initial_value) << '\t' << static_cast<uint32_t>(property->ui_flags()) << '\t'
+                       << escape_tsv(range) << '\t' << enum_is_flags << '\t' << escape_tsv(enum_items) << '\t'
+                       << escape_tsv(property->doc()) << '\n';
+            }
+            ++property_count;
+        }
+        CHECK(property_count > 0);
+        CHECK(values.size() == serializable_count);
+    }
+
+    if (output.is_open()) {
+        output.close();
+        CHECK(output.good());
+    }
+}
+
+TEST_CASE_GPU("glTF material grouped properties round-trip")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    auto* metallic_roughness = scene->create_material<GLTFMaterial>();
+    Properties metallic_edits;
+    metallic_edits.set("base_color_factor", float16_t3(0.2f, 0.4f, 0.6f));
+    metallic_edits.set("base_color_texture_path", std::filesystem::path("base_color.png"));
+    metallic_edits.set("base_color_texture_texcoord", 2u);
+    metallic_edits.set("base_color_texture_offset", float2(0.25f, 0.5f));
+    metallic_edits.set("metallic_factor", float16_t(0.75f));
+    metallic_edits.set("normal_texture_scale", float16_t(0.4f));
+    metallic_edits.set("emissive_factor", float3(0.1f, 0.2f, 0.3f));
+    metallic_edits.set("emissive_texture_rotation", 0.3f);
+    metallic_edits.set("clearcoat_factor", float16_t(0.5f));
+    metallic_edits.set("clearcoat_normal_texture_path", std::filesystem::path("coat_normal.png"));
+    metallic_edits.set("sheen_color_factor", float3(0.3f, 0.2f, 0.1f));
+    metallic_edits.set("iridescence_thickness_texture_uv_scale", float2(0.8f, 0.7f));
+    metallic_edits.set("attenuation_distance", 3.f);
+    metallic_edits.set("diffuse_transmission_color_texture_texcoord", 3u);
+    metallic_roughness->set_properties(metallic_edits);
+
+    auto* metallic_copy = scene->create_material<GLTFMaterial>();
+    metallic_copy->set_properties(metallic_roughness->properties());
+    CHECK(metallic_copy->properties() == metallic_roughness->properties());
+
+    auto* specular_glossiness = scene->create_material<GLTFSpecGlossMaterial>();
+    Properties specular_edits;
+    specular_edits.set("diffuse_factor", float16_t3(0.6f, 0.4f, 0.2f));
+    specular_edits.set("diffuse_texture_path", std::filesystem::path("diffuse.png"));
+    specular_edits.set("diffuse_texture_offset", float2(0.1f, 0.2f));
+    specular_edits.set("specular_factor", float16_t3(0.9f, 0.8f, 0.7f));
+    specular_edits.set("specular_glossiness_texture_texcoord", 4u);
+    specular_edits.set("glossiness_factor", float16_t(0.35f));
+    specular_edits.set("normal_texture_scale", float16_t(0.6f));
+    specular_edits.set("emissive_factor", float3(0.1f, 0.05f, 0.025f));
+    specular_edits.set("emissive_texture_uv_scale", float2(0.5f, 0.75f));
+    specular_glossiness->set_properties(specular_edits);
+
+    auto* specular_copy = scene->create_material<GLTFSpecGlossMaterial>();
+    specular_copy->set_properties(specular_glossiness->properties());
+    CHECK(specular_copy->properties() == specular_glossiness->properties());
+}
 
 TEST_CASE_GPU("material property edits mark emission dirty independently")
 {
@@ -191,23 +414,72 @@ TEST_CASE_GPU("gltf_transform_data_lifecycle")
     auto first = ref(scene->create_material<GLTFDataTestMaterial>());
     auto second = ref(scene->create_material<GLTFSpecGlossDataTestMaterial>());
     scene->update();
+    auto layout = scene->render_module()->layout();
+    auto check_material_size = [&](const std::string& type_name)
+    {
+        const std::string buffer_type_name = fmt::format("StructuredBuffer<{}>", type_name);
+        auto buffer_type = layout->find_type_by_name(buffer_type_name.c_str());
+        REQUIRE(buffer_type);
+        CHECK_LT(layout->get_type_layout(buffer_type)->element_type_layout()->stride(), sizeof(shared::MaterialData));
+    };
+    check_material_size(first->slang_type_name());
+    check_material_size(second->slang_type_name());
     CHECK(first->data().empty());
     CHECK(second->data().empty());
     CHECK_EQ(first->data_ref().buffer.data(), std::numeric_limits<uint64_t>::max());
+
+    // Authored UV transforms are retained even when there is no usable texture.
     first->set_property<float2>("base_color_texture_offset", float2(0.25f, 0.f));
     second->set_property<float2>("diffuse_texture_offset", float2(0.5f, 0.f));
     scene->update();
-    // One 24-byte affine record occupies 32 bytes in the 16-byte-aligned pool.
-    REQUIRE_EQ(first->data().size(), 32);
-    REQUIRE_EQ(second->data().size(), 32);
-    CHECK_NE(first->data_ref().offset, second->data_ref().offset);
-    CHECK_EQ(first->data_ref().buffer.data(), second->data_ref().buffer.data());
-    const std::vector<uint8_t> first_bytes(first->data().begin(), first->data().end());
+    CHECK(first->data().empty());
+    CHECK_EQ(first->effective_masks().textures, 0u);
+    CHECK_EQ(first->effective_masks().transforms, 0u);
+    CHECK(second->data().empty());
+    CHECK_EQ(second->effective_masks().textures, 0u);
+    CHECK_EQ(second->effective_masks().transforms, 0u);
+
+    const ref<sgl::Texture> texture = ctx.device->create_texture({
+        .format = sgl::Format::rgba8_unorm_srgb,
+        .width = 1,
+        .height = 1,
+        .usage = sgl::TextureUsage::shader_resource,
+    });
+    first->set_property("base_color_texture", texture);
+    first->set_property("base_color_texture_path", std::filesystem::path("ignored_base_color.png"));
+    second->set_property("diffuse_texture", texture);
+    second->set_property("diffuse_texture_path", std::filesystem::path("ignored_diffuse.png"));
+    scene->update();
+    CHECK(first->opacity_desc().texture_handle.texture() == texture);
+    CHECK(second->opacity_desc().texture_handle.texture() == texture);
+    CHECK(sgl::math::all(first->get_property<float2>("base_color_texture_offset") == float2(0.25f, 0.f)));
+    CHECK(sgl::math::all(second->get_property<float2>("diffuse_texture_offset") == float2(0.5f, 0.f)));
+    REQUIRE_EQ(first->data().size(), 32u);
     const auto first_offset = first->data_ref().offset;
+    CHECK_NE(first_offset, second->data_ref().offset);
+    CHECK_EQ(first->data_ref().buffer.data(), second->data_ref().buffer.data());
+    CHECK_EQ(first->effective_masks().textures, shared::gltfmat::TextureBits::BASE_COLOR);
+    CHECK_EQ(first->effective_masks().transforms, shared::gltfmat::TextureBits::BASE_COLOR);
+    REQUIRE_EQ(second->data().size(), 32u); // 24-byte transform, padded to the pool's 16-byte alignment.
+    CHECK_EQ(second->effective_masks().textures, shared::gltfmat::SpecGlossTextureBits::DIFFUSE);
+    CHECK_EQ(second->effective_masks().transforms, shared::gltfmat::SpecGlossTextureBits::DIFFUSE);
+    float authored_offset;
+    std::memcpy(&authored_offset, first->data().data() + 2 * sizeof(float), sizeof(authored_offset));
+    CHECK_EQ(authored_offset, 0.25f);
+    const std::vector<uint8_t> first_bytes(first->data().begin(), first->data().end());
+
+    first->set_property<uint32_t>("base_color_texture_texcoord", 2u);
+    scene->update();
+    CHECK_EQ(first->effective_masks().nonzero_texcoords, shared::gltfmat::TextureBits::BASE_COLOR);
+    first->set_property<uint32_t>("base_color_texture_texcoord", 0u);
+    scene->update();
+    CHECK_EQ(first->effective_masks().nonzero_texcoords, 0u);
+
     std::vector<GLTFSpecGlossDataTestMaterial*> neighbors;
     for (uint32_t i = 0; i < 100; ++i) {
         auto* neighbor = scene->create_material<GLTFSpecGlossDataTestMaterial>();
-        neighbor->set_property<float2>("emissive_texture_offset", float2(float(i + 1), 0.f));
+        neighbor->set_property("diffuse_texture", texture);
+        neighbor->set_property<float2>("diffuse_texture_offset", float2(float(i + 1), 0.f));
         neighbors.push_back(neighbor);
     }
     scene->update();
@@ -215,9 +487,7 @@ TEST_CASE_GPU("gltf_transform_data_lifecycle")
     CHECK(std::equal(first_bytes.begin(), first_bytes.end(), first->data().begin()));
     CHECK_EQ(first->data_ref().buffer.data(), neighbors.back()->data_ref().buffer.data());
 
-    // Change the CPU shadow without marking it dirty. An unrelated property update
-    // must not upload these canaries or repack either material's transform bytes.
-    // Restore the shadow before continuing ordinary material edits below.
+    // A factor-only edit must rewrite both workflows' transform payloads.
     auto module = ctx.device->load_module_from_source("gltf_transform_upload_probe", R"(
 import falcor2.utils;
 [shader("compute")]
@@ -256,11 +526,11 @@ void main(BufferOffsetPair first, BufferOffsetPair second, RWStructuredBuffer<fl
     float shadow_first, shadow_second;
     std::memcpy(&shadow_first, first->data().data(), sizeof(float));
     std::memcpy(&shadow_second, second->data().data(), sizeof(float));
-    CHECK_EQ(shadow_first, canary);
-    CHECK_EQ(shadow_second, canary);
-    std::memcpy(const_cast<uint8_t*>(first->data().data()), &original_first, sizeof(float));
-    std::memcpy(const_cast<uint8_t*>(second->data().data()), &original_second, sizeof(float));
+    CHECK_EQ(shadow_first, original_first);
+    CHECK_EQ(shadow_second, original_second);
 
+    second->set_property<float3>("emissive_factor", float3(0.25f));
+    second->set_property("emissive_texture", texture);
     second->set_property<float>("emissive_texture_rotation", 0.3f);
     scene->update();
     CHECK_EQ(second->data().size(), 48);
@@ -273,24 +543,41 @@ void main(BufferOffsetPair first, BufferOffsetPair second, RWStructuredBuffer<fl
     scene->update();
     CHECK(first->data().empty());
     CHECK(second->data().empty());
-    CHECK_EQ(second->data_ref().buffer.data(), std::numeric_limits<uint64_t>::max());
+    CHECK_EQ(first->data_ref().buffer.data(), std::numeric_limits<uint64_t>::max());
     first->set_property<float2>("base_color_texture_offset", float2(0.25f, 0.f));
     scene->update();
-    CHECK_EQ(first->data_ref().offset, first_offset);
+    CHECK_EQ(first->data_ref().offset % 16u, 0u);
     CHECK(std::equal(first_bytes.begin(), first_bytes.end(), first->data().begin()));
-    // The seventh binding shares the same allocation and survives pool growth.
+
+    // Transmission's extension record precedes all transform records, and its
+    // later texture slot is packed after base color in the transform region.
+    first->set_property<float16_t>("transmission_factor", float16_t(0.5f));
+    first->set_property("transmission_texture", texture);
     first->set_property<float2>("transmission_texture_offset", float2(0.75f, 0.f));
     scene->update();
-    REQUIRE_EQ(first->data().size(), 48);
-    CHECK(std::equal(first_bytes.begin(), first_bytes.begin() + 24, first->data().begin()));
+    REQUIRE_GE(first->data().size(), 32u + 2u * 24u);
+    CHECK_EQ(
+        first->effective_masks().transforms,
+        shared::gltfmat::TextureBits::BASE_COLOR | shared::gltfmat::TextureBits::TRANSMISSION
+    );
     float transmission_offset;
-    std::memcpy(&transmission_offset, first->data().data() + 24 + 2 * sizeof(float), sizeof(float));
+    std::memcpy(&transmission_offset, first->data().data() + 32 + 24 + 2 * sizeof(float), sizeof(float));
     CHECK_EQ(transmission_offset, 0.75f);
+    std::vector<uint8_t> with_multiscatter(first->data().begin(), first->data().begin() + 80);
+    first->set_property<float16_t>("metallic_factor", float16_t(0.f));
+    scene->update();
+    CHECK_EQ(first->effective_masks().features & shared::gltfmat::FeatureBits::MULTISCATTER, 0u);
+    CHECK(std::equal(with_multiscatter.begin(), with_multiscatter.end(), first->data().begin()));
+    first->set_property<float16_t>("metallic_factor", float16_t(1.f));
+    scene->update();
+    CHECK_NE(first->effective_masks().features & shared::gltfmat::FeatureBits::MULTISCATTER, 0u);
+    CHECK(std::equal(with_multiscatter.begin(), with_multiscatter.end(), first->data().begin()));
     first->set_property<float2>("base_color_texture_offset", float2(0.f));
     scene->update();
-    std::memcpy(&transmission_offset, first->data().data() + 2 * sizeof(float), sizeof(float));
+    std::memcpy(&transmission_offset, first->data().data() + 32 + 2 * sizeof(float), sizeof(float));
     CHECK_EQ(transmission_offset, 0.75f); // Sparse packing moves binding 6 to slot zero.
     first->set_property<float2>("transmission_texture_offset", float2(0.f));
+    first->set_property<float16_t>("transmission_factor", float16_t(0.f));
     scene->update();
     CHECK(first->data().empty());
     CHECK_EQ(first->data_ref().buffer.data(), std::numeric_limits<uint64_t>::max());
@@ -311,20 +598,45 @@ TEST_CASE_GPU("gltf_volume_data_lifecycle")
     material->set_property<float>("attenuation_distance", 2.f);
     scene->update();
     auto layout = scene->render_module()->layout();
-    auto volume_type = layout->find_type_by_name("StructuredBuffer<GLTFVolumeData>");
+    auto volume_type = layout->find_type_by_name("StructuredBuffer<GLTFVolumeRecord>");
+    REQUIRE(volume_type);
     const auto stride = layout->get_type_layout(volume_type)->element_type_layout()->stride();
-    REQUIRE_EQ(stride, 12u);
+    REQUIRE_EQ(stride, 32u);
+    REQUIRE_EQ(material->data().size(), 32u);
+    CHECK_EQ(
+        material->effective_masks().features & shared::gltfmat::FeatureBits::VOLUME,
+        shared::gltfmat::FeatureBits::VOLUME
+    );
     float3 sigma;
     std::memcpy(&sigma, material->data().data(), sizeof(sigma));
     CHECK_EQ(sigma.x, doctest::Approx(std::log(2.f) / 2.f));
     CHECK_EQ(sigma.y, 0.f);
     CHECK(std::isinf(sigma.z));
+
+    // A transform on a missing texture consumes neither an extension nor UV slot.
     material->set_property<float2>("transmission_texture_offset", float2(0.75f, 0.f));
     scene->update();
+    CHECK_EQ(material->data().size(), 32u);
+    CHECK_EQ(material->effective_masks().transforms, 0u);
+    const ref<sgl::Texture> texture = ctx.device->create_texture({
+        .format = sgl::Format::rgba8_unorm,
+        .width = 1,
+        .height = 1,
+        .usage = sgl::TextureUsage::shader_resource,
+    });
+    material->set_property("transmission_texture", texture);
+    material->set_property<float16_t>("transmission_factor", float16_t(0.5f));
+    scene->update();
+    CHECK_EQ(
+        material->effective_masks().features & shared::gltfmat::FeatureBits::TRANSMISSION,
+        shared::gltfmat::FeatureBits::TRANSMISSION
+    );
+    CHECK_EQ(material->effective_masks().transforms, shared::gltfmat::TextureBits::TRANSMISSION);
+    REQUIRE_GE(material->data().size(), 2u * stride + 24u);
     float offset;
-    std::memcpy(&offset, material->data().data() + stride + 2 * sizeof(float), sizeof(float));
+    std::memcpy(&offset, material->data().data() + 2 * stride + 2 * sizeof(float), sizeof(float));
     CHECK_EQ(offset, 0.75f);
-    const std::vector<uint8_t> packed(material->data().begin(), material->data().end());
+    const std::vector<uint8_t> packed(material->data().begin(), material->data().begin() + 2 * stride + 24);
     for (int i = 0; i < 100; ++i) {
         auto neighbor = scene->create_material<GLTFDataTestMaterial>();
         neighbor->set_property<float>("thickness_factor", 1.f);
@@ -333,13 +645,15 @@ TEST_CASE_GPU("gltf_volume_data_lifecycle")
     CHECK(std::equal(packed.begin(), packed.end(), material->data().begin()));
     material->set_property<float>("attenuation_distance", 4.f);
     scene->update();
-    std::memcpy(&sigma, material->data().data(), sizeof(sigma));
+    std::memcpy(&sigma, material->data().data() + stride, sizeof(sigma));
     CHECK_EQ(sigma.x, doctest::Approx(std::log(2.f) / 4.f));
     material->set_property<float>("thickness_factor", 0.f);
     scene->update();
-    std::memcpy(&offset, material->data().data() + 2 * sizeof(float), sizeof(float));
+    CHECK_EQ(material->effective_masks().features & shared::gltfmat::FeatureBits::VOLUME, 0u);
+    std::memcpy(&offset, material->data().data() + stride + 2 * sizeof(float), sizeof(float));
     CHECK_EQ(offset, 0.75f);
     material->set_property<float2>("transmission_texture_offset", float2(0.f));
+    material->set_property<float16_t>("transmission_factor", float16_t(0.f));
     scene->update();
     CHECK(material->data().empty());
     material->set_property<float>("thickness_factor", 1.f);
@@ -360,50 +674,72 @@ TEST_CASE_GPU("gltf_clearcoat_data_lifecycle")
     material->set_property<float16_t>("clearcoat_normal_texture_scale", float16_t(0.25f));
     scene->update();
     auto layout = scene->render_module()->layout();
-    auto coat_type = layout->find_type_by_name("StructuredBuffer<GLTFClearcoatData>");
+    auto coat_type = layout->find_type_by_name("StructuredBuffer<GLTFClearcoatRecord>");
+    REQUIRE(coat_type);
     const auto stride = layout->get_type_layout(coat_type)->element_type_layout()->stride();
-    REQUIRE_EQ(stride, 20u);
-    REQUIRE_EQ(material->data().size(), 32u); // 20-byte coat payload, aligned to 16.
-    float scale;
-    std::memcpy(&scale, material->data().data() + 12, sizeof(float));
-    CHECK_EQ(scale, 0.25f);
-    // Live selector edits must refresh the optional clearcoat record independently.
+    REQUIRE_EQ(stride, 32u);
+    REQUIRE_EQ(material->data().size(), stride);
+    CHECK_EQ(
+        material->effective_masks().features & shared::gltfmat::FeatureBits::CLEARCOAT,
+        shared::gltfmat::FeatureBits::CLEARCOAT
+    );
+    float16_t scale;
+    std::memcpy(&scale, material->data().data() + 28, sizeof(scale));
+    CHECK_EQ(float(scale), doctest::Approx(0.25f));
+
+    const ref<sgl::Texture> texture = ctx.device->create_texture({
+        .format = sgl::Format::rgba8_unorm,
+        .width = 1,
+        .height = 1,
+        .usage = sgl::TextureUsage::shader_resource,
+    });
+    material->set_property("clearcoat_texture", texture);
+    material->set_property("clearcoat_roughness_texture", texture);
+    material->set_property("clearcoat_normal_texture", texture);
+    scene->update();
+    CHECK_EQ(
+        material->effective_masks().textures,
+        shared::gltfmat::TextureBits::CLEARCOAT | shared::gltfmat::TextureBits::CLEARCOAT_ROUGHNESS
+            | shared::gltfmat::TextureBits::CLEARCOAT_NORMAL
+    );
+
+    // Each logical texture-info stores its own effective UV selector.
     uint32_t selectors;
     for (uint32_t texcoord : {7u, 0u}) {
         material->set_property<uint32_t>("clearcoat_texture_texcoord", texcoord);
         scene->update();
-        std::memcpy(&selectors, material->data().data() + 16, sizeof(selectors));
+        std::memcpy(&selectors, material->data().data() + 4, sizeof(selectors));
         CHECK_EQ(selectors, texcoord);
     }
     for (uint32_t texcoord : {6u, 0u}) {
         material->set_property<uint32_t>("clearcoat_roughness_texture_texcoord", texcoord);
         scene->update();
-        std::memcpy(&selectors, material->data().data() + 16, sizeof(selectors));
-        CHECK_EQ(selectors, texcoord << 3);
+        std::memcpy(&selectors, material->data().data() + 12, sizeof(selectors));
+        CHECK_EQ(selectors, texcoord);
     }
     for (uint32_t texcoord : {5u, 0u}) {
         material->set_property<uint32_t>("clearcoat_normal_texture_texcoord", texcoord);
         scene->update();
-        std::memcpy(&selectors, material->data().data() + 16, sizeof(selectors));
-        CHECK_EQ(selectors, texcoord << 6);
+        std::memcpy(&selectors, material->data().data() + 20, sizeof(selectors));
+        CHECK_EQ(selectors & 7u, texcoord);
     }
     material->set_property<float>("thickness_factor", 1.f);
     material->set_property<float2>("clearcoat_normal_texture_offset", float2(0.75f, 0.f));
     scene->update();
-    REQUIRE_EQ(material->data().size(), 64u); // 12 volume + 20 coat + 24 transform, aligned to 16.
+    REQUIRE_GE(material->data().size(), 2u * stride + 24u);
+    CHECK_EQ(material->effective_masks().transforms, shared::gltfmat::TextureBits::CLEARCOAT_NORMAL);
     float offset;
-    std::memcpy(&offset, material->data().data() + 12 + stride + 2 * sizeof(float), sizeof(float));
+    std::memcpy(&offset, material->data().data() + 2 * stride + 2 * sizeof(float), sizeof(float));
     CHECK_EQ(offset, 0.75f);
     material->set_property<float16_t>("clearcoat_normal_texture_scale", float16_t(0.5f));
     scene->update();
-    std::memcpy(&scale, material->data().data() + 12 + 12, sizeof(float));
-    CHECK_EQ(scale, 0.5f);
+    std::memcpy(&scale, material->data().data() + stride + 28, sizeof(scale));
+    CHECK_EQ(float(scale), doctest::Approx(0.5f));
     material->set_property<float16_t>("clearcoat_factor", float16_t(0.f));
     scene->update();
-    // The shared allocation may retain capacity when the packed payload shrinks.
-    REQUIRE_GE(material->data().size(), 12u + 24u);
-    std::memcpy(&offset, material->data().data() + 12 + 2 * sizeof(float), sizeof(float));
-    CHECK_EQ(offset, 0.75f);
+    CHECK_EQ(material->effective_masks().features & shared::gltfmat::FeatureBits::CLEARCOAT, 0u);
+    CHECK_EQ(material->effective_masks().transforms, 0u);
+    REQUIRE_GE(material->data().size(), stride); // The volume slot remains active.
     material->set_property<float>("thickness_factor", 0.f);
     material->set_property<float2>("clearcoat_normal_texture_offset", float2(0.f));
     scene->update();
@@ -417,24 +753,40 @@ TEST_CASE_GPU("gltf_sheen_iridescence_data_lifecycle")
     scene->update();
     CHECK(material->data().empty());
     auto layout = scene->render_module()->layout();
-    auto material_type = layout->find_type_by_name("StructuredBuffer<GLTFMaterial>");
-    CHECK_EQ(layout->get_type_layout(material_type)->element_type_layout()->stride(), 128u);
-    for (const char* name : {"StructuredBuffer<GLTFSheenData>", "StructuredBuffer<GLTFIridescenceData>"}) {
+    const std::string material_type_name = fmt::format("StructuredBuffer<{}>", material->slang_type_name());
+    auto material_type = layout->find_type_by_name(material_type_name.c_str());
+    REQUIRE(material_type);
+    CHECK_LT(layout->get_type_layout(material_type)->element_type_layout()->stride(), sizeof(shared::MaterialData));
+    for (const char* name : {"StructuredBuffer<GLTFSheenRecord>", "StructuredBuffer<GLTFIridescenceRecord>"}) {
         auto type = layout->find_type_by_name(name);
         REQUIRE(type);
-        CHECK_EQ(layout->get_type_layout(type)->element_type_layout()->stride(), 28u);
+        CHECK_EQ(layout->get_type_layout(type)->element_type_layout()->stride(), 32u);
     }
     material->set_property<float3>("sheen_color_factor", float3(0.5f));
     material->set_property<float>("iridescence_factor", 0.75f);
     scene->update();
     REQUIRE_EQ(material->data().size(), 64u);
+    CHECK_EQ(
+        material->effective_masks().features
+            & (shared::gltfmat::FeatureBits::SHEEN | shared::gltfmat::FeatureBits::IRIDESCENCE),
+        shared::gltfmat::FeatureBits::SHEEN | shared::gltfmat::FeatureBits::IRIDESCENCE
+    );
     float value;
-    std::memcpy(&value, material->data().data() + 28, sizeof(float));
+    std::memcpy(&value, material->data().data() + 32 + 16, sizeof(float));
     CHECK_EQ(value, 0.75f);
+    const ref<sgl::Texture> texture = ctx.device->create_texture({
+        .format = sgl::Format::rgba8_unorm,
+        .width = 1,
+        .height = 1,
+        .usage = sgl::TextureUsage::shader_resource,
+    });
+    material->set_property("iridescence_texture", texture);
     material->set_property<uint32_t>("iridescence_texture_texcoord", 3u);
     scene->update();
+    CHECK_EQ(material->effective_masks().textures, shared::gltfmat::TextureBits::IRIDESCENCE);
+    CHECK_EQ(material->effective_masks().nonzero_texcoords, shared::gltfmat::TextureBits::IRIDESCENCE);
     uint32_t selectors;
-    std::memcpy(&selectors, material->data().data() + 28 + 24, sizeof(selectors));
+    std::memcpy(&selectors, material->data().data() + 32 + 4, sizeof(selectors));
     CHECK_EQ(selectors, 3u);
     const std::vector<uint8_t> packed(material->data().begin(), material->data().end());
     for (int i = 0; i < 100; ++i) {
@@ -445,11 +797,235 @@ TEST_CASE_GPU("gltf_sheen_iridescence_data_lifecycle")
     CHECK(std::equal(packed.begin(), packed.end(), material->data().begin()));
     material->set_property<float3>("sheen_color_factor", float3(0.f));
     scene->update();
-    std::memcpy(&value, material->data().data(), sizeof(float));
+    CHECK_EQ(material->effective_masks().features & shared::gltfmat::FeatureBits::SHEEN, 0u);
+    std::memcpy(&value, material->data().data() + 16, sizeof(float));
     CHECK_EQ(value, 0.75f);
     material->set_property<float>("iridescence_factor", 0.f);
     scene->update();
     CHECK(material->data().empty());
+}
+
+TEST_CASE_GPU("gltf_normal_and_emission_feature_gating")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    auto material = scene->create_material<GLTFDataTestMaterial>();
+    const ref<sgl::Texture> texture = ctx.device->create_texture({
+        .format = sgl::Format::rgba8_unorm,
+        .width = 1,
+        .height = 1,
+        .usage = sgl::TextureUsage::shader_resource,
+    });
+    material->set_property("normal_texture", texture);
+    material->set_property<float2>("normal_texture_offset", float2(0.25f, 0.f));
+    material->set_property("emissive_texture", texture);
+    material->set_property<float2>("emissive_texture_offset", float2(0.5f, 0.f));
+    scene->update();
+    CHECK_EQ(
+        material->effective_masks().features & shared::gltfmat::FeatureBits::NORMAL,
+        shared::gltfmat::FeatureBits::NORMAL
+    );
+    CHECK_EQ(material->effective_masks().features & shared::gltfmat::FeatureBits::EMISSION, 0u);
+    CHECK_EQ(material->effective_masks().textures, shared::gltfmat::TextureBits::NORMAL);
+    CHECK_EQ(material->effective_masks().transforms, shared::gltfmat::TextureBits::NORMAL);
+    REQUIRE_EQ(material->data().size(), 32u);
+
+    // A bound normal texture remains active at zero scale to preserve the
+    // normal-map decode behavior, while zero emission removes emission work.
+    material->set_property<float16_t>("normal_texture_scale", float16_t(0.f));
+    scene->update();
+    CHECK_EQ(
+        material->effective_masks().features & shared::gltfmat::FeatureBits::NORMAL,
+        shared::gltfmat::FeatureBits::NORMAL
+    );
+    CHECK_EQ(material->effective_masks().textures, shared::gltfmat::TextureBits::NORMAL);
+    CHECK_EQ(material->effective_masks().transforms, shared::gltfmat::TextureBits::NORMAL);
+    CHECK_EQ(material->data().size(), 32u);
+    CHECK(sgl::math::all(material->get_property<float2>("normal_texture_offset") == float2(0.25f, 0.f)));
+
+    material->set_property<float3>("emissive_factor", float3(1.f));
+    scene->update();
+    CHECK_EQ(
+        material->effective_masks().features & shared::gltfmat::FeatureBits::EMISSION,
+        shared::gltfmat::FeatureBits::EMISSION
+    );
+    CHECK_EQ(
+        material->effective_masks().textures,
+        shared::gltfmat::TextureBits::NORMAL | shared::gltfmat::TextureBits::EMISSIVE
+    );
+    CHECK_EQ(
+        material->effective_masks().transforms,
+        shared::gltfmat::TextureBits::NORMAL | shared::gltfmat::TextureBits::EMISSIVE
+    );
+    material->set_property<float16_t>("normal_texture_scale", float16_t(1.f));
+    scene->update();
+    CHECK_EQ(
+        material->effective_masks().transforms,
+        shared::gltfmat::TextureBits::NORMAL | shared::gltfmat::TextureBits::EMISSIVE
+    );
+}
+
+TEST_CASE_GPU("gltf_scene_feature_cap_omits_disabled_extra_data")
+{
+    SceneConfig config;
+    config.gltf_allowed_features = GLTFFeatureFlags::all & ~GLTFFeatureFlags::normal & ~GLTFFeatureFlags::volume;
+    auto scene = Scene::create(ref(ctx.device), config);
+    auto* material = scene->create_material<GLTFDataTestMaterial>();
+    const ref<sgl::Texture> texture = ctx.device->create_texture({
+        .format = sgl::Format::rgba8_unorm,
+        .width = 1,
+        .height = 1,
+        .usage = sgl::TextureUsage::shader_resource,
+    });
+    material->set_property("normal_texture", texture);
+    material->set_property<float2>("normal_texture_offset", float2(0.25f, 0.f));
+    material->set_property<float3>("emissive_factor", float3(0.5f));
+    material->set_property("emissive_texture", texture);
+    material->set_property<float2>("emissive_texture_offset", float2(0.5f, 0.f));
+    material->set_property<uint32_t>("feature_mask_filter", F::ALL_MR & ~F::EMISSION);
+    scene->update();
+
+    CHECK_EQ(material->effective_masks().features & (F::NORMAL | F::EMISSION), 0u);
+    CHECK_EQ(material->effective_masks().textures, 0u);
+    CHECK_EQ(material->effective_masks().transforms, 0u);
+    CHECK(material->data().empty());
+
+    material->set_property<float16_t>("transmission_factor", float16_t(1.f));
+    material->set_property<float>("thickness_factor", 1.f);
+    scene->update();
+    CHECK_EQ(material->effective_masks().features & (F::TRANSMISSION | F::VOLUME), F::TRANSMISSION);
+    CHECK_EQ(material->data().size(), 32u); // Transmission record only; volume is disabled by the scene cap.
+    CHECK(!scene->required_capabilities().has(SceneCapabilityFlags::solid_transmission));
+}
+
+TEST_CASE_GPU("gltf_sparse_extension_rank_gpu_readback")
+{
+    auto module = ctx.device->load_module_from_source("gltf_sparse_extension_rank_probe", R"(
+import falcor2.render;
+import falcor2.utils;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void main(uint feature_mask, uint transform_mask, BufferOffsetPair extra_data,
+          RWStructuredBuffer<float4> result, uint index)
+{
+    result[index] = float4(
+        extra_data.load<float>(gltf_material::feature_record_offset(
+            feature_mask, gltfmat::FeatureBits::SHEEN) + 16u),
+        extra_data.load<float>(gltf_material::feature_record_offset(
+            feature_mask, gltfmat::FeatureBits::IRIDESCENCE) + 16u),
+        extra_data.load<float>(gltf_material::transform_record_offset(
+            feature_mask, transform_mask, gltfmat::TextureBits::BASE_COLOR) + 8u),
+        extra_data.load<float>(gltf_material::transform_record_offset(
+            feature_mask, transform_mask, gltfmat::TextureBits::IRIDESCENCE) + 8u)
+    );
+}
+)");
+    REQUIRE(module);
+
+    auto scene = Scene::create(ref(ctx.device));
+    auto material = scene->create_material<GLTFDataTestMaterial>();
+    material->set_property<float16_t>("specular_factor", float16_t(0.5f));
+    material->set_property<float16_t>("transmission_factor", float16_t(0.5f));
+    material->set_property<float16_t>("ior", float16_t(2.f));
+    material->set_property<float>("thickness_factor", 1.f);
+    material->set_property<float16_t>("clearcoat_factor", float16_t(0.5f));
+    material->set_property<float3>("sheen_color_factor", float3(0.25f));
+    material->set_property<float>("iridescence_factor", 0.5f);
+    material->set_property<float>("anisotropy_strength", 0.5f);
+    material->set_property<float>("diffuse_transmission_factor", 0.5f);
+    scene->update();
+    REQUIRE_EQ(
+        material->effective_masks().features & shared::gltfmat::FeatureBits::EXTENSION_BITS,
+        shared::gltfmat::FeatureBits::EXTENSION_BITS
+    );
+    REQUIRE_EQ(material->data().size(), 9u * 32u);
+    CHECK_EQ(material->effective_masks().transforms, 0u);
+
+    const ref<sgl::Texture> texture = ctx.device->create_texture({
+        .format = sgl::Format::rgba8_unorm,
+        .width = 1,
+        .height = 1,
+        .usage = sgl::TextureUsage::shader_resource,
+    });
+    material->set_property("base_color_texture", texture);
+    material->set_property("iridescence_texture", texture);
+    material->set_property<float2>("base_color_texture_offset", float2(0.125f, 0.f));
+    material->set_property<float2>("iridescence_texture_offset", float2(0.75f, 0.f));
+    scene->update();
+    REQUIRE_EQ(
+        material->effective_masks().transforms,
+        shared::gltfmat::TextureBits::BASE_COLOR | shared::gltfmat::TextureBits::IRIDESCENCE
+    );
+    REQUIRE_GE(material->data().size(), 9u * 32u + 2u * 24u);
+
+    const auto requirements = scene->requirements();
+    std::vector<ref<sgl::SlangModule>> modules(requirements->modules.begin(), requirements->modules.end());
+    modules.push_back(module);
+    auto composed = ctx.device->compose_modules(
+        "gltf_sparse_extension_rank_probe_composed",
+        modules,
+        requirements->type_conformances
+    );
+    REQUIRE(composed);
+    auto kernel = ctx.device->create_compute_kernel(
+        {.program = ctx.device->link_program({composed}, {composed->entry_point("main")})}
+    );
+    REQUIRE(kernel);
+    auto result = ctx.device->create_buffer({.size = 2 * sizeof(float4), .usage = sgl::BufferUsage::unordered_access});
+    auto read = [&](uint32_t index)
+    {
+        const auto masks = material->effective_masks();
+        kernel->dispatch(
+            uint3(1),
+            [&](sgl::ShaderCursor cursor)
+            {
+                scene->bind(cursor, SceneBindFlags::materials);
+                cursor = cursor.find_entry_point(0);
+                cursor["feature_mask"] = masks.features;
+                cursor["transform_mask"] = masks.transforms;
+                cursor["extra_data"] = material->data_ref();
+                cursor["result"] = result;
+                cursor["index"] = index;
+            }
+        );
+    };
+    read(0);
+
+    // A SpecGloss neighbor shares the pool and forces the mixed-workflow path.
+    auto neighbor = scene->create_material<GLTFSpecGlossDataTestMaterial>();
+    neighbor->set_property("diffuse_texture", texture);
+    neighbor->set_property<float2>("diffuse_texture_offset", float2(0.5f, 0.f));
+    scene->update();
+    CHECK_EQ(material->data_ref().buffer.data(), neighbor->data_ref().buffer.data());
+
+    // Removing lower feature bits moves later records, while both transform
+    // records move with the shorter feature prefix. The same GPU kernel reads
+    // the new addresses using the current runtime masks and allocation.
+    material->set_property<float16_t>("specular_factor", float16_t(1.f));
+    material->set_property<float16_t>("ior", float16_t(1.5f));
+    material->set_property<float16_t>("clearcoat_factor", float16_t(0.f));
+    scene->update();
+    CHECK_EQ(
+        material->effective_masks().features
+            & (shared::gltfmat::FeatureBits::SPECULAR | shared::gltfmat::FeatureBits::IOR
+               | shared::gltfmat::FeatureBits::CLEARCOAT),
+        0u
+    );
+    REQUIRE_GE(material->data().size(), 6u * 32u + 2u * 24u);
+    CHECK(
+        std::all_of(
+            material->data().begin() + 6u * 32u + 2u * 24u,
+            material->data().end(),
+            [](uint8_t value)
+            {
+                return value == 0;
+            }
+        )
+    );
+    read(1);
+    const auto values = result->get_elements<float4>();
+    REQUIRE_EQ(values.size(), 2u);
+    CHECK_EQ(values[0], float4(0.25f, 0.5f, 0.125f, 0.75f));
+    CHECK_EQ(values[1], values[0]);
 }
 
 TEST_CASE_GPU("material_data_lifecycle")
@@ -548,6 +1124,127 @@ void main(BufferOffsetPair first, BufferOffsetPair second, RWStructuredBuffer<ui
     // Read back only after submitted work has crossed growth, removal and reuse.
     const std::vector<uint32_t> expected{11, 22, 33, 22, 44, 22, 22, 22};
     CHECK(result->get_elements<uint32_t>() == expected);
+}
+
+TEST_CASE_GPU("material_data_reference_and_dynamic_dispatch")
+{
+    auto module = ctx.device->load_module_from_source("material_data_scene_binding_probe", R"(
+import falcor2.render;
+import falcor2.utils;
+
+public struct DataPoolProbeMaterial : IMaterial
+{
+    typedef InvalidMaterialInstance MaterialInstance;
+    public MaterialHeader header;
+    public BufferOffsetPair extra_data;
+    public uint has_data;
+
+    public MaterialInstance setup_material_instance<LodSampler : ILodSampler>(
+        const SurfaceInteraction si,
+        const LodSampler lod_sampler,
+        const MaterialInstanceHints hints = MaterialInstanceHints::none
+    )
+    {
+        InvalidMaterial fallback = {};
+        fallback.header = header;
+        return fallback.setup_material_instance(si, lod_sampler, hints);
+    }
+
+    public override float3 eval_emission<LodSampler : ILodSampler>(
+        const SurfaceInteraction si,
+        const LodSampler lod_sampler,
+        const MaterialInstanceHints hints = MaterialInstanceHints::none
+    )
+    {
+        if (has_data == 0u || !extra_data.buffer.is_valid())
+            return float3(0.0);
+        return float3(
+            float(extra_data.load<uint>(0u)),
+            1.0,
+            float(extra_data.offset)
+        );
+    }
+};
+
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void main(uint material_id, RWStructuredBuffer<float4> result, uint index)
+{
+    SurfaceInteraction si = {};
+    let material = g_scene.get_material(MaterialID(material_id));
+    const float3 value = material.eval_emission(si, ExplicitLodSampler(0.0));
+    result[index] = float4(value, value.y);
+}
+)");
+    REQUIRE(module);
+
+    auto scene = Scene::create(ref(ctx.device));
+    auto* empty = scene->create_material<DataTestMaterial>();
+    empty->set_probe_module(module);
+    scene->update();
+    CHECK_EQ(empty->data_ref().buffer.data(), std::numeric_limits<uint64_t>::max());
+
+    const auto requirements = scene->requirements();
+    auto composed = ctx.device->compose_modules(
+        "material_data_scene_binding_probe_composed",
+        requirements->modules,
+        requirements->type_conformances
+    );
+    REQUIRE(composed);
+    auto kernel = ctx.device->create_compute_kernel(
+        {.program = ctx.device->link_program({composed}, {composed->entry_point("main")})}
+    );
+    REQUIRE(kernel);
+    auto result = ctx.device->create_buffer({.size = 5 * sizeof(float4), .usage = sgl::BufferUsage::unordered_access});
+
+    auto read = [&](DataTestMaterial* material, uint32_t index)
+    {
+        kernel->dispatch(
+            uint3(1),
+            [&](sgl::ShaderCursor cursor)
+            {
+                scene->bind(cursor, SceneBindFlags::materials);
+                cursor = cursor.find_entry_point(0);
+                cursor["material_id"] = uint32_t(material->material_id());
+                cursor["result"] = result;
+                cursor["index"] = index;
+            }
+        );
+    };
+    read(empty, 0);
+
+    auto* first = scene->create_material<DataTestMaterial>();
+    auto* second = scene->create_material<DataTestMaterial>();
+    first->set_probe_module(module);
+    second->set_probe_module(module);
+    first->set_value(13, 11);
+    second->set_value(29, 22);
+    scene->update();
+    const uint32_t first_offset = first->data_ref().offset;
+    const uint32_t second_offset = second->data_ref().offset;
+    CHECK_NE(first_offset, second_offset);
+    CHECK_EQ(first->data_ref().buffer.data(), second->data_ref().buffer.data());
+    read(first, 1);
+    read(second, 2);
+
+    // This exceeds the initial GPU buffer size, so each material record must receive the replacement handle.
+    const uint64_t initial_handle = first->data_ref().buffer.data();
+    first->set_value(4096, 33);
+    scene->update();
+    const uint32_t grown_offset = first->data_ref().offset;
+    CHECK_NE(first->data_ref().buffer.data(), initial_handle);
+    CHECK_NE(grown_offset, second_offset);
+    CHECK_EQ(first->data_ref().buffer.data(), second->data_ref().buffer.data());
+    read(first, 3);
+    read(second, 4);
+
+    const auto values = result->get_elements<float4>();
+    REQUIRE_EQ(values.size(), 5);
+    CHECK_EQ(values[0], float4(0.f, 0.f, 0.f, 0.f));
+    CHECK_EQ(values[1], float4(11.f, 1.f, float(first_offset), 1.f));
+    CHECK_EQ(values[2], float4(22.f, 1.f, float(second_offset), 1.f));
+    CHECK_EQ(values[3], float4(33.f, 1.f, float(grown_offset), 1.f));
+    CHECK_EQ(values[4], float4(22.f, 1.f, float(second_offset), 1.f));
 }
 
 TEST_CASE("material header metadata codec")
@@ -985,10 +1682,9 @@ std::string contextual_root_weight_shader()
 </materialx>)";
 }
 
-std::string weighted_layer_top_shader(std::string_view mix_bg_node)
+std::string weighted_layer_shader()
 {
-    return fmt::format(
-        R"(<materialx version="1.39" colorspace="lin_rec709">
+    return R"(<materialx version="1.39" colorspace="lin_rec709">
   <oren_nayar_diffuse_bsdf name="shared_top" type="BSDF" />
   <oren_nayar_diffuse_bsdf name="base" type="BSDF" />
   <weighted_layer name="covered" type="BSDF">
@@ -998,14 +1694,12 @@ std::string weighted_layer_top_shader(std::string_view mix_bg_node)
   </weighted_layer>
   <mix name="root" type="BSDF">
     <input name="fg" type="BSDF" nodename="covered" />
-    <input name="bg" type="BSDF" nodename="{}" />
+    <input name="bg" type="BSDF" nodename="base" />
     <input name="mix" type="float" value="0.5" />
   </mix>
   <surface name="surface" type="surfaceshader"><input name="bsdf" type="BSDF" nodename="root" /></surface>
   <surfacematerial name="M" type="material"><input name="surfaceshader" type="surfaceshader" nodename="surface" /></surfacematerial>
-</materialx>)",
-        mix_bg_node
-    );
+</materialx>)";
 }
 
 std::string custom_material_implementation_shader(const std::string& gain = {})
@@ -1373,7 +2067,7 @@ TEST_CASE_GPU("scene materialx representative layered material loads")
     // Python covers numerical evaluation. Keep one regular native generation
     // and module-load witness, using the default backend and normal optimization.
     mtlx::CodeGenDesc desc;
-    desc.document = weighted_layer_top_shader("base");
+    desc.document = weighted_layer_shader();
     desc.node_name = "M";
     auto result = mtlx::CodeGen::generate(desc);
     REQUIRE(result);
@@ -2741,7 +3435,7 @@ TEST_CASE("materialx permits library shader source and user graph implementation
     CHECK_FALSE(mtlx::CodeGen::discover_renderable_elements(desc).empty());
 
     // weighted_layer is defined by our source-backed custom_nodes.mtlx library.
-    desc.document = weighted_layer_top_shader("base");
+    desc.document = weighted_layer_shader();
     desc.node_name = "M";
     CHECK_FALSE(mtlx::CodeGen::generate(desc)->module_source.empty());
 }
@@ -3198,7 +3892,7 @@ TEST_CASE_GPU_NIGHTLY("scene materialx preserves an emissive surface without a B
         CHECK_EQ(result->opacity.kind, mtlx::CodeGenResult::OpacityResult::Kind::constant);
         CHECK_EQ(result->opacity.constant, doctest::Approx(0.25f));
         CHECK(contains(result->module_source, "#define MATERIALX_HAS_EMISSION 1"));
-        CHECK(contains(result->module_source, "float3(0.1, 0.8, 0.2)"));
+        CHECK(contains(result->module_source, "float3(0.100000001, 0.800000012, 0.200000003)"));
         CHECK(ctx.device->load_module_from_source(result->module_name, result->module_source));
     }
 }
@@ -3583,10 +4277,7 @@ TEST_CASE_GPU_NIGHTLY("scene materialx reconciles shared microfacet specializati
 
 TEST_CASE_NIGHTLY("scene materialx preserves producer identity through recursive closure reuse")
 {
-    const std::array modes = {
-        mtlx::LayeringMode::closure_tree,
-    };
-    for (mtlx::LayeringMode mode : modes) {
+    for (mtlx::LayeringMode mode : {mtlx::LayeringMode::closure_tree}) {
         CAPTURE(mode);
         mtlx::CodeGenDesc desc;
         desc.document = recursive_closure_dag(4);

@@ -3,22 +3,22 @@
 
 implementing render;
 
-public struct GLTFSpecGlossMaterialInstance : IMaterialInstance
+public struct GLTFSpecGlossMaterialInstance<let Features : uint> : IMaterialInstance
 {
+    public static const bool HAS_EMISSION = (Features & gltfmat::FeatureBits::EMISSION) != 0u;
+
+    public uint feature_mask = 0u;
     public Frame shading_frame_ws;
     public GLTFSpecGlossBSDFData bsdf_data;
-    public float3 emissive_radiance = {};
+    public Conditional<float3, HAS_EMISSION> emission = Conditional<float3, HAS_EMISSION>(float3(0.0));
 
     private GLTFSpecGlossBSDF make_bsdf(const SurfaceInteraction si)
     {
         return GLTFSpecGlossBSDF(shading_frame_ws.to_local(si.wi_ws), bsdf_data);
     }
 
-    public BSDFEval eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both, S : ISampleGenerator>(
-        const SurfaceInteraction si,
-        const float3 wo_ws,
-        inout S sg
-    )
+    public BSDFEval
+    eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both>(const SurfaceInteraction si, const float3 wo_ws)
     {
         float3 wi_ls = shading_frame_ws.to_local(si.wi_ws);
         float3 wo_ls = shading_frame_ws.to_local(wo_ws);
@@ -37,16 +37,16 @@ public struct GLTFSpecGlossMaterialInstance : IMaterialInstance
 
         // The BSDF already includes the outgoing cosine in its evaluated value.
         GLTFSpecGlossBSDF bsdf = GLTFSpecGlossBSDF(wi_ls, bsdf_data);
-        return bsdf.eval_with_pdf(wi_ls, wo_ls, sg, BSDFContext());
+        return bsdf.eval_with_pdf(wi_ls, wo_ls, BSDFContext());
     }
 
-    public bool sample<S : ISampleGenerator>(const SurfaceInteraction si, inout S sg, out MaterialSample sample)
+    public bool sample(const SurfaceInteraction si, const MaterialSampleInput input, out MaterialSample sample)
     {
         sample = {};
         float3 wi_ls = shading_frame_ws.to_local(si.wi_ws);
         GLTFSpecGlossBSDF bsdf = GLTFSpecGlossBSDF(wi_ls, bsdf_data);
         BSDFSample bsdf_sample;
-        if (!bsdf.sample(wi_ls, bsdf_sample, sg, BSDFContext()))
+        if (!bsdf.sample(wi_ls, input, BSDFContext(), bsdf_sample))
             return false;
 
         // Preserve the BSDF's component-sampling weight and mixture PDF.
@@ -77,7 +77,7 @@ public struct GLTFSpecGlossMaterialInstance : IMaterialInstance
         float alpha = roughness * roughness;
         float3 specular = saturate(bsdf_data.specular);
         result.material_color = saturate(bsdf_data.diffuse);
-        result.emission = emissive_radiance;
+        result.emission = eval_emissive_radiance();
 
         // SpecGloss has no authored metallic parameter. Report the actual lobe colors.
         result.metallic = 0.0;
@@ -127,7 +127,14 @@ public struct GLTFSpecGlossMaterialInstance : IMaterialInstance
 
     public BSDFFlags get_lobe_types(const SurfaceInteraction si) { return make_bsdf(si).get_lobe_types(); }
 
-    public override bool is_emissive() { return any(emissive_radiance > 0.0); }
+    public override bool is_emissive() { return any(eval_emissive_radiance() > 0.0); }
 
-    public override float3 eval_emissive_radiance() { return emissive_radiance; }
+    public override float3 eval_emissive_radiance()
+    {
+        if (let value = emission.get()) {
+            if ((feature_mask & gltfmat::FeatureBits::EMISSION) != 0u)
+                return value;
+        }
+        return float3(0.0);
+    }
 };
