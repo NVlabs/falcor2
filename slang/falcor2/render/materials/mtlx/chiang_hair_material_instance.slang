@@ -16,8 +16,11 @@ public struct MXChiangHairMaterialInstance : IMaterialInstance
     public MxChiangHairBSDF bsdf;
     public float3 emissive_radiance = {};
 
-    public BSDFEval
-    eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both>(const SurfaceInteraction si, const float3 wo_ws)
+    public BSDFEval eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both>(
+        const SurfaceInteraction si,
+        const float3 wo_ws,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
         return bsdf.eval_with_pdf(shading_frame_ws.to_local(si.wi_ws), shading_frame_ws.to_local(wo_ws), BSDFContext());
     }

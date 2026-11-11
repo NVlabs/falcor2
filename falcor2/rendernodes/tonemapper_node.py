@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from enum import IntEnum
+from importlib.resources import files
 import math
 from typing import Any, Optional
 
@@ -50,6 +51,8 @@ class TonemappingOperator(IntEnum):
     clamp = 2
     agx = 3
     lut3d = 4
+    log = 5
+    agx_punchy = 6
 
 
 _OPERATOR_TYPE_NAMES = {
@@ -57,6 +60,7 @@ _OPERATOR_TYPE_NAMES = {
     TonemappingOperator.reinhard: "ReinhardOperator",
     TonemappingOperator.clamp: "ClampOperator",
     TonemappingOperator.agx: "AgXOperator",
+    TonemappingOperator.log: "LogOperator",
 }
 
 
@@ -75,6 +79,7 @@ class TonemapperNode(RenderNode):
         self._operator = TonemappingOperator.aces_film
         self._set_operator(operator)
         self._lut: Optional[spy.Texture] = None
+        self._punchy_curve: Optional[spy.Texture] = None
         self._lut_sampler: spy.Sampler = device.create_sampler(
             min_filter=spy.TextureFilteringMode.linear,
             mag_filter=spy.TextureFilteringMode.linear,
@@ -127,6 +132,12 @@ class TonemapperNode(RenderNode):
                 functions = (
                     self._module.require_function("tonemapper_apply_lut3d"),
                     self._module.require_function("tonemapper_apply_lut3d_auto"),
+                    None,
+                )
+            elif operator == TonemappingOperator.agx_punchy:
+                functions = (
+                    self._module.require_function("tonemapper_apply_agx_punchy"),
+                    self._module.require_function("tonemapper_apply_agx_punchy_auto"),
                     None,
                 )
             else:
@@ -531,22 +542,48 @@ class TonemapperNode(RenderNode):
             "lut_middle_gray": self._lut_middle_gray,
         }
 
+    def _punchy_parameters(self) -> dict[str, Any]:
+        if self._punchy_curve is None:
+            with (
+                files("falcor2.rendernodes")
+                .joinpath("data", "agx_punchy_curve.npy")
+                .open("rb") as stream
+            ):
+                curve = np.load(stream, allow_pickle=False)
+            if curve.shape != (128,) or curve.dtype != np.float32 or not np.isfinite(curve).all():
+                raise ValueError(
+                    "The packaged AgX punchy curve must contain 128 finite float32 values."
+                )
+            self._punchy_curve = self._device.create_texture(
+                type=spy.TextureType.texture_2d,
+                format=spy.Format.r32_float,
+                width=128,
+                height=1,
+                mip_count=1,
+                usage=spy.TextureUsage.shader_resource,
+                data=curve.reshape(1, 128),
+            )
+        return {"curve": self._punchy_curve, "curve_sampler": self._lut_sampler}
+
     def _append_tonemap(
         self,
         runtime_input: Any,
         runtime_output: Any,
         cmd: Optional[CommandEncoder],
     ) -> None:
-        lut_parameters = (
-            self._lut_parameters() if self._operator == TonemappingOperator.lut3d else {}
-        )
+        if self._operator == TonemappingOperator.lut3d:
+            operator_parameters = self._lut_parameters()
+        elif self._operator == TonemappingOperator.agx_punchy:
+            operator_parameters = self._punchy_parameters()
+        else:
+            operator_parameters = {}
 
         if self._auto_exposure:
             assert self._adapted_exposure_ev is not None
             self._tonemap_auto_func(
                 color=runtime_input,
                 adapted_exposure_ev=self._adapted_exposure_ev,
-                **lut_parameters,
+                **operator_parameters,
                 _result=runtime_output,
                 _append_to=cmd,
             )
@@ -554,7 +591,7 @@ class TonemapperNode(RenderNode):
             self._tonemap_func(
                 color=runtime_input,
                 exposure_ev=self._exposure_compensation,
-                **lut_parameters,
+                **operator_parameters,
                 _result=runtime_output,
                 _append_to=cmd,
             )
@@ -568,7 +605,7 @@ class TonemapperNode(RenderNode):
     ) -> None:
         assert self._luminance_histogram is not None
         assert self._adapted_exposure_ev is not None
-        if self._operator == TonemappingOperator.lut3d:
+        if self._tonemap_auto_histogram_func is None:
             self._append_tonemap(runtime_input, runtime_output, cmd)
             self._append_meter(runtime_input, histogram_weight_scale, cmd)
             return

@@ -86,6 +86,20 @@ TEST_CASE_GPU("primary_uv_packing_and_wider_promotion")
     std::memcpy(&copied, geometry.vertex_attributes()[0].data.data(), sizeof(copied));
     CHECK(copied.z == 9.f);
     CHECK(copied.w == 10.f);
+
+    const auto* vertex_storage = geometry.vertices().data();
+    const uint32_t first_vertex = 0;
+    desc.indexing_mode = CurveIndexingMode::successive;
+    desc.index_count = 1;
+    desc.index_stream = {&first_vertex, sizeof(uint32_t)};
+    desc.vertex_attributes = {};
+    geometry.set_curve_data(desc);
+    CHECK(geometry.vertices().data() == vertex_storage);
+    CHECK(geometry.vertices().size() == 2);
+    CHECK(geometry.indices().size() == 1);
+    CHECK(unpack(geometry.vertices()[0]).position.x == 0.f);
+    CHECK(sgl::math::all(unpack(geometry.vertices()[0]).texcoord == float2(0.f)));
+    CHECK(geometry.vertex_attributes().empty());
 }
 
 TEST_CASE("convert_list_to_successive_consecutive_chain")

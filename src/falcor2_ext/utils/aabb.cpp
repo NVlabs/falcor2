@@ -18,6 +18,7 @@ FALCOR_PY_EXPORT(utils_aabb)
         .DEF_RW(AABB, min)
         .DEF_RW(AABB, max)
         .def("is_valid", &AABB::is_valid, D(AABB, is_valid))
+        .def("is_finite", &AABB::is_finite, D(AABB, is_finite))
         .def("expand", nb::overload_cast<const float3&>(&AABB::expand), "point"_a, D(AABB, expand))
         .def(
             "expand",

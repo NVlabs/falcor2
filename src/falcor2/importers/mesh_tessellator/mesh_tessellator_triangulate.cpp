@@ -76,11 +76,13 @@ ImporterMesh triangulate_mesh(const TessellatorInputMesh& input)
 {
     const size_t vertex_count = input.positions[0].value_count();
     for (const MeshAttributeStream& positions : input.positions) {
+        FALCOR_CHECK(positions.scalar_type() == sgl::DataType::float32, "Triangulation positions must be float32");
         check_stream_layout(positions, input.face_vertex_counts.size(), vertex_count, input.face_vertex_indices.size());
         FALCOR_CHECK(positions.component_count() == 3, "Mesh tessellator positions must have three components");
         FALCOR_CHECK(positions.indices.empty(), "Mesh tessellator positions cannot be indexed separately");
     }
     for (const MeshAttributeStream& normals : input.normals) {
+        FALCOR_CHECK(normals.scalar_type() == sgl::DataType::float32, "Triangulation normals must be float32");
         check_stream_layout(normals, input.face_vertex_counts.size(), vertex_count, input.face_vertex_indices.size());
         FALCOR_CHECK(normals.component_count() == 3, "Mesh tessellator normals must have three components");
     }

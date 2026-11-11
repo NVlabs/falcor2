@@ -46,7 +46,7 @@ namespace falcor {
 /// nb::isinstance() to correctly handle Python-derived classes. Both provide the same "is-a" semantics
 /// but through their respective language's native type dispatch mechanism.
 template<typename TObject>
-void bind_collection_view(nb::module_& m, const char* name)
+NB_NOINLINE void bind_collection_view(nb::module_& m, const char* name)
 {
     using View = SceneObjectCollectionView<TObject>;
     nb::class_<View>(m, name, D(SceneObjectCollectionView))
@@ -79,11 +79,21 @@ void bind_collection_view(nb::module_& m, const char* name)
             nb::keep_alive<0, 1>()
         )
         .def(
-            "find",
-            [](View& self, std::optional<std::string_view> name, nb::object type) -> nb::object
+            "iter",
+            [](View& self, bool include_builtins)
             {
-                for (size_t i = 0; i < self.size(); ++i) {
-                    TObject* obj = self[i];
+                auto range = self.iter(include_builtins);
+                return nb::make_iterator(nb::type<View>(), "Iterator", range.begin(), range.end());
+            },
+            "include_builtins"_a = false,
+            nb::keep_alive<0, 1>(),
+            D(SceneObjectCollectionView, iter)
+        )
+        .def(
+            "find",
+            [](View& self, std::optional<std::string_view> name, nb::object type, bool include_builtins) -> nb::object
+            {
+                for (TObject* obj : self.iter(include_builtins)) {
                     if (name.has_value() && obj->name() != name.value())
                         continue;
                     if (!type.is_none() && !nb::isinstance(nb::cast(obj), type))
@@ -94,16 +104,16 @@ void bind_collection_view(nb::module_& m, const char* name)
             },
             "name"_a.none() = nb::none(),
             "type"_a.none() = nb::none(),
+            "include_builtins"_a = false,
             nb::rv_policy::reference_internal,
             "Find the first object matching the given name and/or type. Returns None if not found."
         )
         .def(
             "find_all",
-            [](View& self, std::optional<std::string_view> name, nb::object type) -> nb::list
+            [](View& self, std::optional<std::string_view> name, nb::object type, bool include_builtins) -> nb::list
             {
                 nb::list result;
-                for (size_t i = 0; i < self.size(); ++i) {
-                    TObject* obj = self[i];
+                for (TObject* obj : self.iter(include_builtins)) {
                     if (name.has_value() && obj->name() != name.value())
                         continue;
                     if (!type.is_none() && !nb::isinstance(nb::cast(obj), type))
@@ -114,6 +124,7 @@ void bind_collection_view(nb::module_& m, const char* name)
             },
             "name"_a.none() = nb::none(),
             "type"_a.none() = nb::none(),
+            "include_builtins"_a = false,
             nb::rv_policy::reference_internal,
             "Find all objects matching the given name and/or type."
         );
@@ -167,7 +178,9 @@ class PySceneGlobals : public SceneGlobals {
 
 } // namespace falcor
 
-FALCOR_PY_EXPORT(render_scene)
+namespace {
+
+NB_NOINLINE void bind_scene_flags(nb::module_& m)
 {
     using namespace falcor;
 
@@ -207,11 +220,15 @@ FALCOR_PY_EXPORT(render_scene)
         .value("use_threshold", shared::OpacityFlags::use_threshold)
         .value("evaluate_material", shared::OpacityFlags::evaluate_material);
 
-
     nb::enum_<shared::GeometryType>(m, "GeometryType", D_NA(GeometryType), nb::is_arithmetic())
         .value("triangle", shared::GeometryType::triangle)
         .value("lss", shared::GeometryType::lss)
         .value("area_light", shared::GeometryType::area_light);
+}
+
+NB_NOINLINE void bind_scene_requirements(nb::module_& m)
+{
+    using namespace falcor;
 
     nb::class_<SceneUpdateContext>(m, "SceneUpdateContext", D(SceneUpdateContext))
         .def_prop_ro(
@@ -279,6 +296,11 @@ FALCOR_PY_EXPORT(render_scene)
             "type"_a,
             D(SceneRequirements, has_geometry_type)
         );
+}
+
+NB_NOINLINE void bind_scene_object_collections(nb::module_& m)
+{
+    using namespace falcor;
 
     nb::sgl_enum<SceneObjectKind>(m, "SceneObjectKind", D(SceneObjectKind));
 
@@ -295,12 +317,18 @@ FALCOR_PY_EXPORT(render_scene)
         .DEF_PROP_RW(SceneObject, name)
         .DEF_PROP_RO(SceneObject, source_asset_ref, nb::rv_policy::copy)
         .def("remove", &SceneObject::remove, D(SceneObject, remove))
-        .DEF_PROP_RO(SceneObject, is_valid)
+        .def("is_valid", &SceneObject::is_valid, D(SceneObject, is_valid))
+        .def("is_builtin", &SceneObject::is_builtin, D(SceneObject, is_builtin))
         .def("on_create", &SceneObject::on_create, "props"_a.none() = nb::none(), D(SceneObject, on_create))
         .def("on_destroy", &SceneObject::on_destroy, D(SceneObject, on_destroy))
         .def("on_add_to_scene", &SceneObject::on_add_to_scene, D(SceneObject, on_add_to_scene))
         .def("on_remove_from_scene", &SceneObject::on_remove_from_scene, D(SceneObject, on_remove_from_scene))
         .def("on_load_resources", &SceneObject::on_load_resources, D(SceneObject, on_load_resources));
+}
+
+NB_NOINLINE void bind_material(nb::module_& m)
+{
+    using namespace falcor;
 
     nb::class_<Material, PyMaterial, SceneObject> material(m, "Material", D(Material));
     nb::sgl_enum_flags<Material::DirtyFlags>(material, "DirtyFlags");
@@ -353,6 +381,11 @@ FALCOR_PY_EXPORT(render_scene)
         .def("mark_dirty", &PyMaterial::mark_dirty, "flags"_a, D(Material, mark_dirty));
 
     m.attr("MaterialT") = nb::type_var("MaterialT", "bound"_a = nb::type<Material>());
+}
+
+NB_NOINLINE void bind_scene_object_types(nb::module_& m)
+{
+    using namespace falcor;
 
     nb::class_<Geometry, PyGeometry, SceneObject>(m, "Geometry", D(Geometry)) //
         .def(nb::init<>()) // __init__ is needed for Python-side inheritance
@@ -365,6 +398,11 @@ FALCOR_PY_EXPORT(render_scene)
     m.attr("ComponentT") = nb::type_var("ComponentT", "bound"_a = nb::type<Component>());
 
     nb::class_<SceneGlobals, PySceneGlobals, Object>(m, "SceneGlobals", D(SceneGlobals)).def(nb::init<>());
+}
+
+NB_NOINLINE void bind_scene_animation(nb::module_& m)
+{
+    using namespace falcor;
 
     nb::class_<AnimationTimeRange>(m, "AnimationTimeRange", D(AnimationTimeRange))
         .def(nb::init<>())
@@ -396,6 +434,11 @@ FALCOR_PY_EXPORT(render_scene)
         .DEF_PROP_RW(TransformAnimation, rotation_channel)
         .DEF_PROP_RW(TransformAnimation, scale_channel)
         .def("has_channels", &TransformAnimation::has_channels, D(TransformAnimation, has_channels));
+}
+
+NB_NOINLINE void bind_entity(nb::module_& m)
+{
+    using namespace falcor;
 
     nb::class_<Entity, SceneObject>(m, "Entity", D(Entity))
         .DEF_PROP_RW(Entity, parent)
@@ -418,6 +461,7 @@ FALCOR_PY_EXPORT(render_scene)
             "create_component",
             [](Entity* self, nb::type_object cls, std::optional<Properties> props) -> nb::object
             {
+                FALCOR_CHECK(!self->is_builtin(), "Cannot add components to a built-in object.");
                 if (SceneObjectFactory<Component>::get().find_class_info(nb::type_info(cls)) != nullptr) {
                     return nb::cast(self->create_component(nb::type_info(cls), props));
                 } else {
@@ -432,6 +476,11 @@ FALCOR_PY_EXPORT(render_scene)
         );
 
     bind_signal<SceneUpdatedSignal>(m, "SceneUpdatedSignal");
+}
+
+NB_NOINLINE void bind_scene_configuration(nb::module_& m)
+{
+    using namespace falcor;
 
     nb::class_<AOVDesc>(m, "AOVDesc", D(AOVDesc))
         .def_ro("id", &AOVDesc::id)
@@ -464,25 +513,56 @@ FALCOR_PY_EXPORT(render_scene)
                 [](UVOrigin uv_origin,
                    uint32_t max_mip_count,
                    GLTFSpecializationMode gltf_specialization_mode,
-                   GLTFFeatureFlags gltf_allowed_features)
+                   GLTFFeatureFlags gltf_allowed_features,
+                   GLTFFeatureFlags gltf_core_features,
+                   bool gltf_core_texture_transforms,
+                   bool gltf_core_alternate_uvs)
                 {
                     constexpr auto ALL_FEATURES = static_cast<uint32_t>(GLTFFeatureFlags::all);
                     FALCOR_CHECK(
                         (static_cast<uint32_t>(gltf_allowed_features) & ~ALL_FEATURES) == 0,
                         "gltf_allowed_features contains unsupported bits"
                     );
-                    return SceneConfig{uv_origin, max_mip_count, gltf_specialization_mode, gltf_allowed_features};
+                    FALCOR_CHECK(
+                        (static_cast<uint32_t>(gltf_core_features) & ~ALL_FEATURES) == 0,
+                        "gltf_core_features contains unsupported bits"
+                    );
+                    FALCOR_CHECK(
+                        (static_cast<uint32_t>(gltf_core_features) & ~static_cast<uint32_t>(gltf_allowed_features))
+                            == 0,
+                        "gltf_core_features must be contained in gltf_allowed_features"
+                    );
+                    return SceneConfig{
+                        uv_origin,
+                        max_mip_count,
+                        gltf_specialization_mode,
+                        gltf_allowed_features,
+                        gltf_core_features,
+                        gltf_core_texture_transforms,
+                        gltf_core_alternate_uvs
+                    };
                 }
             ),
             "uv_origin"_a = UVOrigin::upper_left,
             "max_mip_count"_a = 0,
             "gltf_specialization_mode"_a = GLTFSpecializationMode::balanced,
-            "gltf_allowed_features"_a = GLTFFeatureFlags::all
+            "gltf_allowed_features"_a = GLTFFeatureFlags::all,
+            "gltf_core_features"_a = GLTFFeatureFlags::none,
+            "gltf_core_texture_transforms"_a = false,
+            "gltf_core_alternate_uvs"_a = false
         )
         .DEF_RO(SceneConfig, uv_origin)
         .DEF_RO(SceneConfig, max_mip_count)
         .DEF_RO(SceneConfig, gltf_specialization_mode)
-        .DEF_RO(SceneConfig, gltf_allowed_features);
+        .DEF_RO(SceneConfig, gltf_allowed_features)
+        .DEF_RO(SceneConfig, gltf_core_features)
+        .DEF_RO(SceneConfig, gltf_core_texture_transforms)
+        .DEF_RO(SceneConfig, gltf_core_alternate_uvs);
+}
+
+NB_NOINLINE void bind_scene(nb::module_& m)
+{
+    using namespace falcor;
 
     nb::class_<Scene, Object>(m, "Scene", D(Scene))
         .def_static("create", &Scene::create, "device"_a, "config"_a = SceneConfig(), D(Scene, create))
@@ -556,6 +636,7 @@ FALCOR_PY_EXPORT(render_scene)
             "find_objects_by_source_asset_ref",
             &Scene::find_objects_by_source_asset_ref,
             "source_asset_ref"_a,
+            "include_builtins"_a = false,
             nb::rv_policy::reference,
             D(Scene, find_objects_by_source_asset_ref)
         )
@@ -668,9 +749,29 @@ FALCOR_PY_EXPORT(render_scene)
             nb::rv_policy::reference_internal,
             D(Scene, active_camera)
         )
+        .def(
+            "frame_free_camera",
+            &Scene::frame_free_camera,
+            "aspect"_a = 1.f,
+            "default_depth_range"_a = float2(0.01f, 1000.f),
+            D(Scene, frame_free_camera)
+        )
+        .def_prop_ro("free_camera", &Scene::free_camera, nb::rv_policy::reference_internal, D(Scene, free_camera))
+        .def(
+            "activate_free_camera_from",
+            &Scene::activate_free_camera_from,
+            "source"_a,
+            nb::rv_policy::reference_internal,
+            D(Scene, activate_free_camera_from)
+        )
         .DEF_PROP_RW(Scene, time)
         .DEF_PROP_RO(Scene, animation_range)
         .def("has_animation", &Scene::has_animation, D(Scene, has_animation));
+}
+
+NB_NOINLINE void bind_geometry_types(nb::module_& m)
+{
+    using namespace falcor;
 
     nb::class_<GeometryGroup, Geometry>(m, "GeometryGroup", D(GeometryGroup))
         .DEF_PROP_RW(GeometryGroup, geometries, nb::rv_policy::reference_internal);
@@ -680,6 +781,11 @@ FALCOR_PY_EXPORT(render_scene)
         .DEF_PROP_RW(GeometryInstance, materials, nb::rv_policy::reference_internal)
         .DEF_PROP_RO(GeometryInstance, geometry_instance_id)
         .DEF_PROP_RO(GeometryInstance, geometry_instance_count);
+}
+
+NB_NOINLINE void bind_standard_materials(nb::module_& m)
+{
+    using namespace falcor;
 
     nb::class_<EmissionOnlyMaterial, Material> emission_only_material(
         m,
@@ -709,6 +815,11 @@ FALCOR_PY_EXPORT(render_scene)
         D(StandardSpecGlossMaterial)
     );
     reflection::bind<StandardSpecGlossMaterial>(standard_specgloss_material);
+}
+
+NB_NOINLINE void bind_generated_materials(nb::module_& m)
+{
+    using namespace falcor;
 
     nb::class_<MDLMaterial, Material> mdl_material(m, "MDLMaterial", D_NA(MDLMaterial));
     reflection::bind<MDLMaterial>(mdl_material);
@@ -727,6 +838,11 @@ FALCOR_PY_EXPORT(render_scene)
         "List the TextureHandle instances used by this material. "
         "Valid after scene.update() / on_load_resources() has run."
     );
+}
+
+NB_NOINLINE void bind_camera(nb::module_& m)
+{
+    using namespace falcor;
 
     nb::class_<CameraUniforms>(m, "CameraUniforms")
         .DEF_PROP_RO(CameraUniforms, width)
@@ -766,6 +882,12 @@ FALCOR_PY_EXPORT(render_scene)
         "height"_a,
         D(Camera, calc_clip_from_view)
     );
+}
+
+NB_NOINLINE void bind_lights(nb::module_& m)
+{
+    using namespace falcor;
+
     reflection::bind<Light>(m);
     reflection::bind<ConstantLight>(m);
     reflection::bind<DistantLight>(m);
@@ -775,4 +897,24 @@ FALCOR_PY_EXPORT(render_scene)
     reflection::bind<DiskLight>(m);
     reflection::bind<RectLight>(m);
     reflection::bind<EnvMapLight>(m);
+}
+
+} // namespace
+
+FALCOR_PY_EXPORT(render_scene)
+{
+    bind_scene_flags(m);
+    bind_scene_requirements(m);
+    bind_scene_object_collections(m);
+    bind_material(m);
+    bind_scene_object_types(m);
+    bind_scene_animation(m);
+    bind_entity(m);
+    bind_scene_configuration(m);
+    bind_scene(m);
+    bind_geometry_types(m);
+    bind_standard_materials(m);
+    bind_generated_materials(m);
+    bind_camera(m);
+    bind_lights(m);
 }

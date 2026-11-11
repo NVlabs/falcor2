@@ -30,6 +30,12 @@ struct FALCOR_API AABB {
     /// Check if the AABB is valid (min <= max for all components).
     bool is_valid() const { return min.x <= max.x && min.y <= max.y && min.z <= max.z; }
 
+    /// Check if all min/max components are finite, independently of validity.
+    bool is_finite() const
+    {
+        return sgl::math::all(sgl::math::isfinite(min)) && sgl::math::all(sgl::math::isfinite(max));
+    }
+
     /// Expand the AABB to include a point.
     void expand(const float3& point)
     {

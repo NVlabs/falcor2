@@ -437,7 +437,7 @@ void GLTFMaterial::write_to_cursor_impl(CursorT cursor) const
     cursor["emissive_factor"] = float4(m_core.emissive_factor, 0.f);
     cursor["feature_mask"] = m_feature_mask;
     cursor["transform_mask"] = m_transform_mask;
-    cursor["extra_data"] = m_scene ? data_ref() : BufferOffsetPair{};
+    cursor["extra_data"] = m_scene ? data_ref() : BufferPtr{};
 }
 
 template void GLTFMaterial::write_to_cursor_impl(sgl::BufferElementCursor cursor) const;

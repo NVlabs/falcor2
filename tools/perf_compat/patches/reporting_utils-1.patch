@@ -1,0 +1,18 @@
+--- a/falcor2/testing/benchmark/reporting/utils.py
++++ b/falcor2/testing/benchmark/reporting/utils.py
+@@ -140,8 +140,13 @@
+                 branch = "(detached head)"
+         return {
+             "id": commit,
+-            "time": datetime.fromisoformat(commit_time) if commit_time else None,
+-            "author_time": datetime.fromisoformat(author_time) if author_time else None,
++            # Python 3.10 requires a numeric UTC offset instead of Git's terminal Z.
++            "time": (
++                datetime.fromisoformat(commit_time.replace("Z", "+00:00")) if commit_time else None
++            ),
++            "author_time": (
++                datetime.fromisoformat(author_time.replace("Z", "+00:00")) if author_time else None
++            ),
+             "dirty": dirty,
+             "branch": branch,
+         }

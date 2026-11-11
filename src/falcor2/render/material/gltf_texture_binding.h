@@ -18,15 +18,16 @@ namespace falcor {
 struct GLTFTextureBinding {
     ref<sgl::Texture> texture;
     ref<sgl::Sampler> sampler;
+    ref<Blob> bytes;
     std::filesystem::path path;
     uint32_t effective_texcoord{0};
     GLTFTextureTransform transform;
     TextureHandle handle;
 
-    /// Resolve the authored object or path using the existing material precedence.
+    /// Resolve the authored object, bytes, or path using the existing material precedence.
     void load(TextureManager* manager, TextureLoadFlags flags)
     {
-        handle = load_material_texture(manager, texture, sampler, path, flags);
+        handle = load_material_texture(manager, texture, sampler, bytes, path, flags);
     }
 };
 

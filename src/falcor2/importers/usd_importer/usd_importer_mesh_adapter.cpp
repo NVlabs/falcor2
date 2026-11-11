@@ -7,6 +7,8 @@
 #include "falcor2/importers/importer.h"
 #include "falcor2/importers/mesh_tessellator/mesh_tessellator.h"
 
+#include <sgl/core/maths.h>
+
 BEGIN_DISABLE_USD_WARNINGS
 #include <pxr/base/gf/vec2f.h>
 #include <pxr/base/gf/vec3f.h>
@@ -142,8 +144,7 @@ MeshAttributeStream make_mesh_attribute_stream(
         .interpolation = get_mesh_interpolation(interpolation),
         // Gf float vectors are contiguous float aggregates on all supported platforms; the checks above make the
         // layout assumption explicit so the tessellator can borrow the USD value table without copying it.
-        .values
-        = std::span<const float>(reinterpret_cast<const float*>(values.cdata()), values.size() * component_count),
+        .values = std::as_bytes(std::span(values.cdata(), values.size())),
         .indices = indices ? std::span<const int>(indices->cdata(), indices->size()) : std::span<const int>(),
     };
 }
@@ -158,7 +159,7 @@ MeshAttributeStream make_mesh_attribute_stream(
     return {
         .attribute = std::move(attribute),
         .interpolation = get_mesh_interpolation(interpolation),
-        .values = values,
+        .values = std::as_bytes(std::span(values)),
         .indices = indices ? std::span<const int>(indices->cdata(), indices->size()) : std::span<const int>(),
     };
 }
@@ -234,7 +235,8 @@ bool get_named_float_values(
 ImporterMesh convert_usd_mesh(
     const pxr::UsdGeomMesh& usd_mesh,
     const ResolveMaterial& resolve_material,
-    const ImportOptions& import_options
+    const ImportOptions& import_options,
+    const pxr::UsdSkelSkinningQuery* skinning
 )
 {
     using namespace pxr;
@@ -247,6 +249,9 @@ ImporterMesh convert_usd_mesh(
     input.properties = ImporterMesh::make_properties(import_options);
     read_import_property<int>(usd_mesh.GetPrim(), "refinementLevel", input.properties, "refinement_level");
     read_import_property<bool>(usd_mesh.GetPrim(), "falcor:recomputeNormals", input.properties, "recompute_normals");
+    // Influences address the control points. Refinement can be enabled when it runs after skinning.
+    if (skinning)
+        input.properties.set("refinement_level", 0);
     const int refinement_level = input.properties.get<int>("refinement_level");
     const auto& texcoord_primvar_names = import_options.usd_texcoord_primvar_names;
     input.name = mesh_name;
@@ -274,6 +279,22 @@ ImporterMesh convert_usd_mesh(
     if (normal_attribute)
         sampled_attributes.push_back(normal_attribute);
     const GeometrySampleTimes times(usd_mesh.GetPrim(), sampled_attributes, import_options.import_mesh_motion);
+    if (skinning) {
+        for (const auto& attribute :
+             {skinning->GetGeomBindTransformAttr(),
+              skinning->GetJointIndicesPrimvar().GetAttr(),
+              skinning->GetJointIndicesPrimvar().GetIndicesAttr(),
+              skinning->GetJointWeightsPrimvar().GetAttr(),
+              skinning->GetJointWeightsPrimvar().GetIndicesAttr()}) {
+            if (attribute && attribute.ValueMightBeTimeVarying()) {
+                sgl::log_warn(
+                    "Mesh '{}' has potentially time-varying skin binding attributes; importing a fixed binding.",
+                    mesh_name
+                );
+                break;
+            }
+        }
+    }
     const auto& sample_times = times.sample_times;
     // Only position and normal values vary across motion samples.
     const UsdTimeCode initial_time = sample_times.front();
@@ -281,7 +302,8 @@ ImporterMesh convert_usd_mesh(
     std::vector<VtArray<GfVec3f>> sampled_positions(sample_times.size());
     std::vector<MeshAttributeStream> position_samples(sampled_positions.size());
     for (size_t sample = 0; sample < sampled_positions.size(); ++sample) {
-        usd_mesh.GetPointsAttr().Get(&sampled_positions[sample], sample_times[sample]);
+        const bool has_points = usd_mesh.GetPointsAttr().Get(&sampled_positions[sample], sample_times[sample]);
+        FALCOR_CHECK(!import_options.import_mesh_motion || has_points, "Mesh motion '{}' is missing points", mesh_name);
         FALCOR_CHECK(
             sampled_positions[sample].size() == sampled_positions[0].size(),
             "Mesh motion '{}' changes point count",
@@ -442,6 +464,8 @@ ImporterMesh convert_usd_mesh(
     named_attribute_storage.reserve(all_primvars.size());
     for (const UsdGeomPrimvar& primvar : all_primvars) {
         const std::string name = primvar.GetPrimvarName().GetString();
+        if (skinning && (name == "skel:jointIndices" || name == "skel:jointWeights"))
+            continue;
         if (!primvar.HasValue()
             || std::find(claimed_primvar_names.begin(), claimed_primvar_names.end(), name)
                 != claimed_primvar_names.end()
@@ -528,7 +552,7 @@ ImporterMesh convert_usd_mesh(
             normal_samples[sample] = {
                 .attribute = {ImporterSemantic::normal, 0, 3},
                 .interpolation = MeshInterpolation::varying,
-                .values = generated_normal_values[sample],
+                .values = std::as_bytes(std::span(generated_normal_values[sample])),
             };
         }
     }
@@ -543,15 +567,59 @@ ImporterMesh convert_usd_mesh(
         }
     );
 
+    // Four-slot sets use the existing importer layout without limiting USD's influence count.
+    // Keep the backing tables alive until tessellation has copied the typed vertex streams.
+    std::vector<std::vector<int4>> joint_sets;
+    std::vector<std::vector<float4>> weight_sets;
+    if (skinning) {
+        const size_t point_count = sampled_positions[0].size();
+        VtIntArray indices;
+        VtFloatArray weights;
+        const int width = skinning->GetNumInfluencesPerComponent();
+        FALCOR_CHECK(
+            width > 0 && skinning->ComputeVaryingJointInfluences(point_count, &indices, &weights, initial_time)
+                && indices.size() == point_count * width && weights.size() == indices.size(),
+            "Invalid influences for skin '{}'",
+            mesh_name
+        );
+        const uint32_t set_count = sgl::div_round_up(uint32_t(width), 4u);
+        joint_sets.resize(set_count);
+        weight_sets.resize(set_count);
+        for (uint32_t set = 0; set < set_count; ++set) {
+            joint_sets[set].resize(point_count, int4(0));
+            weight_sets[set].resize(point_count, float4(0.f));
+            for (size_t point = 0; point < point_count; ++point) {
+                for (uint32_t component = 0; component < 4 && 4 * set + component < uint32_t(width); ++component) {
+                    const size_t source = point * width + 4 * set + component;
+                    joint_sets[set][point][component] = indices[source];
+                    weight_sets[set][point][component] = weights[source];
+                }
+            }
+            input.streams.push_back({
+                .attribute
+                = {.semantic = ImporterSemantic::joints, .index = set, .components = 4, .type = sgl::DataType::int32},
+                .interpolation = MeshInterpolation::vertex,
+                .values = std::as_bytes(std::span(joint_sets[set])),
+            });
+            input.streams.push_back({
+                .attribute = {.semantic = ImporterSemantic::weights, .index = set, .components = 4},
+                .interpolation = MeshInterpolation::vertex,
+                .values = std::as_bytes(std::span(weight_sets[set])),
+            });
+        }
+    }
     ImporterMesh result = tessellate(input);
     // Sample payloads are no longer needed during deduplication and tangent generation.
     sampled_positions.clear();
     sampled_normals.clear();
     generated_normal_values.clear();
+    joint_sets.clear();
+    weight_sets.clear();
     if (!result.position_stream().valid())
         return result;
 
     result.motion_times = times.motion_times;
+    result.motion_sample_indices = times.motion_sample_indices;
     result.motion_interpolation_mode = times.interpolation;
 
     // Compact the tessellated streams before generating tangents. MikkTSpace may then split shared vertices where its

@@ -21,6 +21,7 @@ materialx-integration.md
 material-aovs.md
 lighting-and-sampling.md
 python-native-integration.md
+buffer-pointers.md
 bsdf-correctness-and-testing.md
 hydra-integration.md
 ```
@@ -48,8 +49,8 @@ hydra-integration.md
 6. [Material system](material-system.md) - **`draft`**. How materials, `MaterialSystem`, `TextureManager`, device
    records, shader requirements, opacity, and native, MDL, and MaterialX implementations fit together, including
    MDL's production geometry inputs.
-7. [BSDF contract](bsdf-contract.md) - **`current`**. How BSDF evaluation, sampling, probability measures, fused
-   evaluation, composition, and material-instance dispatch behave.
+7. [BSDF contract](bsdf-contract.md) - **`draft`**. How BSDF evaluation, component weights, joint and marginal
+   densities, sampling, composition, and material-instance dispatch behave.
 8. [MaterialX integration](materialx-integration.md) - **`current`**. How MaterialX discovery, graph preparation,
    code generation, class compilation, runtime resources, editable parameters, and shader specialization work.
 9. [Lighting and sampling](lighting-and-sampling.md) - **`current`**. How light authoring and radiometry, analytic,
@@ -71,6 +72,12 @@ hydra-integration.md
 
 Build and packaging, CI and testing architecture, editor UI, MCP, denoisers, and user guides are deferred until this
 runtime-focused set has been reviewed.
+
+## Additional design drafts
+
+- [Buffer pointers and indirect GPU access](buffer-pointers.md) - **`draft`**. BufferPtr ownership, host/shader
+  transport, backend representation, layout, alignment and conversion contracts. Describes the new
+  implementation alongside existing handles; production consumers have not migrated.
 
 ## Contributing
 

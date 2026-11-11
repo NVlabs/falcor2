@@ -33,18 +33,36 @@ def test_gltf_specialization_scene_config_constructor() -> None:
     default = f2.SceneConfig()
     assert default.gltf_specialization_mode == f2.GLTFSpecializationMode.balanced
     assert default.gltf_allowed_features == f2.GLTFFeatureFlags.all
+    assert default.gltf_core_features == f2.GLTFFeatureFlags.none
+    assert not default.gltf_core_texture_transforms
+    assert not default.gltf_core_alternate_uvs
     allowed = f2.GLTFFeatureFlags.all & ~f2.GLTFFeatureFlags.anisotropy
-    config = f2.SceneConfig(f2.UVOrigin.lower_left, 5, f2.GLTFSpecializationMode.single, allowed)
+    core = (
+        f2.GLTFFeatureFlags.normal | f2.GLTFFeatureFlags.emission | f2.GLTFFeatureFlags.multiscatter
+    )
+    config = f2.SceneConfig(
+        f2.UVOrigin.lower_left, 5, f2.GLTFSpecializationMode.single, allowed, core, True, True
+    )
     assert config.uv_origin == f2.UVOrigin.lower_left
     assert config.max_mip_count == 5
     assert config.gltf_specialization_mode == f2.GLTFSpecializationMode.single
     assert config.gltf_allowed_features == allowed
+    assert config.gltf_core_features == core
+    assert config.gltf_core_texture_transforms
+    assert config.gltf_core_alternate_uvs
     with pytest.raises(AttributeError):
         config.gltf_specialization_mode = f2.GLTFSpecializationMode.all
     with pytest.raises(TypeError):
         f2.SceneConfig(specialize_gltf_materials=False)
     with pytest.raises(RuntimeError, match="feature"):
         f2.SceneConfig(gltf_allowed_features=f2.GLTFFeatureFlags(1 << 30))
+    with pytest.raises(RuntimeError, match="gltf_core_features"):
+        f2.SceneConfig(gltf_core_features=f2.GLTFFeatureFlags(1 << 30))
+    with pytest.raises(RuntimeError, match="gltf_core_features"):
+        f2.SceneConfig(
+            gltf_allowed_features=f2.GLTFFeatureFlags.normal,
+            gltf_core_features=f2.GLTFFeatureFlags.emission,
+        )
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
@@ -148,6 +166,136 @@ def test_gltf_all_feature_variants_are_shared_per_workflow(device: spy.Device) -
     scene.update()
     assert mr_normal.slang_type_name == FLEXIBLE_MR
     assert scene.requirements is before
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
+@pytest.mark.parametrize(
+    "mode",
+    [
+        f2.GLTFSpecializationMode.required,
+        f2.GLTFSpecializationMode.single,
+        f2.GLTFSpecializationMode.balanced,
+        f2.GLTFSpecializationMode.all,
+    ],
+)
+def test_gltf_core_features_preserve_modes_and_required_uv(
+    device: spy.Device, mode: f2.GLTFSpecializationMode
+) -> None:
+    core = (
+        f2.GLTFFeatureFlags.normal | f2.GLTFFeatureFlags.emission | f2.GLTFFeatureFlags.multiscatter
+    )
+    scene = f2.Scene.create(
+        device, f2.SceneConfig(gltf_specialization_mode=mode, gltf_core_features=core)
+    )
+    mr_base = scene.create_material(f2.GLTFMaterial)
+    spec_gloss_base = scene.create_material(f2.GLTFSpecGlossMaterial)
+    scene.update()
+
+    assert not scene.required_capabilities.has(f2.SceneCapabilityFlags.geometry_properties)
+    if mode == f2.GLTFSpecializationMode.all:
+        expected_mr = (8191, 131071, 131071, 131071)
+        expected_spec_gloss = (7, 15, 15, 15)
+    else:
+        expected_mr = (11, 15, 0, 0)
+        expected_spec_gloss = (3, 15, 0, 0)
+    assert _compile_masks(mr_base.slang_type_name) == expected_mr
+    assert _compile_masks(spec_gloss_base.slang_type_name) == expected_spec_gloss
+
+    mr_uv = scene.create_material(f2.GLTFMaterial)
+    mr_uv.base_color_texture = _texture(device)
+    mr_uv.base_color_texture_offset = spy.float2(0.25)
+    mr_uv.base_color_texture_texcoord = 1
+    spec_gloss_uv = scene.create_material(f2.GLTFSpecGlossMaterial)
+    spec_gloss_uv.diffuse_texture = _texture(device)
+    spec_gloss_uv.diffuse_texture_offset = spy.float2(0.25)
+    spec_gloss_uv.diffuse_texture_texcoord = 1
+    scene.update()
+
+    assert scene.required_capabilities.has(f2.SceneCapabilityFlags.geometry_properties)
+    if mode == f2.GLTFSpecializationMode.required:
+        assert _compile_masks(mr_base.slang_type_name) == (11, 15, 0, 0)
+        assert _compile_masks(spec_gloss_base.slang_type_name) == (3, 15, 0, 0)
+        assert _compile_masks(mr_uv.slang_type_name) == (11, 15, 1, 1)
+        assert _compile_masks(spec_gloss_uv.slang_type_name) == (3, 15, 1, 1)
+    elif mode == f2.GLTFSpecializationMode.all:
+        assert (
+            _compile_masks(mr_base.slang_type_name)
+            == _compile_masks(mr_uv.slang_type_name)
+            == expected_mr
+        )
+        assert (
+            _compile_masks(spec_gloss_base.slang_type_name)
+            == _compile_masks(spec_gloss_uv.slang_type_name)
+            == expected_spec_gloss
+        )
+    else:
+        assert (
+            _compile_masks(mr_base.slang_type_name)
+            == _compile_masks(mr_uv.slang_type_name)
+            == (11, 15, 1, 1)
+        )
+        assert (
+            _compile_masks(spec_gloss_base.slang_type_name)
+            == _compile_masks(spec_gloss_uv.slang_type_name)
+            == (3, 15, 1, 1)
+        )
+
+    helper = SceneShaderHelper(device)
+    _, prepared = helper.prepare(scene, "render/test_gltf_material.slang")
+    assert prepared.matches_shader_inputs(scene.requirements)
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
+@pytest.mark.parametrize(
+    "mode",
+    [
+        f2.GLTFSpecializationMode.required,
+        f2.GLTFSpecializationMode.single,
+        f2.GLTFSpecializationMode.balanced,
+        f2.GLTFSpecializationMode.all,
+    ],
+)
+def test_gltf_core_can_compile_specular_transforms_and_alternate_uvs(
+    device: spy.Device, mode: f2.GLTFSpecializationMode
+) -> None:
+    core = (
+        f2.GLTFFeatureFlags.normal
+        | f2.GLTFFeatureFlags.emission
+        | f2.GLTFFeatureFlags.multiscatter
+        | f2.GLTFFeatureFlags.specular
+    )
+    scene = f2.Scene.create(
+        device,
+        f2.SceneConfig(
+            gltf_specialization_mode=mode,
+            gltf_core_features=core,
+            gltf_core_texture_transforms=True,
+            gltf_core_alternate_uvs=True,
+        ),
+    )
+    mr = scene.create_material(f2.GLTFMaterial)
+    spec_gloss = scene.create_material(f2.GLTFSpecGlossMaterial)
+    scene.update()
+
+    if mode == f2.GLTFSpecializationMode.all:
+        expected_mr = (8191, 131071, 131071, 131071)
+        expected_spec_gloss = (7, 15, 15, 15)
+    else:
+        expected_mr = (27, 63, 63, 63)
+        expected_spec_gloss = (3, 15, 15, 15)
+    assert _compile_masks(mr.slang_type_name) == expected_mr
+    assert _compile_masks(spec_gloss.slang_type_name) == expected_spec_gloss
+    assert not scene.required_capabilities.has(f2.SceneCapabilityFlags.geometry_properties)
+
+    mr.base_color_texture = _texture(device)
+    mr.base_color_texture_texcoord = 1
+    scene.update()
+    assert _compile_masks(mr.slang_type_name) == expected_mr
+    assert scene.required_capabilities.has(f2.SceneCapabilityFlags.geometry_properties)
+
+    helper = SceneShaderHelper(device)
+    _, prepared = helper.prepare(scene, "render/test_gltf_material.slang")
+    assert prepared.matches_shader_inputs(scene.requirements)
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])

@@ -35,6 +35,9 @@ ClearValue = spy.float4 | spy.int4 | spy.uint4
 
 UTILS_MODULE_PATH = "falcor2/utils.slang"
 _UTILS_MODULE_CACHE = PerDeviceCache[spy.Module]()
+_TENSOR_USAGE = (
+    spy.BufferUsage.shader_resource | spy.BufferUsage.unordered_access | spy.BufferUsage.shared
+)
 
 
 class Container:
@@ -96,6 +99,7 @@ class Container:
                 container.device,
                 shape=override_dims or container.shape,
                 dtype=format_to_typename(override_format) if override_format else container.dtype,
+                usage=_TENSOR_USAGE,
             )
         if isinstance(container, spy.Texture):
             if container.type == spy.TextureType.texture_2d:
@@ -131,9 +135,13 @@ class Container:
         assert isinstance(spec.dims, tuple)
         assert isinstance(spec.format, spy.Format)
         assert isinstance(spec.container_type, type)
-
         if spec.container_type is spy.Tensor:
-            return spy.Tensor.empty(device, shape=spec.dims, dtype=format_to_typename(spec.format))
+            return spy.Tensor.empty(
+                device,
+                shape=spec.dims,
+                dtype=format_to_typename(spec.format),
+                usage=_TENSOR_USAGE,
+            )
 
         if spec.container_type is spy.Texture:
             if len(spec.dims) != 2:
@@ -197,6 +205,17 @@ class Container:
         if container_torch.is_torch_tensor(container):
             return container_torch.to_render_layout(container)  # type: ignore
         raise TypeError(f"Unsupported container type: {type(container)!r}")
+
+    @staticmethod
+    def to_tensor_binding(container: Any) -> Any:
+        """Return a shader-cursor binding for a Slang tensor output."""
+        if isinstance(container, spy.Tensor):
+            return container
+        if container_torch.is_torch_tensor(container):
+            return container_torch.to_tensor_binding(container)
+        raise TypeError(
+            f"Tensor bindings require a SlangPy or Torch tensor, got {type(container)!r}."
+        )
 
     @staticmethod
     def clear(

@@ -14,7 +14,7 @@ public extension Scene
 {
     public TriangleVertex get_triangle_vertex(uint buffer_index, uint vertex_index)
     {
-        return detail::unpack_triangle_vertex(geometry[buffer_index].as_buffer<PackedTriangleVertex>()[vertex_index]);
+        return detail::unpack_triangle_vertex(geometry[buffer_index].as<PackedTriangleVertex>()[vertex_index]);
     }
 
     /// Get vertex indices within the instance's selected vertex buffer.
@@ -24,7 +24,7 @@ public extension Scene
             = reinterpret<TriangleGeometryInstanceDesc>(get_geometry_instance_desc(geometry_instance_id));
         uint vertex_offset = instance_desc.vertex_offset;
         uint index_offset = instance_desc.index_offset + primitive_index * 3;
-        let indices = geometry[instance_desc.index_buffer].as_buffer<uint>();
+        let indices = geometry[instance_desc.index_buffer].as<uint>();
         return uint[3](
             vertex_offset + indices[index_offset],
             vertex_offset + indices[index_offset + 1],
@@ -38,7 +38,7 @@ public extension Scene
         TriangleGeometryInstanceDesc instance_desc
             = reinterpret<TriangleGeometryInstanceDesc>(get_geometry_instance_desc(geometry_instance_id));
         uint[3] vertex_indices = get_triangle_indices(geometry_instance_id, primitive_index);
-        let vertices = geometry[instance_desc.vertex_buffer].as_buffer<PackedTriangleVertex>();
+        let vertices = geometry[instance_desc.vertex_buffer].as<PackedTriangleVertex>();
         return {
             detail::unpack_triangle_vertex(vertices[vertex_indices[0]]),
             detail::unpack_triangle_vertex(vertices[vertex_indices[1]]),
@@ -53,7 +53,7 @@ public extension Scene
         TriangleGeometryInstanceDesc instance_desc
             = reinterpret<TriangleGeometryInstanceDesc>(get_geometry_instance_desc(hit.geometry_instance_id));
         let vertex_indices = get_triangle_indices(hit.geometry_instance_id, hit.primitive_index);
-        let vertices = geometry[instance_desc.vertex_buffer + 1].as_buffer<PackedTriangleVertex>();
+        let vertices = geometry[instance_desc.vertex_buffer + 1].as<PackedTriangleVertex>();
         let v0 = detail::unpack_triangle_vertex(vertices[vertex_indices[0]]);
         let v1 = detail::unpack_triangle_vertex(vertices[vertex_indices[1]]);
         let v2 = detail::unpack_triangle_vertex(vertices[vertex_indices[2]]);
@@ -129,7 +129,7 @@ public struct TriangleGeomPropAccessor : IGeomPropAccessor
         additional_attribute_mask
             = g_scene.triangle_geometry.additional_attributes[additional_attribute_desc_offset].byte_offset;
         const uint index_offset = triangle_geometry_instance.index_offset + hit.primitive_index * 3;
-        let indices = g_scene.geometry[triangle_geometry_instance.index_buffer].as_buffer<uint>();
+        let indices = g_scene.geometry[triangle_geometry_instance.index_buffer].as<uint>();
         local_vertex_indices = uint3(indices[index_offset], indices[index_offset + 1], indices[index_offset + 2]);
         barycentric_weights
             = float3(1.f - hit.barycentrics.x - hit.barycentrics.y, hit.barycentrics.x, hit.barycentrics.y);
@@ -448,8 +448,8 @@ public extension Scene
         let vertex_offset = geometry_instance_data.vertex_offset;
         let index_offset = geometry_instance_data.index_offset + hit.primitive_index * 3;
 
-        let indices = geometry[geometry_instance_data.index_buffer].as_buffer<uint>();
-        let vertices = geometry[geometry_instance_data.vertex_buffer].as_buffer<PackedTriangleVertex>();
+        let indices = geometry[geometry_instance_data.index_buffer].as<uint>();
+        let vertices = geometry[geometry_instance_data.vertex_buffer].as<PackedTriangleVertex>();
 
         let i0 = indices[index_offset];
         let i1 = indices[index_offset + 1];

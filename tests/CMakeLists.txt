@@ -27,19 +27,24 @@ target_sources(falcor2_tests PRIVATE
     native/gltf_importer/test_gltf_importer.cpp
     native/gltf_importer/test_sampler_info.cpp
     native/importers/test_importer_animation.cpp
+    native/importers/test_importer_camera.cpp
     native/importers/test_importer_edit_stream.cpp
     native/importers/test_importer_vertex_stream.cpp
     native/importers/test_mesh_tessellator.cpp
     native/importers/test_tangent_transfer.cpp
+    native/importers/test_timed_skin_baking.cpp
+    native/importers/test_skinning.cpp
     native/importers/test_ribbon_tessellator.cpp
     native/importers/test_mikkt_cache.cpp
     native/importers/test_vertex_deduplication.cpp
-    native/render/test_scene.cpp
     native/render/test_animation.cpp
     native/render/test_emissive_triangle_tree.cpp
     native/render/test_material_aov_registry.cpp
     native/render/test_materials.cpp
     native/render/test_scene_object.cpp
+    native/render/test_scene.cpp
+    native/render/test_dynamic_geometry.cpp
+    native/render/test_geometry_sample_storage.cpp
     native/render/test_static_curve_geometry.cpp
     native/streaming/test_webrtc.cpp
     native/ui/test_editor_command.cpp
@@ -47,9 +52,12 @@ target_sources(falcor2_tests PRIVATE
     native/ui/test_property_layout.cpp
     native/ui/test_scene_editor.cpp
     native/usd_importer/test_usd_importer.cpp
+    native/usd_importer/test_usd_skinning.cpp
     native/usd_importer/test_usd_importer_tasks.cpp
+    native/utils/test_camera_framing.cpp
     native/utils/test_color.cpp
     native/utils/test_device_vector.cpp
+    native/utils/test_buffer_ptr.cpp
     native/utils/test_managed_vector.cpp
     native/utils/test_offset_allocator.cpp
     native/utils/test_packing.cpp

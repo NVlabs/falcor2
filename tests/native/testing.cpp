@@ -12,6 +12,7 @@
 #include <map>
 #include <ctime>
 #include <fstream>
+#include <functional>
 #include <string>
 #include <string_view>
 
@@ -50,7 +51,8 @@ std::filesystem::path get_test_temp_directory()
 {
     if (g_test_temp_directory == "") {
         std::string datetime_str = build_current_date_string();
-        g_test_temp_directory = std::filesystem::current_path() / ".test_temp" / datetime_str;
+        g_test_temp_directory = project_directory() / ".tmp" / "native-tests"
+            / (datetime_str + "-" + std::to_string(platform::current_process_id()));
         std::filesystem::create_directories(g_test_temp_directory);
     }
     return g_test_temp_directory;
@@ -65,7 +67,9 @@ std::filesystem::path get_suite_temp_directory()
 
 std::filesystem::path get_case_temp_directory()
 {
-    auto path = get_test_temp_directory() / get_current_test_suite_name() / get_current_test_case_name();
+    // Descriptive test names can exceed Windows path limits in nested checkouts.
+    auto case_id = std::hash<std::string>{}(get_current_test_case_name());
+    auto path = get_suite_temp_directory() / std::to_string(case_id);
     std::filesystem::create_directories(path);
     return path;
 }
@@ -226,6 +230,27 @@ void run_gpu_test(void (*func)(GpuTestContext&))
 }
 
 } // namespace falcor::testing
+
+TEST_SUITE("temporary files")
+{
+    TEST_CASE(
+        "long descriptive test names must allow nested cache files in temporary directories even when running from a "
+        "deeply nested public snapshot checkout on Windows with the default filesystem path length limits"
+    )
+    {
+        auto directory = falcor::testing::get_case_temp_directory() / "blob_cache" / "ab"
+            / "ab00000000000000000000000000000000000000";
+        std::filesystem::create_directories(directory);
+        auto path = directory / "metadata.tmp.deadbeef";
+        {
+            std::ofstream file(path);
+            REQUIRE(file.is_open());
+            file << "cache metadata";
+        }
+        CHECK(std::filesystem::file_size(path) == 14);
+        CHECK_NOTHROW((void)std::filesystem::last_write_time(path));
+    }
+}
 
 TEST_SUITE("test tiers")
 {

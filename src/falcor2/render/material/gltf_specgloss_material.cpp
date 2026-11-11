@@ -163,7 +163,7 @@ void GLTFSpecGlossMaterial::write_to_cursor_impl(CursorT cursor) const
         = float16_t4(m_core.glossiness_factor, m_core.normal_texture_scale, float16_t(0.f), float16_t(0.f));
     cursor["feature_mask"] = m_feature_mask;
     cursor["transform_mask"] = m_transform_mask;
-    cursor["extra_data"] = m_scene ? data_ref() : BufferOffsetPair{};
+    cursor["extra_data"] = m_scene ? data_ref() : BufferPtr{};
 }
 
 template void GLTFSpecGlossMaterial::write_to_cursor_impl(sgl::BufferElementCursor cursor) const;

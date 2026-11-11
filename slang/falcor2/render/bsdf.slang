@@ -113,17 +113,27 @@ public enum BSDFFlags : uint {
     all = reflection | transmission | curve,
 };
 
+/// Material-defined contribution selector. Other values are local to a compatible component layout.
+/// A component can represent a group of lobes; it identifies the returned contribution, not the proposal lobe.
+public enum class BSDFComponent : uint {
+    full_response = 0xffffffff,
+};
+
 /// Result of a BSDF sample.
 public struct BSDFSample : IDifferentiable
 {
     /// Outgoing direction.
     public float3 wo;
-    /// pdf with respect to solid angle for sampling outgoing direction wo (0 for delta events).
+    /// Marginal pdf with respect to solid angle for outgoing direction wo (0 for delta events).
     public float pdf;
-    /// Sample weight eval(wi, wo) / pdf(wo).
+    /// For continuous events, selected component value divided by its joint component/direction PDF.
+    /// Delta events carry integrated weights and retain the zero-PDF sentinel.
     public float3 weight;
     /// Flags describing the sampled scattering event (see BSDFFlags).
     public BSDFFlags flags;
+    /// Contribution represented by weight; full_response denotes the entire BSDF response.
+    /// Other indices are local to this BSDF's component layout.
+    public BSDFComponent component = BSDFComponent::full_response;
 
     /// Return true if the sample contains any of the specified flags.
     public bool has_flag(const BSDFFlags flags) { return is_set(this.flags, flags); }
@@ -275,25 +285,40 @@ public struct BSDFContext
 
 public interface IBSDF
 {
-    /// Evaluates the BSDF.
+    /// Evaluates the selected contribution. Surface BSDF values include outgoing foreshortening;
+    /// curve BSDFs return their scattering response without an extra surface cosine.
     /// @param wi Incident direction.
     /// @param wo Outgoing direction.
     /// @param bc BSDF context.
+    /// @param component Contribution to evaluate, or full_response for the entire response.
     /// @return For surface BSDFs, returns f(wi, wo) * abs(dot(wo, n)). Curve BSDFs return their scattering
     /// response without an extra surface foreshortening factor.
-    public float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
+    public float3 eval(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
-        return eval_with_pdf(wi, wo, bc).value;
+        return eval_with_pdf(wi, wo, bc, component).value;
     }
 
-    /// Evaluates the BSDF and its directional pdf together.
+    /// Specific components return their physical contribution and joint component/direction density.
+    /// Full response returns the entire response and marginal directional density. Full-response-only BSDFs
+    /// ignore the selector. Component-aware BSDFs return zero for unknown indices and keep inactive indices stable.
     /// @param wi Incident direction.
     /// @param wo Outgoing direction.
     /// @param bc BSDF context.
-    /// @return The BSDF value and solid-angle pdf returned by eval() and eval_pdf(), respectively.
-    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc);
+    /// @param component Contribution to evaluate, or full_response for the entire response and marginal PDF.
+    /// @return The selected BSDF value and solid-angle density returned by eval() and eval_pdf(), respectively.
+    public BSDFEval eval_with_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    );
 
-    /// Samples the BSDF.
+    /// Samples the BSDF using caller-owned coordinates.
     /// @param wi Incident direction.
     /// @param[out] sample BSDF sample. Only valid if the function returns true.
     /// @param input Uniform sample coordinates and auxiliary random bits; see BSDFSampleInput.
@@ -301,14 +326,20 @@ public interface IBSDF
     /// @return Returns true if successful.
     public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample);
 
-    /// Evaluates the directional pdf for sampling outgoing direction wo.
+    /// Returns the selected joint density, or the marginal density for full response (zero for delta events).
     /// @param wi Incident direction.
     /// @param wo Outgoing direction.
     /// @param bc BSDF context.
-    /// @return Returns the pdf with respect to solid angle for sampling outgoing direction wo (0 for delta events).
-    public float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+    /// @param component Contribution whose joint density is requested, or full_response for the marginal density.
+    /// @return Solid-angle density including component selection probability, or zero for delta events.
+    public float eval_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
-        return eval_with_pdf(wi, wo, bc).pdf;
+        return eval_with_pdf(wi, wo, bc, component).pdf;
     }
 
     /// Evaluate albedos (hemispherical reflectance) of the BSDF. Reflection + transmission hemisphere should be <= 1.0.

@@ -90,6 +90,42 @@ def test_pipeline_single_iteration(
     assert pipeline.reweighting_accumulator._sample_count == 0
 
 
+@pytest.mark.parametrize("device_type", [spy.DeviceType.cuda])
+@pytest.mark.parametrize("samples_per_dispatch", [4, 8])
+@pytest.mark.parametrize("exposure", [0.0, 2.0])
+def test_pipeline_batched_samples_match_single_sample_dispatches(
+    device_type: spy.DeviceType,
+    device: spy.Device,
+    helmet_scene: f2.Scene,
+    samples_per_dispatch: int,
+    exposure: float,
+) -> None:
+    from falcor2.rendernodes import PathTracerPipeline
+
+    spp = 8
+    camera = helpers.create_test_camera(helmet_scene, width=32, height=32, fov_y=45)
+    camera.exposure = exposure
+    pipelines = [PathTracerPipeline.create(device) for _ in range(2)]
+    for pipeline in pipelines:
+        pipeline.spp = spp
+        pipeline.tone_map = False
+        pipeline.accumulator.sanitize_non_finite = False
+        pipeline.accumulator.clamp_sample_luminance = False
+        pipeline.output_spec = f2.ContainerSpec.tensor(spy.Format.rgba32_float)
+
+    reference, batched = pipelines
+    assert reference.samples_per_dispatch == 1
+    batched.samples_per_dispatch = samples_per_dispatch
+
+    expected = reference(helmet_scene, camera).to_numpy().copy()
+    actual = batched(helmet_scene, camera).to_numpy()
+
+    np.testing.assert_allclose(actual, expected, rtol=5e-4, atol=1e-5)
+    assert reference.accumulator._sample_count == spp
+    assert batched._iteration == spp
+    assert batched.accumulator._sample_count == spp // samples_per_dispatch
+
+
 @pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pipeline_updates_scene_before_resolving_active_camera(
@@ -101,7 +137,7 @@ def test_pipeline_updates_scene_before_resolving_active_camera(
     from falcor2.rendernodes import AccumulationMode, PathTracerPipeline
 
     camera = helpers.create_test_camera(empty_scene, width=16, height=8, fov_y=45)
-    assert empty_scene.active_camera is None
+    assert empty_scene.active_camera is empty_scene.free_camera
 
     pipeline = PathTracerPipeline.create(device)
     pipeline.accumulation_mode = AccumulationMode.off

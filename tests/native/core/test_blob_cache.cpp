@@ -675,7 +675,7 @@ TEST_CASE("size-mismatched fixed-size read leaves payload intact")
     CHECK(cache.contains(key));
 }
 
-TEST_CASE("old temp file cleanup on construction")
+TEST_CASE("old temp files are cleaned by maintenance without scanning on construction")
 {
     auto opts = make_test_options();
     auto root = *opts.root_dir;
@@ -688,8 +688,16 @@ TEST_CASE("old temp file cleanup on construction")
         f << "temp data";
     }
 
-    auto old_time = std::filesystem::file_time_type::clock::now() - std::chrono::minutes(2);
+    auto old_time = std::filesystem::file_time_type::clock::now() - std::chrono::minutes(6);
     std::filesystem::last_write_time(tmp_path, old_time);
+
+    auto recent_tmp_path = key_dir / "metadata.tmp.deadbeef";
+    {
+        std::ofstream f(recent_tmp_path, std::ios::binary | std::ios::trunc);
+        f << "recent temp data";
+    }
+    auto recent_time = std::filesystem::file_time_type::clock::now() - std::chrono::minutes(2);
+    std::filesystem::last_write_time(recent_tmp_path, recent_time);
 
     auto unrelated_path = root / "index.bin";
     {
@@ -701,8 +709,19 @@ TEST_CASE("old temp file cleanup on construction")
     CHECK(std::filesystem::exists(unrelated_path));
 
     BlobCache cache(opts);
+    CHECK(std::filesystem::exists(tmp_path));
+    cache.stats();
+    CHECK(std::filesystem::exists(tmp_path));
+
+    auto write = cache.write_stream(make_digest("pending"));
+    const auto pending_path = write.stream()->path();
+    cache.evict();
     CHECK_FALSE(std::filesystem::exists(tmp_path));
+    CHECK(std::filesystem::exists(recent_tmp_path));
+    CHECK(std::filesystem::exists(pending_path));
     CHECK(std::filesystem::exists(unrelated_path));
+    write.commit();
+    CHECK(cache.contains(make_digest("pending")));
 }
 
 TEST_CASE("invalid sub-data names report errors and throwing overloads throw")

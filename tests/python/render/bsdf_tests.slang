@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import slangpy;
+__exported import scattering_tests;
 __exported import falcor2.render;
 __exported import falcor2.utils;
 __exported import falcor2.render.materials.mtlx.mtlx;
@@ -103,19 +104,24 @@ public struct TestGLTFBSDF : IBSDF
         );
     }
 
-    public BSDFEval eval_with_pdf(float3 wi, float3 wo, BSDFContext bc)
+    public BSDFEval eval_with_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
         return make_bsdf<gltfmat::FeatureBits::ALL_MR>(wi).eval_with_pdf(wi, wo, bc);
     }
-    public bool sample(float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample result)
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample result)
     {
         return make_bsdf<gltfmat::FeatureBits::ALL_MR>(wi).sample(wi, input, bc, result);
     }
-    public AlbedoContributions eval_albedo(float3 wi)
+    public AlbedoContributions eval_albedo(const float3 wi)
     {
         return make_bsdf<gltfmat::FeatureBits::ALL_MR>(wi).eval_albedo(wi);
     }
-    public RoughnessInformation eval_roughness(float3 wi)
+    public RoughnessInformation eval_roughness(const float3 wi)
     {
         return make_bsdf<gltfmat::FeatureBits::ALL_MR>(wi).eval_roughness(wi);
     }
@@ -137,16 +143,25 @@ public float4 test_gltf_exact_flexible<let Features : uint>(TestGLTFBSDFData dat
 public struct TestGLTFSpecGlossBSDF : IBSDF
 {
     public GLTFSpecGlossBSDFData data;
-    public BSDFEval eval_with_pdf(float3 wi, float3 wo, BSDFContext bc)
+
+    public BSDFEval eval_with_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
-        return GLTFSpecGlossBSDF(wi, data).eval_with_pdf(wi, wo, bc);
+        return GLTFSpecGlossBSDF(wi, data).eval_with_pdf(wi, wo, bc, component);
     }
-    public bool sample(float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample result)
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample result)
     {
         return GLTFSpecGlossBSDF(wi, data).sample(wi, input, bc, result);
     }
-    public AlbedoContributions eval_albedo(float3 wi) { return GLTFSpecGlossBSDF(wi, data).eval_albedo(wi); }
-    public RoughnessInformation eval_roughness(float3 wi) { return GLTFSpecGlossBSDF(wi, data).eval_roughness(wi); }
+    public AlbedoContributions eval_albedo(const float3 wi) { return GLTFSpecGlossBSDF(wi, data).eval_albedo(wi); }
+    public RoughnessInformation eval_roughness(const float3 wi)
+    {
+        return GLTFSpecGlossBSDF(wi, data).eval_roughness(wi);
+    }
     public property float3 ior_as_reflectance
     {
         get {
@@ -557,7 +572,7 @@ public float4 test_mtlx_generalized_schlick_retroreflection_sample()
 // Chi-square test target
 // ============================================================================
 
-/// Chi-square test target wrapping any BSDF implementation.
+/// Sampling-contract and chi-square target wrapping any BSDF implementation.
 ///
 /// This adapts the IBSDF interface to the chi2::ITarget interface,
 /// using SphericalDomain for the parameter space.
@@ -568,9 +583,8 @@ public float4 test_mtlx_generalized_schlick_retroreflection_sample()
 /// Using hemisphere bounds avoids binning artifacts at the equatorial
 /// discontinuity where eval_pdf transitions from >0 to 0.
 ///
-/// Note: This only tests continuous (non-delta) lobes. BSDFs with purely
-/// delta distributions (e.g., perfect mirrors) cannot be tested this way.
-public struct BSDFTarget<B : IBSDF> : chi2::ITarget
+/// Chi-square checks only continuous lobes; the contract adapter also supports delta events.
+public struct BSDFTarget<B : IBSDF> : chi2::ITarget, scattering_tests::IScatteringTestTarget
 {
     public B bsdf;
     public float3 wi;
@@ -585,103 +599,19 @@ public struct BSDFTarget<B : IBSDF> : chi2::ITarget
         BSDFSample sample;
         bool valid = bsdf.sample(wi, make_bsdf_sample_input(sg), bc, sample);
         p = sample.wo;
-        return valid;
+        return valid && !sample.has_flag(BSDFFlags::delta);
     }
 
     public float pdf(float3 wo) { return bsdf.eval_pdf(wi, wo, bc); }
-};
 
-// ============================================================================
-// Eval/sample consistency test kernel
-// ============================================================================
+    public bool sample(BSDFSampleInput input, out BSDFSample result) { return bsdf.sample(wi, input, bc, result); }
 
-/// GPU kernel to test eval/sample consistency of a BSDF.
-///
-/// For each non-delta sample drawn from bsdf.sample(), verifies:
-/// 1. eval(wi, wo) / eval_pdf(wi, wo) ~= weight (weight consistency)
-/// 2. eval_pdf(wi, wo) ~= pdf from sample() (pdf consistency)
-///
-/// Results are written per-thread (max errors). The Python side reduces
-/// across threads by taking the maximum.
-///
-/// Counter indices: [0]=valid, [1]=failed, [2]=delta, [3]=invalid
-public void test_eval_sample_consistency<B : IBSDF>(
-    uint tid,
-    uint sample_count,
-    uint samples_per_thread,
-    uint seed,
-    B bsdf,
-    float3 wi,
-    BSDFContext bc,
-    WTensor<float, 1> weight_errors,
-    WTensor<float, 1> pdf_errors,
-    AtomicTensor<uint, 1> counters
-)
-{
-    uint2 v = block_cipher_tea(seed, tid);
-    UniformSampleGenerator sg = UniformSampleGenerator(v.x);
 
-    float max_weight_err = 0.0;
-    float max_pdf_err = 0.0;
-
-    for (uint i = 0; i < samples_per_thread; ++i) {
-        uint sample_index = tid * samples_per_thread + i;
-        if (sample_index >= sample_count)
-            break;
-
-        BSDFSample sample = {};
-
-        if (!bsdf.sample(wi, make_bsdf_sample_input(sg), bc, sample)) {
-            counters.add(1, 1); // failed
-            continue;
-        }
-
-        // Sanity: check the complete sample payload before handling either measure.
-        if (sample.pdf < 0 || any(sample.weight < 0) || isnan(sample.pdf) || isinf(sample.pdf)
-            || any(isnan(sample.weight)) || any(isinf(sample.weight)) || any(isnan(sample.wo))
-            || any(isinf(sample.wo))) {
-            counters.add(3, 1); // invalid
-            continue;
-        }
-
-        // Skip delta lobes after checking their zero solid-angle PDF contract.
-        if (sample.has_flag(BSDFFlags::delta)) {
-            if (sample.pdf == 0.0)
-                counters.add(2, 1); // delta
-            else
-                counters.add(3, 1); // invalid
-            continue;
-        }
-
-        counters.add(0, 1); // valid
-
-        // Verify pdf consistency: eval_pdf(wi, wo) should match pdf from sample().
-        float eval_pdf_value = bsdf.eval_pdf(wi, sample.wo, bc);
-        float pdf_denom = max(abs(sample.pdf), 1e-8);
-        float pdf_err = abs(eval_pdf_value - sample.pdf) / pdf_denom;
-        max_pdf_err = max(max_pdf_err, pdf_err);
-
-        // Verify weight consistency: eval(wi, wo) / eval_pdf(wi, wo) ~= weight.
-        if (eval_pdf_value > 1e-8) {
-            float3 eval_value = bsdf.eval(wi, sample.wo, bc);
-            float3 computed_weight = eval_value / eval_pdf_value;
-
-            // Per-channel relative error.
-            for (int c = 0; c < 3; c++) {
-                float denom = max(abs(sample.weight[c]), 1e-8);
-                float err = abs(computed_weight[c] - sample.weight[c]) / denom;
-                max_weight_err = max(max_weight_err, err);
-            }
-        }
+    public BSDFEval eval_with_pdf(float3 wo, BSDFComponent component = BSDFComponent::full_response)
+    {
+        return BSDFEval(bsdf.eval(wi, wo, bc, component), bsdf.eval_pdf(wi, wo, bc, component));
     }
-
-    weight_errors.store(tid, max_weight_err);
-    pdf_errors.store(tid, max_pdf_err);
-}
-
-// ============================================================================
-// Reciprocity test kernel
-// ============================================================================
+};
 
 /// GPU kernel to test BSDF reciprocity (Helmholtz reciprocity).
 ///

@@ -4,6 +4,7 @@
 #pragma once
 
 #include "falcor2/core/asset_resolver.h"
+#include "falcor2/core/blob.h"
 #include "falcor2/render/texture_load_flags.h"
 
 #include "falcor2/core/cursor_writer.h"
@@ -22,6 +23,7 @@
 #include <map>
 #include <optional>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace falcor {
@@ -102,10 +104,12 @@ public:
         auto operator<=>(const SamplerConfig&) const = default;
     };
 
-    /// Parameters for loading a texture from file.
+    /// Parameters for loading a texture from a file or encoded image bytes.
     struct LoadTextureDesc {
         /// Path to the texture file.
         std::filesystem::path path;
+        /// Encoded image data, used instead of path.
+        ref<Blob> texture_bytes;
         /// Asset resolver to use for resolving relative paths (optional).
         ref<AssetResolver> resolver;
         /// Sampler or sampler configuration (optional; a null sampler uses the default).
@@ -165,10 +169,12 @@ public:
     /// These are only updated during `update()` calls.
     const Stats& stats() const { return m_stats; }
 
-    /// Load a texture from file and create a texture handle for it.
+    /// Load a texture from a file or encoded bytes and create a texture handle for it.
     /// Uses the default sampler if no sampler is specified.
     /// If the texture/sampler is already registered, returns the existing handle.
-    /// @param path Path to the texture file.
+    /// Exactly one of `path` or `texture_bytes` must be set.
+    /// @param path Path to the texture file, if loading from a file.
+    /// @param texture_bytes Encoded image data, if loading from memory.
     /// @param resolver Asset resolver to use for resolving relative paths (optional).
     /// @param sampler Sampler or sampler configuration (optional).
     /// @param flags Texture transformations and preset (defaults to color).
@@ -227,6 +233,13 @@ private:
         auto operator<=>(const TextureInfo&) const = default;
     };
 
+    struct ByteTextureInfo {
+        ref<Blob> source;
+        TextureOptions options;
+    };
+
+    using ByteTextureKey = std::pair<Blob*, TextureOptions>;
+
     struct HandleEntry {
         bool allocated{false};
         /// Reference count. Should not be used directly but through `atomic_ref_count` accessor.
@@ -253,6 +266,7 @@ private:
     struct TextureEntry {
         bool allocated{false};
         std::optional<TextureInfo> info;
+        std::optional<ByteTextureInfo> byte_info;
         ref<sgl::Texture> texture;
         UDIMTiles udim_tiles;
         bool is_loaded{false};
@@ -285,6 +299,7 @@ private:
 
     bool is_texture_loaded(TextureID texture_id) const;
 
+    TextureHandle load_regular_texture(TextureID texture_id, const LoadTextureDesc& desc);
     void load_texture(TextureID texture_id);
     void load_textures(std::span<const TextureID> texture_ids);
     void notify_textures_loaded(std::span<const TextureID> texture_ids, double duration_s);
@@ -300,6 +315,7 @@ private:
 
     TextureID get_or_create_texture(ref<sgl::Texture> texture);
     TextureID get_or_create_texture(const std::filesystem::path& path, const TextureOptions& options);
+    TextureID get_or_create_texture(ref<Blob> source, const TextureOptions& options);
     TextureID get_or_create_udim_texture(
         const std::filesystem::path& path,
         const UDIMPaths& udim_paths,
@@ -342,6 +358,7 @@ private:
     std::vector<TextureEntry> m_texture_entries;
     std::map<sgl::Texture*, TextureID> m_texture_to_texture_id;
     std::map<TextureInfo, TextureID> m_texture_info_to_texture_id;
+    std::map<ByteTextureKey, TextureID> m_byte_texture_to_texture_id;
     std::vector<uint32_t> m_free_texture_indices;
 
     std::vector<SamplerEntry> m_sampler_entries;

@@ -36,6 +36,7 @@ falcor2/pxr/
 falcor2.egg-info/
 
 output/
+/screenshots/
 
 falcor2_tests.log
 tests/_mcp_smoke/

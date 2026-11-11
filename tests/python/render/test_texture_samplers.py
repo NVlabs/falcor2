@@ -4,6 +4,7 @@
 from pathlib import Path
 from typing import Any, Callable
 import base64
+from io import BytesIO
 import json
 import struct
 
@@ -194,7 +195,24 @@ def test_gltf_texture_color_space_roles(
     path.write_text(json.dumps(document), encoding="utf-8")
     device = helpers.get_device(device_type)
     scene = f2.Scene.load(device, path)
+    if image_source == "embedded":
+        for material, slots in [
+            (scene.materials[0], ["diffuse", "specular_glossiness", "emissive", "normal"]),
+            (scene.materials[1], ["base_color", "metallic_roughness", "emissive"]),
+            (scene.materials[2], ["base_color"]),
+        ]:
+            for slot in slots:
+                assert material[f"{slot}_texture_bytes"].data == image_path.read_bytes()
+                assert material[f"{slot}_texture"] is None
     scene.update()
+    if image_source == "embedded":
+        for material, slots in [
+            (scene.materials[0], ["diffuse", "specular_glossiness", "emissive", "normal"]),
+            (scene.materials[1], ["base_color", "metallic_roughness", "emissive"]),
+            (scene.materials[2], ["base_color"]),
+        ]:
+            for slot in slots:
+                assert material[f"{slot}_texture"] is None
     encoded = 56 / 255
     decoded = ((encoded + 0.055) / 1.055) ** 2.4
     alpha = 1.0 if image_mode == "L" else 102 / 255
@@ -535,3 +553,157 @@ def test_gltf_all_material_sampler_mappings(tmp_path: Path, device_type: spy.Dev
             assert scene.materials.find(name)[f"{slot}_texture_sampler"] == sampler
     # The scene default and one shared authored sampler.
     assert scene.texture_manager.stats.total_sampler_count == 2
+
+
+def _write_embedded_color_scene(path: Path, name: str, color: tuple[int, int, int, int]) -> bytes:
+    stream = BytesIO()
+    Image.new("RGBA", (2, 2), color).save(stream, format="PNG")
+    data = stream.getvalue()
+    document = {
+        "asset": {"version": "2.0"},
+        "images": [
+            {
+                "name": f"{name} image",
+                "uri": "data:image/png;base64," + base64.b64encode(data).decode("ascii"),
+            }
+        ],
+        "textures": [{"source": 0}],
+        "materials": [{"name": name, "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}}],
+    }
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return data
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
+@pytest.mark.parametrize(
+    "mode, material_type",
+    [
+        (f2.GLTFMaterialMode.standard_material, "StandardMaterial"),
+        (f2.GLTFMaterialMode.openpbr, "OpenPBRMaterial"),
+    ],
+)
+def test_embedded_texture_import_modes(
+    tmp_path: Path, device_type: spy.DeviceType, mode: f2.GLTFMaterialMode, material_type: str
+) -> None:
+    path = tmp_path / "mode.gltf"
+    encoded = _write_embedded_color_scene(path, "Color", (255, 0, 0, 255))
+    options = f2.ImportOptions()
+    options.gltf_material_mode = mode
+    device = helpers.get_device(device_type)
+    scene = f2.Scene.load(device, path, import_options=options)
+    material = scene.materials.find("Color")
+    assert material["base_color_texture_bytes"].data == encoded
+    assert material["base_color_texture"] is None
+
+    scene.update()
+    sample = _sampler_probe(device, scene, material_type)
+    slot = _SLOTS[material_type].index("base_color")
+    np.testing.assert_allclose(_rgba(sample(material, slot, spy.float2(0.5), 0.0)), [1, 0, 0, 1])
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
+def test_embedded_texture_outlives_importer_and_append_uses_new_bytes(
+    tmp_path: Path, device_type: spy.DeviceType
+) -> None:
+    path = tmp_path / "changing.gltf"
+    first_data = _write_embedded_color_scene(path, "First", (255, 0, 0, 255))
+    device = helpers.get_device(device_type)
+    imported = f2.GltfImporter().load_scene(path)
+    scene = f2.Scene.from_importer_scene(device, imported)
+    del imported
+
+    second_data = _write_embedded_color_scene(path, "Second", (0, 0, 255, 255))
+    scene.append(f2.GltfImporter().load_scene(path))
+    first = scene.materials.find("First")
+    second = scene.materials.find("Second")
+    assert first.base_color_texture_bytes.data == first_data
+    assert second.base_color_texture_bytes.data == second_data
+    assert first.base_color_texture is None
+    assert second.base_color_texture is None
+
+    scene.update()
+    sample = _sampler_probe(device, scene, "GLTFMaterial")
+    slot = _SLOTS["GLTFMaterial"].index("base_color")
+    np.testing.assert_allclose(_rgba(sample(first, slot, spy.float2(0.5), 0.0)), [1, 0, 0, 1])
+    np.testing.assert_allclose(_rgba(sample(second, slot, spy.float2(0.5), 0.0)), [0, 0, 1, 1])
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
+def test_embedded_and_file_textures_load_in_one_update(
+    tmp_path: Path, device_type: spy.DeviceType
+) -> None:
+    path = tmp_path / "mixed.gltf"
+    _write_embedded_color_scene(path, "Embedded", (255, 0, 0, 255))
+    Image.new("RGBA", (2, 2), (0, 0, 255, 255)).save(tmp_path / "file.png")
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["images"].append({"uri": "file.png"})
+    document["textures"].append({"source": 1})
+    document["materials"].append(
+        {"name": "File", "pbrMetallicRoughness": {"baseColorTexture": {"index": 1}}}
+    )
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    device = helpers.get_device(device_type)
+    scene = f2.Scene.load(device, path)
+    assert scene.materials.find("Embedded").base_color_texture_bytes is not None
+    assert scene.materials.find("File").base_color_texture_path == tmp_path / "file.png"
+    scene.update()
+
+    sample = _sampler_probe(device, scene, "GLTFMaterial")
+    slot = _SLOTS["GLTFMaterial"].index("base_color")
+    np.testing.assert_allclose(
+        _rgba(sample(scene.materials.find("Embedded"), slot, spy.float2(0.5), 0.0)),
+        [1, 0, 0, 1],
+    )
+    np.testing.assert_allclose(
+        _rgba(sample(scene.materials.find("File"), slot, spy.float2(0.5), 0.0)),
+        [0, 0, 1, 1],
+    )
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
+def test_embedded_texture_decoding_is_on_demand(
+    tmp_path: Path, device_type: spy.DeviceType
+) -> None:
+    corrupt = b"invalid embedded PNG"
+    document = {
+        "asset": {"version": "2.0"},
+        "images": [
+            {
+                "name": "Broken image",
+                "uri": "data:image/png;base64," + base64.b64encode(corrupt).decode("ascii"),
+            }
+        ],
+        "textures": [{"source": 0}],
+        "materials": [
+            {"name": "Referenced", "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}}
+        ],
+    }
+    path = tmp_path / "corrupt.gltf"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    device = helpers.get_device(device_type)
+
+    scene = f2.Scene.load(device, path)
+    assert scene.materials.find("Referenced").base_color_texture_bytes.data == corrupt
+    with pytest.raises(RuntimeError, match="Broken image"):
+        scene.update()
+
+    overridden = f2.Scene.load(device, path)
+    material = overridden.materials.find("Referenced")
+    material.base_color_texture = device.create_texture(
+        type=spy.TextureType.texture_2d,
+        format=spy.Format.rgba8_unorm,
+        width=1,
+        height=1,
+        usage=spy.TextureUsage.shader_resource,
+    )
+    overridden.update()
+
+    removed = f2.Scene.load(device, path)
+    removed.materials.find("Referenced").remove()
+    removed.update()
+
+    document["materials"] = [{"name": "Unused"}]
+    path.write_text(json.dumps(document), encoding="utf-8")
+    unused = f2.Scene.load(device, path)
+    unused.update()

@@ -43,12 +43,14 @@ from slangpy.testing.benchmark import (
 import falcor2.testing.helpers as helpers
 
 
+FALCOR2_PROJECT_REPOSITORY = "https://github.com/NVlabs/falcor2"
+
 FALCOR2_PROJECT = BenchViewProject(
     id="falcor2",
     name="Falcor2",
     suite_id="benchmarks",
     suite_name="Falcor2 benchmarks",
-    repository="https://github.com/NVlabs/falcor2",
+    repository=FALCOR2_PROJECT_REPOSITORY,
     producer_name="falcor2-pytest-benchmark",
     producer_version="1.0.0",
 )

@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,13 @@ from falcor2.pxr import Usd, UsdGeom
 def _probe(
     device: spy.Device, scene: f2.Scene, origins: np.ndarray, directions: np.ndarray
 ) -> list[Any]:
+    return _make_probe(device, scene)(origins, directions)
+
+
+def _make_probe(
+    device: spy.Device, scene: f2.Scene
+) -> Callable[[np.ndarray, np.ndarray], list[Any]]:
+    # Reuse shader setup across animation updates with unchanged geometry/material types.
     helper = SceneShaderHelper(device)
     source = spy.Module(
         device.load_module("render/test_usd_ribbons.slang"),
@@ -41,12 +49,16 @@ def _probe(
             flags=setup.pipeline_flags,
         )
     )
-    result = function(
-        spy.Tensor.from_numpy(device, origins), spy.Tensor.from_numpy(device, directions)
-    )
-    cursor = result.cursor()
-    cursor.load()
-    return [cursor[i].read() for i in range(len(origins))]
+
+    def probe(origins: np.ndarray, directions: np.ndarray) -> list[Any]:
+        result = function(
+            spy.Tensor.from_numpy(device, origins), spy.Tensor.from_numpy(device, directions)
+        )
+        cursor = result.cursor()
+        cursor.load()
+        return [cursor[i].read() for i in range(len(origins))]
+
+    return probe
 
 
 # Exercise the mesh integration on each backend; UV policy itself is CPU-tested.
@@ -186,10 +198,9 @@ def test_usd_ribbon_generated_uv_texture(device_type: spy.DeviceType, device: sp
         np.testing.assert_allclose(hit["tangent"], [0, 1, 0], atol=1e-5)
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
 def test_usd_ribbon_motion_sample_submission(device: spy.Device) -> None:
-    from tests.python.importers.mesh_motion_sampling import MeshSampler
-
     stage = Usd.Stage.CreateInMemory()
     stage.SetTimeCodesPerSecond(2)
     UsdGeom.SetStageMetersPerUnit(stage, 1)
@@ -209,17 +220,13 @@ def test_usd_ribbon_motion_sample_submission(device: spy.Device) -> None:
     assert mesh.motion_times == [0, 1]
     scene = f2.Scene.from_importer_scene(device, imported)
     scene.update()
-    geometry = next(g for g in scene.geometries if isinstance(g, f2.StaticMeshGeometry))
+    assert any(isinstance(g, f2.DynamicMeshGeometry) for g in scene.geometries)
     origins = np.array([[1, 0.25, 4]], dtype=np.float32)
     directions = np.array([[0, 0, -1]], dtype=np.float32)
     before = _probe(device, scene, origins, directions)[0]
     assert before["valid"]
-    sampler = MeshSampler(mesh)
-    indices = mesh.subgeometries[0].indices_numpy.copy()
     for time in (0, 0.5, 1):
-        geometry.set_mesh_data(
-            sub_mesh_indices=[indices], texcoords=mesh.texcoords(0).copy(), **sampler.sample(time)
-        )
+        scene.time = time
         scene.update()
         result = _probe(device, scene, origins, directions)[0]
         assert result["valid"]

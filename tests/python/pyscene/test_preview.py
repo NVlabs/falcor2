@@ -94,14 +94,29 @@ def test_preview_resolves_source_path_without_overwriting_explicit_value(tmp_pat
     assert importer.source_path == explicit_path.resolve()
 
 
-def test_preview_builds_scene_and_runs_editor(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("has_authored_camera", [False, True])
+@pytest.mark.parametrize("headless", [False, True])
+def test_preview_builds_scene_with_camera_before_callbacks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    has_authored_camera: bool,
+    headless: bool,
+) -> None:
+    authored_camera = object()
+    steps: list[str] = []
+
     class FakeImporterScene:
         def __init__(self) -> None:
-            self.cameras: list[object] = []
+            self.cameras = [authored_camera] if has_authored_camera else []
 
-        def add_default_camera_best_view(self, focal_length: float, camera_aspect: float) -> None:
-            calls["best_view_args"] = (focal_length, camera_aspect)
+        def has_camera(self) -> bool:
+            return bool(self.cameras)
+
+        def add_framed_camera(self, *, fov_degrees: float, aspect: float) -> int:
+            calls["framing_args"] = (fov_degrees, aspect)
+            steps.append("frame")
             self.cameras.append(object())
+            return len(self.cameras) - 1
 
     importer_scene = FakeImporterScene()
     importer = SimpleNamespace(source_path=Path())
@@ -124,6 +139,8 @@ def test_preview_builds_scene_and_runs_editor(monkeypatch: pytest.MonkeyPatch) -
     class FakeScene:
         @staticmethod
         def from_importer_scene(*args: Any, **kwargs: Any) -> object:
+            assert len(importer_scene.cameras) == 1
+            steps.append("convert")
             calls["scene_args"] = args
             calls["scene_kwargs"] = kwargs
             return scene
@@ -134,9 +151,12 @@ def test_preview_builds_scene_and_runs_editor(monkeypatch: pytest.MonkeyPatch) -
             return importer
 
     importer.build_importer_scene = lambda: importer_scene
-    importer.run_scene_loaded_callbacks = lambda actual_scene: calls.update(
-        callback_scene=actual_scene
-    )
+
+    def run_callbacks(actual_scene: Any) -> None:
+        steps.append("callbacks")
+        calls["callback_scene"] = actual_scene
+
+    importer.run_scene_loaded_callbacks = run_callbacks
 
     class FakeEditor:
         needs_render = True
@@ -183,28 +203,41 @@ def test_preview_builds_scene_and_runs_editor(monkeypatch: pytest.MonkeyPatch) -
     )
     monkeypatch.setattr(Editor, "create", lambda *args, **kwargs: FakeEditor())
 
-    pyscene.preview(
-        [
-            "--device-type",
-            "automatic",
-            "--width",
-            "640",
-            "--height",
-            "480",
-            "--spp",
-            "3",
-        ]
-    )
+    def fake_render_scene_cameras(
+        actual_device: Any, actual_scene: Any, *args: Any, **kwargs: Any
+    ) -> list[Any]:
+        assert actual_device is device
+        calls["render_scene"] = actual_scene
+        steps.append("render")
+        return []
 
-    assert calls["best_view_args"] == (50.0, pytest.approx(4.0 / 3.0))
+    monkeypatch.setattr(preview_module, "render_scene_cameras", fake_render_scene_cameras)
+
+    args = ["--device-type", "automatic", "--width", "640", "--height", "480", "--spp", "3"]
+    if headless:
+        args.extend(["--out", str(tmp_path)])
+    pyscene.preview(args)
+
+    assert len(importer_scene.cameras) == 1
+    if has_authored_camera:
+        assert importer_scene.cameras[0] is authored_camera
+        assert "framing_args" not in calls
+    else:
+        assert calls["framing_args"] == (50.0, pytest.approx(4.0 / 3.0))
+    assert steps == (
+        ([] if has_authored_camera else ["frame"])
+        + ["convert", "callbacks"]
+        + (["render"] if headless else [])
+    )
     assert calls["scene_args"] == (device, importer_scene)
     assert calls["scene_kwargs"] == {}
     assert calls["callback_scene"] is scene
-    assert calls["enable_cuda_interop"] is True
-    assert pipeline.spp == 3
+    assert calls["enable_cuda_interop"] is not headless
     assert calls["render_scene"] is scene
-    assert calls["delta_time"] == pytest.approx(0.125)
-    assert calls["presented_image"] is rendered_image
+    if not headless:
+        assert pipeline.spp == 3
+        assert calls["delta_time"] == pytest.approx(0.125)
+        assert calls["presented_image"] is rendered_image
     assert importer.source_path == Path(__file__).resolve()
 
 
@@ -227,6 +260,21 @@ def test_render_scene_cameras_validates_positive_values(
             width=width,
             height=height,
             spp=spp,
+        )
+
+
+def test_render_scene_cameras_rejects_scene_without_cameras(tmp_path: Path) -> None:
+    scene = SimpleNamespace(
+        components=SimpleNamespace(find_all=lambda **kwargs: []),
+    )
+    with pytest.raises(ValueError, match="preview scene does not contain a camera"):
+        preview_module.render_scene_cameras(
+            object(),  # type: ignore[arg-type]
+            scene,  # type: ignore[arg-type]
+            tmp_path,
+            width=64,
+            height=32,
+            spp=1,
         )
 
 

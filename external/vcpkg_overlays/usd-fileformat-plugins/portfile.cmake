@@ -17,8 +17,8 @@ endif()
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO skallweitNV/USD-Fileformat-plugins
-    REF 8d198392a1911786ea75e033f3cc47e9b69aaae2
-    SHA512 03487612aeabd3efce8155a3cb5c093e429cd6824956a0fe88669ff817690eeceae927349445c47a7229241dd94452c8ddb11a6c174d82a7e568b3cbc889125a
+    REF 4997b5f3b6f0e4797a91c9a971becbae9704c54f
+    SHA512 6407d4582d614dd3a87fb5d871bd89026ca06329321f62c5dae7b976b6a2912ae81fbb7bb411bb8662a390ec4ee8e79e2f097d67cca59ca7fbaad43a13404a0f
 )
 
 # Use a small feature-selected build instead of the upstream standalone dependency

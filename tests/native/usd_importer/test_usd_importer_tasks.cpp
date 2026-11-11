@@ -29,7 +29,7 @@ TEST_CASE("USD traversal drains workers and preserves the primary error")
         worker_fails = true;
     }
 
-    sgl::thread::TaskGroup tasks;
+    falcor::usd_importer::USDTaskGroup tasks;
     std::atomic<bool> worker_finished{false};
     std::atomic<bool> other_worker_finished{false};
     std::string error;
@@ -64,7 +64,9 @@ TEST_CASE("USD traversal drains workers and preserves the primary error")
 
     CHECK(error == (traversal_fails ? "traversal failed" : worker_fails ? "worker failed" : ""));
     CHECK(worker_finished);
-    CHECK(other_worker_finished);
+    // A worker failure may cancel work that has not started.
+    if (!worker_fails)
+        CHECK(other_worker_finished);
     // The group must already be drained, including its stored exceptions.
     // This also keeps a broken implementation from leaving tasks at destruction.
     CHECK_NOTHROW(tasks.wait());

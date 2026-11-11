@@ -6,6 +6,7 @@
 #include "falcor2/render/component/camera.h"
 #include "falcor2/render/component/geometry_instance.h"
 #include "falcor2/render/component/light.h"
+#include "falcor2/render/component/transform_animation.h"
 #include "falcor2/render/geometry/geometry_group.h"
 #include "falcor2/render/geometry/static_mesh_geometry.h"
 #include "falcor2/render/material/standard_material.h"
@@ -301,6 +302,7 @@ TEST_CASE_GPU("frame selected uses entity position when geometry bounds are unav
     auto scene = Scene::create(ref(ctx.device));
     Entity* view_entity = scene->create_entity();
     Camera* view_camera = view_entity->create_component<Camera>();
+    view_camera->set_focus_distance(5.f);
     scene->set_active_camera(view_camera);
 
     Entity* empty_entity = scene->create_entity();
@@ -380,8 +382,8 @@ TEST_CASE_GPU("editor object templates create named empty entities and materials
     CHECK_EQ(editor->selected_object(), selected);
     CHECK_EQ(editor->selection_version(), initial_version + 1 + materials.size());
     CHECK_EQ(scene->materials().size(), materials.size());
-    CHECK_EQ(scene->entities().size(), 1);
-    CHECK_EQ(scene->components().size(), 0);
+    CHECK_EQ(scene->entities().size(), 2);
+    CHECK_EQ(scene->components().size(), 1);
 }
 
 TEST_CASE_GPU("editor entity templates create and select complete objects")
@@ -435,7 +437,7 @@ TEST_CASE_GPU("editor entity templates create and select complete objects")
             }
         }
     }
-    CHECK_EQ(scene->entities().size(), cases.size() + 1);
+    CHECK_EQ(scene->entities().size(), cases.size() + 2);
     scene->update();
     CHECK_EQ(scene->active_camera(), view_camera);
 }
@@ -491,8 +493,8 @@ TEST_CASE_GPU("editor rejects invalid creation requests without changing selecti
     CHECK_THROWS(editor->create_object(""));
     CHECK_THROWS(editor->create_object("Camera"));
     CHECK_THROWS(editor->create_object("material.Unknown"));
-    CHECK_EQ(scene->entities().size(), 1);
-    CHECK_EQ(scene->components().size(), 0);
+    CHECK_EQ(scene->entities().size(), 2);
+    CHECK_EQ(scene->components().size(), 1);
     CHECK_EQ(scene->materials().size(), 0);
     CHECK_EQ(editor->selected_object(), selected);
     CHECK_EQ(editor->selection_version(), version);
@@ -548,6 +550,15 @@ TEST_CASE_GPU("frame selected command updates the active camera")
     // the camera change made by framing the selection.
     scene->update();
 
+    SUBCASE("zero focus distance uses scene scale for initial navigation")
+    {
+        camera->set_focus_distance(0.f);
+        editor->update_camera(0.1f, 320, 240);
+        CHECK(camera_controller->orbit_distance() == doctest::Approx(std::sqrt(8.f)));
+        CHECK_EQ(camera->focus_distance(), 0.f);
+    }
+    SUBCASE("positive focus distance") { }
+
     CHECK(editor->handle_keyboard_shortcut({sgl::KeyboardEventType::key_press, sgl::KeyCode::f}));
     CHECK_EQ(camera_controller->pivot(), float3(0.f));
     CHECK(camera_entity->transform().translation().x == doctest::Approx(0.f));
@@ -555,9 +566,305 @@ TEST_CASE_GPU("frame selected command updates the active camera")
     CHECK(camera_entity->transform().translation().z == doctest::Approx(std::sqrt(8.f) * 1.5f));
     CHECK_EQ(scene->active_camera(), camera);
 
+    editor->update_camera(0.1f, 320, 240);
+    CHECK_EQ(camera_controller->pivot(), float3(0.f));
+    CHECK(camera_controller->orbit_distance() == doctest::Approx(std::sqrt(8.f) * 1.5f));
+
     const SceneUpdateFlags update_flags = scene->update();
     CHECK(is_set(update_flags, SceneUpdateFlags::transforms));
     CHECK(is_set(update_flags, SceneUpdateFlags::render_state));
+}
+
+TEST_CASE_GPU("camera preparation frames once and preserves later camera edits")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    auto editor = make_ref<ui::SceneEditor>();
+    auto controller = make_ref<ui::CameraController>();
+    SUBCASE("with navigation")
+    {
+        editor->set_camera_controller(controller);
+    }
+    SUBCASE("without navigation") { }
+    editor->set_scene(scene);
+    Transform transform;
+    transform.set_translation(float3(10.f, 20.f, 30.f));
+    scene->free_camera()->entity()->set_transform(transform);
+    editor->request_initial_camera_framing();
+    scene->update();
+
+    auto* camera = editor->update_camera(0.1f, 320, 240);
+    REQUIRE_EQ(camera, scene->free_camera());
+    CHECK_EQ(camera->entity()->transform().translation(), float3(0.f, 0.f, 5.f));
+    CHECK_EQ(camera->width(), 320);
+    CHECK_EQ(camera->height(), 240);
+    if (editor->camera_controller())
+        CHECK_EQ(controller->pivot(), float3(0.f));
+
+    // Initial framing commits the free-camera selection across later camera creation.
+    scene->create_entity()->create_component<Camera>();
+    camera->entity()->set_transform(transform);
+    scene->update();
+    CHECK_EQ(editor->update_camera(0.1f, 240, 640), camera);
+    CHECK_EQ(camera->entity()->transform().translation(), transform.translation());
+    CHECK_EQ(camera->width(), 240);
+    CHECK_EQ(camera->height(), 640);
+
+    // A pending request belongs only to the attached scene; new attachments opt in again.
+    editor->request_initial_camera_framing();
+    auto next_scene = Scene::create(ref(ctx.device));
+    next_scene->free_camera()->entity()->set_transform(transform);
+    editor->set_scene(next_scene);
+    next_scene->update();
+    CHECK_EQ(editor->update_camera(0.1f, 320, 240), next_scene->free_camera());
+    CHECK_EQ(next_scene->free_camera()->entity()->transform().translation(), transform.translation());
+    editor->request_initial_camera_framing();
+    editor->update_camera(0.1f, 320, 240);
+    CHECK_EQ(next_scene->free_camera()->entity()->transform().translation(), float3(0.f, 0.f, 5.f));
+
+    sgl::MouseEvent event{};
+    event.type = sgl::MouseEventType::button_down;
+    event.button = sgl::MouseButton::right;
+    controller->handle_mouse_event(event);
+    editor->set_scene(nullptr);
+    editor->request_initial_camera_framing();
+    CHECK_EQ(editor->update_camera(0.1f, 320, 240), nullptr);
+    if (editor->camera_controller())
+        CHECK_FALSE(controller->is_interacting());
+}
+
+TEST_CASE_GPU("camera preparation preserves authored cameras and does not reframe on deletion")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    auto* camera = scene->create_entity()->create_component<Camera>();
+    Transform transform;
+    transform.set_translation(float3(10.f, 20.f, 30.f));
+    camera->entity()->set_transform(transform);
+    scene->free_camera()->entity()->set_transform(transform);
+    auto editor = make_ref<ui::SceneEditor>();
+    editor->set_scene(scene);
+    editor->request_initial_camera_framing();
+    scene->update();
+
+    CHECK_EQ(editor->update_camera(0.1f, 640, 480), camera);
+    CHECK_EQ(camera->entity()->transform().translation(), transform.translation());
+    CHECK_EQ(camera->width(), 640);
+    CHECK_EQ(camera->height(), 480);
+    editor->set_view_camera(scene->free_camera());
+    CHECK_EQ(scene->active_camera(), camera);
+    editor->set_view_camera(nullptr);
+    CHECK_EQ(scene->active_camera(), camera);
+
+    camera->entity()->remove();
+    scene->update();
+    CHECK_EQ(editor->update_camera(0.1f, 240, 320), scene->free_camera());
+    CHECK_EQ(scene->free_camera()->entity()->transform().translation(), transform.translation());
+    CHECK_EQ(scene->free_camera()->width(), 240);
+    CHECK_EQ(scene->free_camera()->height(), 320);
+}
+
+TEST_CASE_GPU("camera navigation follows explicit reframing without restoring old inertia")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    auto* camera = scene->free_camera();
+    Transform transform;
+    transform.set_translation(float3(10.f, 0.f, 5.f));
+    camera->entity()->set_transform(transform);
+    scene->update();
+    auto controller = make_ref<ui::CameraController>();
+    auto editor = make_ref<ui::SceneEditor>();
+    editor->set_scene(scene);
+    editor->set_camera_controller(controller);
+    editor->update_camera(0.1f, 320, 240);
+
+    sgl::MouseEvent scroll{};
+    scroll.type = sgl::MouseEventType::scroll;
+    scroll.scroll = float2(0.f, 1.f);
+    controller->handle_mouse_event(scroll);
+    editor->update_camera(0.1f, 320, 240);
+    editor->request_initial_camera_framing();
+    controller->handle_mouse_event(scroll);
+    editor->update_camera(0.1f, 320, 240);
+    const float3 position = camera->entity()->transform().translation();
+    CHECK_EQ(position.x, 0.f);
+    CHECK_EQ(position.z, doctest::Approx(5.f * std::exp(-0.3f)));
+    CHECK_EQ(controller->pivot(), float3(0.f));
+
+    // Ordinary navigation must retain its pivot even though orbit and focus distances differ.
+    editor->update_camera(0.01f, 320, 240);
+    CHECK_EQ(controller->pivot(), float3(0.f));
+    const float distance = controller->orbit_distance();
+    camera->set_focus_distance(12.f);
+    editor->update_camera(0.01f, 320, 240);
+    // An optical focus edit must neither move the pivot nor stop the existing dolly inertia.
+    CHECK_EQ(controller->pivot(), float3(0.f));
+    CHECK_LT(controller->orbit_distance(), distance);
+
+    controller->reset_inertia();
+    const float orbit_distance = controller->orbit_distance();
+    const float3 moved_position = camera->entity()->transform().translation();
+    camera->set_focus_distance(0.f);
+    editor->update_camera(0.1f, 320, 240);
+    CHECK_EQ(controller->orbit_distance(), orbit_distance);
+    CHECK_EQ(controller->pivot(), float3(0.f));
+    CHECK_EQ(camera->entity()->transform().translation(), moved_position);
+
+    // External transforms move the pivot with the camera without restoring optical focus as the orbit distance.
+    transform.set_translation(float3(10.f, 20.f, 30.f));
+    camera->entity()->set_transform(transform);
+    scene->update();
+    editor->update_camera(0.1f, 320, 240);
+    CHECK_EQ(controller->transform().translation(), transform.translation());
+    CHECK_EQ(controller->orbit_distance(), orbit_distance);
+    CHECK_EQ(controller->pivot(), float3(10.f, 20.f, 30.f - orbit_distance));
+}
+
+TEST_CASE_GPU("camera switching clears inertia but preserves pending input")
+{
+    auto scene = Scene::create(ref(ctx.device));
+    auto* first = scene->create_entity()->create_component<Camera>();
+    auto* second = scene->create_entity()->create_component<Camera>();
+    first->set_focus_distance(0.f);
+    second->set_focus_distance(12.f);
+    scene->update();
+    auto controller = make_ref<ui::CameraController>();
+    auto editor = make_ref<ui::SceneEditor>();
+    editor->set_scene(scene);
+    editor->set_camera_controller(controller);
+    editor->update_camera(0.1f, 320, 240);
+
+    // An empty scene with zero optical focus still has a useful navigation distance.
+    CHECK_EQ(controller->orbit_distance(), 5.f);
+    CHECK_EQ(first->focus_distance(), 0.f);
+
+    sgl::MouseEvent scroll{};
+    scroll.type = sgl::MouseEventType::scroll;
+    scroll.scroll = float2(0.f, 1.f);
+    controller->handle_mouse_event(scroll);
+    editor->update_camera(0.1f, 320, 240);
+    CHECK_NE(first->entity()->transform().translation().z, 0.f);
+    scene->set_active_camera(second);
+    editor->update_camera(0.1f, 320, 240);
+    CHECK_EQ(second->entity()->transform().translation(), float3(0.f));
+    CHECK_EQ(controller->orbit_distance(), 12.f);
+
+    // A gesture received before the first update of a newly selected camera still applies.
+    scene->set_active_camera(scene->free_camera());
+    controller->handle_mouse_event(scroll);
+    editor->update_camera(0.1f, 320, 240);
+    CHECK_LT(scene->free_camera()->entity()->transform().translation().z, 5.f);
+    const float3 position = scene->free_camera()->entity()->transform().translation();
+    scene->update();
+    CHECK_EQ(scene->active_camera(), scene->free_camera());
+    CHECK_EQ(scene->free_camera()->entity()->transform().translation(), position);
+}
+
+TEST_CASE_GPU("camera navigation and framing preserve animated cameras and edit static cameras")
+{
+    for (const char* animation_target : {"none", "self", "ancestor", "disconnected"}) {
+        SUBCASE(animation_target)
+        {
+            auto scene = Scene::create(ref(ctx.device));
+            auto* parent = scene->create_entity();
+            auto* middle = scene->create_entity();
+            middle->set_parent(parent);
+            auto* entity = scene->create_entity();
+            entity->set_parent(middle);
+            Transform local;
+            local.set_translation(float3(1.f, 2.f, 5.f));
+            entity->set_transform(local);
+            auto* camera = entity->create_component<Camera>();
+            camera->set_focal_length(35.f);
+            camera->set_sensor_height(30.f);
+            camera->set_fstop(2.f);
+            camera->set_exposure(1.5f);
+            camera->set_focus_distance(9.f);
+            camera->set_enable_depth_of_field(true);
+            camera->set_depth_range(float2(0.02f, 300.f));
+            camera->set_width(320);
+            camera->set_height(240);
+            const std::string_view target = animation_target;
+            const bool animated = target == "self" || target == "ancestor";
+            if (target != "none") {
+                auto channel = make_ref<AnimationChannel>();
+                channel->set_times({0.f, 1.f});
+                channel->set_values({0.f, 0.f, 0.f, 10.f, 0.f, 0.f});
+                auto* animation = scene->create_animation();
+                animation->set_channels({channel});
+                auto* binding = (target == "self" ? entity : parent)->create_component<TransformAnimation>();
+                binding->set_animation(animation);
+                binding->set_translation_channel(0);
+                if (target == "disconnected")
+                    binding->set_animation(nullptr);
+            }
+            auto controller = make_ref<ui::CameraController>();
+            controller->set_smoothing(false);
+            auto editor = make_ref<ui::SceneEditor>();
+            editor->set_scene(scene);
+            editor->set_camera_controller(controller);
+            scene->set_time(0.25);
+            scene->update();
+            CHECK_EQ(editor->update_camera(0.1f, 320, 240), camera);
+            scene->set_time(0.5);
+            scene->update();
+            CHECK_EQ(editor->update_camera(0.1f, 320, 240), camera);
+            float3 world_position = local.translation();
+            if (target == "self")
+                world_position = float3(5.f, 0.f, 0.f);
+            else if (target == "ancestor")
+                world_position = float3(6.f, 2.f, 5.f);
+            CHECK_EQ(controller->transform().translation(), world_position);
+            const float3 local_position = entity->transform().translation();
+            Camera* expected_camera = animated ? scene->free_camera() : camera;
+
+            SUBCASE("scroll while paused starts from the evaluated view")
+            {
+                sgl::MouseEvent scroll{};
+                scroll.type = sgl::MouseEventType::scroll;
+                scroll.scroll = float2(0.f, 1.f);
+                controller->handle_mouse_event(scroll);
+                CHECK_EQ(editor->update_camera(0.1f, 320, 240), expected_camera);
+                CHECK_EQ(expected_camera->entity()->transform().translation().x, world_position.x);
+                CHECK_LT(expected_camera->entity()->transform().translation().z, world_position.z);
+            }
+            SUBCASE("frame selected shortcut while paused shares the navigation policy")
+            {
+                auto* selected_entity = scene->create_entity();
+                editor->set_selected_object(selected_entity);
+                CHECK(editor->handle_keyboard_shortcut({sgl::KeyboardEventType::key_press, sgl::KeyCode::f}));
+                CHECK_EQ(editor->update_camera(0.1f, 320, 240), expected_camera);
+            }
+            CHECK_EQ(scene->active_camera(), expected_camera);
+            if (animated) {
+                auto* free_camera = scene->free_camera();
+                CHECK_EQ(entity->transform().translation(), local_position);
+                CHECK_EQ(free_camera->entity()->parent(), nullptr);
+                CHECK_EQ(free_camera->focal_length(), camera->focal_length());
+                CHECK_EQ(free_camera->sensor_height(), camera->sensor_height());
+                CHECK_EQ(free_camera->fstop(), camera->fstop());
+                CHECK_EQ(free_camera->exposure(), camera->exposure());
+                CHECK_EQ(free_camera->focus_distance(), camera->focus_distance());
+                CHECK_EQ(free_camera->enable_depth_of_field(), camera->enable_depth_of_field());
+                CHECK_EQ(free_camera->depth_range(), camera->depth_range());
+                CHECK_EQ(free_camera->width(), camera->width());
+                CHECK_EQ(free_camera->height(), camera->height());
+                const float3 free_position = free_camera->entity()->transform().translation();
+                scene->set_time(0.75);
+                scene->set_active_camera(camera);
+                scene->update();
+                CHECK_EQ(editor->update_camera(0.1f, 320, 240), camera);
+                CHECK_EQ(
+                    controller->transform().translation(),
+                    target == "self" ? float3(7.5f, 0.f, 0.f) : float3(8.5f, 2.f, 5.f)
+                );
+                CHECK_EQ(entity->transform().translation(), target == "self" ? float3(7.5f, 0.f, 0.f) : local_position);
+                scene->set_active_camera(free_camera);
+                CHECK_EQ(editor->update_camera(0.1f, 320, 240), free_camera);
+                CHECK_EQ(free_camera->entity()->transform().translation(), free_position);
+            } else {
+                CHECK_NE(entity->transform().translation(), local_position);
+            }
+        }
+    }
 }
 
 TEST_SUITE_END();

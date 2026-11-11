@@ -91,6 +91,7 @@ def test_create_tensor_container_uses_dims_and_format(device_type: spy.DeviceTyp
     assert isinstance(tensor, spy.Tensor)
     assert tuple(int(dim) for dim in tensor.shape) == (4, 5)
     assert tensor.dtype.full_name == "vector<float,4>"
+    assert Container.to_tensor_binding(tensor) is tensor
 
 
 @pytest.mark.parametrize("device_type", ALL_DEVICE_TYPES)
@@ -127,6 +128,8 @@ def test_texture_helpers_use_height_width_dims(device_type: spy.DeviceType):
     assert spec.dims == (4, 5)
     assert Container.dims(texture) == (4, 5)
     assert Container.format(texture) == spy.Format.rgba32_float
+    with pytest.raises(TypeError, match="Tensor bindings require"):
+        Container.to_tensor_binding(texture)
     assert Container.is_spec(
         texture,
         ContainerSpec.texture2d(spy.Format.rgba32_float, (4, 5)).resolved(
@@ -144,6 +147,21 @@ def test_container_create_temp_reuses_matching_tensor(device_type: spy.DeviceTyp
     reused = Container.create_temp(device, spec, current=current)
 
     assert reused is current
+
+
+@pytest.mark.parametrize("device_type", ALL_DEVICE_TYPES)
+def test_container_create_temp_reuses_shared_tensor_and_resizes(device_type: spy.DeviceType):
+    device = helpers.get_device(device_type)
+    spec = ContainerSpec.tensor(spy.Format.r32_float, (4, 5))
+    current = Container.create_temp(device, spec)
+    assert current.dtype.full_name == "vector<float,1>"
+    assert current.usage & spy.BufferUsage.shared
+    assert Container.create_temp(device, spec, current) is current
+    resized = Container.create_temp(
+        device, ContainerSpec.tensor(spy.Format.r32_float, (3, 5)), current
+    )
+    assert resized is not current
+    assert resized.usage & spy.BufferUsage.shared
 
 
 @pytest.mark.parametrize("device_type", ALL_DEVICE_TYPES)
@@ -255,6 +273,7 @@ def test_torch_allocate_uses_chw_layout():
 
     assert tuple(int(dim) for dim in tensor.shape) == (4, 4, 5)
     assert tensor.dtype == torch.float32
+    assert tensor.is_contiguous()
 
 
 def test_torch_spec_inference_uses_dims_and_chw_layout():
@@ -281,6 +300,8 @@ def test_torch_render_layout_converts_chw_to_hwc():
     render_layout = Container.to_render_layout(tensor)
 
     assert tuple(int(dim) for dim in render_layout.shape) == (5, 6, 4)
+    with pytest.raises(ValueError, match="CUDA storage"):
+        Container.to_tensor_binding(tensor)
 
 
 @pytest.mark.nightly_if(

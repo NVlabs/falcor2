@@ -11,8 +11,7 @@ public float2 transform_probe(
     uint binding,
     uint feature_word,
     uint transform_word,
-    uint extra_handle_word,
-    uint extra_offset_word
+    uint extra_pointer_word
 )
 {
     // The caller derives these word indices from the reflected material layout.
@@ -22,10 +21,10 @@ public float2 transform_probe(
     const uint bit = 1u << binding;
     if ((transform_mask & bit) == 0u)
         return uv;
-    BufferOffsetPair extra_data = {};
-    extra_data.buffer.data = uint64_t(material.payload.data[extra_handle_word])
-        | (uint64_t(material.payload.data[extra_handle_word + 1u]) << 32u);
-    extra_data.offset = material.payload.data[extra_offset_word];
+    const BufferPtr extra_data = BufferPtr<void>(
+        uint64_t(material.payload.data[extra_pointer_word])
+        | (uint64_t(material.payload.data[extra_pointer_word + 1u]) << 32u)
+    );
     const uint location = gltf_material::transform_record_offset(feature_mask, transform_mask, bit);
     const GLTFTextureUVTransform transform = extra_data.load<GLTFTextureUVTransform>(location);
     const float3 p = float3(uv, 1.0);

@@ -524,7 +524,7 @@ void emit_eval_with_pdf(SlangEmitter& e, const MxFlatRootDesc& desc)
 {
     e.begin(
         "public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const "
-        "BSDFContext bc)"
+        "BSDFContext bc, const BSDFComponent component = BSDFComponent::full_response)"
     );
     e.line("BSDFEval result = {}");
     for (size_t i = 0; i < desc.bsdfs.size(); ++i) {

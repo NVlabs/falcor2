@@ -247,7 +247,7 @@ def test_arm_against_usd() -> None:
 
 
 @pytest.mark.parametrize("normal_mode", ["vertex", "indexed_face_varying", "generated"])
-def test_skinning_preserves_mesh_sample_times(normal_mode: str) -> None:
+def test_skinning_preserves_combined_mesh_motion(normal_mode: str) -> None:
     from falcor2.pxr import Gf, UsdSkel
 
     stage = Usd.Stage.CreateInMemory()
@@ -304,29 +304,42 @@ def test_skinning_preserves_mesh_sample_times(normal_mode: str) -> None:
     original = stage.GetRootLayer().ExportToString()
     session = stage.GetSessionLayer().ExportToString()
     options = mesh_motion_options()
+    options.usd_import_skinning = True
+    scene = f2.UsdImporter().import_stage(stage, options)
+    mesh = scene.meshes[0]
+    assert len(scene.skins) == 1
+    assert scene.animation.channels
+    assert any(node.mesh_index == 0 and node.skin_index == 0 for node in scene.nodes)
+    np.testing.assert_array_equal(mesh.motion_times, [1, 10, 20])
+    expected = np.array([source.GetPointsAttr().Get(time) for time in (1, 10, 20)])
+    positions = _frames(mesh, P)
+    mapping = np.argmin(np.linalg.norm(positions[0, :, None] - expected[0, None], axis=-1), axis=-1)
+    np.testing.assert_allclose(positions, expected[:, mapping], atol=1e-6)
+    joints = np.asarray(mesh.find_stream(f2.ImporterSemantic.joints, 0))
+    weights = np.asarray(mesh.find_stream(f2.ImporterSemantic.weights, 0))
+    np.testing.assert_array_equal(joints[:, 0], np.array([0, 1, 0, 1])[mapping])
+    np.testing.assert_array_equal(weights[:, 0], 1)
+    normals_frames = _frames(mesh, N)
+    if normal_mode == "indexed_face_varying":
+        assert not np.array_equal(normals_frames[0], normals_frames[-1])
+    else:
+        np.testing.assert_allclose(normals_frames, np.broadcast_to([0, 0, 1], normals_frames.shape))
+
+    # The importer retains both inputs. Composing them is a consumer responsibility;
+    # the current CPU pose baker only accepts a single geometry sample.
+    with pytest.raises(
+        RuntimeError, match="Cannot bake a skin pose into a mesh with motion samples"
+    ):
+        scene.bake_pose(10)
+    np.testing.assert_array_equal(_frames(scene.meshes[0], P), positions)
     options.bake_poses = True
-    imported = f2.UsdImporter().import_stage(stage, options)
-    mesh = imported.meshes[0]
-    assert mesh.motion_times == [1, 10, 20]
-    assert len(imported.animation.channels) > 0
-    assert mesh.properties["refinement_level"] == 0
-    indices = mesh.subgeometries[0].indices_numpy.ravel()
+    with pytest.raises(
+        RuntimeError, match="Cannot bake a skin pose into a mesh with motion samples"
+    ):
+        f2.UsdImporter().import_stage(stage, options)
     static_options = f2.ImportOptions()
     static_options.bake_poses = True
-    for sample, time in enumerate((1, 10, 20)):
-        snapshot = Usd.Stage.Open(stage.Flatten())
-        for prim in snapshot.Traverse():
-            for attribute in prim.GetAttributes():
-                if attribute.GetNumTimeSamples():
-                    value = attribute.Get(time)
-                    attribute.Clear()
-                    attribute.Set(value)
-        reference = f2.UsdImporter().import_stage(snapshot, static_options).meshes[0]
-        reference_indices = reference.subgeometries[0].indices_numpy.ravel()
-        for semantic, expected in ((P, reference.positions), (N, reference.normals)):
-            np.testing.assert_allclose(
-                mesh.find_stream(semantic, sample)[indices], expected[reference_indices], atol=2e-6
-            )
+    assert not f2.UsdImporter().import_stage(stage, static_options).meshes[0].motion_times
     assert stage.GetRootLayer().ExportToString() == original
     assert stage.GetSessionLayer().ExportToString() == session
 
