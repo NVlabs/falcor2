@@ -740,6 +740,7 @@ class ReferencePathTracerNode(RenderNode):
         camera: f2.Camera,
         color: Any,
         iteration: int,
+        sample_count: int = 1,
         guide_outputs: dict[str, Any | None] | None = None,
         pixel_offset: Any = spy.float2(0.0, 0.0),
         cmd: Optional[CommandEncoder] = None,
@@ -799,6 +800,7 @@ class ReferencePathTracerNode(RenderNode):
             previous_camera=previous_camera,
             output=Container.to_render_layout(color),
             iteration=iteration,
+            sample_count=sample_count,
             pixel_offset=pixel_offset,
             _append_to=render_cmd,
         )
@@ -812,6 +814,7 @@ class ReferencePathTracerNode(RenderNode):
         scene: f2.Scene,
         camera: f2.Camera,
         iteration: int = 0,
+        sample_count: int = 1,
         pixel_offset: Any = spy.float2(0.0, 0.0),
         cmd: Optional[CommandEncoder] = None,
     ) -> tuple[Any, dict[str, Any | None]]:
@@ -821,6 +824,8 @@ class ReferencePathTracerNode(RenderNode):
         the UV Y flip. Callers own accumulation and must reset it after persistent
         filter edits or a change to the fixed offset, but not for temporal jitter.
         """
+        if sample_count < 1:
+            raise ValueError("sample_count must be positive.")
         color_spec = self._resolve_color_output_spec(camera)
         output = self._get_output(color_spec)
         render_dims = Container.dims(output)
@@ -833,6 +838,7 @@ class ReferencePathTracerNode(RenderNode):
             camera,
             output,
             iteration=iteration,
+            sample_count=sample_count,
             guide_outputs=guide_outputs,
             pixel_offset=pixel_offset,
             cmd=cmd,

@@ -178,8 +178,11 @@ public struct OpenPBRMaterialInstance : IMaterialInstance
     }
 
 
-    public BSDFEval
-    eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both>(const SurfaceInteraction si, const float3 wo_ws)
+    public BSDFEval eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both>(
+        const SurfaceInteraction si,
+        const float3 wo_ws,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
         if (Hints == BSDFEvalHints::none)
             return BSDFEval();
@@ -340,7 +343,7 @@ public struct OpenPBRMaterial : IMaterial
     public float normal_texture_scale;
     public bool has_emission;
     public bool geometry_thin_walled;
-    public BufferHandle attributes_buffer;
+    public BufferPtr attributes_buffer;
     public TextureHandle opacity_texture_handle;
     public uint16_t geometry_texture_metadata;
 
@@ -381,7 +384,7 @@ public struct OpenPBRMaterial : IMaterial
         // Setup OpenPBR inputs.
         mi.inputs = openpbr_make_default_resolved_inputs();
 
-        Attributes attributes = attributes_buffer.load<Attributes>(0);
+        Attributes attributes = load_attributes();
 
         // Base
         mi.inputs.base_weight = eval_attribute(attributes.base_weight, si, lod_sampler);
@@ -484,7 +487,7 @@ public struct OpenPBRMaterial : IMaterial
         const MaterialInstanceHints hints = MaterialInstanceHints::none
     )
     {
-        Attributes attributes = attributes_buffer.load<Attributes>(0);
+        Attributes attributes = load_attributes();
         float emission_luminance = eval_attribute(attributes.emission_luminance, si, lod_sampler);
         float3 emission_color = eval_attribute(attributes.emission_color, si, lod_sampler);
         return emission_luminance * emission_color * float.PI;
@@ -496,10 +499,23 @@ public struct OpenPBRMaterial : IMaterial
         const MaterialInstanceHints hints = MaterialInstanceHints::none
     )
     {
-        Attributes attributes = attributes_buffer.load<Attributes>(0);
+        Attributes attributes = load_attributes();
         float emission_luminance = eval_attribute(attributes.emission_luminance, si, lod_sampler);
         float3 emission_color = eval_attribute(attributes.emission_color, si, lod_sampler);
         return emission_luminance * emission_color;
+    }
+
+    [ForceInline]
+    private Attributes load_attributes()
+    {
+#if defined(__TARGET_D3D12__)
+        // OpenPBR uploads Attributes at byte offset zero in a dedicated buffer.
+        // Make that zero constant for D3D performance: a dynamic base prevents small-field
+        // load combining and adds address/extraction instructions. Revisit if attributes are pooled.
+        return BufferPtr<void>(uint64_t(uint(attributes_buffer.bits()))).load<Attributes>(0);
+#else
+        return attributes_buffer.load<Attributes>(0);
+#endif
     }
 
     private float eval_attribute<LodSampler : ILodSampler>(

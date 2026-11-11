@@ -6,7 +6,9 @@
 #include "falcor2/importers/importer_types.h"
 
 namespace falcor {
+class DynamicMeshGeometry;
 
 /// Upload imported attributes and material slots, converting UVs to the target origin.
 void update_imported_mesh(StaticMeshGeometry* geometry, const ImporterMesh& mesh, UVOrigin uv_origin);
+void update_imported_mesh(DynamicMeshGeometry* geometry, const ImporterMesh& mesh, UVOrigin uv_origin);
 } // namespace falcor

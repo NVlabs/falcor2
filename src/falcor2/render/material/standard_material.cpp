@@ -42,6 +42,7 @@ void StandardMaterial::on_load_resources()
         m_scene->texture_manager(),
         m_base_color_texture,
         m_base_color_texture_sampler,
+        m_base_color_texture_bytes,
         m_base_color_texture_path,
         TextureLoadFlags::color
     );
@@ -50,6 +51,7 @@ void StandardMaterial::on_load_resources()
         m_scene->texture_manager(),
         m_normal_texture,
         m_normal_texture_sampler,
+        m_normal_texture_bytes,
         m_normal_texture_path,
         TextureLoadFlags::normal
     );
@@ -58,6 +60,7 @@ void StandardMaterial::on_load_resources()
         m_scene->texture_manager(),
         m_metallic_roughness_texture,
         m_metallic_roughness_texture_sampler,
+        m_metallic_roughness_texture_bytes,
         m_metallic_roughness_texture_path,
         TextureLoadFlags::data_rgb
     );
@@ -66,6 +69,7 @@ void StandardMaterial::on_load_resources()
         m_scene->texture_manager(),
         m_emissive_texture,
         m_emissive_texture_sampler,
+        m_emissive_texture_bytes,
         m_emissive_texture_path,
         TextureLoadFlags::color
     );
@@ -74,6 +78,7 @@ void StandardMaterial::on_load_resources()
         m_scene->texture_manager(),
         m_transmission_texture,
         m_transmission_texture_sampler,
+        m_transmission_texture_bytes,
         m_transmission_texture_path,
         TextureLoadFlags::color
     );

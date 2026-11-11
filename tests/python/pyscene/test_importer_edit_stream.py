@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+import numpy as np
 import slangpy as spy
 import falcor2 as f2
 import falcor2.testing.helpers as helpers
@@ -230,32 +231,34 @@ def test_scene_from_importer_runs_scene_loaded_callback_once(
 
 @pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
-def test_explicit_importer_scene_preparation_adds_best_view_camera_only_when_missing(
+def test_import_preserves_authored_cameras_without_creating_defaults(
     device_type: spy.DeviceType,
 ) -> None:
     device = helpers.get_device(device_type)
     importer = f2.Importer.create()
 
     importer_scene = importer.build_importer_scene()
-    importer_scene.add_default_camera_best_view(50.0, 4.0 / 3.0)
+    assert importer_scene.cameras == []
     scene = f2.Scene.from_importer_scene(device, importer_scene)
 
-    assert len(scene.components.find_all(type=f2.Camera)) == 1
-    assert scene.active_camera is not None
-    assert scene.entities.find("AutoCamera_BestView") is not None
+    assert scene.components.find_all(type=f2.Camera) == []
+    assert scene.active_camera is scene.free_camera
+    assert len(scene.entities) == 1
+    scene.update()
+    scene.frame_free_camera(320 / 240)
+    assert len(scene.entities) == 1
+    assert len(scene.components) == 1
 
     authored_importer = f2.Importer.create()
     camera = authored_importer.cameras.create_fov(name="AuthoredCamera")
     authored_importer.nodes.create(name="AuthoredCameraNode", camera=camera)
 
     authored_importer_scene = authored_importer.build_importer_scene()
-    if not authored_importer_scene.cameras:
-        authored_importer_scene.add_default_camera_best_view()
     authored_scene = f2.Scene.from_importer_scene(device, authored_importer_scene)
 
     assert len(authored_scene.components.find_all(type=f2.Camera)) == 1
     assert authored_scene.entities.find("AuthoredCameraNode") is not None
-    assert authored_scene.entities.find("AutoCamera_BestView") is None
+    assert authored_scene.active_camera.name == "AuthoredCamera"
 
 
 @pytest.mark.nightly_if_not_vk
@@ -340,9 +343,9 @@ def test_scene_load_executes_python_scene_file(
 
     scene = f2.Scene.load(device, scene_path)
 
-    assert len(scene.entities) == 1
-    assert scene.entities[0].name == "CameraNode"
-    assert len(scene.components) == 1
+    assert len(scene.entities) == 2
+    assert scene.entities[1].name == "CameraNode"
+    assert len(scene.components) == 2
     assert scene.active_camera is not None
     assert scene.active_camera.fov_y == pytest.approx(70.0)
 
@@ -408,8 +411,8 @@ def test_scene_loaded_hook_can_create_active_camera(
 
     scene = f2.Scene.load(device, scene_path)
 
-    assert len(scene.entities) == 1
-    assert scene.entities[0].name == "HookCameraEntity"
+    assert len(scene.entities) == 2
+    assert scene.entities[1].name == "HookCameraEntity"
     assert scene.active_camera is not None
     assert scene.active_camera.name == "HookCamera"
 
@@ -453,8 +456,8 @@ def test_scene_create_python_exception_restores_current_importer(
     )
 
     clean_scene = f2.Scene.load(device, clean_scene_path)
-    assert len(clean_scene.entities) == 1
-    assert clean_scene.entities[0].name == "CleanCameraNode"
+    assert len(clean_scene.entities) == 2
+    assert clean_scene.entities[1].name == "CleanCameraNode"
 
     post_load_scene = f2.Importer.get().build_importer_scene()
     assert len(post_load_scene.cameras) == 0

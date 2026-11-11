@@ -3,6 +3,7 @@
 
 #include "unlit_material.h"
 
+#include "material_texture_utils.h"
 #include "falcor2/render/scene.h"
 
 namespace falcor {
@@ -16,21 +17,14 @@ UnlitMaterial::~UnlitMaterial() { }
 
 void UnlitMaterial::on_load_resources()
 {
-    if (m_base_color_texture) {
-        m_base_color_texture_handle = m_scene->texture_manager()->register_texture({
-            .texture = m_base_color_texture,
-            .sampler = m_base_color_texture_sampler,
-        });
-    } else if (!m_base_color_texture_path.empty()) {
-        m_base_color_texture_handle = m_scene->texture_manager()->load_texture({
-            .path = m_base_color_texture_path,
-            .sampler = m_base_color_texture_sampler,
-            .flags = TextureLoadFlags::color,
-            .load_deferred = true,
-        });
-    } else {
-        m_base_color_texture_handle = {};
-    }
+    m_base_color_texture_handle = load_material_texture(
+        m_scene->texture_manager(),
+        m_base_color_texture,
+        m_base_color_texture_sampler,
+        m_base_color_texture_bytes,
+        m_base_color_texture_path,
+        TextureLoadFlags::color
+    );
 }
 
 shared::MaterialFlags UnlitMaterial::flags() const

@@ -12,7 +12,7 @@ public struct Scene
     public RaytracingAccelerationStructure tlas;
 
     /// Shared table of homogeneous vertex and index buffers.
-    public StructuredBuffer<BufferHandle> geometry;
+    public StructuredBuffer<BufferPtr> geometry;
 
     /// Triangle geometry data.
     public TriangleGeometryData triangle_geometry;

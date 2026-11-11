@@ -90,7 +90,9 @@ private:
 
     /// Checks dirty tracked entities and updates reference metrics when flux is invalidated.
     TransformChanges classify_transform_changes();
-    /// Rebuilds tracked entities from triangle counts indexed by geometry instance.
+    /// Requires current emissive-geometry membership.
+    bool has_deformed_emissive_geometry() const;
+    /// Rebuilds tracked entities and geometries from triangle counts indexed by geometry instance.
     /// Returns whether a contributing entity has a dirty transform.
     bool rebuild_transform_stretch(std::span<const uint32_t> triangle_counts);
     /// Returns whether a contributing entity has a dirty transform, including during material edits.
@@ -124,9 +126,11 @@ private:
     ref<const SceneRequirements> m_scene_requirements;
     EmissiveGeometryGenerations m_generations;
 
-    // Borrowed entities remain alive until scene collection compaction, after this system updates.
+    // Borrowed entities and geometries remain alive until scene collection compaction, after this system updates.
     // Membership is rebuilt from GPU triangle counts whenever emission data changes.
     std::vector<EntityTransformStretch> m_transform_stretch;
+    // One entry per contributing instance; non-emissive geometry on the same entity is excluded.
+    std::vector<const Geometry*> m_emissive_geometries;
 
     uint32_t m_triangle_count{0};
     uint32_t m_active_triangle_count{0};

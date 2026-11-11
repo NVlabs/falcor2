@@ -1,8 +1,8 @@
 ---
-status: current
+status: draft
 audience: Falcor2 contributors and coding agents
-last_verified: 2026-09-08
-verified_against: "01b22e34e4715605fdd894a7dcbe736be8030736"
+last_verified: 2026-11-06
+verified_against: "2ac1506f0384e5691c17a0c98cef21f1a9663f66"
 ---
 
 (falcor2-design-bsdf-contract)=
@@ -50,36 +50,114 @@ implementation that honors it must report the density of the restricted proposal
 
 ### Evaluation and sampling operations
 
-`IBSDF.eval_with_pdf()` is the canonical evaluation operation and returns `BSDFEval`, containing the projected value
-and the outgoing solid-angle PDF. `eval()` is a field-selecting convenience alias. The generator-free `eval_pdf()`
-alias calls the same fused operation with a deterministic midpoint sample generator. Randomness may affect an
-implementation's value calculation, but the PDF must be deterministic and independent of generator state.
+`IBSDF.eval_with_pdf(wi, wo, bc, component)` is the canonical evaluation operation and returns `BSDFEval`, containing
+the selected projected value and solid-angle density. `eval()` and `eval_pdf()` select the corresponding field.
+Each operation has one signature with a defaulted `BSDFComponent::full_response` selector. Implementations,
+including custom BSDFs and materials, must accept that selector explicitly. Evaluation takes no random generator.
 
 `sample()` chooses `wo` and returns a `BSDFSample` only on success. The record carries a PDF, an RGB throughput
-weight, and `BSDFFlags` identifying diffuse, glossy, or delta reflection or transmission, plus glossy curve events.
-Continuous events expose their directional density. An ideal mirror or refraction is a discrete delta event rather
-than a finite solid-angle density, so its scalar PDF is zero and its event probability is represented through the
-sample weight and flags.
+weight, a contribution selector, and `BSDFFlags` identifying diffuse, glossy, or delta reflection or transmission,
+plus glossy curve events. Continuous events expose their marginal directional density. An ideal mirror or refraction
+is a discrete delta event rather than a finite solid-angle density, so its scalar PDF is zero and its event
+probability is represented through the sample weight and flags.
 
-At the world-space boundary, `IMaterialInstance` exposes the same three operations through `MaterialSample`.
+At the world-space boundary, `IMaterialInstance` exposes the corresponding evaluation and sampling operations through
+`MaterialSample`.
 Its `eval_with_pdf<Hints>()` takes a compile-time `BSDFEvalHints` mask so aggregate implementations can omit value or
 PDF work when only one field is requested. Implementations may compute extra fields, but callers cannot rely on
 unrequested results.
 
+`BSDFSampleInput` supplies caller-owned coordinates: `u_lobe` selects a proposal, `u_dir` samples within it, and
+`aux_seed` supplies auxiliary random bits. `MaterialSampleInput` aliases that type. The input helpers consume four
+scalar dimensions in field order. Nested choices remap the lobe selector to its conditional interval while
+preserving direction coordinates and the seed; frame conversions do not change these inputs.
+
+### Material sample weight policy
+
+`MATERIAL_SAMPLE_WEIGHT_POLICY` is a renderer-owned link-time constant in `render/config.slang`, with values from
+`MaterialSampleWeightPolicy` in `material.slang`. The default `native` policy preserves valid continuation
+estimators, marginal PDFs, and event flags. It does not guarantee that a material sample's weight can be reconstructed
+through component evaluation, even when the component marker is `full_response`.
+
+Renderers that reconstruct sampled contributions for reuse, such as ReSTIR PT, must select `eval_consistent`.
+Successful continuous material samples then satisfy the component value/joint-density identity below. This does not
+force selected-component implementations to collapse their response. Delta events retain integrated weights.
+The policy changes the estimator guarantee, without changing evaluation or the physical scattering function.
+
+Each linked renderer chooses its policy independently of scene configuration or material properties. The same
+generated material module can therefore serve ordinary continuation and evaluation-consistent reuse. MDL's native
+path returns the SDK's `bsdf_over_pdf` directly; its evaluation-consistent path additionally evaluates the full
+response and divides by the SDK's marginal sampled PDF.
+
+Renderers specialize the enum with a typed exported constant, for example in a shader prelude:
+
+```cpp
+export static const MaterialSampleWeightPolicy MATERIAL_SAMPLE_WEIGHT_POLICY
+    = MaterialSampleWeightPolicy::eval_consistent;
+```
+
+### Contribution identity and sample weights
+
+`BSDFComponent` identifies the physical contribution represented by a sample's weight. A component may group
+several lobes or internal proposals. Its index describes the returned contribution, independently of which
+proposal generated the direction. Indices are local to a component layout and stay fixed when contributions become
+inactive. Component-aware implementations return zero for unknown indices. BSDFs and material adapters that expose
+only full response ignore the selector and always evaluate their entire response. Callers use a material's layout
+ID to determine whether it exposes a component partition.
+
+For a finite component partition, let `F_c(wi, wo)` be component `c`'s projected physical contribution and
+`q_c(wi, wo)` its joint component/direction density, including component-selection probability. At a continuous
+direction, full response is the sum of `F_c`, and the marginal directional density is the sum of `q_c`. The sample
+weight identities hold for material samples under `eval_consistent` and for component-consistent low-level BSDFs.
+
+| Operation or sample field | Full response | Selected component `c` |
+| --- | --- | --- |
+| `eval_with_pdf(..., component).value` | Sum of physical contributions | `F_c(wi, wo)` |
+| `eval_with_pdf(..., component).pdf` | Marginal directional density | `q_c(wi, wo)` |
+| `sample.weight` | Full projected value / marginal density | `F_c(wi, wo) / q_c(wi, wo)` |
+| `sample.pdf` | Marginal directional density | Marginal directional density |
+
+Physical material weights belong in `F_c`; proposal probabilities belong in `q`. For example, selecting one of two
+overlapping contributions with probabilities `p_0` and `p_1` and conditional densities `r_c(wo)` gives joint density
+`q_c(wi, wo) = p_c * r_c(wo)`. Dividing the
+selected contribution by that joint density compensates for selection. Its weight generally differs from full
+`eval / sample.pdf`, even though both estimators integrate the same response.
+
+`BSDFComponent::full_response` is the sentinel `0xffffffff`. Under `eval_consistent`, it means that the weight
+represents the whole response divided by the marginal density; it is not an extra term in the finite component
+partition. Native material estimators may retain hidden branch weights under this marker. A wrapper that collapses
+child contributions must return this marker. Delta weights are integrated event weights with selection compensation;
+continuous division and reconstruction formulas do not apply to them.
+
 ### Composition and proposal selection
 
-Composite BSDFs separate the physical coefficient of a lobe from the probability used to select it for sampling.
-For continuous lobes selected with probabilities `p_j` and conditional densities `q_j`, the density visible to MIS
-is the marginal sum `p_j * q_j` over every lobe that could produce the direction. Returning only the selected
-conditional density would make a later MIS decision depend on hidden sampler state.
-
 `StandardBSDF` combines diffuse reflection, diffuse transmission, microfacet reflection, and microfacet
-reflection/transmission. It biases lobe selection using Fresnel terms and luminance, while fused evaluation sums the
-physical values and marginal proposal density. MaterialX weight and frame wrappers scale values or rotate directions
-without changing a solid-angle PDF under an orthonormal transform. Its layer, mix, and add wrappers choose proposals
-using opacity, mix luminance, or albedo estimates, then combine physical values and marginal PDFs. Delta branches
-return before continuous densities are folded in because discrete probability mass and solid-angle density are
-different measures.
+reflection/transmission. It biases lobe selection using Fresnel terms and luminance. MaterialX weight wrappers scale
+physical values; frame wrappers rotate directions without changing solid-angle densities under orthonormal
+transforms. Its layer, mix, and add wrappers choose proposals using opacity, mix luminance, or albedo estimates.
+Delta branches return before continuous densities are folded in because those measures differ.
+
+Native Standard and SpecGloss samplers retain selected contributions.
+MaterialX weight and frame wrappers preserve child component identity, whereas layer, mix, and add
+wrappers collapse continuous samples to full response. MaterialX `bsdf_mix` and `closure_tree` expose full response at
+the material boundary. Cloth, scratch, OpenPBR, and native metallic-roughness glTF also expose full continuous
+response. Cloth and scratch reconstruct that weight locally from evaluation and the marginal density because
+their adapters do not expose a stable finite partition of latent choices. MDL reconstructs full-response weights
+only when the linked material sample weight policy requires evaluation consistency.
+
+### Component compatibility and roughness
+
+`IMaterialInstance.get_component_layout_id()` identifies compatible component-index meanings. Equal nonzero IDs
+allow callers to interpret a saved component at another compatible instance; they do not imply equal parameters,
+values, or probabilities. Layout zero is reserved for full-response sampling. The scene-local ID lifetime and
+native slot layouts are described in [Material system](material-system.md#component-layout-identity).
+
+`is_component_rough(si, component, marginal_pdf, roughness_threshold)` is a reconnection heuristic. Callers first
+exclude delta events using their flags, then supply the marginal density at the current interaction and outgoing
+direction. The default classifies a response as rough when the threshold is nonpositive or the density is at most
+`1 / threshold^2`. Standard and SpecGloss classify their diffuse slots as rough and compare specular perceptual
+roughness with the threshold; full-response requests use the default density heuristic. This is a classification
+policy, not a universal physical roughness measure.
 
 ### Material-instance dispatch
 
@@ -110,7 +188,7 @@ PDF-only request. The renderer therefore dispatches `IMaterialInstance`, not a c
  direct-light     path-continuation
  candidate        sample()
        |             |
- eval_with_pdf()  weight + PDF + flags
+ eval_with_pdf()  weight + PDF + flags + component
        |             |
      MIS weight   throughput, emitter MIS,
                   medium-boundary update
@@ -123,8 +201,8 @@ PDF-only request. The renderer therefore dispatches `IMaterialInstance`, not a c
    contribute. With MIS enabled, it evaluates a sampled light direction once through `eval_with_pdf()` and uses both
    the scattering value and BSDF PDF. Without MIS it requests only the value.
 3. For path continuation, `sample()` supplies a direction and weight. The path tracer multiplies throughput by the
-   weight and retains the PDF for MIS if the next segment reaches an emitter. Delta flags disable an incompatible
-   continuous-density comparison; transmission flags drive interior-boundary tracking.
+   weight and retains the marginal PDF for MIS if the next segment reaches an emitter. Delta flags disable an
+   incompatible continuous-density comparison; transmission flags drive interior-boundary tracking.
 4. Implementations are expected to fail sampling rather than expose non-finite directions, negative or non-finite
    weights, or invalid densities. The generic tests require successful non-delta samples to have a positive density;
    successful delta samples instead require zero in the scalar PDF field and a matching delta flag.
@@ -134,21 +212,16 @@ PDF-only request. The renderer therefore dispatches `IMaterialInstance`, not a c
 Evaluation and PDF are one semantic calculation. Keeping `eval_with_pdf()` authoritative prevents separate formulas
 from drifting and lets shared half-vector, distribution, Fresnel, or graph work be reused. Single-result aliases
 remain useful at call sites, while compile-time hints prevent large material aggregates from doing unnecessary work.
-The deterministic fallback is safe only because PDF results cannot depend on random generator state.
+Evaluation must reproduce the selected contribution and its density at the supplied interaction and directions.
 
-Probability measure is part of the interface. Continuous PDFs are non-negative solid-angle densities, while delta
-events report zero and carry their discrete selection compensation in the sample weight. Composite non-delta PDFs
-must be marginal over hidden branch choices. These rules let a generic renderer store one PDF for later MIS without
-knowing which concrete BSDF or internal lobe produced the sample.
+Marginalizing over hidden proposal choices lets a generic renderer store one density for later MIS. Returning only
+the selected conditional density would make that comparison depend on hidden sampler state.
 
-The declared `BSDFSample` and `MaterialSample` contract says that `weight` is projected `eval / pdf`. Most simple
-continuous BSDFs and the non-delta MaterialX composition wrappers collapse to that value. Current `StandardBSDF`,
-the advanced MaterialX root, `ProceduralClothBSDF`, and the MaterialX scratch model instead retain a
-selection-compensated branch estimator while reporting the marginal PDF used by MIS. That estimator can remain
-unbiased, but its weight is not generally equal to aggregate `eval / pdf` when lobes overlap. This is an explicit
-current contract ambiguity: generic callers must not diagnose those implementations solely by that equality, and
-the test suite deliberately exempts their weights while separately checking relevant PDFs. Choosing one universal
-weight form remains unresolved.
+Under `eval_consistent`, reconstruct a successful continuous material sample's weight with its component evaluation
+and joint density, while checking `sample.pdf` separately against full-response evaluation. Using the marginal
+density to reconstruct a selected-component weight loses its selection compensation. When reevaluating at another interaction,
+use that interaction's component value and density; a saved proposal probability is not a substitute. Rejected
+attempts contribute zero and must not be silently renormalized out of the sampling distribution.
 
 Flags are behavioral data, not descriptive decoration. They distinguish reflection from transmission, delta from
 continuous events, and curves from surfaces; renderers use them for hemisphere selection, MIS, path-state updates,
@@ -162,8 +235,7 @@ blanket interface guarantees.
   fused operations, hints, aliases, flags, and material-instance interfaces.
 - `slang/falcor2/render/bsdfs/standard_bsdf.slang`, `slang/falcor2/render/bsdfs/lambert_diffuse_brdf.slang`,
   `slang/falcor2/render/bsdfs/specular_microfacet.slang`, `slang/falcor2/render/bsdfs/proceduralcloth_bsdf.slang`,
-  and `slang/falcor2/render/bsdfs/scratch_conductor_brdf.slang` - continuous, delta, composite, and
-  selection-compensated native behavior.
+  and `slang/falcor2/render/bsdfs/scratch_conductor_brdf.slang` - continuous, delta, component, and full-response behavior.
 - `slang/falcor2/render/materials/standard_material_instance.slang` and
   `slang/falcor2/render/materials/openpbr_material.slang` - local-frame adaptation and an upstream split evaluator.
 - `slang/falcor2/render/materials/mtlx/interface.slang` and
@@ -172,9 +244,9 @@ blanket interface guarantees.
 - `slang/falcor2/rendernodes/reference_pathtracer.slang` and
   `slang/falcor2/tools/materials/scene_sampling_tools.slang` - production transport consumption and diagnostic entry
   points.
-- `tests/python/render/bsdf_tests.slang`, `tests/python/render/bsdf_tests.py`,
-  `tests/python/render/test_bsdfs.py`, and `tests/python/render/test_materials.py` - distribution, sample consistency,
-  reciprocity, fused result, flags, lobe-hint, and delta-measure checks.
+- `tests/python/render/scattering_tests.slang`, `tests/python/render/scattering_tests.py`,
+  `tests/python/render/test_bsdfs.py`, and `tests/python/render/test_material_sampling.py` - shared component contracts,
+  independent estimator means, component partitions, layout compatibility, roughness, and delta-measure checks.
 
 ## Related design documents
 

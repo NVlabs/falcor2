@@ -205,11 +205,15 @@ ref<ImporterScene> import_scene(const std::filesystem::path& path, const ImportO
     }
 }
 
-void detail::apply_import_options(ImporterScene& importer_scene, const ImportOptions& import_options)
+void detail::apply_import_options(
+    ImporterScene& importer_scene,
+    const ImportOptions& import_options,
+    std::optional<double> bake_time_seconds
+)
 {
     // Pose baking is an importer-scene operation. Format-specific importers only populate generic skin data.
     if (import_options.bake_poses)
-        importer_scene.bake_pose();
+        importer_scene.bake_pose(bake_time_seconds);
 
     detail::convert_area_lights_to_geometry(importer_scene, import_options);
 

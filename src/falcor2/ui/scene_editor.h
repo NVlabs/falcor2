@@ -115,9 +115,20 @@ public:
     void remove_selected_object();
 
     /// Frame the currently selected entity in the camera view.
+    /// If the camera or an ancestor is animated, activate and move the free camera instead.
     /// @param camera The camera to update, or nullptr to only update the camera controller.
     /// @return True if an entity was selected and the camera controller was updated.
     bool frame_selected(Camera* camera);
+
+    /// On the next update_camera(), frame and select the free camera if it is active.
+    /// Uses square framing after scene evaluation. The request is cleared when the scene changes.
+    void request_initial_camera_framing();
+
+    /// After Scene::update(), apply framing and navigation (dt in seconds), set viewport dimensions
+    /// in pixels (clamped to at least one), and update gizmo matrices.
+    /// Navigation switches animated cameras to the free camera.
+    /// Returns the resulting active camera, or nullptr if no scene is attached.
+    Camera* update_camera(float dt, uint32_t width, uint32_t height);
 
     /// Current tool mode (select, move, rotate, scale).
     ToolMode tool_mode() const { return m_tool_mode; }
@@ -135,8 +146,9 @@ public:
     bool show_light_gizmos() const { return m_show_light_gizmos; }
     void set_show_light_gizmos(bool show) { m_show_light_gizmos = show; }
 
-    /// Set the active camera used to view and project editor gizmos.
-    void set_active_camera(const Camera* camera);
+    /// Set the camera used to view and project editor gizmos without changing scene camera selection.
+    /// update_camera() sets this automatically. nullptr resets the matrices to identity.
+    void set_view_camera(const Camera* camera);
 
     /// Set the camera view and projection matrices used for rendering the gizmo.
     void set_camera_matrices(const float4x4& view, const float4x4& proj);
@@ -213,6 +225,10 @@ private:
     ref<IconLibrary> m_icon_library;
     ref<detail::SceneGizmoRenderer> m_scene_gizmo_renderer;
     ref<CameraController> m_camera_controller;
+    // Last camera state synchronized with the controller, including our own transform writes.
+    ref<Camera> m_camera;
+    float4x4 m_camera_world_matrix{float4x4::identity()};
+    bool m_initial_camera_framing_pending{false};
     ref<Entity> m_inspector_return_entity;
     GraphUICallback m_graph_ui_callback;
     EditorCommandRegistry m_commands;
@@ -257,6 +273,8 @@ private:
     void register_commands();
     void validate_selection();
     bool can_frame_selected() const;
+    void remember_camera_state(Camera* camera);
+    void sync_camera_controller(Camera* camera);
 
     void main_menu_ui();
     bool command_menu_item(const CommandId& id);

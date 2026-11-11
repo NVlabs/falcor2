@@ -7,6 +7,7 @@
 #include "falcor2/core/config.h"
 
 FALCOR_PY_DECLARE(core_platform);
+FALCOR_PY_DECLARE(core_blob);
 FALCOR_PY_DECLARE(core_properties);
 FALCOR_PY_DECLARE(core_reflected_object);
 FALCOR_PY_DECLARE(core_reflection);
@@ -25,7 +26,7 @@ FALCOR_PY_DECLARE(render_texture_manager);
 FALCOR_PY_DECLARE(render_transform);
 
 FALCOR_PY_DECLARE(utils_aabb);
-FALCOR_PY_DECLARE(utils_buffer_handle);
+FALCOR_PY_DECLARE(utils_buffer_ptr);
 
 FALCOR_PY_DECLARE(utils_algorithm_parallel_reduction);
 FALCOR_PY_DECLARE(utils_algorithm_prefix_sum);
@@ -53,9 +54,6 @@ FALCOR_PY_DECLARE(ui_widgets);
 
 FALCOR_PY_DECLARE(streaming_video_encoder);
 FALCOR_PY_DECLARE(streaming_webrtc);
-#if FALCOR_ENABLE_HYDRAIPC
-FALCOR_PY_DECLARE(hydra_controller);
-#endif
 
 #if FALCOR_BUILD_TESTS
 FALCOR_PY_DECLARE(testing_nanobind_reflector);
@@ -81,7 +79,7 @@ NB_MODULE(falcor2_ext, m_)
     m.attr("FALCOR_BUILD_TYPE") = FALCOR_BUILD_TYPE;
 
     FALCOR_PY_IMPORT(utils_aabb);
-    FALCOR_PY_IMPORT(utils_buffer_handle);
+    FALCOR_PY_IMPORT(utils_buffer_ptr);
     FALCOR_PY_IMPORT(utils_algorithm_parallel_reduction);
     FALCOR_PY_IMPORT(utils_algorithm_prefix_sum);
     FALCOR_PY_IMPORT(utils_sampling_distribution_1d);
@@ -100,6 +98,7 @@ NB_MODULE(falcor2_ext, m_)
     FALCOR_PY_IMPORT(denoisers_ngx_features);
 
     FALCOR_PY_IMPORT(core_platform);
+    FALCOR_PY_IMPORT(core_blob);
     FALCOR_PY_IMPORT(core_properties);
     FALCOR_PY_IMPORT(core_reflected_object);
     FALCOR_PY_IMPORT(core_reflection);
@@ -126,9 +125,6 @@ NB_MODULE(falcor2_ext, m_)
 
     FALCOR_PY_IMPORT(streaming_video_encoder);
     FALCOR_PY_IMPORT(streaming_webrtc);
-#if FALCOR_ENABLE_HYDRAIPC
-    FALCOR_PY_IMPORT(hydra_controller);
-#endif
 
 #if FALCOR_BUILD_TESTS
     FALCOR_PY_IMPORT(testing_nanobind_reflector);

@@ -208,8 +208,8 @@ def preview(argv: Sequence[str] | None = None) -> None:
         enable_cuda_interop=args.out is None,
     )
     importer_scene = importer.build_importer_scene()
-    if not importer_scene.cameras:
-        importer_scene.add_default_camera_best_view(50.0, args.width / args.height)
+    if not importer_scene.has_camera():
+        importer_scene.add_framed_camera(fov_degrees=50.0, aspect=args.width / args.height)
     scene = f2.Scene.from_importer_scene(device, importer_scene)
     importer.run_scene_loaded_callbacks(scene)
     if args.out is not None:

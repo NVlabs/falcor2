@@ -61,7 +61,7 @@ struct CodeGenResult {
     std::string material_data_name;
     // Conservative target-independent upper bound for the material data struct size. If it is <=
     // `CodeGenDesc::payload_size`, the data is stored inline in MaterialData after MaterialHeader.
-    // Otherwise MaterialData contains a BufferOffsetPair into shared material storage.
+    // Otherwise MaterialData contains a BufferPtr into shared material storage.
     // The loaded target module is reflected to verify this bound and obtain the exact buffer stride.
     size_t data_struct_size{};
     // All parameters the material could possibly expose.

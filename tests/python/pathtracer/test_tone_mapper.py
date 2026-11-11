@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from importlib.resources import files
+
 import numpy as np
 import pytest
 import slangpy as spy
@@ -485,6 +487,117 @@ def test_tonemapper_selects_operator(
     assert np.array_equal(output[..., 3], input_data[..., 3])
     assert node._luminance_histogram is None
     assert node._adapted_exposure_ev is None
+
+
+_DATAGEN_HDR = np.array(
+    [
+        [0.0, 0.0, 0.0],
+        [0.18, 0.18, 0.18],
+        [1.0, 1.0, 1.0],
+        [0.05, 0.2, 2.0],
+        [8.0, 0.5, 0.02],
+        [0.001, 0.1, 100.0],
+        [65535.0, 0.9, -1.0],
+    ],
+    dtype=np.float32,
+)
+_DATAGEN_LOG = np.array(
+    [
+        [0.0, 0.0, 0.0],
+        [0.443617344, 0.443617344, 0.443617344],
+        [0.850585997, 0.850585997, 0.850585997],
+        [0.244725853, 0.464120626, 1.042162657],
+        [1.409536362, 0.669268727, 0.150851309],
+        [0.012913546, 0.341181129, 1.940241098],
+        [2.8200562, 0.822036207, 0.0],
+    ],
+    dtype=np.float32,
+)
+_DATAGEN_PUNCHY = np.array(
+    [
+        [0.0, 0.0, 0.0],
+        [0.406156391, 0.406117976, 0.406115741],
+        [0.733081102, 0.733044863, 0.733042657],
+        [0.422680974, 0.524100661, 0.884982705],
+        [1.004351735, 0.677960157, 0.520867169],
+        [0.968358696, 0.968953371, 1.005703926],
+        [1.0, 1.0, 1.0],
+    ],
+    dtype=np.float32,
+)
+
+
+def _encode_srgb(linear: np.ndarray) -> np.ndarray:
+    return np.where(
+        linear <= 0.0031308,
+        linear * 12.92,
+        np.power(np.maximum(linear, 0.0031308), 1.0 / 2.4) * 1.055 - 0.055,
+    )
+
+
+def test_punchy_curve_is_a_package_resource() -> None:
+    with files("falcor2.rendernodes").joinpath("data", "agx_punchy_curve.npy").open("rb") as stream:
+        curve = np.load(stream, allow_pickle=False)
+    assert curve.shape == (128,)
+    assert curve.dtype == np.float32
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.parametrize(
+    "operator_name,expected",
+    [("log", _DATAGEN_LOG), ("agx_punchy", np.clip(_DATAGEN_PUNCHY, 0.0, 1.0))],
+)
+def test_datagen_tonemapper_operators_match_reference_points(
+    device_type: spy.DeviceType,
+    device: spy.Device,
+    operator_name: str,
+    expected: np.ndarray,
+) -> None:
+    """The built-in curves retain the existing datagen display encodings."""
+    from falcor2.rendernodes import TonemapperNode, TonemappingOperator
+
+    node = TonemapperNode.create(device, operator=TonemappingOperator[operator_name])
+    data = np.concatenate(
+        (_DATAGEN_HDR, np.full((len(_DATAGEN_HDR), 1), 0.7, dtype=np.float32)), axis=1
+    )[None, :, :].copy(order="C")
+
+    output = node(_tensor_from_numpy(device, data)).to_numpy()
+
+    assert np.allclose(_encode_srgb(output[0, :, :3]), expected, atol=3e-4, rtol=0.0)
+    assert np.allclose(output[0, :, 3], 0.7, atol=1e-6, rtol=0.0)
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
+@pytest.mark.parametrize("operator_name", ["log", "agx_punchy"])
+def test_datagen_tonemapper_operators_support_auto_exposure(
+    device_type: spy.DeviceType,
+    device: spy.Device,
+    operator_name: str,
+) -> None:
+    """Both first-frame and previous-frame exposure use the selected curve."""
+    from falcor2.rendernodes import AutoExposureMode, TonemapperNode, TonemappingOperator
+
+    operator = TonemappingOperator[operator_name]
+    data = np.full((3, 5, 4), 0.25, dtype=np.float32)
+    data[..., 3] = 0.7
+    input_tensor = _tensor_from_numpy(device, data)
+    expected_ev = _histogram_target_ev(data)
+    manual = TonemapperNode.create(device, operator=operator)
+    manual.exposure_compensation = expected_ev
+    expected = manual(input_tensor).to_numpy()
+
+    node = TonemapperNode.create(device, operator=operator)
+    node.auto_exposure = True
+    node.auto_exposure_mode = AutoExposureMode.previous_frame
+    immediate = node(input_tensor).to_numpy()
+    previous = node(input_tensor).to_numpy()
+    node.auto_exposure_mode = AutoExposureMode.current_frame
+    current = node(input_tensor).to_numpy()
+
+    assert np.allclose(immediate, expected, atol=1e-5)
+    assert np.allclose(previous, expected, atol=1e-5)
+    assert np.allclose(current, expected, atol=1e-5)
+    assert np.array_equal(previous[..., 3], data[..., 3])
 
 
 @pytest.mark.nightly_if_not_vk

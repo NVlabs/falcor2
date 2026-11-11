@@ -1,6 +1,6 @@
 {
   "name": "usd-fileformat-plugins",
-  "version-string": "2026.07-falcor2.14",
+  "version-string": "2026.11-falcor2.17",
   "description": "Optional Adobe file-format plugins for Falcor2's core-only OpenUSD",
   "homepage": "https://github.com/skallweitNV/USD-Fileformat-plugins",
   "license": "Apache-2.0",

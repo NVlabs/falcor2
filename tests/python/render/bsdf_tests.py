@@ -16,6 +16,11 @@ from typing import Any, Optional
 
 from falcor2.utils.chi2 import ChiSquareTest
 
+if __package__:
+    from .scattering_tests import SampleContractTest
+else:
+    from scattering_tests import SampleContractTest
+
 SAMPLES_PER_THREAD: int = 1024
 
 # Keep in sync with Slang BSDFFlags::all. SlangPy zero-fills omitted struct
@@ -108,14 +113,8 @@ class BSDFChiSquareTest:
         return result
 
 
-class BSDFEvalSampleConsistencyTest:
-    """Test eval/sample consistency of a BSDF.
-
-    For each sample, verifies that delta events have zero solid-angle PDF. For
-    each non-delta sample, verifies:
-    1. eval(wi, wo) / eval_pdf(wi, wo) ~= weight (weight consistency)
-    2. eval_pdf(wi, wo) ~= pdf from sample() (pdf consistency)
-    """
+class BSDFEvalSampleConsistencyTest(SampleContractTest):
+    """Direct-BSDF adapter for the shared sampling contract."""
 
     def __init__(
         self,
@@ -127,115 +126,15 @@ class BSDFEvalSampleConsistencyTest:
         bc: Optional[dict[str, Any]] = None,
         sample_count: int = 100000,
         global_bindings: dict[str, Any] | None = None,
-    ):
-        """
-        Initialize a BSDF eval/sample consistency test.
-
-        Args:
-            device: Device for running kernels.
-            module: Module containing the BSDF type and test infrastructure.
-            bsdf_type: Name of the Slang type implementing IBSDF.
-            bsdf_bindings: Dictionary of field values for the BSDF struct.
-            wi: Incident direction (must be in positive hemisphere).
-            bc: BSDF context with IOR values. Defaults to vacuum (1.0/1.0).
-            sample_count: Total number of samples to draw.
-        """
-        super().__init__()
-        self.device = device
-        self.module = module
-        self.bsdf_type = bsdf_type
-        self.bsdf_bindings = bsdf_bindings
-        self.wi = wi
-        self.bc = _make_bsdf_context(bc)
-        self.sample_count = sample_count
-        self.global_bindings = global_bindings
-        self.messages = ""
-
-    def run(
-        self,
-        weight_tol: float = 1e-3,
-        pdf_tol: float = 1e-3,
-        quiet: bool = True,
-    ) -> bool:
-        """
-        Run the eval/sample consistency test.
-
-        Args:
-            weight_tol: Maximum allowed relative error for weight consistency.
-            pdf_tol: Maximum allowed relative error for PDF consistency.
-            quiet: If True, suppress console output if test passes.
-
-        Returns:
-            True if all consistency checks pass.
-        """
-        thread_count = (self.sample_count + SAMPLES_PER_THREAD - 1) // SAMPLES_PER_THREAD
-
-        weight_errors = spy.Tensor.zeros(self.device, (thread_count,), dtype=float)
-        pdf_errors = spy.Tensor.zeros(self.device, (thread_count,), dtype=float)
-        counters = spy.Tensor.zeros(self.device, (4,), dtype="uint")
-
-        kernel = self.module[f"bsdf_tests::test_eval_sample_consistency<{self.bsdf_type}>"]
-        if self.global_bindings is not None:
-            kernel = kernel.as_func().set(self.global_bindings)
-        kernel(
-            tid=spy.grid((thread_count,)),
-            sample_count=self.sample_count,
-            samples_per_thread=SAMPLES_PER_THREAD,
-            seed=5678,
-            bsdf=self.bsdf_bindings,
-            wi=self.wi,
-            bc=self.bc,
-            weight_errors=weight_errors,
-            pdf_errors=pdf_errors,
-            counters=counters,
+    ) -> None:
+        super().__init__(
+            device=device,
+            module=module,
+            target=f"bsdf_tests::BSDFTarget<{bsdf_type}>",
+            target_bindings={"bsdf": bsdf_bindings, "wi": wi, "bc": _make_bsdf_context(bc)},
+            sample_count=sample_count,
+            global_bindings=global_bindings,
         )
-
-        weight_errs = weight_errors.to_numpy()
-        pdf_errs = pdf_errors.to_numpy()
-        counts = counters.to_numpy()
-
-        max_weight_err = float(np.max(weight_errs))
-        max_pdf_err = float(np.max(pdf_errs))
-        n_valid = int(counts[0])
-        n_failed = int(counts[1])
-        n_delta = int(counts[2])
-        n_invalid = int(counts[3])
-
-        passed = True
-        self.messages = f"Eval/sample consistency ({self.bsdf_type}):\n"
-        self.messages += (
-            f"  Samples: {n_valid} valid, {n_failed} failed, "
-            f"{n_delta} delta, {n_invalid} invalid\n"
-        )
-        self.messages += f"  Max weight error: {max_weight_err:.6e} (tolerance: {weight_tol})\n"
-        self.messages += f"  Max PDF error: {max_pdf_err:.6e} (tolerance: {pdf_tol})\n"
-
-        if n_invalid > 0:
-            self.messages += (
-                f"  FAIL: {n_invalid} samples with an invalid PDF, weight, or direction\n"
-            )
-            passed = False
-        if max_weight_err > weight_tol:
-            self.messages += (
-                f"  FAIL: Weight error {max_weight_err:.6e} exceeds " f"tolerance {weight_tol}\n"
-            )
-            passed = False
-        if max_pdf_err > pdf_tol:
-            self.messages += (
-                f"  FAIL: PDF error {max_pdf_err:.6e} exceeds " f"tolerance {pdf_tol}\n"
-            )
-            passed = False
-        if n_valid == 0:
-            self.messages += "  FAIL: No valid (non-delta) samples to test\n"
-            passed = False
-
-        if passed:
-            self.messages += "  PASSED\n"
-
-        if not passed or not quiet:
-            print(self.messages)
-
-        return passed
 
 
 class BSDFReciprocityTest:

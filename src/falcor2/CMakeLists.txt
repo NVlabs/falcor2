@@ -1,21 +1,6 @@
 
 add_library(falcor2 SHARED)
 
-if(FALCOR_ENABLE_HYDRAIPC)
-    target_sources(falcor2 PRIVATE
-        hydra/controller.cpp
-        hydra/controller.h
-        hydra/scene_reconciler.cpp
-        hydra/scene_reconciler.h
-        hydra/scene_resources.cpp
-        hydra/scene_resources.h
-        hydra/scene_mesh.cpp
-        hydra/scene_mesh.h
-        hydra/scene_materialx.cpp
-        hydra/scene_materialx.h
-    )
-    target_link_libraries(falcor2 PRIVATE hydraipc_transport)
-endif()
 
 target_sources(falcor2 PRIVATE
     falcor2.cpp
@@ -26,6 +11,7 @@ target_sources(falcor2 PRIVATE
     core/archive.cpp
     core/archive.h
     core/array_view.h
+    core/blob.h
     core/blob_cache.cpp
     core/blob_cache.h
     core/cursor_writer.h
@@ -204,20 +190,18 @@ target_sources(falcor2 PRIVATE
     importers/usd_importer/usd_importer_mesh_adapter.cpp
     importers/usd_importer/usd_importer_mesh_adapter.h
     importers/usd_importer/usd_importer_skinning.cpp
-    importers/usd_importer/usd_importer_skinning_animated.cpp
-    importers/usd_importer/usd_importer_skinning.h
     importers/usd_importer/usd_importer_utils.cpp
     importers/usd_importer/usd_importer_utils.h
     importers/usd_importer/usd_importer.cpp
     importers/usd_importer/usd_importer.h
 
     utils/aabb.h
+    utils/camera_framing.cpp
+    utils/camera_framing.h
     utils/color.cpp
     utils/color.h
-    utils/buffer_handle.cpp
-    utils/buffer_handle.h
-    utils/buffer_offset_pair.cpp
-    utils/buffer_offset_pair.h
+    utils/buffer_ptr.cpp
+    utils/buffer_ptr.h
     utils/buffer_suballocator.cpp
     utils/buffer_suballocator.h
     utils/device_vector.h
@@ -296,6 +280,8 @@ target_sources(falcor2 PRIVATE
     render/transform.cpp
     render/transform.h
 
+    render/utils/geometry_dispatch.h
+
     render/component/camera.cpp
     render/component/camera.h
     render/component/geometry_instance.cpp
@@ -311,6 +297,23 @@ target_sources(falcor2 PRIVATE
     render/geometry/geometry_attribute_registry.h
     render/geometry/geometry_vertex_attribute.cpp
     render/geometry/geometry_vertex_attribute.h
+    render/geometry/mesh_geometry_data.cpp
+    render/geometry/mesh_geometry_data.h
+    render/geometry/curve_geometry_data.cpp
+    render/geometry/curve_geometry_data.h
+    render/geometry/dynamic_mesh_geometry.cpp
+    render/geometry/dynamic_mesh_geometry.h
+    render/geometry/dynamic_curve_geometry.cpp
+    render/geometry/dynamic_curve_geometry.h
+    render/geometry/geometry_animation.cpp
+    render/geometry/geometry_deformer.h
+    render/geometry/geometry_updater.h
+    render/geometry/vertex_cache_updater.h
+    render/geometry/vertex_cache_updater.cpp
+    render/geometry/vertex_cache_deformer.h
+    render/geometry/vertex_cache_deformer.cpp
+    render/geometry/geometry_animation.h
+    render/geometry/geometry_sample_storage.h
     render/geometry/static_mesh_geometry.cpp
     render/geometry/static_mesh_geometry.h
     render/geometry/static_curve_geometry.cpp
@@ -528,7 +531,6 @@ file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${FALCOR_BUILD_TYPE}/include/fa
 "#pragma once
 
 #define FALCOR_BUILD_TYPE \"${FALCOR_BUILD_TYPE}\"
-#define FALCOR_ENABLE_HYDRAIPC $<BOOL:${FALCOR_ENABLE_HYDRAIPC}>
 #define FALCOR_ENABLE_NGX $<BOOL:${FALCOR_ENABLE_NGX}>
 #define FALCOR_ENABLE_STREAMING $<BOOL:${FALCOR_ENABLE_STREAMING}>
 

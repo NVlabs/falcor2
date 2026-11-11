@@ -101,7 +101,8 @@ float mdl_read_argblock_as_float(uint offs)
 
 double mdl_read_argblock_as_double(uint offs)
 {
-    return gMDLMaterialData.arg_block_load<double>(offs);
+    // Match the MDL SDK runtime: read two words without requiring 8-byte alignment.
+    return asdouble(gMDLMaterialData.arg_block_load<uint>(offs), gMDLMaterialData.arg_block_load<uint>(offs + 4));
 }
 
 int mdl_read_argblock_as_int(uint offs)
@@ -131,7 +132,11 @@ float mdl_read_rodata_as_float(uint offs)
 
 double mdl_read_rodata_as_double(uint offs)
 {
-    return gMDLMaterialData.read_only_data_load<double>(offs);
+    // Match the MDL SDK runtime: read two words without requiring 8-byte alignment.
+    return asdouble(
+        gMDLMaterialData.read_only_data_load<uint>(offs),
+        gMDLMaterialData.read_only_data_load<uint>(offs + 4)
+    );
 }
 
 int mdl_read_rodata_as_int(uint offs)

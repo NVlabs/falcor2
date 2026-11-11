@@ -29,6 +29,11 @@ public extern struct OpacityEvaluator : IOpacityEvaluator = AcceptAllHitsEvaluat
 // Renderer overrides
 // Renderers may specialize these options when composing shaders.
 
+/// Select eval_consistent when reconstructing or reusing sampled contributions through material evaluation.
+/// Native preserves continuation estimators without requiring an additional full-response evaluation.
+public extern static const MaterialSampleWeightPolicy MATERIAL_SAMPLE_WEIGHT_POLICY
+    = MaterialSampleWeightPolicy::native;
+
 /// Renderers can specialize this constant to enable conservative triangle ray offsets.
 public extern static const bool ENABLE_PRECISE_RAY_OFFSETS = false;
 

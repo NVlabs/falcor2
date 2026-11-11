@@ -202,8 +202,6 @@ BlobCache::BlobCache(std::optional<Options> options)
         FALCOR_THROW("BlobCache: failed to create root directory '{}': {}", m_root_dir.string(), ec.message());
 
     m_lock_path = m_root_dir / "cache.lock";
-
-    cleanup_temp_files();
 }
 
 BlobCache::~BlobCache() = default;
@@ -688,7 +686,7 @@ void BlobCache::evict()
         }
 
         std::error_code ec;
-        auto scan = scan_entries(ec);
+        auto scan = scan_entries(ec, true);
         if (ec)
             return;
 
@@ -788,10 +786,11 @@ BlobCache::Stats BlobCache::stats()
 // Helpers
 // ----------------------------------------------------------------------------
 
-BlobCache::ScanResult BlobCache::scan_entries(std::error_code& ec) const noexcept
+BlobCache::ScanResult BlobCache::scan_entries(std::error_code& ec, bool clean_temp_files) const noexcept
 {
     ec.clear();
     ScanResult result;
+    const auto now = std::filesystem::file_time_type::clock::now();
 
     try {
         std::error_code it_ec;
@@ -833,8 +832,16 @@ BlobCache::ScanResult BlobCache::scan_entries(std::error_code& ec) const noexcep
                         continue;
 
                     std::string payload_name = payload_it->path().filename().string();
-                    if (is_temp_file_name(payload_name))
+                    if (is_temp_file_name(payload_name)) {
+                        if (clean_temp_files) {
+                            const auto write_time = payload_it->last_write_time(payload_ec);
+                            // Best-effort orphan cleanup avoids tracking writers across processes. A pending write
+                            // whose last-write timestamp is older than five minutes may be removed and fail to commit.
+                            if (!payload_ec && now - write_time > std::chrono::minutes(5))
+                                std::filesystem::remove(payload_it->path(), payload_ec);
+                        }
                         continue;
+                    }
 
                     auto size = payload_it->file_size(payload_ec);
                     if (payload_ec || size > std::numeric_limits<uint64_t>::max()) {
@@ -1011,55 +1018,6 @@ void BlobCache::remove_payload(const std::filesystem::path& key_dir, const std::
     }
 }
 
-void BlobCache::cleanup_temp_files() noexcept
-{
-    try {
-        auto now = std::filesystem::file_time_type::clock::now();
-
-        std::error_code ec;
-        for (auto prefix_it = std::filesystem::directory_iterator(m_root_dir, ec);
-             !ec && prefix_it != std::filesystem::directory_iterator();
-             prefix_it.increment(ec)) {
-            std::error_code entry_ec;
-
-            if (!prefix_it->is_directory(entry_ec) || entry_ec)
-                continue;
-
-            std::string prefix_name = prefix_it->path().filename().string();
-            if (!is_hex_string(prefix_name, 2))
-                continue;
-
-            for (auto key_it = std::filesystem::directory_iterator(prefix_it->path(), entry_ec);
-                 !entry_ec && key_it != std::filesystem::directory_iterator();
-                 key_it.increment(entry_ec)) {
-                std::error_code key_ec;
-                std::string key_name = key_it->path().filename().string();
-                if (!is_hex_string(key_name, 40))
-                    continue;
-
-                if (!key_it->is_directory(key_ec) || key_ec)
-                    continue;
-
-                for (auto payload_it = std::filesystem::directory_iterator(key_it->path(), key_ec);
-                     !key_ec && payload_it != std::filesystem::directory_iterator();
-                     payload_it.increment(key_ec)) {
-                    std::string filename = payload_it->path().filename().string();
-                    if (!is_temp_file_name(filename))
-                        continue;
-
-                    std::error_code time_ec;
-                    auto write_time = payload_it->last_write_time(time_ec);
-                    if (!time_ec && (now - write_time) > std::chrono::minutes(1)) {
-                        std::error_code remove_ec;
-                        std::filesystem::remove(payload_it->path(), remove_ec);
-                    }
-                }
-            }
-        }
-    } catch (...) {
-    }
-}
-
 void BlobCache::maybe_evict(uint64_t published_bytes) noexcept
 {
     try {
@@ -1080,7 +1038,7 @@ void BlobCache::maybe_evict(uint64_t published_bytes) noexcept
             return;
 
         std::error_code ec;
-        auto scan = scan_entries(ec);
+        auto scan = scan_entries(ec, true);
         if (ec)
             return;
 

@@ -2,8 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import IntEnum
+import logging
+from pathlib import Path
 from typing import Any, Callable, Optional
+from uuid import uuid4
 from weakref import ReferenceType, ref
 
 import slangpy as spy
@@ -11,12 +15,14 @@ import falcor2 as f2
 
 from falcor2.editor.scene_shader import SceneShaderHelper
 from falcor2.editor.graph_settings import GraphSettingsPanel
+from falcor2.editor.utils import save_image
 from falcor2.rendergraph import is_torch_tensor, torch_to_slangpy
 from falcor2.rendergraph.render_node import RenderNode
 from falcor2.streaming.config import StreamingConfig
 
 
 _active_editor: ReferenceType["Editor"] | None = None
+_logger = logging.getLogger(__name__)
 
 
 def _get_active_editor() -> Optional["Editor"]:
@@ -115,6 +121,8 @@ class Editor:
         self._capture_image = None
         self._swapchain_image = None
         self._rendered_frames = 0
+        self._screenshot_requested = False
+        self._tev_requested = False
         self._ui_frame_active = False
         self._needs_render = False
         self._dt = 0.0
@@ -143,6 +151,8 @@ class Editor:
         self._scene_editor.add_help_section(
             "Application",
             [
+                ("F2", "Save PNG and EXR to screenshots/"),
+                ("F3", "Send viewport image to tev"),
                 ("F5", "Toggle scene editor"),
                 ("F6", "Toggle profiler"),
                 ("F12", "Cycle render mode (D3D12/Vulkan)"),
@@ -217,10 +227,7 @@ class Editor:
         self._scene_editor.scene = value
         self._interaction_controller.scene = value
         self._camera = value and value.active_camera
-        if self._camera is not None:
-            self._camera_controller.transform = f2.Transform(
-                self._camera.entity.world_from_object_matrix
-            )
+        self._scene_editor.request_initial_camera_framing()
 
     @property
     def output(self) -> Optional[FrameOutput]:
@@ -356,20 +363,6 @@ class Editor:
         if scene is not None:
             scene.update()
 
-        # Detect active camera changes (e.g., camera removed and replaced).
-        camera = scene and scene.active_camera
-        if camera is not self._camera:
-            self._camera = camera
-            if camera is not None:
-                self._camera_controller.transform = f2.Transform(
-                    camera.entity.world_from_object_matrix
-                )
-
-        # Update camera controller
-        if self._camera_controller.update(self._dt):
-            if camera is not None:
-                camera.entity.set_world_transform(self._camera_controller.transform)
-
         # Acquire swapchain image
         if self.surface is None or self._stream is not None:
             self._image = self._ensure_composite()
@@ -404,13 +397,7 @@ class Editor:
             vp_width = self._image.width
             vp_height = self._image.height
 
-        if camera is not None:
-            # Handle resize
-            if vp_width != camera.width or vp_height != camera.height:
-                camera.width = vp_width
-                camera.height = vp_height
-
-        self._scene_editor.set_active_camera(camera)
+        self._update_camera(vp_width, vp_height)
 
         # Create frame output and command encoder
         self._cmd = self.device.create_command_encoder()
@@ -496,6 +483,28 @@ class Editor:
 
         fps = 1.0 / self._dt if self._dt > 0 else 0.0
 
+        # Preserve the rendered image before selection outlines are composited.
+        export_texture = None
+        if self._screenshot_requested or self._tev_requested:
+            export_texture = self.device.create_texture(
+                format=self._output.color_target.format,
+                width=self._output.width,
+                height=self._output.height,
+                mip_count=1,
+                usage=spy.TextureUsage.shader_resource,
+                label="editor_image_export",
+            )
+            self._cmd.copy_texture(
+                export_texture,
+                0,
+                0,
+                spy.uint3(0),
+                self._output.color_target,
+                0,
+                0,
+                spy.uint3(0),
+            )
+
         # Update selection state before drawing the overlay so this render pass uses
         # the latest selection observed by the interaction controller.
         self._interaction_controller.update_selection_overlay()
@@ -575,6 +584,33 @@ class Editor:
         self._rendered_frames += 1
         self._needs_render = False
 
+        if export_texture is not None:
+            self._export_image(export_texture)
+
+    def _export_image(self, texture: spy.Texture) -> None:
+        """Export a submitted viewport snapshot, keeping failures out of the render loop."""
+        screenshot_requested = self._screenshot_requested
+        tev_requested = self._tev_requested
+        self._screenshot_requested = self._tev_requested = False
+
+        if screenshot_requested:
+            try:
+                timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%SZ")
+                path = Path("screenshots") / f"screenshot-{timestamp}-{uuid4().hex}"
+                for suffix in (".exr", ".png"):
+                    output_path = path.with_suffix(suffix)
+                    save_image(texture, output_path)
+                    print(f"Saved viewport image to {output_path.resolve()}", flush=True)
+            except Exception:
+                _logger.exception("Failed to save viewport image")
+
+        if tev_requested:
+            try:
+                # The texture overload reads back now; tev sends the owned bitmap asynchronously.
+                spy.tev.show_async(texture)
+            except Exception:
+                _logger.exception("Failed to send viewport image to tev")
+
     def _ensure_composite(self) -> spy.Texture:
         if self._composite is None:
             usage = spy.TextureUsage.shader_resource
@@ -630,6 +666,11 @@ class Editor:
     def _wait_for_device(self) -> None:
         self.device.wait()
         self.profiler.tick()
+
+    def _update_camera(self, width: int, height: int) -> None:
+        self._camera = self._scene_editor.update_camera(self._dt, width, height)
+        if self._camera is None:
+            self._interaction_controller.cancel_pointer_owner()
 
     def _render_debug(self):
         """Dispatch debug shaders using SceneShaderHelper."""
@@ -739,6 +780,12 @@ class Editor:
 
         # These application function keys must work even while ImGui owns focus.
         if event.type == spy.KeyboardEventType.key_press:
+            if event.key == spy.KeyCode.f2:
+                self._screenshot_requested = True
+                return
+            if event.key == spy.KeyCode.f3:
+                self._tev_requested = True
+                return
             if event.key == spy.KeyCode.f5:
                 self._scene_editor.visible = not self._scene_editor.visible
                 return

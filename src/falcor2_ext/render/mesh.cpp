@@ -9,6 +9,8 @@
 
 #include "falcor2/render/geometry/static_curve_geometry.h"
 #include "falcor2/render/geometry/static_mesh_geometry.h"
+#include "falcor2/render/geometry/dynamic_mesh_geometry.h"
+#include "falcor2/render/geometry/dynamic_curve_geometry.h"
 
 namespace falcor {
 
@@ -666,6 +668,9 @@ FALCOR_PY_EXPORT(render_static_mesh_geometry)
             "optional sequence of MeshVertexAttribute values. "
             "Replaces any existing mesh data."
         );
+
+    nb::class_<DynamicMeshGeometry, Geometry>(m, "DynamicMeshGeometry", D(DynamicMeshGeometry, 2));
+    nb::class_<DynamicCurveGeometry, Geometry>(m, "DynamicCurveGeometry", D(DynamicCurveGeometry));
 
     nb::class_<StaticCurveGeometry, Geometry>(m, "StaticCurveGeometry", D(StaticCurveGeometry))
         .def(

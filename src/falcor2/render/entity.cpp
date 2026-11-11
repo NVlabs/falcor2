@@ -15,6 +15,7 @@ void Entity::remove()
 {
     if (!is_valid())
         return;
+    FALCOR_CHECK(!is_builtin(), "Cannot remove a built-in object.");
     for (Entity* child : m_children) {
         child->remove();
     }
@@ -45,6 +46,7 @@ void Entity::on_remove_from_scene()
 
 void Entity::set_parent(Entity* parent)
 {
+    FALCOR_CHECK(!is_builtin() || !parent, "Cannot parent a built-in object.");
     if (parent == m_parent)
         return;
 
@@ -110,6 +112,7 @@ AABB Entity::world_aabb() const
 
 Component* Entity::create_component(std::string_view type, std::optional<Properties> props)
 {
+    FALCOR_CHECK(!is_builtin(), "Cannot add components to a built-in object.");
     Component* component = m_scene->_create_object<Component>(type, props);
     component->m_entity = this;
     m_components.push_back(component);
@@ -118,6 +121,7 @@ Component* Entity::create_component(std::string_view type, std::optional<Propert
 
 Component* Entity::create_component(const std::type_info& type, std::optional<Properties> props)
 {
+    FALCOR_CHECK(!is_builtin(), "Cannot add components to a built-in object.");
     Component* component = m_scene->_create_object<Component>(type, props);
     component->m_entity = this;
     m_components.push_back(component);

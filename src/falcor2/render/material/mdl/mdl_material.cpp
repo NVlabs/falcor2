@@ -138,21 +138,31 @@ void MDLMaterial::on_load_resources()
             const auto& parameter = *texture_resource.parameter;
             const auto& path = m_material_properties.get_ref<std::string>(parameter.name);
             const bool srgb = m_material_properties.get<bool>(parameter.name + ":srgb");
+            const auto flags = srgb ? TextureLoadFlags::color : TextureLoadFlags::data;
             const auto& texture = m_material_properties.get_ref<ref<sgl::Texture>>(parameter.name + ":texture");
+            const auto& texture_bytes = m_material_properties.get_ref<ref<Blob>>(parameter.name + ":texture_bytes");
             const auto& sampler = m_material_properties.get_ref<ref<sgl::Sampler>>(parameter.name + ":sampler");
 
-            // Match native materials: an explicit texture overrides the file path.
+            // Match native materials: an explicit texture overrides encoded bytes and the file path.
             // TextureManager reuses existing resources when only other parameters changed.
             if (texture) {
                 texture_resource.texture_handle = m_scene->texture_manager()->register_texture({
                     .texture = texture,
                     .sampler = sampler,
                 });
+            } else if (texture_bytes) {
+                texture_resource.texture_handle = m_scene->texture_manager()->load_texture({
+                    .texture_bytes = texture_bytes,
+                    .sampler = sampler,
+                    .flags = flags,
+                    .usage = sgl::TextureUsage::shader_resource,
+                    .load_deferred = true,
+                });
             } else if (!path.empty()) {
                 texture_resource.texture_handle = m_scene->texture_manager()->load_texture({
                     .path = try_resolve(path),
                     .sampler = sampler,
-                    .flags = srgb ? TextureLoadFlags::color : TextureLoadFlags::data,
+                    .flags = flags,
                     .usage = sgl::TextureUsage::shader_resource,
                     .load_deferred = true,
                 });
@@ -162,7 +172,8 @@ void MDLMaterial::on_load_resources()
 
             // Empty defaults remain editable; no source image is needed during compilation.
             // Clearing both inputs restores texture_isvalid()'s zero resource ID.
-            const uint32_t resource_id = texture || !path.empty() ? sgl::narrow_cast<uint32_t>(i + 1) : 0;
+            const uint32_t resource_id
+                = texture || texture_bytes || !path.empty() ? sgl::narrow_cast<uint32_t>(i + 1) : 0;
             set_material_data(mutable_data(), m_arg_block_offset + parameter.argument_offset, resource_id);
             continue;
         }
@@ -339,11 +350,10 @@ template<typename CursorT>
 void MDLMaterial::write_to_cursor_impl(CursorT cursor) const
 {
     auto data = cursor["data"];
-    const auto data_buffer = data_ref();
-    data["data"] = data_buffer.buffer;
-    data["ro_data_offset"] = data_buffer.offset;
-    data["arg_block_offset"] = data_buffer.offset + m_arg_block_offset;
-    data["texture_table_offset"] = data_buffer.offset + m_texture_table_offset;
+    data["data"] = data_ref();
+    data["ro_data_offset"] = 0u;
+    data["arg_block_offset"] = m_arg_block_offset;
+    data["texture_table_offset"] = m_texture_table_offset;
     data["surface_scatter_bsdf_count"] = m_result.surface_scatter_handle_count;
 }
 
@@ -574,7 +584,15 @@ void MDLMaterial::run_codegen()
                         ref<sgl::Texture>{},
                         false,
                         "Optional GPU texture overriding the filename. Clear it to use the filename again. "
-                        "Its format determines color-space decoding; :srgb only applies to file loading.",
+                        "Its format determines color-space decoding; :srgb only applies to encoded or file loading.",
+                        on_change,
+                        ui_group
+                    );
+                    m_material_properties.add_property(
+                        it.first + ":texture_bytes",
+                        ref<Blob>{},
+                        false,
+                        "Optional encoded texture bytes used when no GPU texture is set; overrides the filename.",
                         on_change,
                         ui_group
                     );
@@ -582,7 +600,8 @@ void MDLMaterial::run_codegen()
                         it.first + ":sampler",
                         ref<sgl::Sampler>{},
                         false,
-                        "Optional sampler for either a GPU texture or a filename. Null uses the scene default.",
+                        "Optional sampler for a GPU texture, encoded bytes, or a filename. Null uses the scene "
+                        "default.",
                         on_change,
                         ui_group
                     );
@@ -687,7 +706,7 @@ struct ${NAME}_Instance : IMaterialInstance
     }
 
     BSDFEval eval_with_pdf<
-        let Hints : BSDFEvalHints = BSDFEvalHints::both>(const SurfaceInteraction si, const float3 wo)
+        let Hints : BSDFEvalHints = BSDFEvalHints::both>(const SurfaceInteraction si, const float3 wo, const BSDFComponent component = BSDFComponent::full_response)
     {
         if (Hints == BSDFEvalHints::none)
             return BSDFEval();
@@ -761,7 +780,16 @@ struct ${NAME}_Instance : IMaterialInstance
         else if (sample_data.event_type == BSDF_EVENT_SPECULAR_TRANSMISSION)
             sample.flags = BSDFFlags::delta_transmission;
 
-        return sample_data.event_type != 0;
+        if (sample_data.event_type == 0)
+            return false;
+        // Preserve the SDK estimator unless the renderer requires evaluation-consistent weights.
+        if (MATERIAL_SAMPLE_WEIGHT_POLICY == MaterialSampleWeightPolicy::eval_consistent
+            && !sample.has_flag(BSDFFlags::delta)) {
+            if (sample.pdf <= 0.0)
+                return false;
+            sample.weight = eval(si, sample.wo_ws) / sample.pdf;
+        }
+        return true;
     }
 
     MaterialProperties collect_properties(const SurfaceInteraction si)

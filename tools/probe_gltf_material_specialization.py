@@ -178,7 +178,7 @@ void probe_main(
 
 
 # The real render module supplies IMaterial, MaterialData, g_scene, and
-# BufferHandle. The generic material is intentionally ordinary Type<let ...>.
+# BufferPtr. The generic material is intentionally ordinary Type<let ...>.
 _SCENE_SOURCE = """\
 import slangpy;
 import falcor2.render;
@@ -228,7 +228,8 @@ public struct ProbeMaterialInstance<let Features : uint> : IMaterialInstance
         = Conditional<ProbeMultiscatterState, (Features & 2u) != 0u>(ProbeMultiscatterState());
 
     public BSDFEval eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both>(
-        const SurfaceInteraction si, const float3 wo_ws)
+        const SurfaceInteraction si, const float3 wo_ws,
+        const BSDFComponent component = BSDFComponent::full_response)
     {
         BSDFEval result = {};
         if (let state = multiscatter.get()) {
@@ -258,7 +259,7 @@ public struct ProbeGLTFMaterial<let F : uint, let T : uint, let X : uint, let U 
     typedef ProbeMaterialInstance<F> MaterialInstance;
     public MaterialHeader header;
     public uint feature_mask;
-    public BufferOffsetPair extra_data;
+    public BufferPtr extra_data;
 
     public MaterialInstance setup_material_instance<LodSampler : ILodSampler>(
         const SurfaceInteraction si, const LodSampler lod_sampler,
@@ -482,20 +483,21 @@ def _material_words(module: spy.Module) -> dict[str, int]:
         words.append(
             {
                 "feature_mask": _field_word(layout, "feature_mask"),
-                "extra_handle": _field_word(layout, "extra_data", "buffer", "data"),
-                "extra_offset": _field_word(layout, "extra_data", "offset"),
+                "extra_pointer": _field_word(layout, "extra_data"),
             }
         )
     if words[0] != words[1]:
         raise RuntimeError(f"Probe material field offsets differ by specialization: {words}")
-    if words[0]["extra_handle"] + 1 >= 32:
-        raise RuntimeError("Probe material buffer handle exceeds MaterialData")
+    if words[0]["extra_pointer"] + 1 >= 32:
+        raise RuntimeError("Probe material buffer pointer exceeds MaterialData")
     return words[0]
 
 
 def _pack_materials(
-    on_type_id: int, off_type_id: int, words: dict[str, int], extra_handle: int
+    on_type_id: int, off_type_id: int, words: dict[str, int], extra_buffer: spy.Buffer
 ) -> np.ndarray:
+    import falcor2 as f2
+
     # MaterialData is a 16-byte header followed by 112 payload bytes.
     records = np.zeros((5, 32), dtype=np.uint32)
     records[0, 0] = 0  # InvalidMaterial remains the first conformance.
@@ -505,13 +507,16 @@ def _pack_materials(
         (on_type_id, 2, 0),
         (on_type_id, 2, 64),
     )
-    for material_id, (type_id, feature_mask, extra_offset) in enumerate(materials, start=1):
-        handle = extra_handle if type_id == on_type_id and feature_mask else 0xFFFFFFFFFFFFFFFF
+    for material_id, (type_id, feature_mask, extra_byte_offset) in enumerate(materials, start=1):
+        pointer = (
+            f2.to_buffer_ptr(extra_buffer, extra_byte_offset).data
+            if type_id == on_type_id and feature_mask and extra_byte_offset != 0xFFFFFFFF
+            else f2.BufferPtr().data
+        )
         records[material_id, 0] = type_id
         records[material_id, words["feature_mask"]] = feature_mask
-        records[material_id, words["extra_handle"]] = handle & 0xFFFFFFFF
-        records[material_id, words["extra_handle"] + 1] = handle >> 32
-        records[material_id, words["extra_offset"]] = extra_offset
+        records[material_id, words["extra_pointer"]] = pointer & 0xFFFFFFFF
+        records[material_id, words["extra_pointer"] + 1] = pointer >> 32
     return records
 
 
@@ -582,9 +587,7 @@ def _run_scene_probe(backend: str, directory: Path) -> dict[str, Any]:
                 element_count=5,
                 struct_size=128,
                 usage=spy.BufferUsage.shader_resource,
-                data=_pack_materials(
-                    on_type_id, off_type_id, material_words, f2.to_handle(extra_buffer).data
-                ),
+                data=_pack_materials(on_type_id, off_type_id, material_words, extra_buffer),
             )
 
             def bind(cursor: spy.ShaderCursor) -> None:

@@ -4,6 +4,7 @@
 #pragma once
 
 #include "falcor2/render/geometry.h"
+#include "mesh_geometry_data.h"
 #include "falcor2/render/geometry/geometry_vertex_attribute.h"
 
 #include "falcor2/core/types.h"
@@ -48,9 +49,8 @@ public:
 
     // SceneObject interface
 
-    virtual void clear_invalid_references() override;
-    virtual void on_add_to_scene() override;
-    virtual void on_remove_from_scene() override { clear_render_state(); }
+    void on_add_to_scene() override;
+    void on_remove_from_scene() override { clear_render_state(); }
 
     // Geometry interface
 
@@ -113,13 +113,7 @@ private:
     void clear_render_state();
     void register_geometry_attributes();
 
-    struct SubMesh {
-        std::string name;
-        std::vector<shared::PackedTriangleVertex> vertices;
-        std::vector<uint32_t> indices;
-        std::vector<MeshVertexAttribute> vertex_attributes;
-        Material* material{nullptr};
-    };
+    using SubMesh = MeshGeometryData;
 
     std::vector<SubMesh> m_sub_meshes;
     std::vector<RenderTriangleGeometryHandle> m_render_geometries;

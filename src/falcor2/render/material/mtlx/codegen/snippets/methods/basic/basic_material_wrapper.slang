@@ -17,7 +17,7 @@ public struct $MxMaterialName : IMaterial
 #if MATERIALX_PAYLOAD_SIZE <= MATERIAL_PAYLOAD_LIMIT
     public $MxMaterialDataName data;
 #else
-    public BufferOffsetPair data_buffer;
+    public BufferPtr data_buffer;
 #endif
     static SurfaceInteraction prepare_graph_si(const SurfaceInteraction si, const MaterialInstanceHints hints)
     {

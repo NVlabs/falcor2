@@ -33,6 +33,11 @@ public struct ClampOperator : ITonemappingOperator
     public static override float3 apply(float3 color) { return tonemap_clamp(color); }
 };
 
+public struct LogOperator : ITonemappingOperator
+{
+    public static override float3 apply(float3 color) { return log(1.0 + clamp(color, 0.0, 65535.0)); }
+};
+
 public float3 tonemapper_apply<TOperator : ITonemappingOperator>(float3 color, uniform float exposure_ev)
 {
     return TOperator.apply(exp2(exposure_ev) * color);
@@ -214,6 +219,104 @@ public half4 tonemapper_apply_lut3d_auto(
             lut_max_ev,
             lut_middle_gray
         )),
+        color.w
+    );
+}
+
+float3 punchy_srgb_to_linear(float3 value)
+{
+    return float3(
+        value.x <= 0.04045 ? value.x / 12.92 : pow((value.x + 0.055) / 1.055, 2.4),
+        value.y <= 0.04045 ? value.y / 12.92 : pow((value.y + 0.055) / 1.055, 2.4),
+        value.z <= 0.04045 ? value.z / 12.92 : pow((value.z + 0.055) / 1.055, 2.4)
+    );
+}
+
+float3 punchy_log_space(float3 value)
+{
+    float3 stops = log2(max(value / 0.18, float3(1e-20)));
+    return saturate((stops + 10.0) / 16.5);
+}
+
+float3 tonemapper_sample_agx_punchy(float3 color, uniform Texture2D<float> curve, uniform SamplerState curve_sampler)
+{
+    float3 rgb = clamp(color, 0.0, 65535.0);
+    float3 compressed = float3(
+        dot(float3(0.84247906, 0.0784336, 0.07922375), rgb),
+        dot(float3(0.04232824, 0.87846864, 0.07916613), rgb),
+        dot(float3(0.04237565, 0.0784336, 0.87914297), rgb)
+    );
+    float3 coordinate = punchy_log_space(compressed);
+    float3 mapped = float3(
+        curve.SampleLevel(curve_sampler, float2((coordinate.x * 127.0 + 0.5) / 128.0, 0.5), 0.0),
+        curve.SampleLevel(curve_sampler, float2((coordinate.y * 127.0 + 0.5) / 128.0, 0.5), 0.0),
+        curve.SampleLevel(curve_sampler, float2((coordinate.z * 127.0 + 0.5) / 128.0, 0.5), 0.0)
+    );
+    mapped = pow(mapped, 1.3);
+    float luma = dot(mapped, float3(0.2126, 0.7152, 0.0722));
+    float3 encoded = saturate((mapped - luma) * 1.2 + luma);
+    return punchy_srgb_to_linear(encoded);
+}
+
+public float3 tonemapper_apply_agx_punchy(
+    float3 color,
+    uniform float exposure_ev,
+    uniform Texture2D<float> curve,
+    uniform SamplerState curve_sampler
+)
+{
+    return tonemapper_sample_agx_punchy(exp2(exposure_ev) * color, curve, curve_sampler);
+}
+
+public float4 tonemapper_apply_agx_punchy(
+    float4 color,
+    uniform float exposure_ev,
+    uniform Texture2D<float> curve,
+    uniform SamplerState curve_sampler
+)
+{
+    return float4(tonemapper_apply_agx_punchy(color.xyz, exposure_ev, curve, curve_sampler), color.w);
+}
+
+public half4 tonemapper_apply_agx_punchy(
+    half4 color,
+    uniform float exposure_ev,
+    uniform Texture2D<float> curve,
+    uniform SamplerState curve_sampler
+)
+{
+    return half4(half3(tonemapper_apply_agx_punchy(float3(color.xyz), exposure_ev, curve, curve_sampler)), color.w);
+}
+
+public float3 tonemapper_apply_agx_punchy_auto(
+    float3 color,
+    uniform StructuredBuffer<float> adapted_exposure_ev,
+    uniform Texture2D<float> curve,
+    uniform SamplerState curve_sampler
+)
+{
+    return tonemapper_apply_agx_punchy(color, adapted_exposure_ev[0], curve, curve_sampler);
+}
+
+public float4 tonemapper_apply_agx_punchy_auto(
+    float4 color,
+    uniform StructuredBuffer<float> adapted_exposure_ev,
+    uniform Texture2D<float> curve,
+    uniform SamplerState curve_sampler
+)
+{
+    return float4(tonemapper_apply_agx_punchy_auto(color.xyz, adapted_exposure_ev, curve, curve_sampler), color.w);
+}
+
+public half4 tonemapper_apply_agx_punchy_auto(
+    half4 color,
+    uniform StructuredBuffer<float> adapted_exposure_ev,
+    uniform Texture2D<float> curve,
+    uniform SamplerState curve_sampler
+)
+{
+    return half4(
+        half3(tonemapper_apply_agx_punchy_auto(float3(color.xyz), adapted_exposure_ev, curve, curve_sampler)),
         color.w
     );
 }

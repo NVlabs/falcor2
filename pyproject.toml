@@ -40,6 +40,7 @@ py-modules = ["runcli"]
 
 [tool.setuptools.package-data]
 "*" = ["*.py", "*.pyi", "py.typed", "*.json"]
+"falcor2.rendernodes" = ["data/*.npy"]
 "falcor2.streaming" = ["OPENH264_BINARY_LICENSE.txt", "web/*.html", "web/*.js", "web/*.css"]
 "falcor2.tools.skills" = ["user/**/*", "developer/**/*", "instructions.md", "PLANS.md"]
 

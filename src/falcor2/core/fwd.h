@@ -12,6 +12,10 @@ namespace falcor {
 class ArchiveSerializer;
 class ArchiveDeserializer;
 
+// blob.h
+
+class Blob;
+
 // blob_cache.h
 
 class BlobCache;

@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 
 import slangpy as spy
-from falcor2 import AssetResolver, TextureHandle, TextureLoadFlags, TextureManager
+from falcor2 import AssetResolver, Blob, TextureHandle, TextureLoadFlags, TextureManager
 import numpy as np
 import pytest
 import falcor2.testing.helpers as helpers
@@ -234,6 +234,59 @@ def test_load_texture(
     assert stats.regular_texture_count == 0
     assert stats.udim_texture_count == 0
     assert stats.total_sampler_count == 1
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_encoded_bytes_deferred_load_and_cache(device_type: spy.DeviceType) -> None:
+    device = helpers.get_device(device_type)
+    manager = TextureManager(device)
+    path = DATA_DIR / "assets/textures/test_texture_manager/regular_blue.png"
+    encoded = path.read_bytes()
+    source = Blob(encoded, "embedded/blue.png")
+    assert source.data == encoded
+    assert source.name == "embedded/blue.png"
+
+    color = manager.load_texture(source, load_deferred=True)
+    same_color = manager.load_texture(source, load_deferred=True)
+    linear = manager.load_texture(source, flags=TextureLoadFlags.data_rgb, load_deferred=True)
+    limited = manager.load_texture(source, max_mip_count=3, load_deferred=True)
+    other_source = manager.load_texture(Blob(encoded, "embedded/blue.png"), load_deferred=True)
+    from_file = manager.load_texture(path, load_deferred=True)
+
+    assert color == same_color
+    assert color != linear
+    assert color != limited
+    assert color != other_source
+    assert color.path is None
+    assert color.texture is None
+    assert from_file.path == path
+
+    del encoded, source
+    manager.update()
+
+    assert color.is_finalized()
+    assert color.texture is not None
+    assert color.texture.format == spy.Format.rgba8_unorm_srgb
+    assert linear.texture.format == spy.Format.rgba8_unorm
+    assert limited.texture.width == limited.texture.height == 4
+    assert limited.texture.mip_count == 3
+    assert other_source.texture is not None
+    assert from_file.texture is not None
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_invalid_encoded_bytes_fail_during_update(device_type: spy.DeviceType) -> None:
+    manager = TextureManager(helpers.get_device(device_type))
+    with pytest.raises(RuntimeError, match="exactly one"):
+        manager.load_texture("")
+
+    handle = manager.load_texture(Blob(b"invalid image", "embedded/broken.png"), load_deferred=True)
+    assert handle.texture is None
+    with pytest.raises(RuntimeError, match="embedded/broken.png"):
+        manager.update()
+
+    with pytest.raises(RuntimeError, match="embedded/immediate.png"):
+        manager.load_texture(Blob(b"invalid image", "embedded/immediate.png"))
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)

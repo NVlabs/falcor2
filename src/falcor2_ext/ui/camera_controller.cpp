@@ -74,6 +74,7 @@ FALCOR_PY_EXPORT(ui_camera_controller)
             &ui::CameraController::cancel_interaction,
             D(ui, CameraController, cancel_interaction)
         )
+        .def("reset_inertia", &ui::CameraController::reset_inertia, D(ui, CameraController, reset_inertia))
         .def("update", &ui::CameraController::update, "dt"_a, D(ui, CameraController, update));
 
     nb::sgl_enum<ui::CameraController::State>(camera_controller, "State", D(ui, CameraController, State));

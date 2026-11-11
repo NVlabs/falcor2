@@ -72,10 +72,11 @@ bool read_fixed_indices(
 /// Shared authored-time selection and metadata for fixed-topology geometry motion.
 /// no_samples selects the representation's existing fallback when motion has no authored times.
 struct GeometrySampleTimes {
-    /// Nonempty USD evaluation schedule; motion-disabled imports use a single Default time.
+    /// Nonempty USD evaluation schedule; motion-disabled imports use EarliestTime, which also reads default-only data.
     std::vector<pxr::UsdTimeCode> sample_times;
-    /// Seconds corresponding to sample_times when there are multiple samples; empty for static geometry.
+    /// Timeline seconds; clip keys may reference the same stored sample. Empty for static geometry.
     std::vector<float> motion_times;
+    std::vector<uint32_t> motion_sample_indices;
     AnimationInterpolationMode interpolation = AnimationInterpolationMode::linear;
 
     GeometrySampleTimes(
@@ -83,6 +84,13 @@ struct GeometrySampleTimes {
         const std::vector<pxr::UsdAttribute>& attributes,
         bool import_motion,
         pxr::UsdTimeCode no_samples = pxr::UsdTimeCode::Default()
+    );
+
+private:
+    void setup_clips(
+        const pxr::UsdPrim& prim,
+        const std::vector<pxr::UsdAttribute>& attributes,
+        pxr::UsdTimeCode no_samples
     );
 };
 

@@ -116,31 +116,41 @@ public struct StandardBSDF : IBSDF, IDifferentiable
 
 
     [Differentiable]
-    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
+    public override float3 eval(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
-        return eval_with_pdf(wi, wo, bc).value;
+        return eval_with_pdf(wi, wo, bc, component).value;
     }
 
     [Differentiable]
-    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
         BSDFEval result = {};
-        if (p_diffuse_reflection > 0.0) {
+        if (p_diffuse_reflection > 0.0 && (component == BSDFComponent::full_response || uint(component) == 0)) {
             const BSDFEval lobe = diffuse_reflection.eval_with_pdf(wi, wo, bc);
             result.value += (1.0 - spec_trans) * (1.0 - diff_trans) * lobe.value;
             result.pdf += p_diffuse_reflection * lobe.pdf;
         }
-        if (p_diffuse_transmission > 0.0) {
+        if (p_diffuse_transmission > 0.0 && (component == BSDFComponent::full_response || uint(component) == 1)) {
             const BSDFEval lobe = diffuse_transmission.eval_with_pdf(wi, wo, bc);
             result.value += (1.0 - spec_trans) * diff_trans * lobe.value;
             result.pdf += p_diffuse_transmission * lobe.pdf;
         }
-        if (p_specular_reflection > 0.0) {
+        if (p_specular_reflection > 0.0 && (component == BSDFComponent::full_response || uint(component) == 2)) {
             const BSDFEval lobe = specular_reflection.eval_with_pdf(wi, wo, bc);
             result.value += (1.0 - spec_trans) * lobe.value;
             result.pdf += p_specular_reflection * lobe.pdf;
         }
-        if (p_specular_transmission > 0.0) {
+        if (p_specular_transmission > 0.0 && (component == BSDFComponent::full_response || uint(component) == 3)) {
             const BSDFEval lobe = specular_transmission.eval_with_pdf(wi, wo, bc);
             result.value += spec_trans * lobe.value;
             result.pdf += p_specular_transmission * lobe.pdf;
@@ -161,6 +171,7 @@ public struct StandardBSDF : IBSDF, IDifferentiable
                 return false;
 
             sample.weight *= (1.0 - spec_trans) * (1.0 - diff_trans) / p_diffuse_reflection;
+            sample.component = BSDFComponent(0);
             sample.pdf *= p_diffuse_reflection;
 
             if (p_specular_reflection > 0.0)
@@ -172,6 +183,7 @@ public struct StandardBSDF : IBSDF, IDifferentiable
                 return false;
 
             sample.weight *= (1.0 - spec_trans) * diff_trans / p_diffuse_transmission;
+            sample.component = BSDFComponent(1);
             sample.pdf *= p_diffuse_transmission;
 
             if (p_specular_transmission > 0.0)
@@ -181,6 +193,7 @@ public struct StandardBSDF : IBSDF, IDifferentiable
                 return false;
 
             sample.weight *= (1.0 - spec_trans) / p_specular_reflection;
+            sample.component = BSDFComponent(2);
             sample.pdf *= p_specular_reflection;
 
             if (sample.has_flag(BSDFFlags::delta))
@@ -203,6 +216,7 @@ public struct StandardBSDF : IBSDF, IDifferentiable
                 return false;
 
             sample.weight *= spec_trans / p_specular_transmission;
+            sample.component = BSDFComponent(3);
             sample.pdf *= p_specular_transmission;
 
             if (sample.has_flag(BSDFFlags::delta))
@@ -259,10 +273,15 @@ public struct TestStandardBSDF : IBSDF
     public StandardBSDFData data = {};
 
 
-    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
         StandardBSDF bsdf = StandardBSDF(wi, data);
-        return bsdf.eval_with_pdf(wi, wo, bc);
+        return bsdf.eval_with_pdf(wi, wo, bc, component);
     }
 
     public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)

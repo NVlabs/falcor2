@@ -296,17 +296,13 @@ public struct ScratchConductorBRDF : IBSDF
                 float3 outgoing;
                 float3 f = float3(1.f);
                 bool valid = trace(wiLocal, pos, -projectedIncomingYZ, outgoing, f);
-                // for the PDF, we need a different estimator; normalissation is done in evalPdf
-                // TODO(BSDF, @aweidlich): Revisit the scratch broadening against Raymond, Guennebaud, and Barla,
-                // "Multi-Scale Rendering of Scratched Materials using a Structured SV-BRDF Model," 2016,
-                // doi:10.1145/2897824.2925945. Sampling draws (n+1)/(2*pi)*cos^n(theta), while this reconstruction
-                // declares n+1 but uses n, an outer (n+2)/(2*pi) normalization, and an additional macro wo.z.
+                // The physical response includes the surface cosine; the directional
+                // proposal is a normalized Phong density around the traced direction.
                 f = isEval ? f : 1.f;
-                const float exponent = isEval ? phongCoefficient : phongCoefficient + 1.f;
 
                 evalScratch
-                    += (valid ? f * areaRatio[j] * pow(max(dot(outgoing, woLocal), 0.f), phongCoefficient) * woLocal.z
-                                * sideWeight
+                    += (valid ? f * areaRatio[j] * pow(max(dot(outgoing, woLocal), 0.f), phongCoefficient)
+                                * (isEval ? woLocal.z : 1.f) * sideWeight
                               : 0.0f);
             }
 
@@ -445,15 +441,11 @@ public struct ScratchConductorBRDF : IBSDF
                 float3 outgoing;
                 float3 f = float3(1.f);
                 bool valid = trace(wiLocal, pos, -projectedIncomingYZ, outgoing, f);
-                // for the PDF, we need a different estimator; normalissation is done in evalPdf
-                // TODO(BSDF, @aweidlich): Revisit the scratch broadening against Raymond, Guennebaud, and Barla,
-                // "Multi-Scale Rendering of Scratched Materials using a Structured SV-BRDF Model," 2016,
-                // doi:10.1145/2897824.2925945. Sampling draws (n+1)/(2*pi)*cos^n(theta), while this reconstruction
-                // declares n+1 but uses n, an outer (n+2)/(2*pi) normalization, and an additional macro wo.z.
+                // Keep the physical cosine out of the directional proposal density.
                 const float lobe = valid
-                    ? areaRatio[j] * pow(max(dot(outgoing, woLocal), 0.f), phongCoefficient) * woLocal.z * sideWeight
+                    ? areaRatio[j] * pow(max(dot(outgoing, woLocal), 0.f), phongCoefficient) * sideWeight
                     : 0.0f;
-                evalScratch += f * lobe;
+                evalScratch += f * lobe * woLocal.z;
                 pdfScratch += lobe;
             }
 
@@ -472,7 +464,12 @@ public struct ScratchConductorBRDF : IBSDF
     }
 
 
-    public BSDFEval eval_with_pdf(const float3 wiLocal, const float3 woLocal, BSDFContext bc)
+    public BSDFEval eval_with_pdf(
+        const float3 wiLocal,
+        const float3 woLocal,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
         if (min(wiLocal.z, woLocal.z) < BSDF_MIN_COS_THETA)
             return BSDFEval();
@@ -487,11 +484,11 @@ public struct ScratchConductorBRDF : IBSDF
         BSDFEval result = unscratched.eval_with_pdf(wiLocal, woLocal, bc);
         result.value
             = result.value * (1.0 - mask[0]) + scratch.value * mask[0] * (phongCoefficient + 2.f) / (2.f * float.PI);
-        result.pdf = result.pdf * (1.0 - mask[0]) + scratch.pdf * mask[0] * (phongCoefficient + 2.f) / (2.f * float.PI);
+        result.pdf = result.pdf * (1.0 - mask[0]) + scratch.pdf * mask[0] * (phongCoefficient + 1.f) / (2.f * float.PI);
         return result;
     }
 
-    public bool sample(float3 wiLocal, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
+    public bool sample(const float3 wiLocal, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
 
@@ -515,7 +512,7 @@ public struct ScratchConductorBRDF : IBSDF
                 if (phongCoefficient < kDiracLimit)
                     evalScratch = calculateEvalOrPdf(wiLocal, sample.wo, false)[0];
                 sample.pdf = sample.pdf * (1.0 - mask[0])
-                    + evalScratch * mask[0] * (phongCoefficient + 2.f) / (2.f * float.PI);
+                    + evalScratch * mask[0] * (phongCoefficient + 1.f) / (2.f * float.PI);
             }
         } else {
             const float groovelength = kDefaultGrooveLength;
@@ -528,7 +525,7 @@ public struct ScratchConductorBRDF : IBSDF
             const float3 projectedIncomingYZ = calculatePojectedIncoming(-wiLocal, P2, P4);
             // avoid nummerical precision issues with rescaling
             var aux_rng = input.make_aux_rng();
-            const float pos = 0.01 + next_float(aux_rng) * 0.99;
+            const float pos = max(next_float(aux_rng), 0x1p-24);
             valid = trace(wiLocal, pos, projectedIncomingYZ, outgoing, f);
 
             if (valid) {
@@ -553,14 +550,14 @@ public struct ScratchConductorBRDF : IBSDF
                 // switch to Dirac
                 if (phongCoefficient < kDiracLimit) {
                     const float evalScratch = calculateEvalOrPdf(wiLocal, sample.wo, false)[0];
-                    sample.pdf = evalScratch * (phongCoefficient + 2.f) / (2.f * float.PI);
+                    sample.pdf = evalScratch * (phongCoefficient + 1.f) / (2.f * float.PI);
 
                     // This should not happen. But it occasionally does in regions where we blend from scratch to
                     // no-scratch if the scratch direction doesn't have enough bleed.
                     if (sample.pdf <= 0.f)
                         return false;
 
-                    sample.weight = f;
+                    sample.weight = f * sample.wo.z * (phongCoefficient + 2.f) / (phongCoefficient + 1.f);
                     sample.flags = BSDFFlags::non_delta_reflection;
 
                     PBRTConductorBSDF unscratched = { D, eta, k };
@@ -573,6 +570,14 @@ public struct ScratchConductorBRDF : IBSDF
             }
         }
 
+        // Groove trajectories are latent, so expose the full continuous response as one component.
+        if (valid && !sample.has_flag(BSDFFlags::delta)) {
+            const BSDFEval evaluated = eval_with_pdf(wiLocal, sample.wo, bc);
+            if (evaluated.pdf <= 0.0)
+                return false;
+            sample.pdf = evaluated.pdf;
+            sample.weight = evaluated.value / sample.pdf;
+        }
         return valid;
     }
 

@@ -13,6 +13,9 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
+#include <limits>
+#include <type_traits>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -77,7 +80,8 @@ public:
     void set_positions(std::initializer_list<float> values)
     {
         m_positions = values;
-        m_position_streams = {{.attribute = {ImporterSemantic::position, 0, 3}, .values = m_positions}};
+        m_position_streams
+            = {{.attribute = {ImporterSemantic::position, 0, 3}, .values = std::as_bytes(std::span(m_positions))}};
         input.positions = m_position_streams;
     }
 
@@ -90,7 +94,8 @@ public:
             m_positions.push_back(value.y);
             m_positions.push_back(value.z);
         }
-        m_position_streams = {{.attribute = {ImporterSemantic::position, 0, 3}, .values = m_positions}};
+        m_position_streams
+            = {{.attribute = {ImporterSemantic::position, 0, 3}, .values = std::as_bytes(std::span(m_positions))}};
         input.positions = m_position_streams;
     }
 
@@ -109,7 +114,7 @@ public:
         streams.push_back({
             .attribute = attribute,
             .interpolation = interpolation,
-            .values = storage.values,
+            .values = std::as_bytes(std::span(storage.values)),
             .indices = storage.indices,
         });
         input.normals = m_normal_streams;
@@ -849,7 +854,7 @@ TEST_CASE_NIGHTLY("subdivision validates later position samples")
     std::array<MeshAttributeStream, 2> positions{storage.input.positions[0], storage.input.positions[0]};
     storage.input.positions = positions;
 
-    positions[1].values = positions[0].values.first(6);
+    positions[1].values = positions[0].values.first(6 * sizeof(float));
     CHECK_THROWS_WITH(tessellate(storage.input), doctest::Contains("requires 3"));
     positions[1] = positions[0];
     positions[1].attribute.components = 1;
@@ -1027,7 +1032,7 @@ TEST_CASE("stream tessellator preserves orientation in winding and generated nor
         const MeshAttributeStream normals{
             .attribute = {ImporterSemantic::normal, 0, 3},
             .interpolation = MeshInterpolation::varying,
-            .values = normal_values,
+            .values = std::as_bytes(std::span(normal_values)),
         };
         input.input.normals = {&normals, 1};
         check_orientation(tessellate(input.input));
@@ -1064,7 +1069,7 @@ TEST_CASE("ordinary triangulation and smooth normals skip holes independently of
     const MeshAttributeStream normals{
         .attribute = {ImporterSemantic::normal, 0, 3},
         .interpolation = MeshInterpolation::varying,
-        .values = normal_values,
+        .values = std::as_bytes(std::span(normal_values)),
     };
     input.normals = {&normals, 1};
     REQUIRE_EQ(normal_values.size(), 8 * 3);
@@ -1258,6 +1263,192 @@ TEST_CASE("subdivision patch stitching follows UV interpolation")
             CHECK_EQ(uvs[vertex], float2(0.1f, 0.2f));
         for (uint32_t vertex : second_vertices)
             CHECK_EQ(uvs[vertex], float2(0.8f, 0.9f));
+    }
+}
+
+
+TEST_CASE_TEMPLATE(
+    "integer tessellation streams preserve exact values and runtime widths",
+    T,
+    int8_t,
+    uint8_t,
+    int16_t,
+    uint16_t,
+    int32_t,
+    uint32_t,
+    int64_t,
+    uint64_t
+)
+{
+    using namespace mesh_tessellator;
+    using sgl::DataType;
+    constexpr std::array signed_types = {DataType::int8, DataType::int16, DataType::int32, DataType::int64};
+    constexpr std::array unsigned_types = {DataType::uint8, DataType::uint16, DataType::uint32, DataType::uint64};
+    constexpr size_t type_index = sizeof(T) == 1 ? 0 : sizeof(T) == 2 ? 1 : sizeof(T) == 4 ? 2 : 3;
+    constexpr auto type = std::is_signed_v<T> ? signed_types[type_index] : unsigned_types[type_index];
+    for (const uint32_t width : {1u, 3u, 8u}) {
+        for (const auto interpolation :
+             {MeshInterpolation::constant,
+              MeshInterpolation::uniform,
+              MeshInterpolation::vertex,
+              MeshInterpolation::varying,
+              MeshInterpolation::face_varying}) {
+            for (const bool indexed : {false, true}) {
+                CAPTURE(width);
+                CAPTURE(interpolation);
+                CAPTURE(indexed);
+                TestTessellatorInput storage;
+                auto& input = storage.input;
+                input.subdivision_scheme = SubdivisionScheme::none;
+                input.orientation = MeshOrientation::left_handed;
+                storage.set_topology({3, 3}, {0, 1, 2, 0, 2, 3});
+                storage.set_positions({float3(0, 0, 0), float3(1, 0, 0), float3(1, 1, 0), float3(0, 1, 0)});
+                storage.add_subgeometry("mesh", {0, 1});
+                const size_t element_count = interpolation == MeshInterpolation::constant ? 1
+                    : interpolation == MeshInterpolation::uniform                         ? 2
+                    : interpolation == MeshInterpolation::face_varying                    ? 6
+                                                                                          : 4;
+                std::vector<T> values(element_count * width);
+                for (size_t i = 0; i < values.size(); ++i)
+                    values[i]
+                        = i % 2 ? T(std::numeric_limits<T>::lowest() + T(i)) : T(std::numeric_limits<T>::max() - T(i));
+                std::vector<int> indices;
+                if (indexed)
+                    for (size_t i = 0; i < element_count; ++i)
+                        indices.push_back(int(element_count - 1 - i));
+                input.streams.push_back({
+                    .attribute = {.components = width, .name = "integer", .type = type},
+                    .interpolation = interpolation,
+                    .values = std::as_bytes(std::span(values)),
+                    .indices = indices,
+                });
+                auto mesh = tessellate(input);
+                REQUIRE_EQ(mesh.vertex_count(), 6);
+                CHECK(mesh.subgeometries[0].indices == std::vector<uint3>{{0, 2, 1}, {3, 5, 4}});
+                const auto* attribute = mesh.find_attribute("integer");
+                REQUIRE(attribute);
+                CHECK_EQ(attribute->type, type);
+                CHECK_EQ(attribute->num_components, width);
+                const void* data = nullptr;
+                size_t stride = 0;
+                mesh.get_stream_info(*attribute, data, stride);
+                const std::array<size_t, 6> points = {0, 1, 2, 0, 2, 3};
+                for (size_t corner = 0; corner < 6; ++corner) {
+                    const size_t element = interpolation == MeshInterpolation::constant ? 0
+                        : interpolation == MeshInterpolation::uniform                   ? corner / 3
+                        : interpolation == MeshInterpolation::face_varying              ? corner
+                                                                                        : points[corner];
+                    const size_t value_index = indexed ? element_count - 1 - element : element;
+                    for (size_t component = 0; component < width; ++component) {
+                        T actual;
+                        std::memcpy(
+                            &actual,
+                            static_cast<const std::byte*>(data) + corner * stride + component * sizeof(T),
+                            sizeof(T)
+                        );
+                        CHECK_EQ(actual, values[value_index * width + component]);
+                    }
+                }
+                mesh.deduplicate_vertices();
+                const bool split_faces
+                    = interpolation == MeshInterpolation::uniform || interpolation == MeshInterpolation::face_varying;
+                CHECK_EQ(mesh.vertex_count(), split_faces ? 6 : 4);
+                input.subdivision_scheme = SubdivisionScheme::catmull_clark;
+                input.properties.set("refinement_level", 0);
+                CHECK_EQ(tessellate(input).vertex_count(), 6);
+                input.properties.set("refinement_level", 1);
+                if (interpolation != MeshInterpolation::constant && interpolation != MeshInterpolation::uniform) {
+                    CHECK_THROWS_WITH(tessellate(input), doctest::Contains("requires float32"));
+                    continue;
+                }
+
+                // Separate subsets identify each refined triangle's coarse face, including shared-edge vertices.
+                input.subgeometries.clear();
+                storage.add_subgeometry("first", {0});
+                storage.add_subgeometry("second", {1});
+                // A second scalar size exercises interleaved padding and copying a continuous value at uniform seams.
+                const std::array<uint8_t, 3> tag = {1, 128, 255};
+                input.streams.push_back({
+                    .attribute = {.components = 3, .name = "tag", .type = DataType::uint8},
+                    .interpolation = MeshInterpolation::constant,
+                    .values = std::as_bytes(std::span(tag)),
+                });
+                for (auto scheme :
+                     {SubdivisionScheme::catmull_clark, SubdivisionScheme::bilinear, SubdivisionScheme::loop}) {
+                    CAPTURE(scheme);
+                    input.subdivision_scheme = scheme;
+                    for (int level : {1, 2}) {
+                        CAPTURE(level);
+                        input.properties.set("refinement_level", level);
+                        auto refined = tessellate(input);
+                        const auto* refined_attribute = refined.find_attribute("integer");
+                        REQUIRE(refined_attribute);
+                        CHECK_EQ(refined_attribute->type, type);
+                        CHECK_EQ(refined_attribute->num_components, width);
+                        refined.get_stream_info(*refined_attribute, data, stride);
+                        const auto tags = refined.get_stream<std::array<uint8_t, 3>>(*refined.find_attribute("tag"));
+                        REQUIRE_EQ(refined.subgeometries.size(), 2);
+                        const auto first_vertices = referenced_vertices(refined.subgeometries[0]);
+                        const auto second_vertices = referenced_vertices(refined.subgeometries[1]);
+                        bool shared_vertex = false;
+                        for (uint32_t vertex : first_vertices)
+                            shared_vertex |= second_vertices.contains(vertex);
+                        CHECK_EQ(
+                            shared_vertex,
+                            interpolation == MeshInterpolation::constant && scheme != SubdivisionScheme::bilinear
+                        );
+                        for (size_t face = 0; face < 2; ++face) {
+                            const auto vertices = referenced_vertices(refined.subgeometries[face]);
+                            REQUIRE(!vertices.empty());
+                            const size_t element = interpolation == MeshInterpolation::constant ? 0 : face;
+                            const size_t value_index = indexed ? element_count - 1 - element : element;
+                            for (uint32_t vertex : vertices) {
+                                CHECK(tags[vertex] == tag);
+                                for (size_t component = 0; component < width; ++component) {
+                                    T actual;
+                                    std::memcpy(
+                                        &actual,
+                                        static_cast<const std::byte*>(data) + vertex * stride + component * sizeof(T),
+                                        sizeof(T)
+                                    );
+                                    CHECK_EQ(actual, values[value_index * width + component]);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("triangulation supports typed joint arrays wider than four components")
+{
+    using namespace mesh_tessellator;
+    TestTessellatorInput storage;
+    auto& input = storage.input;
+    input.subdivision_scheme = SubdivisionScheme::none;
+    storage.set_topology({3}, {0, 1, 2});
+    storage.set_positions({float3(0, 0, 0), float3(1, 0, 0), float3(0, 1, 0)});
+    storage.add_subgeometry("mesh", {0});
+    const std::array<uint16_t, 8> joints = {0, 1, 2, 3, 4, 5, 65534, 65535};
+    const std::array<float, 8> weights = {0.5f, 0.25f, 0.125f, 0.125f, 0.f, 0.f, 0.f, 0.f};
+    input.streams.push_back({
+        .attribute = {.semantic = ImporterSemantic::joints, .components = 8, .type = sgl::DataType::uint16},
+        .interpolation = MeshInterpolation::constant,
+        .values = std::as_bytes(std::span(joints)),
+    });
+    input.streams.push_back({
+        .attribute = {.semantic = ImporterSemantic::weights, .components = 8},
+        .interpolation = MeshInterpolation::constant,
+        .values = std::as_bytes(std::span(weights)),
+    });
+    auto mesh = tessellate(input);
+    const auto actual_joints = mesh.get_stream<std::array<uint16_t, 8>>(*mesh.find_attribute(ImporterSemantic::joints));
+    const auto actual_weights = mesh.get_stream<std::array<float, 8>>(*mesh.find_attribute(ImporterSemantic::weights));
+    for (size_t vertex = 0; vertex < mesh.vertex_count(); ++vertex) {
+        CHECK(actual_joints[vertex] == joints);
+        CHECK(actual_weights[vertex] == weights);
     }
 }
 

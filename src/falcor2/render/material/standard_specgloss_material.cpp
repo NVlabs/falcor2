@@ -42,6 +42,7 @@ void StandardSpecGlossMaterial::on_load_resources()
         m_scene->texture_manager(),
         m_diffuse_texture,
         m_diffuse_texture_sampler,
+        m_diffuse_texture_bytes,
         m_diffuse_texture_path,
         TextureLoadFlags::color
     );
@@ -50,6 +51,7 @@ void StandardSpecGlossMaterial::on_load_resources()
         m_scene->texture_manager(),
         m_specular_glossiness_texture,
         m_specular_glossiness_texture_sampler,
+        m_specular_glossiness_texture_bytes,
         m_specular_glossiness_texture_path,
         TextureLoadFlags::color
     );
@@ -58,6 +60,7 @@ void StandardSpecGlossMaterial::on_load_resources()
         m_scene->texture_manager(),
         m_normal_texture,
         m_normal_texture_sampler,
+        m_normal_texture_bytes,
         m_normal_texture_path,
         TextureLoadFlags::normal
     );
@@ -66,6 +69,7 @@ void StandardSpecGlossMaterial::on_load_resources()
         m_scene->texture_manager(),
         m_emissive_texture,
         m_emissive_texture_sampler,
+        m_emissive_texture_bytes,
         m_emissive_texture_path,
         TextureLoadFlags::color
     );
@@ -74,6 +78,7 @@ void StandardSpecGlossMaterial::on_load_resources()
         m_scene->texture_manager(),
         m_transmission_texture,
         m_transmission_texture_sampler,
+        m_transmission_texture_bytes,
         m_transmission_texture_path,
         TextureLoadFlags::color
     );

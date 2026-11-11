@@ -98,6 +98,33 @@ FALCOR_PY_EXPORT(render_texture_manager)
             D(TextureManager, load_texture)
         )
         .def(
+            "load_texture",
+            [](TextureManager& self,
+               ref<Blob> texture_bytes,
+               std::variant<std::monostate, SamplerConfig, ref<sgl::Sampler>> sampler,
+               TextureLoadFlags flags,
+               sgl::TextureUsage usage,
+               bool load_deferred,
+               std::optional<uint32_t> max_mip_count)
+            {
+                return self.load_texture({
+                    .texture_bytes = std::move(texture_bytes),
+                    .sampler = std::move(sampler),
+                    .flags = flags,
+                    .usage = usage,
+                    .load_deferred = load_deferred,
+                    .max_mip_count = max_mip_count,
+                });
+            },
+            "texture_bytes"_a,
+            "sampler"_a.none() = nb::none(),
+            "flags"_a = TextureManager::LoadTextureDesc().flags,
+            "usage"_a = TextureManager::LoadTextureDesc().usage,
+            "load_deferred"_a = TextureManager::LoadTextureDesc().load_deferred,
+            "max_mip_count"_a = nb::none(),
+            D(TextureManager, load_texture)
+        )
+        .def(
             "register_texture",
             [](TextureManager& self,
                ref<sgl::Texture> texture,

@@ -15,6 +15,7 @@ void calculate_smooth_normals(const TessellatorInputMesh& input, size_t sample, 
     FALCOR_ASSERT(sample < input.positions.size());
     const MeshAttributeStream& positions = input.positions[sample];
 
+    FALCOR_CHECK(positions.scalar_type() == sgl::DataType::float32, "Smooth-normal input positions must be float32");
     const size_t vertex_count = positions.value_count();
     detail::check_stream_layout(
         positions,

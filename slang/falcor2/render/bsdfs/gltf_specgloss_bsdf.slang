@@ -66,24 +66,34 @@ public struct GLTFSpecGlossBSDF : IBSDF, IDifferentiable
     public BSDFFlags get_lobe_types() { return lobe_types; }
 
     [Differentiable]
-    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
+    public override float3 eval(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
-        return eval_with_pdf(wi, wo, bc).value;
+        return eval_with_pdf(wi, wo, bc, component).value;
     }
 
     [Differentiable]
-    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
         BSDFEval result = {};
 
         // Add physical lobe values, but mix their PDFs by selection probability.
         // The leaf values already include the outgoing cosine.
-        if (p_diffuse > 0.0) {
+        if (p_diffuse > 0.0 && (component == BSDFComponent::full_response || uint(component) == 0)) {
             const BSDFEval lobe = diffuse.eval_with_pdf(wi, wo, bc);
             result.value += lobe.value;
             result.pdf += p_diffuse * lobe.pdf;
         }
-        if (p_specular > 0.0) {
+        if (p_specular > 0.0 && (component == BSDFComponent::full_response || uint(component) == 1)) {
             const BSDFEval lobe = specular.eval_with_pdf(wi, wo, bc);
             result.value += lobe.value;
             result.pdf += p_specular * lobe.pdf;
@@ -104,6 +114,7 @@ public struct GLTFSpecGlossBSDF : IBSDF, IDifferentiable
             if (!diffuse.sample(wi, input, bc, sample))
                 return false;
             sample.weight *= 1.0 / p_diffuse;
+            sample.component = BSDFComponent(0);
             sample.pdf *= p_diffuse;
             if (p_specular > 0.0)
                 sample.pdf += p_specular * specular.eval_pdf(wi, sample.wo, bc);
@@ -111,6 +122,7 @@ public struct GLTFSpecGlossBSDF : IBSDF, IDifferentiable
             if (!specular.sample(wi, input, bc, sample))
                 return false;
             sample.weight *= 1.0 / p_specular;
+            sample.component = BSDFComponent(1);
             sample.pdf *= p_specular;
 
             // Delta samples carry integrated event weights and a zero-PDF sentinel;

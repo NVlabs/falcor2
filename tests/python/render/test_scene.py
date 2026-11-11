@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from pathlib import Path
+import gc
 import sys
 
 import numpy as np
@@ -22,6 +23,24 @@ def device(device_type: spy.DeviceType) -> spy.Device:
 @pytest.fixture
 def scene(device: spy.Device) -> f2.Scene:
     return f2.Scene.create(device)
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_scene_object_predicates(scene: f2.Scene) -> None:
+    for obj in (scene.free_camera, scene.free_camera.entity):
+        assert obj.is_valid() is True
+        assert obj.is_builtin() is True
+
+    entity = scene.create_entity()
+    camera = entity.create_component(f2.Camera)
+    for obj in (entity, camera):
+        assert obj.is_valid() is True
+        assert obj.is_builtin() is False
+
+    entity.remove()
+    for obj in (entity, camera):
+        assert obj.is_valid() is False
+        assert obj.is_builtin() is False
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
@@ -474,15 +493,15 @@ class TestSceneCollections:
     def test_empty_collections(self, scene: f2.Scene):
         assert len(scene.materials) == 0
         assert len(scene.geometries) == 0
-        assert len(scene.entities) == 0
-        assert len(scene.components) == 0
+        assert len(scene.entities) == 1
+        assert len(scene.components) == 1
 
     @pytest.mark.nightly_if_not_vk
     def test_empty_iteration(self, scene: f2.Scene):
         assert list(scene.materials) == []
         assert list(scene.geometries) == []
-        assert list(scene.entities) == []
-        assert list(scene.components) == []
+        assert list(scene.entities) == [scene.free_camera.entity]
+        assert list(scene.components) == [scene.free_camera]
 
     @pytest.mark.nightly_if_not_vk
     def test_materials_collection(self, scene: f2.Scene):
@@ -521,10 +540,10 @@ class TestSceneCollections:
         e1 = scene.create_entity()
         e2 = scene.create_entity()
 
-        assert len(scene.entities) == 3
-        assert scene.entities[0] is e0
-        assert scene.entities[1] is e1
-        assert scene.entities[2] is e2
+        assert len(scene.entities) == 4
+        assert scene.entities[1] is e0
+        assert scene.entities[2] is e1
+        assert scene.entities[3] is e2
 
     @pytest.mark.nightly_if_not_vk
     def test_entities_iteration(self, scene: f2.Scene):
@@ -532,21 +551,18 @@ class TestSceneCollections:
         e1 = scene.create_entity()
 
         iterated = list(scene.entities)
-        assert len(iterated) == 2
-        assert iterated[0] is e0
-        assert iterated[1] is e1
+        assert iterated == [scene.free_camera.entity, e0, e1]
 
     @pytest.mark.nightly_if_not_vk
     def test_components_via_entity(self, scene: f2.Scene):
         entity = scene.create_entity()
         camera = entity.create_component(f2.Camera)
 
-        assert len(scene.components) == 1
-        assert scene.components[0] is camera
+        assert len(scene.components) == 2
+        assert scene.components[1] is camera
 
         iterated = list(scene.components)
-        assert len(iterated) == 1
-        assert iterated[0] is camera
+        assert iterated == [scene.free_camera, camera]
 
     @pytest.mark.nightly_if_not_vk
     def test_negative_indexing(self, scene: f2.Scene):
@@ -657,8 +673,7 @@ class TestCollectionFind:
         light2 = entity.create_component(f2.ConstantLight)
 
         cameras = scene.components.find_all(type=f2.Camera)
-        assert len(cameras) == 1
-        assert cameras[0] is camera
+        assert cameras == [camera]
 
         lights = scene.components.find_all(type=f2.ConstantLight)
         assert len(lights) == 2
@@ -694,6 +709,89 @@ class TestCollectionFind:
         assert scene.materials.find_all("anything") == []
         assert scene.materials.find_all() == []
 
+    def test_builtin_filtering(self, scene: f2.Scene) -> None:
+        for collection, builtin in (
+            (scene.entities, scene.free_camera.entity),
+            (scene.components, scene.free_camera),
+        ):
+            assert collection.find() is None
+            assert collection.find_all() == []
+            assert collection.find(builtin.name) is None
+            assert collection.find(include_builtins=True) is builtin
+            assert collection.find_all(include_builtins=True) == [builtin]
+            assert collection.find(builtin.name, include_builtins=True) is builtin
+            assert list(collection.iter()) == []
+            assert list(collection.iter(include_builtins=True)) == [builtin]
+
+        first = scene.create_entity().create_component(f2.Camera)
+        named = scene.create_entity().create_component(f2.Camera)
+        named.name = scene.free_camera.name
+        for kwargs in ({}, {"type": f2.Camera}):
+            assert scene.components.find(**kwargs) is first
+            assert scene.components.find_all(**kwargs) == [first, named]
+            assert scene.components.find_all(include_builtins=True, **kwargs) == [
+                scene.free_camera,
+                first,
+                named,
+            ]
+            assert scene.components.find("free_camera", **kwargs) is named
+            assert scene.components.find_all("free_camera", **kwargs) == [named]
+            assert (
+                scene.components.find("free_camera", include_builtins=True, **kwargs)
+                is scene.free_camera
+            )
+            assert scene.components.find_all("free_camera", include_builtins=True, **kwargs) == [
+                scene.free_camera,
+                named,
+            ]
+
+    def test_filtered_iteration_preserves_raw_access(self, scene: f2.Scene) -> None:
+        first = scene.create_entity()
+        second = scene.create_entity()
+        assert list(scene.materials.iter()) == []
+        assert list(scene.entities.iter()) == [first, second]
+        raw = [scene.free_camera.entity, first, second]
+        assert list(scene.entities.iter(include_builtins=True)) == raw
+        assert list(scene.entities) == raw
+        assert len(scene.entities) == len(raw)
+        assert scene.entities[-1] is second
+        for entity in raw:
+            assert scene.entities[entity.collection_index] is entity
+
+    def test_filtered_iterator_retains_owner(self, device: spy.Device) -> None:
+        def make_iterator(include_builtins: bool):
+            local_scene = f2.Scene.create(device)
+            local_scene.create_entity().name = "authored"
+            return local_scene.entities.iter(include_builtins=include_builtins)
+
+        filtered = make_iterator(False)
+        inclusive = make_iterator(True)
+        gc.collect()
+        assert [entity.name for entity in filtered] == ["authored"]
+        assert [entity.name for entity in inclusive] == ["free_camera", "authored"]
+
+    def test_filtered_queries_match_python_subclasses(self, scene: f2.Scene) -> None:
+        class QueryMaterial(f2.Material):
+            pass
+
+        regular = scene.create_material("StandardMaterial")
+        custom = scene.create_material(QueryMaterial)
+        regular.name = custom.name = "shared"
+        for include_builtins in (False, True):
+            assert (
+                scene.materials.find(
+                    "shared", type=QueryMaterial, include_builtins=include_builtins
+                )
+                is custom
+            )
+            assert scene.materials.find_all(
+                type=QueryMaterial, include_builtins=include_builtins
+            ) == [custom]
+            assert list(scene.materials.iter(include_builtins=include_builtins)) == [
+                regular,
+                custom,
+            ]
+
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 class TestSceneObjectFactory:
@@ -723,7 +821,7 @@ class TestSceneObjectFactory:
     def test_create_entity(self, scene: f2.Scene):
         entity = scene.create_entity()
         assert entity is not None
-        assert len(scene.entities) == 1
+        assert len(scene.entities) == 2
 
     @pytest.mark.nightly_if_not_vk
     def test_create_component_by_class(self, scene: f2.Scene):
@@ -731,7 +829,7 @@ class TestSceneObjectFactory:
         camera = entity.create_component(f2.Camera)
         assert camera is not None
         assert isinstance(camera, f2.Camera)
-        assert len(scene.components) == 1
+        assert len(scene.components) == 2
 
     @pytest.mark.nightly_if_not_vk
     def test_create_component_by_type_name(self, scene: f2.Scene):
@@ -739,6 +837,23 @@ class TestSceneObjectFactory:
         camera = entity.create_component("Camera")
         assert camera is not None
         assert isinstance(camera, f2.Camera)
+
+    def test_builtin_entity_rejects_component_creation(self, scene: f2.Scene) -> None:
+        constructed = []
+
+        class CustomComponent(f2.Component):
+            def __init__(self) -> None:
+                super().__init__()
+                constructed.append(self)
+
+        entity = scene.free_camera.entity
+        for component_type in ("Camera", f2.Camera, CustomComponent):
+            with pytest.raises(RuntimeError, match="Cannot add components to a built-in object"):
+                entity.create_component(component_type)
+            assert list(scene.components) == [scene.free_camera]
+            assert list(entity.components) == [scene.free_camera]
+            assert list(scene.entities) == [entity]
+        assert constructed == []
 
     @pytest.mark.nightly_if_not_vk
     def test_create_multiple_types(self, scene: f2.Scene):
@@ -752,8 +867,8 @@ class TestSceneObjectFactory:
 
         assert len(scene.materials) == 2
         assert len(scene.geometries) == 1
-        assert len(scene.entities) == 1
-        assert len(scene.components) == 2
+        assert len(scene.entities) == 2
+        assert len(scene.components) == 3
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
@@ -882,21 +997,21 @@ class TestObjectRemoval:
         e0.remove()
         scene.update()
 
-        assert len(scene.entities) == 1
-        assert scene.entities[0].name == "e1"
+        assert len(scene.entities) == 2
+        assert scene.entities[1].name == "e1"
 
     def test_remove_entity_removes_components(self, scene: f2.Scene):
         entity = scene.create_entity()
         entity.create_component(f2.Camera)
         entity.create_component(f2.ConstantLight)
 
-        assert len(scene.components) == 2
+        assert len(scene.components) == 3
 
         entity.remove()
         scene.update()
 
-        assert len(scene.entities) == 0
-        assert len(scene.components) == 0
+        assert len(scene.entities) == 1
+        assert len(scene.components) == 1
 
     def test_remove_all_objects(self, scene: f2.Scene):
         scene.create_material("StandardMaterial")
@@ -910,8 +1025,8 @@ class TestObjectRemoval:
         scene.update()
 
         assert len(scene.materials) == 0
-        assert len(scene.entities) == 0
-        assert len(scene.components) == 0
+        assert len(scene.entities) == 1
+        assert len(scene.components) == 1
 
     def test_collection_index_updated_after_compaction(self, scene: f2.Scene):
         m0 = scene.create_material("StandardMaterial")
@@ -936,7 +1051,7 @@ class TestActiveCamera:
     """Tests for active camera management on the scene."""
 
     def test_active_camera_auto_selected(self, scene: f2.Scene):
-        assert scene.active_camera is None
+        assert scene.active_camera is scene.free_camera
 
         entity = scene.create_entity()
         camera = entity.create_component(f2.Camera)
@@ -957,9 +1072,9 @@ class TestActiveCamera:
         assert scene.active_camera is cam2
 
         scene.active_camera = None
-        assert scene.active_camera is None
+        assert scene.active_camera is scene.free_camera
 
-    def test_active_camera_cleared_on_removal(self, scene: f2.Scene):
+    def test_active_camera_falls_back_on_removal(self, scene: f2.Scene):
         entity = scene.create_entity()
         camera = entity.create_component(f2.Camera)
         scene.update()
@@ -969,7 +1084,7 @@ class TestActiveCamera:
         entity.remove()
         scene.update()
 
-        assert scene.active_camera is None
+        assert scene.active_camera is scene.free_camera
 
     def test_active_camera_auto_replacement(self, scene: f2.Scene):
         e1 = scene.create_entity()
@@ -984,7 +1099,7 @@ class TestActiveCamera:
         e1.remove()
         scene.update()
 
-        assert scene.active_camera is cam2
+        assert scene.active_camera is scene.free_camera
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)

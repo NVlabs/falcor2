@@ -27,10 +27,17 @@ BEGIN_DISABLE_USD_WARNINGS
 #include <pxr/usd/ar/resolvedPath.h>
 #include <pxr/usd/ar/resolver.h>
 #include <pxr/usd/sdf/assetPath.h>
+#include <pxr/usd/usd/resolveInfo.h>
 END_DISABLE_USD_WARNINGS
 
 #include <array>
+#include <span>
 #include <stdexcept>
+#include <typeindex>
+#include <unordered_map>
+#include <utility>
+#include <sgl/core/short_vector.h>
+#include <sgl/core/type_utils.h>
 #include <vector>
 
 namespace falcor {
@@ -81,6 +88,73 @@ bool read_fixed_indices(
     return present;
 }
 
+namespace {
+
+/// Hash resolved geometry samples, reusing array hashes for samples retained by the caller.
+class GeometrySampleHasher {
+public:
+    struct ArrayIdentity {
+        const void* data;
+        size_t size;
+        std::type_index type;
+
+        bool operator==(const ArrayIdentity&) const = default;
+    };
+    using Key = sgl::short_vector<ArrayIdentity, 3>;
+
+    struct Hash {
+        size_t combined = 0;
+        sgl::short_vector<size_t, 3> attributes;
+    };
+
+    std::pair<Key, Hash> hash(std::span<const pxr::VtValue> values) const
+    {
+        Key key;
+        Hash hash;
+        for (const auto& value : values) {
+            const auto identity = get_array_identity(value);
+            const auto cached = m_array_hashes.find(identity);
+            const size_t attribute_hash = cached != m_array_hashes.end() ? cached->second : value.GetHash();
+            key.push_back(identity);
+            hash.attributes.push_back(attribute_hash);
+            hash.combined = pxr::TfHash::Combine(hash.combined, attribute_hash);
+        }
+        return {std::move(key), std::move(hash)};
+    }
+
+    /// Cache this sample's array hashes. The keyed arrays must remain alive and unchanged until this
+    /// helper is destroyed; caching a discarded duplicate's pointer would allow stale hits after address reuse.
+    void retain(const Key& key, const Hash& hash)
+    {
+        for (size_t i = 0; i < key.size(); ++i)
+            if (key[i].data && key[i].size)
+                m_array_hashes.emplace(key[i], hash.attributes[i]);
+    }
+
+private:
+    struct ArrayIdentityHash {
+        size_t operator()(const ArrayIdentity& identity) const
+        {
+            return pxr::TfHash::Combine(identity.data, identity.size, identity.type.hash_code());
+        }
+    };
+
+    static ArrayIdentity get_array_identity(const pxr::VtValue& value)
+    {
+        // Points/normals and widths are the geometry arrays used by the adapters.
+        const void* data = nullptr;
+        if (value.IsHolding<pxr::VtArray<pxr::GfVec3f>>())
+            data = value.UncheckedGet<pxr::VtArray<pxr::GfVec3f>>().cdata();
+        else if (value.IsHolding<pxr::VtArray<float>>())
+            data = value.UncheckedGet<pxr::VtArray<float>>().cdata();
+        return {data, value.GetArraySize(), value.GetTypeid()};
+    }
+
+    std::unordered_map<ArrayIdentity, size_t, ArrayIdentityHash> m_array_hashes;
+};
+
+} // namespace
+
 GeometrySampleTimes::GeometrySampleTimes(
     const pxr::UsdPrim& prim,
     const std::vector<pxr::UsdAttribute>& attributes,
@@ -88,12 +162,25 @@ GeometrySampleTimes::GeometrySampleTimes(
     pxr::UsdTimeCode no_samples
 )
 {
+    const bool has_clips = import_motion
+        && std::any_of(attributes.begin(),
+                       attributes.end(),
+                       [](const pxr::UsdAttribute& attribute)
+                       {
+                           return attribute
+                               && attribute.GetResolveInfo().GetSource() == pxr::UsdResolveInfoSourceValueClips;
+                       });
+    if (has_clips) {
+        setup_clips(prim, attributes, no_samples);
+        return;
+    }
+
     std::vector<double> authored_times;
     if (import_motion)
         pxr::UsdAttribute::GetUnionedTimeSamples(attributes, &authored_times);
     sample_times.assign(authored_times.begin(), authored_times.end());
     if (sample_times.empty())
-        sample_times.push_back(import_motion ? no_samples : pxr::UsdTimeCode::Default());
+        sample_times.push_back(import_motion ? no_samples : pxr::UsdTimeCode::EarliestTime());
     if (authored_times.size() > 1) {
         interpolation = prim.GetStage()->GetInterpolationType() == pxr::UsdInterpolationTypeHeld
             ? AnimationInterpolationMode::step
@@ -103,6 +190,93 @@ GeometrySampleTimes::GeometrySampleTimes(
             rate = 24.0;
         for (double time : authored_times)
             motion_times.push_back(static_cast<float>(time / rate));
+    }
+}
+
+void GeometrySampleTimes::setup_clips(
+    const pxr::UsdPrim& prim,
+    const std::vector<pxr::UsdAttribute>& attributes,
+    pxr::UsdTimeCode no_samples
+)
+{
+    using namespace pxr;
+    std::vector<double> authored_times;
+    UsdAttribute::GetUnionedTimeSamples(attributes, &authored_times);
+    if (authored_times.size() < 2) {
+        sample_times.assign(authored_times.begin(), authored_times.end());
+        if (sample_times.empty())
+            sample_times.push_back(no_samples);
+        return;
+    }
+
+    interpolation = prim.GetStage()->GetInterpolationType() == UsdInterpolationTypeHeld
+        ? AnimationInterpolationMode::step
+        : AnimationInterpolationMode::linear;
+    double rate = prim.GetStage()->GetTimeCodesPerSecond();
+    if (rate <= 0.0)
+        rate = 24.0;
+
+    // Leave clip selection, layer offsets and boundary interpolation to USD. Intern complete resolved samples
+    // before tessellation, so repeated cycles reuse both CPU vertex streams and resident GPU source storage.
+    std::unordered_map<size_t, std::vector<uint32_t>> samples_by_hash;
+    std::vector<std::vector<VtValue>> samples;
+    GeometrySampleHasher hasher;
+
+    std::vector<UsdAttribute> valued_attributes;
+    for (const auto& attribute : attributes)
+        if (attribute && attribute.HasValue())
+            valued_attributes.push_back(attribute);
+    for (size_t key = 0; key < authored_times.size(); ++key) {
+        double time = authored_times[key];
+        UsdTimeCode evaluation_time(time);
+        // USD exposes the left side of a clip-map jump at (boundary - SafeStep()). Store an explicit
+        // left/right pair at the boundary instead of depending on that epsilon surviving float conversion.
+        // Read the original resolved sample: in USD 26.08 PreTime can select the previous asset even when
+        // only the time map jumps, without a clip activation (Usd_ClipSet::GetActiveClip).
+        const bool before_jump
+            = key + 1 < authored_times.size() && time == authored_times[key + 1] - UsdTimeCode::SafeStep();
+        if (before_jump)
+            time = authored_times[key + 1];
+        const float seconds = static_cast<float>(time / rate);
+        FALCOR_CHECK(
+            motion_times.empty() || seconds > motion_times.back()
+                || (key > 0 && authored_times[key - 1] == time - UsdTimeCode::SafeStep()),
+            "Geometry motion '{}' has distinct times that cannot be represented as float seconds",
+            prim.GetPath().GetString()
+        );
+        motion_times.push_back(seconds);
+
+        std::vector<VtValue> values;
+        for (const auto& attribute : valued_attributes) {
+            VtValue value;
+            FALCOR_CHECK(
+                attribute.Get(&value, evaluation_time),
+                "Geometry motion '{}' has a missing or blocked sample",
+                attribute.GetPath().GetString()
+            );
+            values.push_back(std::move(value));
+        }
+        const auto [sample_key, hash] = hasher.hash(values);
+        auto& candidates = samples_by_hash[hash.combined];
+        auto found = std::find_if(
+            candidates.begin(),
+            candidates.end(),
+            [&](uint32_t sample)
+            {
+                return samples[sample] == values;
+            }
+        );
+        uint32_t sample;
+        if (found != candidates.end()) {
+            sample = *found;
+        } else {
+            sample = sgl::narrow_cast<uint32_t>(sample_times.size());
+            sample_times.push_back(evaluation_time);
+            samples.push_back(std::move(values));
+            hasher.retain(sample_key, hash);
+            candidates.push_back(sample);
+        }
+        motion_sample_indices.push_back(sample);
     }
 }
 

@@ -29,13 +29,23 @@ public struct DiffuseSpecularBRDF : IBSDF, IDifferentiable
 
 
     [Differentiable]
-    public override float3 eval(const float3 wi, const float3 wo, const BSDFContext bc)
+    public override float3 eval(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
-        return eval_with_pdf(wi, wo, bc).value;
+        return eval_with_pdf(wi, wo, bc, component).value;
     }
 
     [Differentiable]
-    public BSDFEval eval_with_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+    public BSDFEval eval_with_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
         if (min(wi.z, wo.z) < MIN_COS_THETA)
             return BSDFEval();
@@ -61,7 +71,7 @@ public struct DiffuseSpecularBRDF : IBSDF, IDifferentiable
     }
 
     [Differentiable]
-    public bool sample(float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
+    public bool sample(const float3 wi, const BSDFSampleInput input, const BSDFContext bc, out BSDFSample sample)
     {
         sample = {};
 
@@ -96,9 +106,14 @@ public struct DiffuseSpecularBRDF : IBSDF, IDifferentiable
 
     // Slang cannot propagate derivatives through the generic IBSDF default, so keep the differentiable concrete alias.
     [Differentiable]
-    public override float eval_pdf(const float3 wi, const float3 wo, const BSDFContext bc)
+    public override float eval_pdf(
+        const float3 wi,
+        const float3 wo,
+        const BSDFContext bc,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
     {
-        return eval_with_pdf(wi, wo, bc).pdf;
+        return eval_with_pdf(wi, wo, bc, component).pdf;
     }
 
     // Internal functions

@@ -11,6 +11,7 @@ import falcor2.utils;
 
 import slangpy;
 
+
 // Configuration externs
 
 /// Enable next event estimation.
@@ -526,6 +527,12 @@ public interface IWriteGuide
     [OutputSpec("rgba16_float", "0,0,1,0", "write")]
     public static void normals(uint2 coord, float4 value);
     public static bool normals_enabled();
+    [OutputSpec("rgba16_float", "0,0,1,0", "write")]
+    public static void geometric_normals(uint2 coord, float4 value);
+    public static bool geometric_normals_enabled();
+    [OutputSpec("rgba32_float", "0,0,0,0", "write")]
+    public static void world_position(uint2 coord, float4 value);
+    public static bool world_position_enabled();
     [OutputSpec("r16_float", "1", "write")]
     public static void roughness(uint2 coord, float value);
     public static bool roughness_enabled();
@@ -573,6 +580,12 @@ public struct NoWriteGuide : IWriteGuide
 
     public static override void normals(uint2 coord, float4 value) { }
     public static bool normals_enabled() { return false; }
+
+    public static override void geometric_normals(uint2 coord, float4 value) { }
+    public static bool geometric_normals_enabled() { return false; }
+
+    public static override void world_position(uint2 coord, float4 value) { }
+    public static bool world_position_enabled() { return false; }
 
     public static override void roughness(uint2 coord, float value) { }
     public static bool roughness_enabled() { return false; }
@@ -626,6 +639,8 @@ extern static const bool WriteGuide_diffuse_albedo = false;
 extern static const bool WriteGuide_material_color = false;
 extern static const bool WriteGuide_specular_albedo = false;
 extern static const bool WriteGuide_normals = false;
+extern static const bool WriteGuide_geometric_normals = false;
+extern static const bool WriteGuide_world_position = false;
 extern static const bool WriteGuide_roughness = false;
 extern static const bool WriteGuide_metallic = false;
 extern static const bool WriteGuide_depth = false;
@@ -1383,6 +1398,10 @@ void write_primary_surface_interaction(
     Camera previous_camera
 )
 {
+    if (WriteGuide::world_position_enabled())
+        WriteGuide::world_position(coord, float4(si.position_ws, 1.0));
+    if (WriteGuide::geometric_normals_enabled())
+        WriteGuide::geometric_normals(coord, float4(si.normal_ws, 0.0));
     if (WriteGuide::depth_enabled() || WriteGuide::hardware_depth_enabled()) {
         float depth = dot(si.position_ws - camera.position, camera.image_w);
         if (WriteGuide::depth_enabled())
@@ -1424,24 +1443,28 @@ public void render(
     Camera previous_camera,
     out float4 output,
     uint iteration,
-    float2 pixel_offset
+    float2 pixel_offset,
+    uniform uint sample_count
 )
 {
     uint2 id = ray_sampler.id;
-    SampleGenerator sg = SampleGenerator(id, iteration);
-
-    // Consume the same two camera random values even for a zero-width Box.
-    ReconstructionFilterSample filter_sample = pixel_filter.sample(next_float2(sg));
-    float2 uv = get_primary_uv(ray_sampler, pixel_offset + filter_sample.offset);
-    Ray ray = ray_sampler.camera.get_ray(uv);
-    if (ENABLE_DEPTH_OF_FIELD && ray_sampler.camera.aperture_radius > 0.0 && ray_sampler.camera.focus_distance > 0.0)
-        ray = ray_sampler.camera.get_ray(uv, next_float2(sg));
-
     uint path_id = id.y * ray_sampler.camera.dims.x + id.x;
-    float3 radiance = trace_path(ray, path_id, sg) * filter_sample.weight * ray_sampler.camera.exposure_scale;
+    float3 sum = 0.f;
+    for (uint i = 0; i < sample_count; i++) {
+        SampleGenerator sg = SampleGenerator(id, iteration + i);
 
-    if (WriteGuide::nan_count_enabled() && any(isnan(radiance)))
-        WriteGuide::nan_count(id, 1u);
+        // Consume the same two camera random values even for a zero-width Box.
+        ReconstructionFilterSample filter_sample = pixel_filter.sample(next_float2(sg));
+        float2 uv = get_primary_uv(ray_sampler, pixel_offset + filter_sample.offset);
+        Ray ray = ray_sampler.camera.get_ray(uv);
+        if (ENABLE_DEPTH_OF_FIELD && ray_sampler.camera.aperture_radius > 0.0
+            && ray_sampler.camera.focus_distance > 0.0)
+            ray = ray_sampler.camera.get_ray(uv, next_float2(sg));
 
-    output = float4(radiance, 1.0);
+        float3 radiance = trace_path(ray, path_id, sg) * filter_sample.weight * ray_sampler.camera.exposure_scale;
+        if (WriteGuide::nan_count_enabled() && any(isnan(radiance)))
+            WriteGuide::nan_count(id, 1u);
+        sum += radiance;
+    }
+    output = float4(sum / float(sample_count), 1.f);
 }

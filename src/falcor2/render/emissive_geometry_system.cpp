@@ -99,6 +99,7 @@ EmissiveGeometrySystem::EmissiveGeometrySystem(Scene* scene)
 void EmissiveGeometrySystem::clear_resources()
 {
     m_transform_stretch.clear();
+    m_emissive_geometries.clear();
     m_triangle_count = 0;
     m_active_triangle_count = 0;
     m_triangles.clear();
@@ -157,7 +158,7 @@ SceneUpdateFlags EmissiveGeometrySystem::update(SceneUpdateContext& ctx)
     const bool materials_changed = m_materials.has_dirty(
         Material::DirtyFlags::emission | Material::DirtyFlags::added | Material::DirtyFlags::removed
     );
-    const bool geometries_changed = m_geometries.is_dirty();
+    const bool geometries_changed = m_geometries.has_dirty(~Geometry::DirtyFlags::deformation);
 
     bool instances_changed = false;
     if (m_components.has_dirty(~Component::DirtyFlags::entity_transform)) {
@@ -172,13 +173,16 @@ SceneUpdateFlags EmissiveGeometrySystem::update(SceneUpdateContext& ctx)
 
     const bool update_emission = materials_changed || geometries_changed || instances_changed;
     TransformChanges transform_changes;
-    if (!update_emission)
+    bool deformed = m_geometries.has_dirty(Geometry::DirtyFlags::deformation);
+    if (!update_emission) {
         transform_changes = classify_transform_changes();
+        deformed = has_deformed_emissive_geometry();
+    }
 
-    if (!update_emission && !transform_changes.geometry_changed)
+    if (!update_emission && !deformed && !transform_changes.geometry_changed)
         return SceneUpdateFlags::none;
 
-    const bool update_flux = update_emission || transform_changes.flux_changed;
+    const bool update_flux = update_emission || deformed || transform_changes.flux_changed;
 
     RenderScene* render_scene = m_scene->_render_scene();
 
@@ -217,7 +221,8 @@ SceneUpdateFlags EmissiveGeometrySystem::update(SceneUpdateContext& ctx)
     }
 
     const bool topology_changed = update_emission;
-    const bool geometry_changed = geometries_changed || instances_changed || transform_changes.geometry_changed;
+    const bool geometry_changed
+        = geometries_changed || deformed || instances_changed || transform_changes.geometry_changed;
     const bool flux_changed = update_flux;
     if (topology_changed)
         ++m_generations.topology;
@@ -250,10 +255,25 @@ EmissiveGeometrySystem::TransformChanges EmissiveGeometrySystem::classify_transf
     return changes;
 }
 
+bool EmissiveGeometrySystem::has_deformed_emissive_geometry() const
+{
+    if (!m_geometries.has_dirty(Geometry::DirtyFlags::deformation))
+        return false;
+    return std::any_of(
+        m_emissive_geometries.begin(),
+        m_emissive_geometries.end(),
+        [&](const Geometry* geometry)
+        {
+            return is_set(m_geometries.dirty_flags()[geometry->collection_index()], Geometry::DirtyFlags::deformation);
+        }
+    );
+}
+
 bool EmissiveGeometrySystem::rebuild_transform_stretch(std::span<const uint32_t> triangle_counts)
 {
     bool transforms_changed = false;
     m_transform_stretch.clear();
+    m_emissive_geometries.clear();
     const auto contributes_triangles = [&triangle_counts](Component* component)
     {
         const auto* instance = component->as<GeometryInstance>();
@@ -269,8 +289,14 @@ bool EmissiveGeometrySystem::rebuild_transform_stretch(std::span<const uint32_t>
     for (const Entity* entity : m_entities.objects()) {
         if (!entity->is_valid())
             continue;
-        const auto& components = entity->components();
-        if (!std::any_of(components.begin(), components.end(), contributes_triangles))
+        bool contributes = false;
+        for (Component* component : entity->components()) {
+            if (contributes_triangles(component)) {
+                m_emissive_geometries.push_back(component->as<GeometryInstance>()->geometry());
+                contributes = true;
+            }
+        }
+        if (!contributes)
             continue;
         transforms_changed
             |= is_set(m_entities.dirty_flags()[entity->collection_index()], Entity::DirtyFlags::transform);

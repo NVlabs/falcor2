@@ -4,6 +4,7 @@
 #include "scene_object.h"
 
 #include "falcor2/render/scene.h"
+#include "falcor2/render/component/camera.h"
 
 namespace falcor {
 
@@ -17,11 +18,19 @@ SceneObject::~SceneObject() { }
 
 void SceneObject::set_name(std::string_view name)
 {
+    FALCOR_CHECK(!is_builtin(), "Cannot rename a built-in object.");
     m_name = name;
+}
+
+bool SceneObject::is_builtin() const
+{
+    const Camera* free_camera = m_scene ? m_scene->free_camera() : nullptr;
+    return free_camera && (this == free_camera || this == free_camera->entity());
 }
 
 void SceneObject::remove()
 {
+    FALCOR_CHECK(!is_builtin(), "Cannot remove a built-in object.");
     m_removed = true;
 }
 

@@ -65,16 +65,43 @@ GLTFMasks all_masks(uint32_t allowed_features, bool specular_glossiness)
     return {features, textures, textures, textures};
 }
 
+GLTFMasks
+core_masks(uint32_t core_features, bool specular_glossiness, bool core_texture_transforms, bool core_alternate_uvs)
+{
+    GLTFMasks masks = all_masks(core_features, specular_glossiness);
+    if (masks.features == 0)
+        return {};
+    if (!core_texture_transforms)
+        masks.transforms = 0;
+    if (!core_alternate_uvs)
+        masks.nonzero_texcoords = 0;
+    return masks;
+}
+
 } // namespace
 
-GLTFContext::GLTFContext(GLTFSpecializationMode mode, GLTFFeatureFlags allowed_features)
+GLTFContext::GLTFContext(
+    GLTFSpecializationMode mode,
+    GLTFFeatureFlags allowed_features,
+    GLTFFeatureFlags core_features,
+    bool core_texture_transforms,
+    bool core_alternate_uvs
+)
     : m_mode(mode)
     , m_allowed_features(static_cast<uint32_t>(allowed_features))
+    , m_core_features(static_cast<uint32_t>(core_features))
+    , m_core_texture_transforms(core_texture_transforms)
+    , m_core_alternate_uvs(core_alternate_uvs)
 {
     FALCOR_CHECK(
         (m_allowed_features & ~F::ALL_MR) == 0,
         "gltf_allowed_features contains unknown bits: 0x{:x}",
         m_allowed_features & ~F::ALL_MR
+    );
+    FALCOR_CHECK(
+        (m_core_features & ~m_allowed_features) == 0,
+        "gltf_core_features contains features not permitted by gltf_allowed_features: 0x{:x}",
+        m_core_features & ~m_allowed_features
     );
     FALCOR_CHECK(
         mode == GLTFSpecializationMode::required || mode == GLTFSpecializationMode::single
@@ -114,6 +141,10 @@ void GLTFContext::update(MaterialCollection& materials)
 
     const GLTFMasks metallic_roughness_all = all_masks(m_allowed_features, false);
     const GLTFMasks specular_glossiness_all = all_masks(m_allowed_features, true);
+    const GLTFMasks metallic_roughness_core
+        = core_masks(m_core_features, false, m_core_texture_transforms, m_core_alternate_uvs);
+    const GLTFMasks specular_glossiness_core
+        = core_masks(m_core_features, true, m_core_texture_transforms, m_core_alternate_uvs);
     const auto select_compile = [&](const WorkflowState& workflow, const GLTFMasks& effective, const GLTFMasks& all)
     {
         switch (m_mode) {
@@ -134,13 +165,15 @@ void GLTFContext::update(MaterialCollection& materials)
             continue;
         if (auto* gltf = dynamic_cast<GLTFMaterial*>(material)) {
             const GLTFMasks effective = gltf->effective_masks();
-            const GLTFMasks compile = select_compile(m_metallic_roughness, effective, metallic_roughness_all);
+            const GLTFMasks compile = select_compile(m_metallic_roughness, effective, metallic_roughness_all)
+                                          .merged(metallic_roughness_core);
             FALCOR_ASSERT(compile.covers(effective));
             gltf->set_compile_masks(compile);
             m_metallic_roughness.active.insert(compile);
         } else if (auto* specular_glossiness = dynamic_cast<GLTFSpecGlossMaterial*>(material)) {
             const GLTFMasks effective = specular_glossiness->effective_masks();
-            const GLTFMasks compile = select_compile(m_specular_glossiness, effective, specular_glossiness_all);
+            const GLTFMasks compile = select_compile(m_specular_glossiness, effective, specular_glossiness_all)
+                                          .merged(specular_glossiness_core);
             FALCOR_ASSERT(compile.covers(effective));
             specular_glossiness->set_compile_masks(compile);
             m_specular_glossiness.active.insert(compile);

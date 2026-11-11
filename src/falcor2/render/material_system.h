@@ -10,7 +10,7 @@
 
 #include "falcor2/utils/managed_vector.h"
 #include "falcor2/utils/buffer_suballocator.h"
-#include "falcor2/utils/buffer_offset_pair.h"
+#include "falcor2/utils/buffer_ptr.h"
 
 #include <sgl/device/fwd.h>
 #include <sgl/device/shader.h>
@@ -46,7 +46,7 @@ public:
     /// Get the additional modules required by all active materials.
     std::span<const ref<sgl::SlangModule>> required_modules() const { return m_required_modules; }
 
-    BufferOffsetPair data_ref(BufferSuballocator::Allocation allocation) const;
+    BufferPtr data_ref(BufferSuballocator::Allocation allocation) const;
 
 private:
     friend class Material;
@@ -61,7 +61,6 @@ private:
 
     ManagedVector<shared::MaterialData> m_material_data;
     BufferSuballocator m_data_storage;
-    BufferHandle m_data_buffer_handle = to_handle(ref<sgl::Buffer>{});
 
     SceneCapabilities m_required_capabilities;
     std::vector<sgl::TypeConformance> m_type_conformances;

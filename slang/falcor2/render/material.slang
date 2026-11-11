@@ -20,12 +20,18 @@ public struct MaterialSample
 {
     /// Sampled direction in world-space (normalized).
     public float3 wo_ws = {};
-    /// pdf with respect to solid angle for the sampled direction (wo).
+    /// Marginal pdf with respect to solid angle for the sampled direction (wo), zero for delta events.
     public float pdf = {};
-    /// Sample weight eval(wi, wo) / pdf(wo). Surface BSDF eval includes outgoing foreshortening.
+    /// Continuation estimator weight. Under eval_consistent, continuous weights equal the selected component value
+    /// divided by its joint component/direction PDF. Native weights need not satisfy that identity.
+    /// The pdf field remains marginal. Delta events carry integrated weights with a zero-PDF sentinel.
     public float3 weight = {};
     /// Flags describing the sampled scattering event.
     public BSDFFlags flags = BSDFFlags::none;
+    /// Contribution selector; eval_consistent guarantees that weight reconstructs this contribution.
+    /// Native estimators may return full_response without satisfying the reconstruction identity.
+    /// Other indices are meaningful only within a compatible material component layout.
+    public BSDFComponent component = BSDFComponent::full_response;
 
     /// Return true if the sample contains any of the specified flags.
     public bool has_flag(const BSDFFlags flags) { return is_set(this.flags, flags); }
@@ -37,6 +43,15 @@ public enum class MaterialInstanceHints : uint {
     disable_normal_mapping = 0x1,
     /// Adjust shading normal to reduce risk of back-facing hits.
     adjust_shading_normal = 0x2,
+};
+
+/// Renderer requirement for material continuation weights; does not change the physical scattering function.
+public enum class MaterialSampleWeightPolicy : uint {
+    /// Preserve native estimators, which need not reconstruct through component evaluation.
+    native = 0,
+    /// Require continuous weights to equal component value divided by joint component/direction density.
+    /// Full-response adapters may need an additional evaluation. Delta weights retain their integrated convention.
+    eval_consistent = 1,
 };
 
 /// Resolved properties of a homogeneous participating medium.
@@ -59,26 +74,77 @@ public interface IMaterialAOVWriter
 /// Scattering and emission at a geometrically accepted surface hit.
 public interface IMaterialInstance
 {
-    /// Evaluates the scattering value. This is a convenience alias for eval_with_pdf().
-    public float3 eval(const SurfaceInteraction si, const float3 wo_ws)
+    /// Evaluates the selected scattering contribution. Convenience alias for eval_with_pdf().
+    /// @param si Accepted surface interaction, including the incident direction in world space.
+    /// @param wo_ws Normalized outgoing direction in world space, pointing away from the surface.
+    /// @param component Contribution to evaluate, or full_response for the entire response.
+    /// @return Selected scattering value using the surface or curve BSDF convention.
+    public float3
+    eval(const SurfaceInteraction si, const float3 wo_ws, const BSDFComponent component = BSDFComponent::full_response)
     {
-        return eval_with_pdf<BSDFEvalHints::eval>(si, wo_ws).value;
+        return eval_with_pdf<BSDFEvalHints::eval>(si, wo_ws, component).value;
     }
 
-    /// Evaluates the scattering value and directional PDF together.
-    /// Prefer this operation when both results are needed, so shared work is performed only once.
-    public BSDFEval
-    eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both>(const SurfaceInteraction si, const float3 wo_ws);
+    /// Evaluates value and density together, sharing work when both are requested.
+    /// Component values include all material weights; their joint PDFs include selection probabilities.
+    /// Full response uses the marginal directional PDF. Full-response-only materials ignore the selector;
+    /// component-aware materials return zero for unknown indices.
+    /// @tparam Hints Compile-time selection of the value and PDF fields to compute.
+    /// @param si Accepted surface interaction, including the incident direction in world space.
+    /// @param wo_ws Normalized outgoing direction in world space, pointing away from the surface.
+    /// @param component Contribution to evaluate, or full_response for the entire response and marginal PDF.
+    /// @return Requested scattering value and solid-angle density; unrequested fields must not be used.
+    public BSDFEval eval_with_pdf<let Hints : BSDFEvalHints = BSDFEvalHints::both>(
+        const SurfaceInteraction si,
+        const float3 wo_ws,
+        const BSDFComponent component = BSDFComponent::full_response
+    );
+
+    /// Evaluates the selected joint density, or the marginal density for full response.
+    /// @param si Accepted surface interaction, including the incident direction in world space.
+    /// @param wo_ws Normalized outgoing direction in world space, pointing away from the surface.
+    /// @param component Contribution whose joint density is requested, or full_response for the marginal density.
+    /// @return Solid-angle density including component selection probability, or zero for delta events.
+    public float eval_pdf(
+        const SurfaceInteraction si,
+        const float3 wo_ws,
+        const BSDFComponent component = BSDFComponent::full_response
+    )
+    {
+        return eval_with_pdf<BSDFEvalHints::pdf>(si, wo_ws, component).pdf;
+    }
+
+    /// Equal nonzero IDs guarantee identical component-index meanings across material instances.
+    /// Zero is reserved for materials whose samples always represent full response. IDs are scene-local.
+    /// @return Component layout ID for compatibility checks during reuse.
+    public uint get_component_layout_id() { return 0; }
+
+    /// Reconnection heuristic using a component at the current incident direction and its marginal PDF.
+    /// The default uses density as a proxy; full-response groups follow the same policy.
+    /// Callers must exclude delta events using the sample flags before applying this heuristic.
+    /// @param si Accepted surface interaction at which the contribution is classified.
+    /// @param component Contribution to classify, or full_response for the entire response.
+    /// @param marginal_pdf Marginal directional sampling density at the current interaction and outgoing direction.
+    /// @param roughness_threshold Roughness cutoff used by the reconnection heuristic.
+    /// @return True if the contribution is classified as rough enough for reconnection.
+    public bool is_component_rough(
+        const SurfaceInteraction si,
+        BSDFComponent component,
+        float marginal_pdf,
+        float roughness_threshold
+    )
+    {
+        return roughness_threshold <= 0.0 || marginal_pdf <= 1.0 / (roughness_threshold * roughness_threshold);
+    }
 
     /// Sample scattering using caller-owned coordinates and auxiliary seed bits.
     /// Returns false on rejection; sample is valid only on success.
+    /// MATERIAL_SAMPLE_WEIGHT_POLICY selects whether weights must reconstruct through component evaluation.
+    /// @param si Accepted surface interaction, including the incident direction in world space.
+    /// @param input Uniform sample coordinates and auxiliary random bits; see MaterialSampleInput.
+    /// @param[out] sample Sampled direction, weight, marginal PDF, event flags and contribution identity.
+    /// @return True if a valid sample was generated.
     public bool sample(const SurfaceInteraction si, const MaterialSampleInput input, out MaterialSample sample);
-
-    /// Evaluates the directional PDF. This is a convenience alias for eval_with_pdf().
-    public float eval_pdf(const SurfaceInteraction si, const float3 wo_ws)
-    {
-        return eval_with_pdf<BSDFEvalHints::pdf>(si, wo_ws).pdf;
-    }
 
     /// Returns true if the material is emissive and thus can contribute to lighting.
     public bool is_emissive() { return false; }
@@ -93,13 +159,23 @@ public interface IMaterialInstance
     /// Return the resolved homogeneous medium bounded by this material.
     public HomogeneousMediumProperties get_interior_medium() { return {}; }
 
+    /// Collect material properties used as rendering and denoising guides.
+    /// @param si Accepted surface interaction at which properties are evaluated.
+    /// @return Representative material properties; these may approximate the full scattering model.
     public MaterialProperties collect_properties(const SurfaceInteraction si);
 
+    /// Collect optional per-BSDF diagnostic properties.
+    /// @param si Accepted surface interaction at which properties are evaluated.
+    /// @param wo Outgoing direction in world space.
+    /// @return Per-BSDF properties when supported, otherwise an empty optional.
     public Optional<ExtraBsdfProperties> collect_extra_bsdf_properties(const SurfaceInteraction si, const float3 wo)
     {
         return {};
     }
 
+    /// Query the scattering event types available at an interaction.
+    /// @param si Accepted surface interaction at which event types are evaluated.
+    /// @return Flags describing the available scattering event types.
     public BSDFFlags get_lobe_types(const SurfaceInteraction si);
 };
 

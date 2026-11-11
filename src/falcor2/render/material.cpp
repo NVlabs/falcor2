@@ -55,7 +55,7 @@ std::span<const uint8_t> Material::data() const
     return m_scene->_material_system()->m_data_storage.data(m_data_allocation);
 }
 
-BufferOffsetPair Material::data_ref() const
+BufferPtr Material::data_ref() const
 {
     if (!is_valid())
         return {};

@@ -5,7 +5,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Mapping, Sequence
 
@@ -17,8 +18,7 @@ from . import container_torch
 from .container import Container
 from .image_format import SINT_FORMATS, UINT_FORMATS, channel_count, format_to_typename
 
-BLOCK_TYPE_PREFIX = "__falcor_OutputBlock"
-BLOCK_VAR_PREFIX = "__g_falcor_OutputBlock"
+OUTPUT_VAR_PREFIX = "__g_falcor_OutputBlock"
 IMPL_TYPE_PREFIX = "__falcor_OutputImpl"
 OUTPUT_SPEC_ATTRIBUTE = "OutputSpec"
 _INDEXED_OUTPUT_FUNCTION = "generic_data"
@@ -67,6 +67,7 @@ class IndexedOutput:
     name: str
     component_count: int
     target: object
+    operation: OutputOperation = OutputOperation.write
 
 
 @dataclass(frozen=True)
@@ -79,7 +80,6 @@ class _ReflectedOutput:
     enabled: bool
     storage_type: str | None = None
     write_expr: str | None = None
-    direct_binding: bool = False
 
 
 @dataclass(frozen=True)
@@ -102,7 +102,6 @@ class _PreparedIndexedOutput:
     field_name: str
     storage_type: str
     write_expr: str
-    direct_binding: bool
 
 
 class OutputPrelude:
@@ -114,9 +113,10 @@ class OutputPrelude:
         module: spy.Module,
         interface_name: str,
         concrete_type_name: str | None = None,
+        operation_overrides: Mapping[str, OutputOperation] | None = None,
     ) -> "OutputPrelude":
         """Create an output prelude generator for one static writer interface."""
-        return cls(module, interface_name, concrete_type_name)
+        return cls(module, interface_name, concrete_type_name, operation_overrides)
 
     @staticmethod
     def read_specs(
@@ -179,6 +179,7 @@ class OutputPrelude:
         module: spy.Module,
         interface_name: str,
         concrete_type_name: str | None = None,
+        operation_overrides: Mapping[str, OutputOperation] | None = None,
     ) -> None:
         """
         Create an output prelude generator for one static writer interface.
@@ -205,12 +206,10 @@ class OutputPrelude:
             self._concrete_type_name = concrete_type_name
         else:
             raise ValueError("Output prelude concrete type name must not be empty.")
-        self._block_type_name = BLOCK_TYPE_PREFIX + interface_name
-        self._block_var_name = BLOCK_VAR_PREFIX + interface_name
+        self._output_var_prefix = OUTPUT_VAR_PREFIX + interface_name
         self._impl_type_name = IMPL_TYPE_PREFIX + interface_name
         self._signature_prefix = self._interface_name + "\n" + self._concrete_type_name + "\n"
-        # Only immutable descriptors over immutable-layout textures may use identity caching.
-        # Native tensors can change layout through point_to(); generic sequences can be edited.
+
         self._indexed_input: tuple[IndexedOutput, ...] | None = None
         self._indexed_sorted: tuple[IndexedOutput, ...] = ()
         self._indexed_signature: str = ""
@@ -234,6 +233,25 @@ class OutputPrelude:
             )
         }
 
+        # Include per-output operations in the signature so different accumulation
+        # choices generate distinct shaders.
+        if operation_overrides:
+            for name, operation in operation_overrides.items():
+                if name not in self._specs:
+                    raise ValueError(
+                        f"Cannot override operation for output {name!r} without an OutputSpec."
+                    )
+                self._specs[name] = replace(self._specs[name], operation=operation)
+            self._signature_prefix += (
+                "operations="
+                + repr(
+                    tuple(
+                        sorted((name, spec.operation.value) for name, spec in self._specs.items())
+                    )
+                )
+                + "\n"
+            )
+
     @property
     def specs(self) -> Mapping[str, OutputSpec]:
         """Reflected output specs by output name."""
@@ -256,6 +274,7 @@ class OutputPrelude:
                 output.id,
                 output.name,
                 output.component_count,
+                output.operation.value,
                 get_value_signature(output.target),
             )
             for output in indexed_outputs
@@ -293,7 +312,7 @@ class OutputPrelude:
             _reflect_output(
                 self._module,
                 self._interface_type,
-                self._block_var_name,
+                self._output_var_prefix,
                 name,
                 targets.get(name),
                 (self._specs[name].operation if name in self._specs else OutputOperation.write),
@@ -301,51 +320,24 @@ class OutputPrelude:
             for name in output_names
         ]
         indexed_outputs = self._prepare_indexed_outputs(indexed_outputs)
-        enabled_outputs = [output for output in outputs if output.enabled]
-        # Vulkan reflection drops read/write resources nested in a parameter block.
-        # Bind incrementing outputs directly because they require both access modes.
-        block_outputs = [output for output in enabled_outputs if not output.direct_binding]
-        direct_outputs = [output for output in enabled_outputs if output.direct_binding]
-        indexed_block_outputs = [output for output in indexed_outputs if not output.direct_binding]
-        indexed_direct_outputs = [output for output in indexed_outputs if output.direct_binding]
-
         lines = []
-
-        # Generate the storage block containing one writable resource per enabled output.
-        lines.extend(
-            [
-                f"public struct {self._block_type_name}",
-                "{",
-            ]
-        )
-        for output in block_outputs:
+        # A tensor-only ParameterBlock can silently miss writes on the pinned
+        # Vulkan stack. All output resources use the same global binding path.
+        for output in outputs:
+            if not output.enabled:
+                continue
             assert output.storage_type is not None
-            lines.append(f"    public {output.storage_type} {output.name};")
-        for output in indexed_block_outputs:
-            lines.append(f"    public {output.storage_type} {output.field_name};")
-        lines.extend(["}", ""])
-
-        if block_outputs or indexed_block_outputs:
             lines.extend(
                 [
-                    f"public ParameterBlock<{self._block_type_name}> {self._block_var_name};",
+                    f"public {output.storage_type} {self._output_var_prefix}_{output.name};",
                     "",
                 ]
             )
 
-        for output in direct_outputs:
-            assert output.storage_type is not None
+        for output in indexed_outputs:
             lines.extend(
                 [
-                    f"public {output.storage_type} {self._block_var_name}_{output.name};",
-                    "",
-                ]
-            )
-
-        for output in indexed_direct_outputs:
-            lines.extend(
-                [
-                    f"public {output.storage_type} {self._block_var_name}_{output.field_name};",
+                    f"public {output.storage_type} {self._output_var_prefix}_{output.field_name};",
                     "",
                 ]
             )
@@ -441,36 +433,16 @@ class OutputPrelude:
         targets: Mapping[str, object | None],
         indexed_outputs: Sequence[IndexedOutput] = (),
     ) -> None:
-        """Bind named and stable-ID containers to the generated parameter block."""
+        """Bind enabled containers to their generated global variables."""
         indexed_outputs = self._sorted_indexed_outputs(indexed_outputs)
-        if not any(container is not None for container in targets.values()) and not indexed_outputs:
-            return
-
-        block = None
         for name, container in targets.items():
             if container is None:
                 continue
-            spec = self._specs.get(name)
-            if spec is not None and spec.operation == OutputOperation.increment:
-                cursor[f"{self._block_var_name}_{name}"] = Container.to_render_layout(container)
-                continue
-            if block is None:
-                block = cursor[self._block_var_name]
-            block[name] = Container.to_render_layout(container)
+            cursor[f"{self._output_var_prefix}_{name}"] = _output_binding(container)
 
-        # Storage declarations and write expressions belong to generate(), not per-dispatch binding.
         for output in indexed_outputs:
             field_name = _indexed_field_name(output.id)
-            if isinstance(output.target, spy.Tensor) or container_torch.is_torch_tensor(
-                output.target
-            ):
-                cursor[f"{self._block_var_name}_{field_name}"] = Container.to_render_layout(
-                    output.target
-                )
-                continue
-            if block is None:
-                block = cursor[self._block_var_name]
-            block[field_name] = Container.to_render_layout(output.target)
+            cursor[f"{self._output_var_prefix}_{field_name}"] = _output_binding(output.target)
 
     def clear_indexed(
         self,
@@ -546,7 +518,13 @@ class OutputPrelude:
             isinstance(output.target, spy.Texture) for output in outputs
         ):
             indexed_signature = tuple(
-                (output.id, output.name, output.component_count, get_value_signature(output.target))
+                (
+                    output.id,
+                    output.name,
+                    output.component_count,
+                    output.operation.value,
+                    get_value_signature(output.target),
+                )
                 for output in outputs
             )
             self._indexed_input = indexed_outputs
@@ -571,12 +549,9 @@ class OutputPrelude:
                 target_component_count,
             )
             field_name = _indexed_field_name(output.id)
-            direct_binding = isinstance(
-                output.target, spy.Tensor
-            ) or container_torch.is_torch_tensor(output.target)
-            storage_type, write_expr, direct_binding = _storage_type_and_write_expr(
+            storage_type, write_expr = _storage_type_and_write_expr(
                 container=output.target,
-                block_var_name=self._block_var_name,
+                output_var_prefix=self._output_var_prefix,
                 name=field_name,
                 coord_name=function.coord_name,
                 coord_type=function.coord_type,
@@ -587,8 +562,7 @@ class OutputPrelude:
                     target_value_type,
                 ),
                 value_type=target_value_type,
-                operation=OutputOperation.write,
-                direct_binding=direct_binding,
+                operation=output.operation,
             )
             prepared.append(
                 _PreparedIndexedOutput(
@@ -596,7 +570,6 @@ class OutputPrelude:
                     field_name=field_name,
                     storage_type=storage_type,
                     write_expr=write_expr,
-                    direct_binding=direct_binding,
                 )
             )
         return tuple(prepared)
@@ -608,6 +581,12 @@ def _concrete_type_name(interface_name: str) -> str:
             f"Output prelude interface name '{interface_name}' must be in the form 'IBla'."
         )
     return interface_name[1:]
+
+
+def _output_binding(container: object) -> object:
+    if isinstance(container, spy.Texture):
+        return container
+    return Container.to_tensor_binding(container)
 
 
 def _function_returns_void(function: spy.FunctionReflection) -> bool:
@@ -718,7 +697,7 @@ def _indexed_value_expr(
 def _reflect_output(
     module: spy.Module,
     interface_type: SlangType,
-    block_var_name: str,
+    output_var_prefix: str,
     name: str,
     container: object | None,
     operation: OutputOperation,
@@ -741,9 +720,9 @@ def _reflect_output(
             enabled=False,
         )
 
-    storage_type, write_expr, direct_binding = _storage_type_and_write_expr(
+    storage_type, write_expr = _storage_type_and_write_expr(
         container=container,
-        block_var_name=block_var_name,
+        output_var_prefix=output_var_prefix,
         name=function.name,
         coord_name=coord_parameter.name,
         coord_type=coord_parameter.type.full_name,
@@ -760,24 +739,21 @@ def _reflect_output(
         enabled=True,
         storage_type=storage_type,
         write_expr=write_expr,
-        direct_binding=direct_binding,
     )
 
 
 def _storage_type_and_write_expr(
     *,
     container: object,
-    block_var_name: str,
+    output_var_prefix: str,
     name: str,
     coord_name: str,
     coord_type: str,
     value_name: str,
     value_type: str,
     operation: OutputOperation,
-    direct_binding: bool = False,
-) -> tuple[str, str, bool]:
-    direct_binding = direct_binding or operation == OutputOperation.increment
-    block_field = f"{block_var_name}_{name}" if direct_binding else f"{block_var_name}.{name}"
+) -> tuple[str, str]:
+    output_var = f"{output_var_prefix}_{name}"
     if isinstance(container, spy.Texture):
         if container.type != spy.TextureType.texture_2d:
             raise TypeError(f"Unsupported texture type for output prelude: {container.type!r}")
@@ -785,36 +761,58 @@ def _storage_type_and_write_expr(
             if container.format != spy.Format.r32_uint:
                 raise TypeError("Incrementing texture outputs require r32_uint format.")
             write_expr = (
-                f"{block_field}[{coord_name}] = " f"{block_field}[{coord_name}] + {value_name};"
+                f"{output_var}[{coord_name}] = " f"{output_var}[{coord_name}] + {value_name};"
             )
             storage_type = f'[format("r32ui")] RWTexture2D<{value_type}>'
         else:
-            write_expr = f"{block_field}[{coord_name}] = {value_name};"
+            write_expr = f"{output_var}[{coord_name}] = {value_name};"
             storage_type = f"RWTexture2D<{value_type}>"
-        return (
-            storage_type,
-            write_expr,
-            direct_binding,
-        )
+        return storage_type, write_expr
 
-    if isinstance(container, spy.Tensor) or container_torch.is_torch_tensor(container):
-        _, dims = Container.format_and_dims(container)
+    if container_torch.is_torch_tensor(container):
+        # Torch images are CHW, so each channel is a strided scalar tensor element.
+        target_format = Container.format(container)
+        channel_total = channel_count(target_format)
+        scalar_type = format_to_typename(target_format).removeprefix("vector<").split(",", 1)[0]
+        index_prefix = _tensor_index_expr(coord_name, coord_type, 2)
+        storage_type = (
+            f"RWTensor<{scalar_type}, 3>"
+            if operation == OutputOperation.increment
+            else f"WTensor<{scalar_type}, 3>"
+        )
+        stores = []
+        for channel in range(channel_total):
+            index_expr = f"{index_prefix}, {channel}"
+            component = (
+                f"({value_name}).{'xyzw'[channel]}"
+                if value_type.startswith("vector<")
+                else value_name
+            )
+            stored_value = f"{scalar_type}({component})"
+            if operation == OutputOperation.increment:
+                stored_value = f"{output_var}.load({index_expr}) + {stored_value}"
+            stores.append(f"{output_var}.store({index_expr}, {stored_value});")
+        return storage_type, " ".join(stores)
+
+    if isinstance(container, spy.Tensor):
+        dims = container.shape
         dimension_count = len(dims)
         index_expr = _tensor_index_expr(coord_name, coord_type, dimension_count)
+        # The output parameter may be float while the requested tensor stores half.
+        target_value_type = container.dtype.full_name
+        stored_value = (
+            value_name if target_value_type == value_type else f"{target_value_type}({value_name})"
+        )
         if operation == OutputOperation.increment:
-            storage_type = f"RWTensor<{value_type}, {dimension_count}>"
+            storage_type = f"RWTensor<{target_value_type}, {dimension_count}>"
             write_expr = (
-                f"{block_field}.store({index_expr}, "
-                f"{block_field}.load({index_expr}) + {value_name});"
+                f"{output_var}.store({index_expr}, "
+                f"{output_var}.load({index_expr}) + {stored_value});"
             )
         else:
-            storage_type = f"WTensor<{value_type}, {dimension_count}>"
-            write_expr = f"{block_field}.store({index_expr}, {value_name});"
-        return (
-            storage_type,
-            write_expr,
-            direct_binding,
-        )
+            storage_type = f"WTensor<{target_value_type}, {dimension_count}>"
+            write_expr = f"{output_var}.store({index_expr}, {stored_value});"
+        return storage_type, write_expr
 
     raise TypeError(f"Unsupported container type for output prelude: {type(container)!r}")
 
@@ -826,13 +824,18 @@ def _find_type_decl(module: spy.Module, type_name: str) -> spy.DeclReflection:
         except RuntimeError:
             continue
 
-        for child_decl in module_decl.children:
+        # Slang's __include places declarations under an include scope rather
+        # than directly under the module declaration.
+        pending = deque(module_decl.children)
+        while pending:
+            child_decl = pending.popleft()
             try:
                 type_reflection = child_decl.as_type()
             except RuntimeError:
-                continue
+                type_reflection = None
             if type_reflection is not None and type_reflection.name == type_name:
                 return child_decl
+            pending.extend(child_decl.children)
 
     raise RuntimeError(f"Unable to find {type_name} declaration in module sources.")
 

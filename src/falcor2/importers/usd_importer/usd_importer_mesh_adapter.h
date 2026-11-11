@@ -8,6 +8,7 @@
 
 BEGIN_DISABLE_USD_WARNINGS
 #include <pxr/usd/usdGeom/mesh.h>
+#include <pxr/usd/usdSkel/skinningQuery.h>
 END_DISABLE_USD_WARNINGS
 
 
@@ -18,7 +19,8 @@ namespace usd_importer {
 ImporterMesh convert_usd_mesh(
     const pxr::UsdGeomMesh& usd_mesh,
     const ResolveMaterial& resolve_material,
-    const ImportOptions& import_options
+    const ImportOptions& import_options,
+    const pxr::UsdSkelSkinningQuery* skinning = nullptr
 );
 
 } // namespace usd_importer

@@ -39,26 +39,32 @@ inline int interpolation_element_index(MeshInterpolation interpolation, const Pr
     SGL_UNREACHABLE();
 }
 
-inline std::span<const float> stream_element(const MeshAttributeStream& stream, int element_index)
+inline std::span<const std::byte> stream_element(const MeshAttributeStream& stream, int element_index)
 {
     const int value_index = stream.indices.empty() ? element_index : stream.indices[element_index];
-    return stream.values.subspan(value_index * stream.component_count(), stream.component_count());
+    return stream.values.subspan(value_index * stream.element_size(), stream.element_size());
+}
+
+inline std::span<const float> float_values(const MeshAttributeStream& stream)
+{
+    FALCOR_CHECK(stream.scalar_type() == sgl::DataType::float32, "Mesh tessellator evaluation requires float32 values");
+    return {reinterpret_cast<const float*>(stream.values.data()), stream.values.size() / sizeof(float)};
 }
 
 template<typename T>
 inline T stream_element(const MeshAttributeStream& stream, int element_index)
 {
     static_assert(std::is_trivially_copyable_v<T>);
-    const std::span<const float> element = stream_element(stream, element_index);
+    const auto element = stream_element(stream, element_index);
     FALCOR_ASSERT_EQ(sizeof(T), element.size_bytes());
     T value;
     std::memcpy(&value, element.data(), sizeof(T));
     return value;
 }
 
-inline void copy_stream_element(const MeshAttributeStream& stream, int element_index, float* destination)
+inline void copy_stream_element(const MeshAttributeStream& stream, int element_index, void* destination)
 {
-    const std::span<const float> element = stream_element(stream, element_index);
+    const auto element = stream_element(stream, element_index);
     std::memcpy(destination, element.data(), element.size_bytes());
 }
 
@@ -90,8 +96,8 @@ enum class RegionMode {
 /// Runtime state for one final ImporterMesh attribute.
 struct OutputStream {
     ImporterMeshDefaultAttribute attribute;
-    // Scalar offset in OutputStreams' interleaved final-vertex storage.
-    size_t scalar_offset = 0;
+    // Byte offset in OutputStreams' interleaved final-vertex storage.
+    size_t byte_offset = 0;
     // Null only for generated attributes such as the limit-surface normal.
     const MeshAttributeStream* input = nullptr;
     RegionMode region_mode = RegionMode::continuous;
@@ -100,7 +106,11 @@ struct OutputStream {
     std::vector<float> control_values;
 
     size_t component_count() const { return attribute.components; }
-    const float* mesh_values() const { return control_values.empty() ? input->values.data() : control_values.data(); }
+    size_t element_size() const { return component_count() * data_type_size(attribute.type); }
+    const float* mesh_values() const
+    {
+        return control_values.empty() ? float_values(*input).data() : control_values.data();
+    }
     void prepare_control_values(size_t value_count);
 };
 
@@ -117,18 +127,18 @@ public:
     std::span<const OutputStream> streams() const { return m_streams; }
     size_t size() const { return m_streams.size(); }
 
-    void reserve_vertices(size_t count) { m_values.reserve(count * m_scalar_stride); }
+    void reserve_vertices(size_t count) { m_values.reserve(count * m_byte_stride); }
     void resize_vertices(size_t count);
     size_t vertex_count() const { return m_vertex_count; }
 
-    float* value(size_t stream_index, int vertex_index)
+    std::byte* value(size_t stream_index, int vertex_index)
     {
-        return m_values.data() + vertex_index * m_scalar_stride + m_streams[stream_index].scalar_offset;
+        return m_values.data() + vertex_index * m_byte_stride + m_streams[stream_index].byte_offset;
     }
 
-    const float* value(size_t stream_index, int vertex_index) const
+    const std::byte* value(size_t stream_index, int vertex_index) const
     {
-        return m_values.data() + vertex_index * m_scalar_stride + m_streams[stream_index].scalar_offset;
+        return m_values.data() + vertex_index * m_byte_stride + m_streams[stream_index].byte_offset;
     }
 
     template<typename T>
@@ -137,14 +147,14 @@ public:
         static_assert(std::is_trivially_copyable_v<T>);
         static_assert(alignof(T) <= alignof(float));
         static_assert(sizeof(T) % sizeof(float) == 0);
-        FALCOR_ASSERT_EQ(sizeof(T), m_streams[stream_index].component_count() * sizeof(float));
+        FALCOR_ASSERT_EQ(sizeof(T), m_streams[stream_index].element_size());
         return *reinterpret_cast<T*>(value(stream_index, vertex_index));
     }
 
-    void set_value(size_t stream_index, int vertex_index, std::span<const float> source)
+    void set_value(size_t stream_index, int vertex_index, std::span<const std::byte> source)
     {
         const OutputStream& stream = m_streams[stream_index];
-        FALCOR_ASSERT_EQ(source.size(), stream.component_count());
+        FALCOR_ASSERT_EQ(source.size(), stream.element_size());
         std::memcpy(value(stream_index, vertex_index), source.data(), source.size_bytes());
     }
 
@@ -153,7 +163,7 @@ public:
         set_value(
             stream_index,
             destination_vertex,
-            std::span<const float>(value(stream_index, source_vertex), m_streams[stream_index].component_count())
+            std::span<const std::byte>(value(stream_index, source_vertex), m_streams[stream_index].element_size())
         );
     }
 
@@ -161,9 +171,10 @@ public:
 
 private:
     size_t m_vertex_count = 0;
-    size_t m_scalar_stride = 0;
+    size_t m_byte_stride = 0;
+    size_t m_alignment = 1;
     std::vector<OutputStream> m_streams;
-    std::vector<float> m_values;
+    std::vector<std::byte> m_values;
 };
 
 /// Stable destination view acquired after ImporterMesh has been exactly allocated.
@@ -171,25 +182,8 @@ private:
 struct OutputBinding {
     std::byte* data = nullptr;
     size_t byte_stride = 0;
-    size_t component_count = 0;
 
-    float* value(int vertex_index) const { return reinterpret_cast<float*>(data + size_t(vertex_index) * byte_stride); }
-
-    template<typename T>
-    T& value(int vertex_index) const
-    {
-        static_assert(std::is_trivially_copyable_v<T>);
-        static_assert(alignof(T) <= alignof(float));
-        static_assert(sizeof(T) % sizeof(float) == 0);
-        FALCOR_ASSERT_EQ(sizeof(T), component_count * sizeof(float));
-        return *reinterpret_cast<T*>(value(vertex_index));
-    }
-
-    void set_value(int vertex_index, std::span<const float> source) const
-    {
-        FALCOR_ASSERT_EQ(source.size(), component_count);
-        std::memcpy(value(vertex_index), source.data(), source.size_bytes());
-    }
+    std::byte* value(int vertex_index) const { return data + size_t(vertex_index) * byte_stride; }
 };
 
 void add_output_attribute(
