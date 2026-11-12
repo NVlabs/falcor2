@@ -387,9 +387,20 @@ NB_NOINLINE void bind_scene_object_types(nb::module_& m)
 {
     using namespace falcor;
 
+    nb::class_<MeshBounds>(m, "MeshBounds", D(MeshBounds))
+        .def(nb::init<>())
+        .DEF_RW(MeshBounds, aabb)
+        .DEF_RW(MeshBounds, radius);
+
     nb::class_<Geometry, PyGeometry, SceneObject>(m, "Geometry", D(Geometry)) //
         .def(nb::init<>()) // __init__ is needed for Python-side inheritance
-        .DEF_PROP_RO(Geometry, local_aabb);
+        .DEF_PROP_RO(Geometry, local_aabb)
+        .def(
+            "calculate_bounds",
+            &Geometry::calculate_bounds,
+            "transform"_a = float4x4::identity(),
+            D(Geometry, calculate_bounds)
+        );
     m.attr("GeometryT") = nb::type_var("GeometryT", "bound"_a = nb::type<Geometry>());
 
     nb::class_<Component, SceneObject>(m, "Component", D(Component)) //
@@ -750,6 +761,13 @@ NB_NOINLINE void bind_scene(nb::module_& m)
             D(Scene, active_camera)
         )
         .def(
+            "calculate_bounds",
+            &Scene::calculate_bounds,
+            "transform"_a = float4x4::identity(),
+            D(Scene, calculate_bounds)
+        )
+        .def("apply_transform", &Scene::apply_transform, "transform"_a, D(Scene, apply_transform))
+        .def(
             "frame_free_camera",
             &Scene::frame_free_camera,
             "aspect"_a = 1.f,
@@ -780,7 +798,13 @@ NB_NOINLINE void bind_geometry_types(nb::module_& m)
         .DEF_PROP_RW(GeometryInstance, geometry)
         .DEF_PROP_RW(GeometryInstance, materials, nb::rv_policy::reference_internal)
         .DEF_PROP_RO(GeometryInstance, geometry_instance_id)
-        .DEF_PROP_RO(GeometryInstance, geometry_instance_count);
+        .DEF_PROP_RO(GeometryInstance, geometry_instance_count)
+        .def(
+            "calculate_bounds",
+            &GeometryInstance::calculate_bounds,
+            "additional_transform"_a = float4x4::identity(),
+            D(GeometryInstance, calculate_bounds)
+        );
 }
 
 NB_NOINLINE void bind_standard_materials(nb::module_& m)

@@ -196,6 +196,7 @@ def _create_marble_shader_ball_scene(
     return scene, camera, surface
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
 @pytest.mark.parametrize("backend", ["materialx-inline", "materialx-buffered", "mdl"])
 def test_material_aov_writes_without_instance_setup(
@@ -305,6 +306,7 @@ def test_material_aov_writes_without_instance_setup(
     )
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
 def test_material_aov_default_renders_through_guide_outputs(
     device_type: spy.DeviceType, device: spy.Device
@@ -398,6 +400,7 @@ def _check_material_aov_guide_outputs(
     assert connection.connected
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", MATERIAL_AOV_DEVICE_TYPES)
 @pytest.mark.nightly_if_not_vk
 def test_mdl_material_aov_renders_from_custom_material_struct(
@@ -445,6 +448,7 @@ export tutorials_aov::aov_material green() = tutorials_aov::aov_material(
     assert source.count("_ns::init(state);") == 1
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
 def test_material_aov_binding_lifecycle(
     device_type: spy.DeviceType,
@@ -513,6 +517,7 @@ def test_material_aov_binding_lifecycle(
     assert f2.Container.format(node._guides["mask"]) == spy.Format.rgba32_float
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
 def test_pipeline_resolves_material_aov_after_normal_scene_update(
     device_type: spy.DeviceType,
@@ -546,6 +551,7 @@ def test_pipeline_resolves_material_aov_after_normal_scene_update(
     assert registry.has_output("dust_mask_output")
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
 def test_pipeline_preserves_arbitrary_guide_output_specs(
     device_type: spy.DeviceType,
@@ -654,6 +660,7 @@ def test_material_aov_marble_blue_veins_on_aswf_shader_ball(
         assert source.count("_ns::init(state);") == 1
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
 @pytest.mark.parametrize("backend", ["materialx", "mdl"])
 def test_material_aov_generation_is_independent_of_consumers(
@@ -753,6 +760,7 @@ def test_material_aov_generation_is_independent_of_consumers(
     assert np.any(guides[name].to_numpy() != 0)
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
 def test_unused_aov_guide_binding_stays_cheap(
     device_type: spy.DeviceType, device: spy.Device

@@ -39,6 +39,7 @@ class UsdImporterContext {
 public:
     UsdImporterContext(
         const pxr::UsdStageRefPtr& stage,
+        pxr::UsdTimeCode initial_time,
         const ImportOptions& import_options,
         ustring source_asset_path,
         bool parallel_adds = true
@@ -214,6 +215,7 @@ private:
 
 private:
     pxr::UsdStageRefPtr m_usd_stage;
+    const pxr::UsdTimeCode m_initial_time;
     const pxr::ArResolverContext m_resolver_context;
     // Construct and destroy on the importing thread; run() drains all children first.
     pxr::ArResolverScopedCache m_resolver_cache;

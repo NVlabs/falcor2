@@ -28,13 +28,17 @@ from slangpy import (
 )
 import slangpy
 from falcor2.editor import create_device
+from falcor2.testing.device_selection import parse_device_types
 
 if TYPE_CHECKING:
     import falcor2 as f2
 
 
-if os.environ.get("SLANGPY_DEVICE", None) is not None:
-    DEFAULT_DEVICE_TYPES = [DeviceType[os.environ["SLANGPY_DEVICE"]]]
+_ENVIRONMENT_DEVICE_TYPES = (
+    parse_device_types(os.environ["SLANGPY_DEVICE"]) if "SLANGPY_DEVICE" in os.environ else None
+)
+if _ENVIRONMENT_DEVICE_TYPES is not None:
+    DEFAULT_DEVICE_TYPES = list(_ENVIRONMENT_DEVICE_TYPES)
 elif sys.platform == "win32":
     DEFAULT_DEVICE_TYPES = [DeviceType.d3d12, DeviceType.vulkan, DeviceType.cuda]
 elif sys.platform == "linux" or sys.platform == "linux2":
@@ -44,6 +48,12 @@ elif sys.platform == "darwin":
     DEFAULT_DEVICE_TYPES = []  # [DeviceType.metal]
 else:
     raise RuntimeError("Unsupported platform")
+
+_DEFAULT_DEVICE_TYPES = tuple(DEFAULT_DEVICE_TYPES)
+# Consumers that need one backend, such as the preview subprocess, use the first selection.
+SELECTED_DEVICE_TYPE: DeviceType | None = (
+    _ENVIRONMENT_DEVICE_TYPES[0] if _ENVIRONMENT_DEVICE_TYPES is not None else None
+)
 
 DEVICE_CACHE: dict[
     tuple[
@@ -69,11 +79,26 @@ CONFIG: dict[str, Any] = {}
 DRIVER_VERSION: Optional[Sequence[int]] = None
 USED_TORCH_DEVICES: bool = False
 
-# Enable this to make tests just run on d3d12 for faster testing
-# DEFAULT_DEVICE_TYPES = [DeviceType.d3d12]
-
 # Always dump stuff when testing
 slangpy.set_dump_generated_shaders(True)
+
+
+def configure_test_device_type(device_type: DeviceType | Sequence[DeviceType] | None) -> None:
+    """Select backends for parameter matrices and explicit requests; None restores defaults."""
+    global SELECTED_DEVICE_TYPE
+    selected = [device_type] if isinstance(device_type, DeviceType) else device_type
+    if selected is None:
+        selected = _ENVIRONMENT_DEVICE_TYPES
+    if selected is not None and not selected:
+        raise ValueError("At least one device type must be selected")
+    SELECTED_DEVICE_TYPE = selected[0] if selected is not None else None
+    DEFAULT_DEVICE_TYPES[:] = selected if selected is not None else _DEFAULT_DEVICE_TYPES
+
+
+def _require_device_type(device_type: DeviceType) -> None:
+    if SELECTED_DEVICE_TYPE is not None and device_type not in DEFAULT_DEVICE_TYPES:
+        enabled = ",".join(backend.name for backend in DEFAULT_DEVICE_TYPES)
+        pytest.skip(f"Backend {device_type.name} not enabled; selected backends: {enabled}")
 
 
 def configure_test_device_options(
@@ -221,6 +246,7 @@ def get_device(
     enable_print: bool = False,
     enable_compilation_reports: bool | None = None,
 ) -> Device:
+    _require_device_type(type)
     module_cache_path, shader_cache_path = get_module_and_shader_cache_path()
     if enable_compilation_reports is None:
         enable_compilation_reports = COMPILATION_REPORTS_ENABLED
@@ -312,6 +338,7 @@ def get_ngx(device: Device) -> Any:
 # Helper that gets a device that wraps the current torch cuda context.
 # This is useful for testing the torch integration.
 def get_torch_device(type: DeviceType, use_cache: bool = True) -> Device:
+    _require_device_type(type)
     import torch
 
     global USED_TORCH_DEVICES

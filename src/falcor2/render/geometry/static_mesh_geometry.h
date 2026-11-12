@@ -56,6 +56,8 @@ public:
 
     virtual void update_render_state() override;
 
+    MeshBounds calculate_bounds(const float4x4& transform = float4x4::identity()) const override;
+
     /// Number of sub-meshes in this geometry.
     size_t sub_mesh_count() const { return m_sub_meshes.size(); }
 

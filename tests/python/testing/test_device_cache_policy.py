@@ -78,6 +78,7 @@ def test_get_device_enables_compilation_reports_for_telemetry(
     with monkeypatch.context() as patch:
         patch.setattr(helpers, "create_device", create_device)
         patch.setattr(helpers, "COMPILATION_REPORTS_ENABLED", True)
+        patch.setattr(helpers, "SELECTED_DEVICE_TYPE", None)
         helpers.get_device(
             helpers.DeviceType.d3d12,
             use_cache=False,

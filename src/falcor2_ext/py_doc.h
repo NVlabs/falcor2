@@ -3229,6 +3229,15 @@ R"doc(Geometry instance component. A geometry instance references instances
 the reference geometry on the entity. It allows to assign per-instance
 materials.)doc";
 
+static const char *mkd_doc_falcor_GeometryInstance_calculate_bounds =
+R"doc(Calculate exact bounds using additional_transform *
+entity.world_from_object_matrix(). The additional transform must be
+finite and affine. Evaluate animations with Scene::update() first.
+Missing or removed geometry returns empty bounds; unsupported geometry
+throws.
+
+)doc";
+
 static const char *mkd_doc_falcor_GeometryInstance_class_descriptor = R"doc()doc";
 
 static const char *mkd_doc_falcor_GeometryInstance_class_name = R"doc()doc";
@@ -3396,6 +3405,13 @@ static const char *mkd_doc_falcor_Geometry_DirtyFlags_render_state = R"doc()doc"
 static const char *mkd_doc_falcor_Geometry_DirtyFlags_resources = R"doc(Vertex data changed without replacing render state or topology.)doc";
 
 static const char *mkd_doc_falcor_Geometry_Geometry = R"doc(Constructor.)doc";
+
+static const char *mkd_doc_falcor_Geometry_calculate_bounds =
+R"doc(Calculate exact mesh bounds after applying a finite affine transform
+to local vertices. Empty geometry returns empty bounds. Geometry types
+without supported CPU vertex data throw.
+
+)doc";
 
 static const char *mkd_doc_falcor_Geometry_class_descriptor = R"doc()doc";
 
@@ -3607,15 +3623,18 @@ static const char *mkd_doc_falcor_ImportAssetEdit_m_import_options = R"doc()doc"
 
 static const char *mkd_doc_falcor_ImportAssetEdit_m_path = R"doc()doc";
 
-static const char *mkd_doc_falcor_ImportOptions = R"doc(Options used when importing source scene assets.)doc";
+static const char *mkd_doc_falcor_ImportOptions =
+R"doc(Options used when importing source scene assets. USD static values use
+the authored playback start, or numeric zero without a complete
+playback range.)doc";
 
 static const char *mkd_doc_falcor_ImportOptions_bake_poses =
 R"doc(Bake imported skin bindings into static geometry. USD evaluates
-imported animation at zero seconds; glTF uses the stored pose.
-Ordinary node transforms and animation remain unchanged. Skinned USD
-meshes retain their control cage. Combined mesh motion and skinning,
-blend shapes, dual-quaternion skinning and instanced USD skinning are
-unsupported.)doc";
+imported animation at its initial viewing time; glTF uses the stored
+pose. Ordinary node transforms and animation remain unchanged. Skinned
+USD meshes retain their control cage. Combined mesh motion and
+skinning, blend shapes, dual-quaternion skinning and instanced USD
+skinning are unsupported.)doc";
 
 static const char *mkd_doc_falcor_ImportOptions_curve_refinement_level =
 R"doc(Default curve refinement level, in [0, 256]. Zero selects CVs;
@@ -4538,6 +4557,13 @@ static const char *mkd_doc_falcor_ImporterScene_animation =
 R"doc(Animation data (single animation per scene, empty channels if no
 animation).)doc";
 
+static const char *mkd_doc_falcor_ImporterScene_animation_range =
+R"doc(Authored playback interval, or the union of transform and geometry
+sample intervals when unspecified. Invalid when neither an authored
+interval nor animation samples exist. Does not shift key timestamps.
+
+)doc";
+
 static const char *mkd_doc_falcor_ImporterScene_assets = R"doc(Embedded asset array.)doc";
 
 static const char *mkd_doc_falcor_ImporterScene_bake_pose =
@@ -4604,6 +4630,11 @@ nonzero limit; zero means unrestricted.)doc";
 static const char *mkd_doc_falcor_ImporterScene_meshes = R"doc(Mesh array.)doc";
 
 static const char *mkd_doc_falcor_ImporterScene_nodes = R"doc(Node array.)doc";
+
+static const char *mkd_doc_falcor_ImporterScene_playback_range =
+R"doc(Authored playback interval in seconds, independent of key times.
+Invalid when unspecified. Composing imports unions their effective
+animation ranges when either has an authored interval.)doc";
 
 static const char *mkd_doc_falcor_ImporterScene_prototypes = R"doc(Prototype array.)doc";
 
@@ -5784,6 +5815,27 @@ static const char *mkd_doc_falcor_MeshAttributeSemantic_tex_coord = R"doc()doc";
 static const char *mkd_doc_falcor_MeshAttributeSemantic_unknown = R"doc()doc";
 
 static const char *mkd_doc_falcor_MeshAttributeSemantic_weights = R"doc()doc";
+
+static const char *mkd_doc_falcor_MeshBounds =
+R"doc(Bounds measured from mesh vertices in one coordinate system. Empty
+bounds have an invalid AABB and a zero radius. A single point has a
+valid AABB.)doc";
+
+static const char *mkd_doc_falcor_MeshBounds_aabb = R"doc()doc";
+
+static const char *mkd_doc_falcor_MeshBounds_expand =
+R"doc(Include a finite point. Throws if its distance cannot be represented
+as a float.
+
+)doc";
+
+static const char *mkd_doc_falcor_MeshBounds_expand_2 =
+R"doc(Include bounds measured in the same coordinate system. Empty bounds
+are ignored.
+
+)doc";
+
+static const char *mkd_doc_falcor_MeshBounds_radius = R"doc(Maximum distance from the coordinate system's origin to a mesh vertex.)doc";
 
 static const char *mkd_doc_falcor_MeshGeometryData = R"doc()doc";
 
@@ -9078,8 +9130,10 @@ const).
 )doc";
 
 static const char *mkd_doc_falcor_Scene_animation_range =
-R"doc(Get the keyframe interval across all animations in seconds; invalid
-when there are no keys.
+R"doc(Get the imported playback interval in seconds, falling back to the
+union of animation key/sample intervals. New animated scenes start at
+this interval's beginning. Appending assets preserves the current
+time.
 
 )doc";
 
@@ -9099,6 +9153,19 @@ static const char *mkd_doc_falcor_Scene_append_2 = R"doc(Append imported CPU-sid
 
 static const char *mkd_doc_falcor_Scene_append_3 = R"doc(Build and append importer edits, then run loaded callbacks.)doc";
 
+static const char *mkd_doc_falcor_Scene_apply_transform =
+R"doc(Apply a transform to each authored root entity, leaving hierarchy and
+descendant local transforms unchanged. Composes transform *
+root.transform using Transform's TRS decomposition, which removes
+shear. Excludes built-in entities. Later animation evaluation can
+replace keyed root transform components. Call update() afterwards to
+publish the transforms; this method does not update the scene.
+
+Args:
+    transform: Finite transform to apply to the authored scene.
+
+)doc";
+
 static const char *mkd_doc_falcor_Scene_bind =
 R"doc(Bind scene data to shader globals for rendering.
 
@@ -9106,6 +9173,22 @@ Args:
     globals: The shader cursor pointing to the global parameters.
     flags: Flags indicating which parts of the scene to bind
            (materials, lights, etc.).
+
+)doc";
+
+static const char *mkd_doc_falcor_Scene_calculate_bounds =
+R"doc(Calculate exact mesh bounds by combining the bounds of all live
+geometry instances. Call update() first to evaluate the desired
+animation pose. This method does not update the scene. Empty scenes
+return an invalid AABB and zero radius. Unsupported geometry throws.
+
+Args:
+    transform: Finite affine transform applied after each instance's
+               world transform.
+
+Returns:
+    Vertex bounds and maximum distance from the transformed coordinate
+    system's origin.
 
 )doc";
 
@@ -9490,6 +9573,8 @@ static const char *mkd_doc_falcor_Scene_m_has_geometry_animation = R"doc()doc";
 static const char *mkd_doc_falcor_Scene_m_hit_group_policy =
 R"doc(Hit group policy used for scene ray tracing setup. This is currently
 hard-coded but will eventually be configurable.)doc";
+
+static const char *mkd_doc_falcor_Scene_m_imported_playback_range = R"doc()doc";
 
 static const char *mkd_doc_falcor_Scene_m_initial_camera_selection_pending = R"doc(Indicates whether the initial camera selection is pending.)doc";
 
@@ -10407,6 +10492,8 @@ static const char *mkd_doc_falcor_StaticMeshGeometryDataDesc_sub_meshes = R"doc(
 static const char *mkd_doc_falcor_StaticMeshGeometryDataDesc_vertex_attributes = R"doc()doc";
 
 static const char *mkd_doc_falcor_StaticMeshGeometryDataDesc_vertex_count = R"doc()doc";
+
+static const char *mkd_doc_falcor_StaticMeshGeometry_calculate_bounds = R"doc()doc";
 
 static const char *mkd_doc_falcor_StaticMeshGeometry_class_descriptor = R"doc()doc";
 
@@ -12283,6 +12370,8 @@ When types match, the input is moved through. Otherwise elements are
 converted individually.
 
 )doc";
+
+static const char *mkd_doc_falcor_detail_validate_bounds_transform = R"doc()doc";
 
 static const char *mkd_doc_falcor_detail_validate_list_element_count = R"doc(Validate a counted list size before reserving destination storage.)doc";
 
@@ -19680,8 +19769,8 @@ R"doc(Timeline seconds; clip keys may reference the same stored sample.
 Empty for static geometry.)doc";
 
 static const char *mkd_doc_falcor_usd_importer_GeometrySampleTimes_sample_times =
-R"doc(Nonempty USD evaluation schedule; motion-disabled imports use
-EarliestTime, which also reads default-only data.)doc";
+R"doc(Nonempty USD evaluation schedule; motion-disabled imports use the
+initial viewing time.)doc";
 
 static const char *mkd_doc_falcor_usd_importer_GeometrySampleTimes_setup_clips = R"doc()doc";
 
@@ -19835,6 +19924,8 @@ static const char *mkd_doc_falcor_usd_importer_UsdImporterContext_m_enable_virtu
 
 static const char *mkd_doc_falcor_usd_importer_UsdImporterContext_m_import_options = R"doc()doc";
 
+static const char *mkd_doc_falcor_usd_importer_UsdImporterContext_m_initial_time = R"doc()doc";
+
 static const char *mkd_doc_falcor_usd_importer_UsdImporterContext_m_material_name_to_index = R"doc()doc";
 
 static const char *mkd_doc_falcor_usd_importer_UsdImporterContext_m_meters_per_unit = R"doc()doc";
@@ -19959,9 +20050,27 @@ static const char *mkd_doc_falcor_usd_importer_get_float2_value = R"doc()doc";
 
 static const char *mkd_doc_falcor_usd_importer_get_float4_value = R"doc()doc";
 
+static const char *mkd_doc_falcor_usd_importer_get_initial_time =
+R"doc(Match usdview's initial frame: authored playback start, or numeric
+zero without a complete range.
+
+)doc";
+
+static const char *mkd_doc_falcor_usd_importer_get_playback_range =
+R"doc(Preserve the authored playback interval independently of the animation
+key interval.
+
+)doc";
+
 static const char *mkd_doc_falcor_usd_importer_get_purpose = R"doc()doc";
 
 static const char *mkd_doc_falcor_usd_importer_get_source_input = R"doc()doc";
+
+static const char *mkd_doc_falcor_usd_importer_get_time_codes_per_second =
+R"doc(Use one finite positive rate for all USD time-code to seconds
+conversions.
+
+)doc";
 
 static const char *mkd_doc_falcor_usd_importer_get_uv_primvar = R"doc()doc";
 

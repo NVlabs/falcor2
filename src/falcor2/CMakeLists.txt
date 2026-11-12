@@ -503,11 +503,7 @@ add_dependencies(falcor2_copy_mtlx
 
 add_dependencies(falcor2 falcor2_usd_deployment)
 
-# Copy openpbr-bsdf shaders files.
-add_custom_command(TARGET falcor2
-    POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/external/openpbr-bsdf" "${FALCOR_SHADER_OUTPUT_DIRECTORY}/openpbr-bsdf"
-)
+add_dependencies(falcor2 falcor2_copy_openpbr)
 
 set_target_properties(falcor2 PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${FALCOR_RUNTIME_OUTPUT_DIRECTORY}
@@ -585,7 +581,7 @@ install(
     DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/mtlx/resources/Lights
 )
 install(
-    DIRECTORY "${CMAKE_SOURCE_DIR}/external/openpbr-bsdf/"
+    DIRECTORY "${FALCOR_SHADER_OUTPUT_DIRECTORY}/openpbr-bsdf/"
     DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/shaders/openpbr-bsdf
     PATTERN ".git" EXCLUDE
 )

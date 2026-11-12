@@ -20,6 +20,7 @@ using CurveGeometry = std::variant<ImporterCurve, ImporterMesh>;
 std::optional<CurveGeometry> convert_usd_curves(
     const pxr::UsdGeomBasisCurves& curves,
     const ResolveMaterial& resolve_material,
+    pxr::UsdTimeCode viewing_time,
     const ImportOptions& options
 );
 } // namespace falcor::usd_importer

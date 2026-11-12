@@ -25,6 +25,7 @@ def editor_device(request: pytest.FixtureRequest) -> spy.Device:
     return get_device(request.param)
 
 
+@pytest.mark.nightly
 def test_headless_editor_composes_srgb_and_ui(editor_device: spy.Device) -> None:
     editor = Editor(editor_device, EditorConfig(width=640, height=360, window=False, mcp=False))
     try:
@@ -63,6 +64,7 @@ def test_headless_editor_composes_srgb_and_ui(editor_device: spy.Device) -> None
     assert editor_device.create_command_encoder() is not None
 
 
+@pytest.mark.nightly
 def test_deleted_selection_clears_before_scene_update(editor_device: spy.Device) -> None:
     scene = f2.load_scene(editor_device, "data/scenes/cornell-box.py")
     editor = Editor(
@@ -104,6 +106,7 @@ def test_deleted_selection_clears_before_scene_update(editor_device: spy.Device)
         editor.close()
 
 
+@pytest.mark.nightly
 def test_editor_stream_starts_and_closes_without_a_viewer(editor_device: spy.Device) -> None:
     pytest.importorskip("aiohttp")
 
@@ -194,6 +197,7 @@ def test_headless_pathtracer_accumulates_and_remote_camera_resets(
         editor.close()
 
 
+@pytest.mark.nightly
 def test_remote_text_edits_native_ui(editor_device: spy.Device) -> None:
     editor = Editor(editor_device, EditorConfig(width=640, height=360, window=False, mcp=False))
     editor._scene_editor.visible = False
@@ -231,6 +235,7 @@ def test_remote_text_edits_native_ui(editor_device: spy.Device) -> None:
         editor.close()
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("key", [spy.KeyCode.f5, spy.KeyCode.f6, spy.KeyCode.f12])
 def test_application_function_keys_work_with_ui_focus(key: spy.KeyCode) -> None:
     editor = Editor.__new__(Editor)
@@ -252,6 +257,7 @@ def test_application_function_keys_work_with_ui_focus(key: spy.KeyCode) -> None:
     editor.on_keyboard_event.assert_not_called()
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("failure", ["update", "render", "present"])
 def test_run_closes_editor_after_failure(failure: str) -> None:
     editor = SimpleNamespace(
@@ -272,6 +278,7 @@ def test_run_closes_editor_after_failure(failure: str) -> None:
     editor.device.close.assert_not_called()
 
 
+@pytest.mark.nightly
 def test_run_passes_current_scene_and_closes_editor() -> None:
     scenes = [object(), object()]
     editor = SimpleNamespace(

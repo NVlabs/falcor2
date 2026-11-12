@@ -19,6 +19,7 @@ namespace usd_importer {
 ImporterMesh convert_usd_mesh(
     const pxr::UsdGeomMesh& usd_mesh,
     const ResolveMaterial& resolve_material,
+    pxr::UsdTimeCode viewing_time,
     const ImportOptions& import_options,
     const pxr::UsdSkelSkinningQuery* skinning = nullptr
 );

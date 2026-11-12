@@ -73,7 +73,7 @@ float calculate_mse(const float* img1, const float* img2, uint32_t width, uint32
     return mse / num_pixels;
 }
 
-TEST_CASE("optix_denoiser_creation_destruction")
+TEST_CASE_DEVICE("optix_denoiser_creation_destruction", cuda)
 {
     sgl::ref<sgl::Device> device = create_cuda_device();
     CHECK(device);
@@ -97,7 +97,7 @@ TEST_CASE("optix_denoiser_creation_destruction")
 }
 
 
-TEST_CASE("optix_denoiser_denoise_checkerboard")
+TEST_CASE_DEVICE("optix_denoiser_denoise_checkerboard", cuda)
 {
     sgl::ref<sgl::Device> device = create_cuda_device();
     CHECK(device);

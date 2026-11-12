@@ -12,7 +12,8 @@ TEST_SUITE_BEGIN("device");
 
 TEST_CASE("enumerate_adapters")
 {
-    std::vector<AdapterInfo> adapters = Device::enumerate_adapters();
+    std::vector<AdapterInfo> adapters
+        = Device::enumerate_adapters(falcor::testing::options().device_type.value_or(DeviceType::automatic));
     CHECK(!adapters.empty());
 }
 

@@ -38,7 +38,8 @@ void build_material(
     const std::string_view& terminal_identifier,
     const pxr::TfTokenVector& shaderSourceTypes,
     const pxr::TfTokenVector& renderContexts,
-    const std::function<void(const std::filesystem::path&)>& register_asset
+    const std::function<void(const std::filesystem::path&)>& register_asset,
+    pxr::UsdTimeCode time
 );
 
 } // namespace usd_importer

@@ -9,6 +9,8 @@ import slangpy as spy
 import falcor2 as f2
 import falcor2.testing.helpers as helpers
 
+pytestmark = pytest.mark.nightly
+
 
 def matrix_to_numpy(matrix: spy.float4x4) -> np.ndarray:
     return np.array(

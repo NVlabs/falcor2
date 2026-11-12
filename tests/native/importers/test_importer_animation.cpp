@@ -37,6 +37,8 @@ TEST_CASE("ImporterAnimation - key range empty")
     CHECK_FALSE(anim.key_range().is_valid());
     anim.channels.emplace_back();
     CHECK_FALSE(anim.key_range().is_valid());
+    const auto scene = make_ref<ImporterScene>();
+    CHECK_FALSE(scene->animation_range().is_valid());
 }
 
 TEST_CASE("ImporterAnimation - key range single channel")
@@ -81,6 +83,20 @@ TEST_CASE("ImporterAnimation - key range multiple channels")
         CHECK_EQ(anim.key_range().start, start);
         CHECK_EQ(anim.key_range().end, start + 3.f);
     }
+
+    const auto scene = make_ref<ImporterScene>();
+    scene->animation = anim;
+    CHECK_EQ(scene->animation_range().start, 10.f);
+    CHECK_EQ(scene->animation_range().end, 13.f);
+    scene->meshes.emplace_back().motion_times = {-5.f, 20.f};
+    scene->curves.emplace_back().motion_times = {-6.f, 25.f};
+    CHECK_EQ(scene->animation_range().start, -6.f);
+    CHECK_EQ(scene->animation_range().end, 25.f);
+    scene->playback_range = {0.f, 6.f};
+    CHECK_EQ(scene->animation_range().start, 0.f);
+    CHECK_EQ(scene->animation_range().end, 6.f);
+    CHECK_EQ(scene->animation.key_range().start, 10.f);
+    CHECK_EQ(scene->animation.key_range().end, 13.f);
 }
 
 TEST_SUITE_END();

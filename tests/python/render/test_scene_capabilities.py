@@ -182,6 +182,15 @@ def test_mdl_capabilities_from_sdk_metadata(
     assert scene.required_capabilities == f2.SceneCapabilities()
 
 
+@pytest.mark.nightly_if(
+    material_type=(
+        "StandardMaterial",
+        "StandardSpecGlossMaterial",
+        "UnlitMaterial",
+        "GLTFSpecGlossMaterial",
+        "OpenPBRMaterial",
+    )
+)
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 @pytest.mark.parametrize(
     "material_type,texture_slots",

@@ -1,152 +1,196 @@
 ---
 status: current
 audience: Falcor2 contributors and coding agents
-last_verified: 2026-09-08
-verified_against: "1bcd66bf773572a9dbb6ed68d7f315551f9bdc67"
+last_verified: 2026-11-11
+verified_against: "88cadd20735e943369f61f5d03aadf55507d77be"
 ---
 
 (falcor2-design-scene-model)=
 # Scene model
 
-The Falcor2 scene model is the native, scene-owned representation that connects editable objects to renderer-facing
-GPU state. A `Scene` owns typed collections of materials, geometries, animations, entities, and components; tracks
-pending changes with per-object dirty flags; and applies them at the explicit `Scene.update()` boundary. Entities
-form the transform hierarchy, components attach renderable behavior, and scene systems translate those objects into
-material, light, emissive, and geometry state. The scene also publishes the Slang modules, type conformances, and
-pipeline requirements that renderers must use when compiling and binding shaders.
+The Falcor2 scene model connects editable native objects to synchronized renderer-facing state. A `Scene` owns
+collections of materials, geometries, animations, entities and components, and applies pending changes at
+`Scene.update()`. Entities supply transform hierarchy; components attach behavior; scene systems build device
+records and acceleration structures. Animation edits participate in the same dirty-state protocol, including
+when time is unchanged. The scene publishes immutable requirement snapshots, resolving material and consumer
+capabilities independently of renderer-owned outputs. Renderers use the selected snapshot for shader linking
+and ray-tracing setup, while object references, collection indices and generation counters have distinct
+lifetime and invalidation roles.
 
 ## Purpose and scope
 
-This page explains the live scene's ownership model, entity/component graph, deferred object lifecycle, dirty-state
-protocol, update ordering, shader requirements, and binding boundary. It covers behavior shared by scenes regardless
-of how they were populated.
+This page explains live-scene ownership, deferred lifecycle, animation bindings, update ordering, capability
+resolution and shader binding. These contracts apply regardless of how a scene was populated.
 
-Importer staging and callbacks belong in [Scene loading and authoring](scene-loading-and-authoring.md). Geometry
-storage, instances,
-acceleration structures, and hit groups belong in [Geometry and ray tracing](geometry-and-ray-tracing.md). Material
-records and opacity logic belong in [Material system](material-system.md); light sampling belongs in
-[Lighting and sampling](lighting-and-sampling.md); renderer and presentation composition belongs in
-[Render pipeline](render-pipeline.md).
+[Scene loading and authoring](scene-loading-and-authoring.md) covers importer staging and callbacks.
+[Geometry and ray tracing](geometry-and-ray-tracing.md) and [Geometry deformation](geometry-deformation.md) cover
+GPU storage, acceleration structures and deformer history. [Material system](material-system.md),
+[Named material outputs](material-aovs.md) and [Lighting and sampling](lighting-and-sampling.md) cover the
+corresponding scene systems. Renderer composition and caching belong in [Render pipeline](render-pipeline.md).
 
 ## Architecture
 
-`Scene` is both owner and coordinator. It holds the SGL device, immutable live-scene configuration, the shared
-`falcor2.render` Slang module, and five owning `SceneObjectCollection` instances. Read-oriented collection views
-expose indexed access, iteration, and name/type searches without exposing ownership operations. Registered factories
-create concrete materials, geometries, and components by C++ type or public type name; Python bindings expose the
-same creation and collection model. Adding an object assigns its scene and current collection index, chooses a
-default name when needed, and records the shared `added` dirty flag before its creation callback runs.
+### Objects, collections and the entity graph
 
-Every collection member derives from `SceneObject`. The base class supplies scene membership, a collection index,
-a name, validity state, common lifecycle callbacks, and the shared `resources`, `added`, and `removed` dirty
-bits. Concrete object families add lower dirty bits for their own synchronization needs. The collection stores flags
-beside the objects and maintains an atomic OR of all pending flags, allowing an update pass to skip an entire
-collection when no relevant work exists.
+`Scene` owns its device reference, immutable configuration, shared `falcor2.render` module and five typed
+`SceneObjectCollection` instances. Collections hold references to objects; views expose iteration, indexing
+and name/type searches. Registered factories create concrete materials, geometries and components. Creation
+assigns scene membership and a collection index, supplies a default name when needed, and sets `added` before
+calling the object's creation hook.
 
-An `Entity` is a transform-bearing node in the scene graph. Its transform is local to an optional parent, while
-`world_from_object_matrix()` composes and caches the parent chain. Changing or reparenting an entity invalidates
-that cache for the entity and descendants, marks their transforms dirty, and notifies attached components. Components
-are created through an entity, are referenced by that entity, and also appear in the scene-wide component collection.
-Camera, geometry-instance, light, and transform-animation types use this attachment point to add behavior without
-turning `Entity` into a union of renderer features.
+`SceneObject` supplies validity, membership and common lifecycle callbacks. Shared dirty bits cover resources,
+addition and removal; each object family adds flags for its own consumers. Collections store per-object flags
+and an aggregate atomic OR so systems can skip irrelevant work. Dirty bits coalesce edits rather than recording
+an ordered history.
 
-The scene owns aggregate systems beside the object graph. `TextureManager` services pending texture resources;
-`MaterialSystem` and `LightSystem` consume their relevant collections; `RenderScene` maintains the low-level
-render representation; and `EmissiveGeometrySystem` derives emissive-light data from geometry, material, entity,
-and component state. These systems are updated centrally rather than independently by renderers, so one scene update
-produces a mutually consistent host/device snapshot.
+An `Entity` has a local transform and optional parent. World transforms are cached; edits or reparenting
+invalidate descendants and notify attached components. Components belong to the scene-wide collection and are
+also referenced by their entity. Geometry instances, cameras, lights and transform animation use this attachment
+point. Low-level render transforms are allocated when geometry needs them rather than for every entity.
+
+Each scene starts with a protected built-in free camera and selects it immediately. While initial selection
+remains pending, an update with newly added components can select the first valid nonbuiltin camera. Explicit
+camera selection, including selecting the free camera through `None`, ends that pending state. Removing the
+active camera falls back to the free camera, not another authored camera. Raw collection iteration includes
+built-ins; default search and filtered iteration omit them.
+
+`TextureManager`, `MaterialSystem`, `LightSystem`, `RenderScene` and `EmissiveGeometrySystem` translate scene objects
+into resources and device state. Central update ordering lets all of them consume an edit before its dirty flags
+are cleared.
+
+### Animation ownership and paused edits
+
+`Animation` owns reference-counted `AnimationChannel` objects. Channels are not scene collection members and
+attach to at most one animation. Replacing the channel list validates every incoming channel before changing
+ownership, so null or foreign-owned entries cannot leave a partially replaced list. A retained channel preserves
+its identity across list growth or replacement.
+
+Channel property setters notify the owner's data flag; timestamp changes also reset the cached keyframe accessor.
+The animation pass responds to time changes, animation collection dirtiness and component animation-state changes.
+Consequently edits to keyframes, interpolation or bindings apply at the next update even in a paused scene.
+Python array getters return lists; edits must be assigned back through a property to notify the owner.
+
+`TransformAnimation` retains its `Animation` and selects translation, rotation and scale channels by index.
+Attachment requires live objects in the same scene. The animation tracks non-owning backlinks to its live
+bindings; removing a binding unregisters it. Scene reference cleanup clears bindings to removed animations.
+Missing or empty channels leave their transform fields unchanged; disconnection preserves the last pose.
+Removing an overriding binding can reevaluate remaining bindings at unchanged time.
+
+Channel replacement and animation destruction detach channels. Removing an animation does not immediately
+detach its channels if another reference retains it; the next update's removal pass clears its scene membership.
+Detached channels remain independently editable. Retained channels or animations do not keep the scene alive,
+and scene-dependent edits require the owning scene to remain alive.
+
+Transform animation runs before transform upload. Geometry deformation also consumes `Scene.time`, through the
+later `RenderScene` update, but owns a separate sample-selection and output-history contract. Animation-range
+queries include valid animation key ranges and instantiated dynamic geometry; an unbound keyed animation can
+contribute a range without making `has_animation()` report a live animation binding.
+
+### Consumer requests and immutable requirements
+
+`MaterialSystem` computes conservative capability demand from all valid materials, including unassigned ones.
+Available geometry streams alone do not require their shader access paths. Capabilities currently describe
+geometry-property access, material-output writes, opacity evaluation and solid transmission.
+
+A mutable `SceneRenderRequest` adds consumer-required capabilities and names of material auxiliary outputs
+(AOVs). It contains no output formats, targets or compiled resources. Requested names must already be declared
+and synchronized by `Scene.update()`; resolution performs lookup, never registration. Any requested AOV currently
+adds `material_aovs` and conservative `geometry_properties`. Duplicate names and ordering do not change the
+meaning. Output allocation and writer selection remain renderer-owned.
+
+### Capability selection and shader reuse
+
+Scene capability policies select the shader features available to a renderer:
+
+| Capability policy | Selection |
+| --- | --- |
+| `required` | Union of conservative material demand and consumer demand; the public default |
+| `all` | Every supported capability, including output support without an output request |
+| `specified` | An explicit supported mask that must cover material and consumer demand |
+
+Unknown demand, unavailable outputs and insufficient explicit selections fail. `scene.requirements`, default
+resolution, the shader helper and the reference path tracer use `required`; the scene retains an internal
+all-capabilities template. The tracer derives interior tracking from selected `solid_transmission`, rather than
+an independent override. Known opaque or thin-only materials can omit it, while unknown material implementations
+remain conservative. Scene-specific selection can require more compiled variants across scenes while reducing
+work in each specialization; `all` remains an explicit choice.
+
+`SceneRequirements` is published as `ref<const SceneRequirements>`. It holds modules to link, type conformances,
+selected capabilities and ray-tracing setup fields. Saved snapshots survive updates and scene destruction.
+Native code constructs mutable fields before publication without retaining mutable aliases; Python exposes
+read-only fields and copies mutable nested values. Resolution validates each request, then reuses selected
+snapshots by effective capability mask. Different requests can therefore share one snapshot without sharing
+output storage.
 
 ## Runtime flow
 
-Mutation and rendering are separated by an explicit synchronization boundary:
+1. Creation enters a collection immediately, while add hooks and resource loading wait for update. `remove()`
+   invalidates an object immediately and queues teardown; removing an entity recursively removes its descendants
+   and components.
+2. `Scene.update()` repairs invalid references and camera state, handles pending initial camera selection, then
+   runs queued add hooks followed by remove hooks. Resource loading skips invalid removed objects even if they
+   still carry resource or addition flags.
+3. Textures update before animation, materials and lights. Geometry render state, entity transforms and component
+   render state follow, carrying animation-driven changes into the same update's device representation.
+4. The scene synchronizes requirement snapshots and conservative material demand, including the current AOV
+   catalog generation. Material-driven culling is refreshed before `RenderScene` updates geometry/deformation and
+   acceleration structures. Emissive geometry updates afterward with the required shader state available.
+5. Collections tear down removed members, compact surviving objects and reset dirty flags. Teardown clears
+   membership and releases collection references; external references can keep an invalid detached object alive.
+   Unused named `SceneGlobals` are collected. The scene stores result flags, advances `update_generation` only
+   for a nonempty result, and emits `updated` even for a no-op update. The outer call then submits any remaining
+   command encoder; subsystems may already have submitted work for readbacks.
 
-```text
- create, edit, reparent, remove, or change animation time
-                       |
-                       v
-            collection dirty flags
-                       |
-                       v
-                  Scene.update()
-           lifecycle -> systems -> transforms
-           -> requirements -> render state
-                       |
-                       v
-         linked shaders and bound g_scene data
-```
+Renderers consume state after this boundary. `PathTracerPipeline` updates the scene before selecting its camera
+and uses `update_generation` to invalidate accumulation. `SceneShaderHelper.prepare()` resolves consumer demand
+and returns the linked module together with the exact snapshot used. Callers use that snapshot for conformances
+and ray-tracing setup; failed preparation preserves the previous successful helper state.
 
-1. Creation makes an object visible in its typed collection immediately, but `on_add_to_scene()` and resource
-   loading wait for the next update. `remove()` makes the object invalid immediately and marks it for removal;
-   owning storage and collection compaction also wait for the update. Removing an entity recursively marks its child
-   entities and components for removal.
-2. The update first repairs references to invalid objects and chooses a replacement active camera when necessary.
-   If no active camera exists, the first valid newly added camera is selected. It then calls add/remove lifecycle
-   hooks and asks new or resource-dirty objects to load resources.
-3. The texture manager runs before animation, material, and light updates. Animation channels may change entity
-   transforms during this pass. Geometry render state, entity transforms, and component render state are then
-   synchronized in that order, so animation-driven transform changes reach the same update's renderer-facing state.
-4. The scene rebuilds a candidate `SceneRequirements` from its settings module, material modules and conformances,
-   light conformances, enabled capabilities, and ray-tracing setup fields. Changes to that value or the scene's
-   required capabilities advance `requirements_generation` and report the `requirements` update flag.
-   The default `scene.requirements` enables all capabilities; `resolve_requirements()` selects capabilities
-   for a consumer without changing that default.
-5. `RenderScene` and emissive geometry update after requirements are known. Removed objects are destroyed, the
-   typed collections are compacted, all dirty flags are reset, and unused ref-counted scene globals are collected.
-   The scene stores the resulting `SceneUpdateFlags` and emits its `updated` signal; `update_generation`
-   advances only when those result flags are non-empty. After the pass returns, `update()` submits the command
-   encoder if any subsystem requested one.
-
-Renderers must call `Scene.update()` before consuming scene state. `PathTracerPipeline` does this before resolving
-the active camera and uses `update_generation` to invalidate accumulation. `SceneShaderHelper` caches a renderer
-module linked with common utilities, `scene.render_module`, and the modules in the resolved requirements. It compares
-shader inputs to reuse compatible modules. Ray-tracing dispatch setup also compares the full requirements,
-including geometry and pipeline fields. Dispatch setup applies the current type conformances and uses a
-write callback that calls `Scene.bind()`. Binding writes selected material, light, emissive-geometry, and render
-scene systems under the shader's `g_scene` parameter block, then binds any additional `SceneGlobals` at global
-scope.
+`Scene.bind()` writes the selected material, light, emissive and render systems under `g_scene`, then binds
+additional `SceneGlobals` at global scope. Requirement selection describes shader support; it does not replace
+the update or binding operation.
 
 ## Invariants and rationale
 
-Scene objects have one owning scene and one typed collection. Their raw collection index is an implementation handle,
-not stable identity: compaction preserves surviving object order but rewrites indices. Code must not retain an index
-across an update that can remove objects. A removed object is invalid as soon as `remove()` returns even though its
-storage remains until update; callers and lifecycle hooks must check validity rather than treating collection presence
-as liveness.
+A collection index is a temporary lookup position. Compaction preserves survivor order but rewrites indices;
+retain an object reference rather than assuming its index remains stable. Validity changes at removal, before
+collection ownership is released. Retaining an attached scene object does not extend its scene's lifetime.
 
-The entity hierarchy is expected to be an acyclic forest whose members belong to the same scene. `set_parent()`
-updates raw parent/child relationships and recursively propagates transform invalidation; it does not validate cycles
-or cross-scene parenting. Callers must preserve those preconditions. Removing a parent recursively removes its
-descendants and components, while the update's reference-cleanup phase removes stale raw pointers before compaction.
+The entity hierarchy must be an acyclic forest within one scene. `set_parent()` propagates invalidation but does
+not validate cycles or cross-scene parenting. Callers preserve those preconditions. Dirty marking is equally
+part of the interface: direct mutation that bypasses the relevant setter can leave device state stale.
 
-Dirty flags are a coalescing change protocol, not a history. Multiple edits before one update combine their bits, and
-the flags are cleared only after all consumers have run. New object types must mark the flag expected by the system
-that owns their renderer-facing representation; direct state mutation that bypasses dirty marking can leave host and
-device views inconsistent.
+`requirements_generation` signals a need to resolve again, not a requirement to recompile. Snapshot changes,
+material-demand changes or synchronized AOV-catalog changes can advance it, even when an all-capabilities shader
+remains unchanged. Generations distinguish scene states; consumers compare the resulting snapshots before
+rebuilding resources.
 
-Update ordering is part of the contract. Invalid references are repaired before callbacks and systems inspect them;
-animation precedes transform upload; scene requirements are settled before emissive shaders inspect them; and
-compaction occurs only after every consumer has processed removal state. `requirements_generation` is narrower
-than `update_generation`: the former indicates changes that may affect requirements, while the latter means the
-update reported some scene change. Compare resolved requirements before rebuilding shaders or pipelines.
+`matches_shader_inputs()` compares capabilities, conformances and underlying Slang component identities.
+Full `matches()` also compares hit-group policy, geometry-type mask, linear-swept-sphere intersection mode and
+pipeline flags. A geometry-only change can require new ray-tracing setup while reusing a module. Independently,
+acceleration-structure opacity follows actual material demand, not an arbitrarily broader shader selection.
 
 ## Source landmarks
 
-- `src/falcor2/render/scene.h` and `src/falcor2/render/scene.cpp` - scene ownership, update ordering,
-  requirements, generations, active-camera policy, and shader binding.
-- `src/falcor2/render/scene_object.h` and `src/falcor2/render/scene_object.cpp` - object lifecycle, typed
-  collections, dirty aggregation, views, and compaction.
-- `src/falcor2/render/entity.h`, `src/falcor2/render/entity.cpp`, and `src/falcor2/render/component.h` - entity
-  hierarchy, transform propagation, component attachment, and recursive removal.
-- `src/falcor2/render/scene_system.h`, `src/falcor2/render/scene_update.h`, and
-  `src/falcor2/render/scene_requirements.h` - system interface, update context and result flags, and shader
-  requirement record.
-- `src/falcor2_ext/render/scene.cpp` - Python exposure of collections, factories, entities, components, updates,
-  requirements, and binding.
-- `falcor2/editor/scene_shader.py` and `falcor2/rendernodes/pathtracer_pipeline_node.py` - requirement-aware
-  shader linking and the renderer's update boundary.
-- `tests/native/render/test_scene.cpp`, `tests/native/render/test_scene_object.cpp`, and
-  `tests/python/render/test_scene.py` - dirty-state, hierarchy, lifecycle, compaction, requirements, and binding
-  behavior.
+- `src/falcor2/render/scene.h` and `src/falcor2/render/scene.cpp` - ownership, update ordering, cameras, requirements,
+  generations, animation queries and binding.
+- `src/falcor2/render/scene_object.h` and `src/falcor2/render/scene_object.cpp` - lifecycle, references, dirty
+  aggregation, collection views and compaction.
+- `src/falcor2/render/entity.cpp` and `src/falcor2/render/component.cpp` - hierarchy, attachment and invalidation.
+- `src/falcor2/render/animation.h`, `src/falcor2/render/animation.cpp` and
+  `src/falcor2/render/component/transform_animation.cpp` - channel ownership, notifications and binding lifetimes.
+- `src/falcor2/render/scene_requirements.h`, `src/falcor2/render/scene_render_request.h` and
+  `src/falcor2/render/scene_capabilities.h` - snapshot, request and capability contracts.
+- `src/falcor2/render/material_system.cpp` and `slang/falcor2/rendernodes/reference_pathtracer.slang` - conservative
+  demand and selected interior-tracking support.
+- `src/falcor2_ext/render/scene.cpp` - collection/factory exposure, retained channels and read-only snapshots.
+- `falcor2/editor/scene_shader.py` and `falcor2/rendernodes/pathtracer_pipeline_node.py` - preparation and the
+  renderer's update boundary.
+- `tests/native/render/test_scene.cpp`, `tests/native/render/test_scene_object.cpp` and
+  `tests/python/render/test_scene.py` - lifecycle, camera policy, snapshot retention, requests and binding.
+- `tests/native/render/test_animation.cpp` and `tests/python/render/test_animation.py` - ownership rejection,
+  removed bindings, empty channels and an in-memory paused-edit example.
+- `tests/python/render/test_scene_capabilities.py` - material demand, unused streams and transmission transitions.
 
 ## Related design documents
 
@@ -154,6 +198,8 @@ update reported some scene change. Compare resolved requirements before rebuildi
 - [Falcor2 design documentation](index.md)
 - [Scene loading and authoring](scene-loading-and-authoring.md)
 - [Geometry and ray tracing](geometry-and-ray-tracing.md)
+- [Geometry deformation](geometry-deformation.md)
 - [Material system](material-system.md)
+- [Named material outputs](material-aovs.md)
 - [Lighting and sampling](lighting-and-sampling.md)
 - [Render pipeline](render-pipeline.md)

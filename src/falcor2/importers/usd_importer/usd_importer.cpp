@@ -209,7 +209,9 @@ ref<ImporterScene> load_scene_from_stage_impl(
     // version) and we do not need nor use it.
     process_mtlx_references(usd_stage);
 
-    auto importer_context = std::make_shared<UsdImporterContext>(usd_stage, import_options, ustring(source_asset_path));
+    const UsdTimeCode initial_time = get_initial_time(*usd_stage);
+    auto importer_context
+        = std::make_shared<UsdImporterContext>(usd_stage, initial_time, import_options, ustring(source_asset_path));
 
     float4x4 root_transform = sgl::math::matrix_from_scaling(float3(importer_context->get_meters_per_unit()));
     if (UsdGeomGetStageUpAxis(usd_stage) == UsdGeomTokens->z)
@@ -226,6 +228,9 @@ ref<ImporterScene> load_scene_from_stage_impl(
     for (ImporterCurve& curve : scene->curves)
         curve.uv_origin = scene->uv_origin;
 
+    scene->playback_range = get_playback_range(*usd_stage);
+    const double time_seconds = initial_time.GetValue() / get_time_codes_per_second(*usd_stage);
+    detail::apply_import_options(*scene, import_options, time_seconds);
     return scene;
 }
 
@@ -259,7 +264,6 @@ ref<ImporterScene> load_scene_impl(const std::filesystem::path& path, const Impo
 
     const std::string source_asset_path = std::filesystem::absolute(path).lexically_normal().string();
     ref<ImporterScene> scene = usd_importer::load_scene_from_stage_impl(usd_stage, import_options, source_asset_path);
-    detail::apply_import_options(*scene, import_options, 0.0);
     return scene;
 }
 
@@ -271,7 +275,6 @@ ref<ImporterScene> import_stage_impl(const UsdStage& stage, const ImportOptions&
     const std::string source_asset_path = stage.GetRootLayer()->GetRealPath();
     ref<ImporterScene> scene
         = usd_importer::load_scene_from_stage_impl(import_stage, import_options, source_asset_path);
-    detail::apply_import_options(*scene, import_options, 0.0);
     return scene;
 }
 

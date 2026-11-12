@@ -9,6 +9,8 @@ import falcor2 as f2
 import falcor2.testing.helpers as helpers
 from pathtracer.test_pathtracer import _add_quad, _make_quad_camera, _render_mean
 
+pytestmark = pytest.mark.nightly
+
 
 def _add_emissive_curve(
     scene: f2.Scene, *, z: float, radius: float, half_length: float, emission: spy.float3

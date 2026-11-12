@@ -1,200 +1,202 @@
 ---
 status: current
 audience: Falcor2 contributors and coding agents
-last_verified: 2026-09-15
-verified_against: "d4d9693f4cfcc31a65fc6504183f2dcb6630670b"
+last_verified: 2026-11-11
+verified_against: "937fa44437ce197d952f959179a6ffddac523487"
 ---
 
 (falcor2-design-lighting-and-sampling)=
 # Lighting and sampling
 
-Falcor2 represents authored analytic and environment lights as scene components and derives emissive triangle
-emitters from geometry and materials. `LightSystem` and `EmissiveGeometrySystem` turn those mutable scene objects
-into synchronized device data, power estimates, and generation counters. Renderers then choose their own
-`LightSampler`: uniform selection, radiometric power selection, or power selection augmented by a spatial
-`EmissiveTriangleTree`. This separation keeps scene ownership independent of an integrator's sampling strategy.
-Light samples carry the complete scene-selection probability needed by transport, while environment emitters and
-finite emitters remain separate probability domains because their power estimates have different measures.
+Falcor2 separates authored emitters, synchronized scene data and renderer-owned proposal distributions.
+`LightSystem` manages analytic and environment components, including procedural surfaces for finite area lights;
+`EmissiveGeometrySystem` derives triangle emitters from materials and geometry. Renderers choose uniform,
+power-weighted or hierarchical light sampling. Samples expose unweighted radiance and the complete proposal
+probability, while retained references preserve an endpoint for evaluation at another receiver. The reference
+path tracer combines next-event estimation with emitter-hit transport through multiple importance sampling.
+Analytic visibility and hidden-surface continuation determine which hits terminate a path without changing the
+meaning of the sampling distribution.
 
 ## Purpose and scope
 
-This page explains light authoring and radiometry, analytic and environment implementations, emissive geometry,
-scene synchronization, and renderer-owned sampling. It also describes the current emissive-triangle hierarchy.
-Material emission and device records belong in [Material system](material-system.md); importer conversion of area
-lights belongs in [Scene loading and authoring](scene-loading-and-authoring.md); path-tracing consumption belongs in
-[Render pipeline](render-pipeline.md) and [BSDF contract](bsdf-contract.md).
+This page explains emitter ownership, radiometry, sampling distributions, retained endpoints and their transport
+contract. Next-event estimation (NEE) explicitly samples an emitter; multiple importance sampling (MIS) combines
+that technique with paths that reach an emitter through scattering. A probability density function (PDF) measures
+the proposal used, including emitter selection at scene level.
 
-A light sampler is a proposal distribution used for next-event estimation. Its probability density function (PDF)
-includes both selecting an emitter and selecting a direction or point on that emitter.
+[Material system](material-system.md) covers material emission, [Scene loading and authoring](scene-loading-and-authoring.md)
+covers asset translation, and [Geometry and ray tracing](geometry-and-ray-tracing.md) covers shared acceleration
+structures. [Render pipeline](render-pipeline.md) and [BSDF contract](bsdf-contract.md) cover renderer composition
+and scattering.
 
 ## Architecture
 
-### Authoring and radiometry
+### Authored lights and radiometry
 
-`Light` is a `Component` attached to an entity, so its world transform and lifecycle follow the scene model. Shared
-authoring controls are active state, RGB color in render space, nonnegative intensity, exposure in stops, optional
-blackbody color temperature, and normalization. Effective emission is color times intensity and `2^exposure`, with
-the normalized temperature tint when enabled. A normalized finite or angular light divides by its final world-space
-size factor, keeping the intended emission measure stable when size changes.
+`Light` is an entity-owned component. Effective emission is render-space RGB color times nonnegative intensity,
+`2^exposure` and an optional luminance-normalized blackbody tint. Normalization divides by the concrete light's
+world-space size factor where applicable; point intensity and surface radiance remain different quantities.
+Point, sphere, cylinder, disk and rectangle lights compose `LightShaping`, which evaluates cone softness and focus
+around local negative Z without changing the emitting surface. A shaped point is still a `PointLight`.
+Selection power uses an angular-midpoint approximation for soft shaping; emitted radiance uses the full profile.
 
-Constant and distant lights are environment emitters. A constant light is uniform over the sphere; a distant light
-samples a world-oriented angular cone. `EnvMapLight` owns a texture through `TextureManager` and builds a fixed-size
-importance map and mip hierarchy used for directional sampling. Point, sphere, disk, and rectangle lights are
-finite emitters. Sphere transforms use a volume-equivalent scale under nonuniform transforms; disk and rectangle
-area comes from transformed basis vectors. Surface samplers convert their area density to solid-angle density at
-the receiver.
+Constant, distant and texture-backed environment lights emit at infinity. `EnvMapLight` owns its texture through
+`TextureManager` and builds an importance-map mip hierarchy. Its local pole defaults to Y; Z alignment composes
+a positive 90-degree X rotation into the light record, leaving entity and child transforms unchanged. USD
+`DomeLight_1` resolves `scene` pole alignment against the stage up axis during import; legacy domes use Y.
+A textureless imported dome becomes a constant light. An unassigned runtime environment map contributes no light;
+a black importance map has no sampling distribution and evaluates to zero PDF.
 
-Point and analytic area lights can compose `LightShaping`. Shaping defines a cone, soft transition, and focus term
-around the light's local negative Z axis without changing the emitter geometry. Its sampling power estimate uses a
-compact angular approximation, while the evaluated falloff follows the full shaping expression.
+Finite sphere, cylinder, disk and rectangle lights have analytic surfaces. Sphere radius uses volume-equivalent
+transform scale; its sampler chooses directions uniformly over the visible solid-angle cone, then intersects
+the sphere. Disk, rectangle and cylinder samplers use area densities converted to solid angle. Planar surfaces
+use transformed basis vectors. Cylinders emit only from the open lateral surface along local X; axial and uniform
+radial scaling are exact, while radial nonuniform scale or shear uses an area-equivalent circular approximation,
+with a warning during USD import.
 
-### Environment-map orientation
+Opt-in virtual sphere shrinking makes the sampled sphere receiver-dependent and compensates radiance for its
+smaller area. USD import enables this compatibility option for recognized Unreal provenance. Samples that use
+the proxy remain NEE-only and cannot retain a reusable endpoint; authored-surface hits and reevaluation are
+unavailable in those receiver contexts. Ordinary sphere samples support complementary hit transport.
 
-`EnvMapLight.pole_axis` selects whether the texture's top pole aligns with positive Y or positive Z in the owning
-entity's local space; Y is the default. When writing GPU light data, the component composes the entity's world
-transform with a positive 90-degree rotation about local X for Z alignment. Evaluation, sampling, and PDF evaluation
-use the resulting light orientation. Editing the axis marks render state dirty so the next scene update uploads the
-change.
+### Synchronized emitter data and geometry
 
-The USD importer resolves `DomeLight_1`'s `poleAxis` value while the stage is available: explicit Y and Z are retained,
-and `scene` becomes the stage's up axis. Legacy `DomeLight` uses Y. The resolved value travels through `ImporterLight`
-to the runtime environment component because the runtime has no USD stage-axis setting. A dome without a texture
-becomes a direction-independent `ConstantLight`.
+`LightSystem` collects active components, places finite analytic records before environment records, assigns
+snapshot `LightID` values and publishes reflected device records, conformances and selection weights. Topology,
+geometry and selection-weight generations currently advance together on a synchronized light change.
 
-Pole alignment belongs to the environment light, so it leaves the owning entity and its descendants' transforms
-unchanged and requires no synthetic child node. Other light types continue to use their own orientation conventions.
+For analytic area lights, the system owns one canonical procedural bounding box and shared bottom-level
+acceleration structure (BLAS), with persistent per-light instances in the top-level structure (TLAS). Instance
+data carries the current light ID and visibility flag; shader intersection resolves the actual surface.
+Radiometric changes retain instances, while transforms, masks and identity are updated as needed. Adding the
+first or removing the last area-light geometry changes the geometry-type requirements and ray-tracing layout;
+it need not recompile an otherwise unchanged linked shader module.
 
-### Synchronized scene representations
+`EmissiveGeometrySystem` discovers potentially emissive triangles and estimates their material emission.
+Positive estimated emission defines the dense active mapping; active membership does not guarantee positive
+flux after geometry degenerates. World-space area and emission determine one-sided luminance flux. Independent
+topology, geometry and flux generations track changes. Rigid movement of contributing entities can preserve
+cached flux; deformation and area-changing transforms invalidate it. Unrelated nonemissive transforms do not
+require rebuilding light distributions.
 
-`LightSystem` collects active `Light` components during `Scene.update()`. It places analytic lights first and
-environment lights in contiguous ranges, assigns snapshot `LightID` values, serializes each concrete reflected
-Slang type into fixed records, and publishes type conformances. A GPU kernel evaluates scalar selection weights.
-The system exposes topology, geometry, and selection-weight generations so samplers can rebuild only when their
-inputs change. The current implementation advances all three generations for any synchronized light change, which
-is conservative.
+### Renderer-owned sampling
 
-`EmissiveGeometrySystem` scans potentially emissive triangle geometry independently of authored light components.
-It combines geometry and material requirements, constructs triangle and instance mappings, evaluates material
-emission, and computes one-sided luminance flux. Only active triangles with positive flux enter the sampling set.
-Buffers map global triangle IDs to dense active IDs and back, while topology, geometry, and flux generations let a
-sampler distinguish a changed set from changed values.
+The scene owns emitter data; each renderer owns its `LightSampler` and updates it after the scene. The reference
+path tracer defaults to `PowerLightSampler`. Replacing the concrete sampler changes shader specialization.
+`UniformLightSampler` selects equally among active component lights and active emissive triangles, independently
+of intensity.
 
-### Renderer-owned sampling strategies
+`PowerLightSampler` builds alias tables for finite analytic, environment and emissive-triangle sets. Compatible
+finite flux estimates determine the analytic/triangle mixture. Environment estimates measure directional
+radiance integrated over solid angle, with different units from finite flux. When both domains have positive
+estimates, selection gives each domain probability one half and uses relative weights within it. Alias tables
+track relevant topology and weight/flux changes; pure emissive geometry motion need not rebuild them.
 
-The scene owns emitter data but not a global sampling policy. Each renderer owns a `LightSampler` implementing the
-Slang `ILightSampler` interface and updates it after the scene. The reference path tracer defaults to
-`PowerLightSampler`; replacing it changes shader specialization and therefore the renderer's linked module.
-
-`UniformLightSampler` gives equal selection probability to active component lights and active emissive triangles.
-`PowerLightSampler` builds alias tables for analytic, environment, and emissive sets. Finite analytic lights and
-emissive triangles are mixed by estimated flux. Environment and finite domains use unlike power measures, so when
-both domains are nonempty the sampler chooses each domain with probability one half, then uses normalized weights
-inside that domain. Multiple environment lights form a mixture, and PDF evaluation includes every environment
-component that can produce the queried direction.
-
-`HierarchicalLightSampler` preserves power sampling for analytic and environment lights but replaces emissive
-triangle alias selection with `EmissiveTriangleTree`. The tree is a flat, binary, preorder hierarchy built over
-active triangle IDs. Nodes store a spatial bound, total flux, and an emitter-normal cone; the left child is implicit
-and the right child is indexed. Traversal weights children using receiver position and normal, flux, distance,
-receiver cosine bounds, and emitter orientation. The default leaf policy is uniform, while a selectable contextual
-leaf policy applies the same local reasoning within leaves.
-
-Tree topology is currently built on the CPU using equal partitioning, binned surface-area heuristic (the default),
-or binned solid-angle heuristic. If the active set is unchanged, GPU refit kernels can update leaf and internal
-bounds, flux, and cones without replacing topology. Sampling and reverse PDF evaluation use the same traversal; an
-active-triangle-to-leaf map supports exact evaluation of the distribution that sampling used.
+`HierarchicalLightSampler` keeps analytic/environment power selection and replaces triangle selection with
+`EmissiveTriangleTree`. CPU construction produces a flat binary tree with spatial bounds, flux and normal cones;
+binned surface-area splitting is the default, with equal and solid-angle alternatives. Traversal considers the
+receiver position and normal. Leaves default to uniform selection, with an optional contextual policy.
+Unchanged active triangle IDs and order allow GPU refitting of bounds, cones and flux; changed membership or
+build options require rebuilding. Sampling and reverse PDF evaluation use matching branch and leaf probabilities.
 
 ## Runtime flow
 
-```text
-authored Light components     emissive materials + triangles
-            |                              |
-            v                              v
-      LightSystem                 EmissiveGeometrySystem
-       records + weights          active triangles + flux
-            |                              |
-            +---------------+--------------+
-                            |
-                            v
-                 renderer-owned LightSampler
-                 /           |             \
-             uniform       power       hierarchical
-                                           |
-                                  EmissiveTriangleTree
-                            |
-                            v
-                 LightSample: Li, PDF, emitter ID
-                            |
-                            v
-                    path-tracer NEE and MIS
-```
+1. Authoring, material or geometry edits mark scene data dirty. `Scene.update()` synchronizes emitter records,
+   procedural light instances, triangle emission, weights and generations.
+2. The renderer updates and binds its sampler from that scene state. `ILight.sample()` consumes explicit `float2`
+   coordinates; `ILightSampler.sample()` consumes `LightSampleInput`, separating emitter selection from light sampling.
+3. The sampler chooses an emitter and evaluates a direction or endpoint. `LightSample.radiance` is unweighted,
+   unoccluded incident radiance; `weight` is radiance divided by PDF, or zero when PDF is zero. Individual-light
+   PDFs are conditional; scene-sampler PDFs include selection. Point-light probabilities are discrete; other
+   sample PDFs use solid angle.
+4. The path tracer evaluates scattering and visibility and combines competing techniques. Environment sampling
+   and hits use summed environment radiance and the marginal PDF over all relevant components.
 
-1. Authoring or transform edits mark component and scene state dirty. Material, geometry, instance, or transform
-   edits similarly invalidate the emissive-geometry inputs.
-2. `Scene.update()` synchronizes component-light records, texture-backed environment maps, emissive triangles,
-   selection weights, and generation counters.
-3. The renderer updates its selected sampler. Alias tables rebuild from relevant weights; the hierarchical sampler
-   rebuilds when active topology changes and may refit when only geometry or flux changes.
-4. Shader specialization binds the concrete sampler. A sample first chooses the appropriate emitter domain and
-   emitter, then samples its direction or surface and multiplies those conditional probabilities into one PDF.
-5. The path tracer evaluates visibility and scattering. It uses the complete light PDF for multiple importance
-   sampling when the emitter supports the corresponding competing path.
+### Analytic visibility and emitter-hit MIS
+
+`geometry_visible` defaults to false and controls the area-light surface's transport behavior:
+
+| Surface state | Primary rays | Shadow rays | Secondary radiance rays |
+| --- | --- | --- | --- |
+| Hidden | Ignore surface | Ignore surface | Accumulate emission and continue |
+| Visible | Terminal hit | Block | Terminal hit |
+
+Hidden non-emitting back faces are skipped. Visible planar surfaces remain blockers from either side.
+Point lights have no corresponding surface. For supported emitter hits, the path tracer uses the previous
+scatter's non-delta state and actual NEE hemisphere coverage to decide whether a competing technique exists.
+With NEE enabled and MIS disabled, covered sampleable hits are suppressed to avoid double counting. With MIS,
+analytic, triangle and environment hits use their complete sampler PDF; delta and uncovered paths retain their
+hit contribution.
+
+Only triangles currently participate in material-surface light sampling. Native curves and other unsupported
+emissive surfaces retain hit emission even when triangle NEE is enabled without MIS. Curve emission does not
+imply curve-light sampling support.
+
+A hidden analytic hit advances the prepared segment's lower distance bound without consuming path depth.
+It preserves the original terminal distance, sampled homogeneous-medium event, stochastic-opacity evaluator,
+scatter PDF and coverage. Intermediate emission evaluates attenuation from the original segment origin without
+committing throughput repeatedly. Resampling at each hidden surface would change the proposal and medium weight.
+
+### Retained endpoints
+
+`LightSampleRef` stores emitter type, emitter ID and two intrinsic parameters in 16 bytes. Parameters describe
+triangle barycentrics or an analytic surface location; sphere normals and infinite world directions use
+octahedral encoding. The reference contains no PDF, visibility or reservoir weight. Ordinary sampling overloads
+can discard it.
+
+`eval_sample()` reconstructs that endpoint for a destination receiver without random inputs and computes the
+current proposal density. Reconstruction may succeed with zero radiance or zero PDF, including a radiating
+triangle outside the hierarchy's receiver-normal support. Coincident connections fail. Scene-level environment
+reevaluation uses the complete environment mixture, independently of which component originally supplied the
+direction. Virtual sphere proxies cannot supply or consume retained references.
 
 ## Invariants and rationale
 
-Light IDs, active triangle IDs, and sampler tables belong to one synchronized scene snapshot. They are dense lookup
-keys, not durable object identities. A renderer must update its sampler after the scene and bind records,
-generations, and linked shader requirements from the same state.
+Scene IDs, active triangle mappings, sampler distributions and linked requirements must describe the same
+synchronized state. IDs are lookup keys, not permanent object identities. Retained references require unchanged
+emitter identities and parameterizations; their `is_valid()` check only says an endpoint type was retained.
+Callers remain responsible for reference contents, and the interface supplies no temporal identity remapping.
 
-Finite and infinite emitters are separate selection domains. Treating unlike power estimates as one normalized
-quantity would imply a unit conversion that the system does not define. The fixed half split when both domains are
-present is therefore intentional; power weighting still applies within each compatible domain.
+A complete PDF includes every hidden domain, emitter and conditional-sampling choice. Direction evaluation,
+surface-hit evaluation and retained reevaluation must use the proposal appropriate to the current receiver.
+Keeping unweighted radiance separate from proposal weight preserves meaningful endpoint evaluation when the
+current proposal has zero support. Reference reconstruction does not establish visibility.
 
-The returned PDF is complete. It includes hidden branch choices, emitter selection, and conditional direction or
-surface sampling. The environment PDF is a mixture over all relevant environment lights, and hierarchical
-`sample()` and `eval_pdf()` must traverse equivalent probabilities. These properties let generic transport perform
-MIS without knowing the sampler's internal branch.
-
-Current point and analytic area samples are marked next-event-estimation-only. The reference path tracer therefore
-does not compare a later path hit against their light-sampling density. This flag is part of the sampling contract,
-not a statement that the light has no surface query methods.
-
-The emissive hierarchy separates stable topology from changing values so refit can preserve buffers and traversal
-indices. Its spatial and angular bounds are conservative; they influence efficiency but must not remove a
-positive-probability emitter. CPU topology construction and the selectable experimental policies are current
-implementation choices, not promises that every scene uses a hierarchy.
+NEE-only is a property of the available competing strategy, not of the emitter being analytically represented.
+Point and virtual-proxy samples use it; authored analytic surfaces can participate in hit MIS. Visibility controls
+path termination and occlusion separately. Conservative tree bounds and matching sample/PDF traversal preserve
+the intended distribution; receiver-context restrictions can still intentionally assign zero proposal support.
 
 ## Source landmarks
 
-- `src/falcor2/render/component/light.h` and `src/falcor2/render/component/light.cpp` - shared authoring controls,
-  transforms, normalization, shaping, environment pole alignment, concrete light data, and power estimates.
-- `src/falcor2/importers/usd_importer/usd_importer_context.cpp` and `src/falcor2/render/scene_import.cpp` - USD dome
-  pole-axis resolution and transfer into runtime environment lights.
-- `src/falcor2/render/light_system.h` and `src/falcor2/render/light_system.cpp` - active-light ordering, IDs, records,
-  type conformances, selection weights, generations, and scene binding.
-- `src/falcor2/render/emissive_geometry_system.h` and `src/falcor2/render/emissive_geometry_system.cpp` - emissive
-  triangle discovery, emission evaluation, flux, mappings, generations, and device buffers.
-- `src/falcor2/render/light_sampler.h` and `src/falcor2/render/light_sampler.cpp` - uniform, power, and hierarchical
-  sampler ownership, invalidation, alias tables, specialization, and binding.
-- `src/falcor2/render/emissive_triangle_tree.h` and `src/falcor2/render/emissive_triangle_tree.cpp` - hierarchy
-  construction, packed nodes, options, mappings, rebuild, and refit control.
-- `slang/falcor2/render/light.slang`, `slang/falcor2/render/light_system.slang`, and
-  `slang/falcor2/render/lights/` - device light interfaces, records, radiometry, shaping, and concrete sampling.
-- `slang/falcor2/render/light_sampler.slang`, `slang/falcor2/render/emissive_geometry.slang`, and
-  `slang/falcor2/render/emissive_triangle_tree.slang` - complete-scene sampling, domain mixtures, emissive-triangle
-  queries, tree traversal, and PDF evaluation.
-- `falcor2/rendernodes/reference_pathtracer_node.py` and
-  `slang/falcor2/rendernodes/reference_pathtracer.slang` - renderer ownership, specialization, binding, next-event
-  estimation, and multiple importance sampling.
-- `tests/python/render/test_light_sampler.py`, `tests/python/render/test_light_surface_sampling.py`,
-  `tests/python/render/test_hierarchical_light_sampler.py`, and
-  `tests/native/render/test_emissive_triangle_tree.cpp` - radiometry, distributions, sample/PDF agreement,
-  invalidation, rebuild/refit, packing, and conservative bounds.
-- `tests/native/usd_importer/test_usd_importer.cpp` and `tests/native/render/test_scene.cpp` - dome pole-axis import,
-  preservation of child transforms, runtime property transfer, and textureless fallback.
+- `src/falcor2/render/component/light.h` and `src/falcor2/render/component/light.cpp` - authoring, radiometry,
+  transforms, shaping and environment orientation/resources.
+- `src/falcor2/importers/usd_importer/usd_importer_context.cpp` and `src/falcor2/importers/light_import.cpp` -
+  USD classification, pole-axis resolution and shared runtime transfer.
+- `src/falcor2/render/light_system.cpp` and `src/falcor2/render/emissive_geometry_system.cpp` - records, procedural
+  instances, generations, triangle emission and flux updates.
+- `src/falcor2/render/light_sampler.cpp` and `src/falcor2/render/emissive_triangle_tree.cpp` - distribution ownership,
+  invalidation, hierarchy construction and refit.
+- `slang/falcor2/render/light.slang` and `slang/falcor2/render/light_sampler.slang` - sample/reference contracts,
+  complete PDFs, mixtures and endpoint evaluation.
+- `slang/falcor2/render/lights/` and `slang/falcor2/render/emissive_triangle_tree.slang` - concrete emitters,
+  procedural surface queries and matching tree traversal.
+- `slang/falcor2/render/kernels/emissive_geometry_kernels.slang` - active mapping and area/flux computation.
+- `falcor2/rendernodes/reference_pathtracer_node.py` and `slang/falcor2/rendernodes/reference_pathtracer.slang` -
+  renderer sampler ownership, NEE, hit MIS and segment continuation.
+- `src/falcor2_ext/render/scene.cpp` and `src/falcor2_ext/render/light_sampler.cpp` - reflected light/sampler exposure.
+- `tests/python/render/test_light_sampler.py`, `tests/python/render/test_light_surface_sampling.py` and
+  `tests/python/render/test_light_sample_ref.py` - distributions, visibility, surface PDFs and endpoint reconstruction.
+- `tests/python/render/test_hierarchical_light_sampler.py` and `tests/native/render/test_emissive_triangle_tree.cpp` -
+  rebuild/refit, contextual support, traversal agreement and conservative packing.
+- `tests/python/pathtracer/test_pathtracer.py` and `tests/python/pathtracer/test_curve_emission.py` - hit energy,
+  hidden continuation, opacity/media, shadow implementations and unsampled curve emission.
+- `tests/native/usd_importer/test_usd_importer.cpp` and `data/scenes/emissive-strength.py` - in-memory USD light
+  examples and material/environment authoring.
 
 ## Related design documents
 
+- [Sampling inputs](sampling-inputs.md) - caller budgets and coordinate reuse across sampling hierarchies.
 - [Falcor2 system overview](overview.md)
 - [Scene model](scene-model.md)
 - [Render pipeline](render-pipeline.md)

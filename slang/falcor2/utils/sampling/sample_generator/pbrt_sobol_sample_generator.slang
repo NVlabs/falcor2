@@ -13,7 +13,7 @@ uint sobol_uint(uint index, uint dimension)
 {
     uint result = 0;
     for (uint column = dimension * 32; index != 0; index >>= 1, ++column) {
-        if (index & 1u)
+        if ((index & 1u) != 0u)
             result ^= qmc_sobol_table[column];
     }
     return result;

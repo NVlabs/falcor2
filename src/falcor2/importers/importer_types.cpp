@@ -430,6 +430,22 @@ evaluate_local_transforms(std::span<const ImporterNode> nodes, const ImporterAni
 
 } // namespace
 
+AnimationTimeRange ImporterScene::animation_range() const
+{
+    if (playback_range.is_valid())
+        return playback_range;
+    AnimationTimeRange range = animation.key_range();
+    for (const ImporterMesh& mesh : meshes) {
+        if (!mesh.motion_times.empty())
+            range.expand({mesh.motion_times.front(), mesh.motion_times.back()});
+    }
+    for (const ImporterCurve& curve : curves) {
+        if (!curve.motion_times.empty())
+            range.expand({curve.motion_times.front(), curve.motion_times.back()});
+    }
+    return range;
+}
+
 void ImporterScene::bake_pose(std::optional<double> time_seconds)
 {
     if (skins.empty())

@@ -4,7 +4,7 @@
 #pragma once
 
 #include "falcor2/render/component.h"
-#include "falcor2/render/render_scene.h"
+#include "falcor2/render/geometry.h"
 
 namespace falcor {
 
@@ -36,6 +36,11 @@ public:
     /// Number of geometries belonging to this geometry instance.
     /// All subsequent geometries use successive GeometryInstanceIDs.
     uint32_t geometry_instance_count() const;
+
+    /// Calculate exact bounds using additional_transform * entity.world_from_object_matrix().
+    /// The additional transform must be finite and affine. Evaluate animations with Scene::update() first.
+    /// Missing or removed geometry returns empty bounds; unsupported geometry throws.
+    MeshBounds calculate_bounds(const float4x4& additional_transform = float4x4::identity()) const;
 
     // SceneObject interface
 

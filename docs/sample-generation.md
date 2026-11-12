@@ -52,8 +52,9 @@ scrambling. See [Kollig and Keller (2002), section 3.2.3](https://doi.org/10.111
 
 Subsequent draws use Xorshift32, initialized once from the original index and seed.
 Its state reuses the sample-index word; the dimension counter saturates so Sobol
-coordinates never repeat through counter wrap. Total state is 12 bytes. Materials
-consume the generator directly, without fixed budgets or synchronization.
+coordinates never repeat through counter wrap. Total state is 12 bytes. Rendering operations receive
+[caller-owned sampling inputs](design/sampling-inputs.md); factory budgets are fixed, while caller control
+flow determines the overall coordinate schedule.
 
 The sample index supports 2^32 points per seed/pixel before wrapping. Coordinates
 are computed as 32-bit integers; floats use the upper 24 bits. QMC does not improve

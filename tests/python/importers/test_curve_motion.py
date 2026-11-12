@@ -186,14 +186,21 @@ def test_curve_motion_indexed_width_primvar(refinement: int) -> None:
         f2.UsdImporter().import_stage(stage, _options(refinement))
 
 
-def test_curve_static_uses_earliest_width_sample() -> None:
+def test_curve_static_uses_initial_width_sample() -> None:
     stage = Usd.Stage.CreateInMemory()
     curve = UsdGeom.BasisCurves.Define(stage, "/Curve")
     curve.CreateTypeAttr("linear")
     curve.CreateCurveVertexCountsAttr([2])
     curve.CreatePointsAttr([(0, 0, 0), (1, 0, 0)])
-    curve.CreateWidthsAttr().Set([2], 1)
-    curve.GetWidthsAttr().Set([4], 2)
+    curve.CreateWidthsAttr([20]).Set([2], -1)
+    curve.GetWidthsAttr().Set([6], 1)
     curve.SetWidthsInterpolation("constant")
     imported = f2.UsdImporter().import_stage(stage).curves[0]
-    np.testing.assert_allclose(imported.radii, 1)
+    np.testing.assert_allclose(imported.radii, 2)
+    stage.SetStartTimeCode(0.5)
+    # A start alone is not a complete playback range: usdview still opens at zero.
+    imported = f2.UsdImporter().import_stage(stage).curves[0]
+    np.testing.assert_allclose(imported.radii, 2)
+    stage.SetEndTimeCode(600)
+    imported = f2.UsdImporter().import_stage(stage).curves[0]
+    np.testing.assert_allclose(imported.radii, 2.5)

@@ -55,6 +55,20 @@ void StaticMeshGeometry::recompute_local_aabb()
     }
 }
 
+MeshBounds StaticMeshGeometry::calculate_bounds(const float4x4& transform) const
+{
+    detail::validate_bounds_transform(transform);
+    MeshBounds bounds;
+    for (const SubMesh& sub_mesh : m_sub_meshes) {
+        for (const shared::PackedTriangleVertex& vertex : sub_mesh.vertices) {
+            float4 position(vertex.position[0], vertex.position[1], vertex.position[2], 1.f);
+            float4 transformed = sgl::math::mul(transform, position);
+            bounds.expand(float3(transformed.x, transformed.y, transformed.z));
+        }
+    }
+    return bounds;
+}
+
 void StaticMeshGeometry::on_add_to_scene()
 {
     register_geometry_attributes();

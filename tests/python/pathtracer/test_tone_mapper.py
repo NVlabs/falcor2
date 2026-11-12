@@ -158,6 +158,7 @@ def _tonemap_with_shader_helper(
         ),
     ],
 )
+@pytest.mark.nightly
 def test_tonemap_shader_helpers_match_golden_values(
     device_type: spy.DeviceType,
     device: spy.Device,
@@ -196,6 +197,7 @@ def _float_buffer_value(buffer: spy.Buffer) -> float:
     return float(buffer.to_numpy().view(np.float32)[0])
 
 
+@pytest.mark.nightly
 def test_histogram_weight_scale_prevents_uint32_overflow() -> None:
     from falcor2.rendernodes.tonemapper_node import (
         UINT32_MAX,
@@ -228,6 +230,7 @@ def _constant_tensor(
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_tonemap_shader_histogram_matches_reference(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
@@ -257,6 +260,7 @@ def test_tonemap_shader_histogram_matches_reference(
 
 @pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_tonemapper_current_frame_auto_exposure_hits_current_target(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
@@ -278,6 +282,7 @@ def test_tonemapper_current_frame_auto_exposure_hits_current_target(
 
 @pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_tonemapper_black_borders_have_no_histogram_influence(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
@@ -305,6 +310,7 @@ def test_tonemapper_black_borders_have_no_histogram_influence(
 
 @pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_tonemapper_histogram_percentiles_reject_luminance_outliers(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
@@ -332,6 +338,7 @@ def test_tonemapper_histogram_percentiles_reject_luminance_outliers(
 
 @pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_tonemapper_all_black_fallback_is_neutral_and_retains_previous_frame_history(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
@@ -374,6 +381,7 @@ def test_tonemapper_all_black_fallback_is_neutral_and_retains_previous_frame_his
         (4.0, 0.25, "adaptation_speed_up", 1.0, 0.25),
     ],
 )
+@pytest.mark.nightly
 def test_tonemapper_previous_frame_mode_clamps_ev_change(
     device_type: spy.DeviceType,
     device: spy.Device,
@@ -431,6 +439,7 @@ def test_tonemapper_previous_frame_mode_clamps_ev_change(
 
 @pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_tonemapper_runtime_bounds_reinitialize_clamped_history(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
@@ -535,6 +544,7 @@ def _encode_srgb(linear: np.ndarray) -> np.ndarray:
     )
 
 
+@pytest.mark.nightly
 def test_punchy_curve_is_a_package_resource() -> None:
     with files("falcor2.rendernodes").joinpath("data", "agx_punchy_curve.npy").open("rb") as stream:
         curve = np.load(stream, allow_pickle=False)
@@ -569,6 +579,7 @@ def test_datagen_tonemapper_operators_match_reference_points(
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
 @pytest.mark.parametrize("operator_name", ["log", "agx_punchy"])
+@pytest.mark.nightly
 def test_datagen_tonemapper_operators_support_auto_exposure(
     device_type: spy.DeviceType,
     device: spy.Device,
@@ -602,6 +613,7 @@ def test_datagen_tonemapper_operators_support_auto_exposure(
 
 @pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_tonemapper_operator_applies_to_auto_exposure_paths(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
@@ -654,6 +666,7 @@ def test_tonemapper_lut3d_interpolates_log_coordinates_and_preserves_alpha(
 
 @pytest.mark.nightly_if(device_type=(spy.DeviceType.d3d12,))
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_tonemapper_nonfinite_metering_does_not_poison_exposure(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
@@ -684,6 +697,7 @@ def test_tonemapper_nonfinite_metering_does_not_poison_exposure(
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_tonemapper_queued_previous_frame_sequence(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
@@ -719,6 +733,7 @@ def test_tonemapper_queued_previous_frame_sequence(
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
+@pytest.mark.nightly
 def test_tonemapper_auto_exposure_histogram_is_fixed_size_and_reused(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
@@ -746,6 +761,7 @@ def test_tonemapper_auto_exposure_histogram_is_fixed_size_and_reused(
 
 @pytest.mark.nightly_if(device_type=(spy.DeviceType.cuda,))
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_tonemapper_auto_exposure_texture_preserves_contract(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
@@ -783,6 +799,7 @@ def test_tonemapper_auto_exposure_texture_preserves_contract(
 
 @pytest.mark.nightly_if(device_type=(spy.DeviceType.d3d12,))
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_tonemapper_auto_exposure_half_tensor_preserves_contract(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
@@ -819,6 +836,7 @@ def test_tonemapper_auto_exposure_half_tensor_preserves_contract(
     assert np.allclose(previous_frame_output, output_data, atol=1e-3)
 
 
+@pytest.mark.nightly
 def test_tonemapper_auto_exposure_torch_preserves_contract() -> None:
     """CUDA torch CHW input remains a torch tensor and meters in render layout."""
     try:
@@ -859,6 +877,7 @@ def test_tonemapper_auto_exposure_torch_preserves_contract() -> None:
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
+@pytest.mark.nightly
 def test_tonemapper_configuration_validation(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
@@ -902,6 +921,7 @@ def test_tonemapper_configuration_validation(
         node(scalar_input)
 
 
+@pytest.mark.nightly
 def test_tonemapper_rejects_input_from_another_device() -> None:
     """Auto-exposure rejects containers whose storage belongs to another device."""
     if not helpers.DEFAULT_DEVICE_TYPES:

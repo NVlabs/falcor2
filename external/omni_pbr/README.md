@@ -18,8 +18,10 @@ MaterialX components covered by Apache-2.0 or any scene textures.
 
 ## Provenance
 
+- Upstream: NVIDIA Omniverse Core Materials
 - Package version: **2.1.4**
 - Revision: **08dd9e79b494ae8511a02910333d6352e1b68be2** (2026-08-25)
+- Redistributed license: [LICENSE](LICENSE)
 
 | Local file | Upstream file at the pinned revision |
 | --- | --- |
@@ -54,3 +56,4 @@ precedence over the copies here.
 Assets can depend on a particular library version; do not assume different versions of the
 same MDL module can be switched by changing search paths within one process.
 The MDL database retains loaded modules by their qualified names.
+

@@ -20,6 +20,8 @@ from pathtracer.test_pathtracer import (
     _render_mean,
 )
 
+pytestmark = pytest.mark.nightly
+
 
 def _scene(device: spy.Device) -> tuple[f2.Scene, f2.StandardMaterial, f2.GeometryInstance]:
     scene = f2.Scene.create(device)

@@ -31,12 +31,13 @@ namespace {
 std::vector<sgl::DeviceType> ngx_device_types()
 {
 #if SGL_WINDOWS
-    return {sgl::DeviceType::d3d12, sgl::DeviceType::vulkan, sgl::DeviceType::cuda};
+    const std::array available{sgl::DeviceType::d3d12, sgl::DeviceType::vulkan, sgl::DeviceType::cuda};
 #elif SGL_LINUX
-    return {sgl::DeviceType::vulkan, sgl::DeviceType::cuda};
+    const std::array available{sgl::DeviceType::vulkan, sgl::DeviceType::cuda};
 #else
-    return {};
+    const std::array<sgl::DeviceType, 0> available{};
 #endif
+    return testing::get_device_types(available);
 }
 
 sgl::DeviceDesc make_ngx_device_desc(sgl::DeviceType device_type)
@@ -244,7 +245,7 @@ void run_ngx_smoke_test(sgl::DeviceType device_type)
 } // namespace
 
 // Note: Not using 'TEST_CASE_GPU' as we want to create new devices that have NGX support.
-TEST_CASE("ngx_dlss_rr_native_smoke")
+TEST_CASE_DEBUG_NIGHTLY("ngx_dlss_rr_native_smoke")
 {
     for (sgl::DeviceType device_type : ngx_device_types()) {
         SUBCASE(enum_to_string(device_type).c_str())

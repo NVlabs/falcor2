@@ -8,20 +8,129 @@ from pathlib import Path
 import pytest
 import slangpy as spy
 import falcor2 as f2
+import falcor2.ngx as fngx
 import falcor2.testing.helpers as helpers
 import numpy as np
 from falcor2.rendernodes import (
+    DLSSRayReconNode,
     ReferencePathTracerNode,
     SchedulingMode,
     VisibilityRayMode,
     VisibilityRayPlacement,
 )
 from falcor2.rendernodes.reference_pathtracer_node import WRITE_GUIDE_INTERFACE
+from falcor2.testing.image_test_plugin import ImageTest
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_pathtracer_render_with_guides(device: spy.Device) -> None:
+    scene = f2.Scene.load(device, "data/scenes/cornell-box-2026.py")
+    scene.update()
+    camera = scene.active_camera
+    assert camera is not None
+    camera.width, camera.height = 128, 96
+
+    node = ReferencePathTracerNode.create(device)
+    node.max_depth = 3
+    node.guide_output_specs = {
+        name: f2.ContainerSpec.auto() for name in DLSSRayReconNode.GUIDE_NAMES
+    }
+    color, guides = node(scene, camera)
+
+    image = color.to_numpy()
+    assert np.isfinite(image).all()
+    assert image[..., :3].max() > 0.0
+    for name in DLSSRayReconNode.GUIDE_NAMES:
+        guide = guides[name]
+        assert guide is not None
+        assert np.isfinite(guide.to_numpy()).all(), name
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_pathtracer_render_with_dlss_rr(device: spy.Device, image_test: ImageTest) -> None:
+    try:
+        ngx = fngx.NGX.get(device)
+    except RuntimeError as exc:
+        message = str(exc).partition("\n")[0]
+        if message not in {
+            "NGX CUDA initialization failed: NVSDK_NGX_Result_FAIL_OutOfDate",
+            "NGX CUDA initialization failed: NVSDK_NGX_Result_FAIL_FeatureNotSupported",
+        }:
+            raise
+        pytest.skip(f"DLSS Ray Reconstruction is unavailable: {message}")
+    if not ngx.info.dlssd_supported:
+        pytest.skip(f"DLSS Ray Reconstruction is not supported on {device.desc.type}")
+
+    scene = f2.Scene.load(device, "data/internal/sponza.py")
+    scene.update()
+    camera = scene.active_camera
+    assert camera is not None
+    camera.width, camera.height = 128, 96
+
+    reconstruction = DLSSRayReconNode.create(device)
+    reconstruction.quality = fngx.QualityMode.dlaa
+    node = ReferencePathTracerNode.create(device)
+    node.max_depth = 3
+    node.output_spec, node.guide_output_specs = reconstruction.get_optimal_specs(128, 96)
+
+    try:
+        color, guides = node(scene, camera, sample_count=64)
+        output = reconstruction(color, guides, camera, 128, 96)
+        # Linux ARM64 CUDA uses preset E rather than the SDK's default preset F.
+        image_test(output.to_numpy()[..., :3], tolerance=5e-7)
+    finally:
+        # Complete CUDA callbacks while their NGX/feature owners are still alive.
+        device.wait()
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_pathtracer_render_with_ser(device: spy.Device, image_test: ImageTest) -> None:
+    if not device.has_feature(spy.Feature.shader_execution_reordering):
+        pytest.skip("Shader execution reordering is not supported by this device")
+
+    scene = f2.Scene.load(device, "data/internal/sponza.py")
+    scene.update()
+    camera = scene.active_camera
+    assert camera is not None
+    camera.width, camera.height = 128, 96
+
+    node = ReferencePathTracerNode.create(device)
+    node.max_depth = 3
+    node.scheduling_mode = SchedulingMode.ser
+    node.guide_output_specs = {
+        name: f2.ContainerSpec.auto() for name in DLSSRayReconNode.GUIDE_NAMES
+    }
+    color, _ = node(scene, camera, sample_count=64)
+
+    image_test(color.to_numpy()[..., :3], tolerance=1e-7)
+
+
+@pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+def test_pathtracer_render_with_all_capabilities(device: spy.Device, image_test: ImageTest) -> None:
+    scene = f2.Scene.load(device, "data/internal/sponza.py")
+    scene.update()
+    camera = scene.active_camera
+    assert camera is not None
+    camera.width, camera.height = 128, 96
+
+    node = ReferencePathTracerNode.create(device)
+    node.max_depth = 3
+    node.scene_capability_policy = f2.SceneCapabilityPolicy.all
+    node.guide_output_specs = {
+        name: f2.ContainerSpec.auto() for name in DLSSRayReconNode.GUIDE_NAMES
+    }
+    color, _ = node(scene, camera, sample_count=64)
+
+    image_test(color.to_numpy()[..., :3], tolerance=1e-7)
+
+
+###############################################################################
+# NIGHTLY TESTS
+###############################################################################
 
 
 DATA = Path(__file__).resolve().parents[3] / "data"
 GUIDE_TEST_SCENE = "data/assets/kronos/TransmissionTest/glTF/TransmissionTest.gltf"
-
 MATERIALX_NORMAL_DEPENDENT_OPACITY = """<materialx version="1.39" colorspace="lin_rec709">
   <normal name="normal" type="vector3">
     <input name="space" type="string" value="world" />
@@ -77,10 +186,6 @@ MATERIALX_DIELECTRIC = """<materialx version="1.39" colorspace="lin_rec709">
     <input name="surfaceshader" type="surfaceshader" nodename="surface" />
   </surfacematerial>
 </materialx>"""
-
-
-def _standard_props(values: dict[str, object]) -> f2.Properties:
-    return f2.Properties(values)
 
 
 def _create_mdl_opacity_material(
@@ -313,6 +418,54 @@ def _half_image_means(image: np.ndarray) -> np.ndarray:
     )
 
 
+def _make_capability_scene(
+    device: spy.Device, color: spy.float3
+) -> tuple[f2.Scene, f2.StandardMaterial, f2.StaticMeshGeometry, f2.Camera]:
+    scene = f2.Scene.create(device)
+    material = scene.create_material(f2.StandardMaterial)
+    material.base_color_factor = spy.float3(0)
+    material.emissive_factor = color
+    geometry = scene.create_geometry(f2.StaticMeshGeometry)
+    geometry.set_mesh_data(
+        positions=np.array([[-2, -2, 0], [2, -2, 0], [-2, 2, 0], [2, 2, 0]], dtype=np.float32),
+        sub_mesh_indices=[np.array([[0, 2, 1], [2, 3, 1]], dtype=np.uint32)],
+        normals=np.tile(np.array([0, 0, -1], dtype=np.float32), (4, 1)),
+        texcoords=np.tile(np.array([0.25, 0.5], dtype=np.float32), (4, 1)),
+        vertex_attributes=[
+            f2.MeshVertexAttribute(
+                f2.MeshAttributeSemantic.tex_coord,
+                1,
+                np.tile(np.array([0.75, 0.5], dtype=np.float32), (4, 1)),
+            ),
+        ],
+    )
+    instance = scene.create_entity().create_component(f2.GeometryInstance)
+    instance.geometry = geometry
+    instance.materials = [material]
+    camera = _make_quad_camera(scene, width=4, height=4)
+    scene.update()
+    return scene, material, geometry, camera
+
+
+def _make_capability_renderer(
+    device: spy.Device, policy: f2.SceneCapabilityPolicy = f2.SceneCapabilityPolicy.all
+) -> ReferencePathTracerNode:
+    node = ReferencePathTracerNode.create(device)
+    assert node.scene_capability_policy == f2.SceneCapabilityPolicy.required
+    node.scene_capability_policy = policy
+    node.max_depth = 1
+    node.visibility_ray_mode = VisibilityRayMode.trace_ray
+    node.pixel_filter = f2.BoxReconstructionFilter(width=0)
+    return node
+
+
+def _render_capability_scene(
+    node: ReferencePathTracerNode, scene: f2.Scene, camera: f2.Camera
+) -> np.ndarray:
+    image, _ = node(scene, camera, iteration=0)
+    return image.to_numpy()[..., :3]
+
+
 @pytest.mark.nightly
 @pytest.mark.slow
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
@@ -391,7 +544,7 @@ def test_pathtracer_materialx_transmissive_exit_backface(
     )
     emitter = scene.create_material(
         f2.StandardMaterial,
-        _standard_props(
+        f2.Properties(
             {
                 "base_color_factor": spy.float3(0.0),
                 "emissive_factor": spy.float3(1.0),
@@ -413,6 +566,7 @@ def test_pathtracer_materialx_transmissive_exit_backface(
     assert np.min(image[0, 0]) > 1e-4
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pathtracer_render_with_geometry(
     device_type: spy.DeviceType, device: spy.Device, helmet_scene: f2.Scene
@@ -428,7 +582,7 @@ def test_pathtracer_render_with_geometry(
     assert not np.isnan(data).any()
 
 
-@pytest.mark.nightly_if_not_vk
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pathtracer_unlit_material_returns_baked_color_and_terminates(
     device_type: spy.DeviceType, device: spy.Device
@@ -500,6 +654,7 @@ def test_pathtracer_unlit_material_returns_baked_color_and_terminates(
     )
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 @pytest.mark.parametrize(
     "visibility_ray_placement",
@@ -537,6 +692,7 @@ def test_pathtracer_visibility_modes_and_placements(
         np.testing.assert_allclose(images[0], images[1], rtol=1e-4, atol=1e-5)
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pathtracer_ser_scheduler_render_when_supported(
     device_type: spy.DeviceType, device: spy.Device, helmet_scene: f2.Scene
@@ -571,7 +727,7 @@ def test_pathtracer_double_sided_backfaces_render(
         scene = f2.Scene.create(device)
         material = scene.create_material(
             f2.StandardMaterial,
-            _standard_props(
+            f2.Properties(
                 {
                     "base_color_factor": spy.float3(0.0, 0.0, 0.0),
                     "emissive_factor": spy.float3(1.0, 0.7, 0.4),
@@ -592,7 +748,7 @@ def test_pathtracer_double_sided_backfaces_render(
     assert double_sided.max() > 0.1
 
 
-@pytest.mark.nightly_if_not_vk
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pathtracer_opacity_runtime_transitions(
     device_type: spy.DeviceType, device: spy.Device
@@ -610,7 +766,7 @@ def test_pathtracer_opacity_runtime_transitions(
     scene = f2.Scene.create(device)
     front = scene.create_material(
         f2.StandardMaterial,
-        _standard_props(
+        f2.Properties(
             {
                 "base_color_factor": spy.float3(0.0, 0.0, 0.0),
                 "emissive_factor": spy.float3(1.0, 0.0, 0.0),
@@ -621,7 +777,7 @@ def test_pathtracer_opacity_runtime_transitions(
     )
     rear = scene.create_material(
         f2.StandardMaterial,
-        _standard_props(
+        f2.Properties(
             {
                 "base_color_factor": spy.float3(0.0, 0.0, 0.0),
                 "emissive_factor": spy.float3(0.0, 1.0, 0.0),
@@ -633,7 +789,7 @@ def test_pathtracer_opacity_runtime_transitions(
     _add_quad(scene, z=0.2, normal_z=-1.0, material=rear)
     transmitter = scene.create_material(
         f2.StandardMaterial,
-        _standard_props(
+        f2.Properties(
             {
                 "base_color_factor": spy.float3(1.0),
                 "roughness_factor": 0.0,
@@ -741,6 +897,7 @@ def test_pathtracer_opacity_runtime_transitions(
         )
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 @pytest.mark.parametrize("padding_triangles", [0, 2, 6])
 def test_pathtracer_layered_blend_coverage(
@@ -749,7 +906,7 @@ def test_pathtracer_layered_blend_coverage(
     scene = f2.Scene.create(device)
     material = scene.create_material(
         f2.StandardMaterial,
-        _standard_props(
+        f2.Properties(
             {
                 "base_color_factor": spy.float3(0.0),
                 "emissive_factor": spy.float3(1.0),
@@ -820,7 +977,7 @@ def test_pathtracer_opacity_visibility_modes(
     scene = f2.Scene.create(device)
     surface = scene.create_material(
         f2.StandardMaterial,
-        _standard_props(
+        f2.Properties(
             {
                 "base_color_factor": spy.float3(1.0, 1.0, 1.0),
                 "roughness_factor": 1.0,
@@ -830,7 +987,7 @@ def test_pathtracer_opacity_visibility_modes(
     )
     occluder = scene.create_material(
         f2.StandardMaterial,
-        _standard_props(
+        f2.Properties(
             {
                 "base_color_factor": spy.float3(0.0, 0.0, 0.0),
                 "double_sided": True,
@@ -935,7 +1092,7 @@ def test_pathtracer_opacity_visibility_modes(
         )
 
 
-@pytest.mark.nightly_if_not_vk
+@pytest.mark.nightly
 @pytest.mark.slow
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pathtracer_mdl_cutout_opacity_camera_traversal(
@@ -945,7 +1102,7 @@ def test_pathtracer_mdl_cutout_opacity_camera_traversal(
     front = _create_mdl_opacity_material(scene, "parameterized", opacity=0.0)
     rear = scene.create_material(
         f2.StandardMaterial,
-        _standard_props(
+        f2.Properties(
             {
                 "base_color_factor": spy.float3(0.0, 0.0, 0.0),
                 "emissive_factor": spy.float3(0.0, 1.0, 0.0),
@@ -983,7 +1140,7 @@ def test_pathtracer_mdl_cutout_opacity_visibility_modes(
     scene = f2.Scene.create(device)
     surface = scene.create_material(
         f2.StandardMaterial,
-        _standard_props(
+        f2.Properties(
             {
                 "base_color_factor": spy.float3(1.0, 1.0, 1.0),
                 "roughness_factor": 1.0,
@@ -1046,7 +1203,7 @@ def test_pathtracer_materialx_cutout_opacity_camera_traversal(
     front = _create_materialx_opacity_material(scene, 0.0)
     rear = scene.create_material(
         f2.StandardMaterial,
-        _standard_props(
+        f2.Properties(
             {
                 "base_color_factor": spy.float3(0.0, 0.0, 0.0),
                 "emissive_factor": spy.float3(0.0, 1.0, 0.0),
@@ -1094,7 +1251,7 @@ def test_pathtracer_materialx_cutout_opacity_camera_traversal(
         normal_front = normal_scene.create_material(f2.MaterialXMaterial, props)
         normal_rear = normal_scene.create_material(
             f2.StandardMaterial,
-            _standard_props(
+            f2.Properties(
                 {
                     "base_color_factor": spy.float3(0.0, 0.0, 0.0),
                     "emissive_factor": spy.float3(0.0, 1.0, 0.0),
@@ -1119,7 +1276,7 @@ def test_pathtracer_materialx_cutout_opacity_camera_traversal(
         assert center[0] > center[1] * 10.0
 
 
-@pytest.mark.nightly_if(device_type=(spy.DeviceType.cuda,))
+@pytest.mark.nightly
 @pytest.mark.slow
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pathtracer_materialx_cutout_opacity_visibility_modes(
@@ -1131,7 +1288,7 @@ def test_pathtracer_materialx_cutout_opacity_visibility_modes(
     scene = f2.Scene.create(device)
     surface = scene.create_material(
         f2.StandardMaterial,
-        _standard_props(
+        f2.Properties(
             {
                 "base_color_factor": spy.float3(1.0, 1.0, 1.0),
                 "roughness_factor": 1.0,
@@ -1187,7 +1344,7 @@ def test_pathtracer_transmission_nee_sees_lower_hemisphere_light(
         scene = f2.Scene.create(device)
         surface = scene.create_material(
             f2.StandardMaterial,
-            _standard_props(
+            f2.Properties(
                 {
                     "base_color_factor": spy.float3(1.0, 1.0, 1.0),
                     "roughness_factor": 1.0,
@@ -1200,7 +1357,7 @@ def test_pathtracer_transmission_nee_sees_lower_hemisphere_light(
         )
         emitter = scene.create_material(
             f2.StandardMaterial,
-            _standard_props(
+            f2.Properties(
                 {
                     "base_color_factor": spy.float3(0.0, 0.0, 0.0),
                     "emissive_factor": spy.float3(4.0, 4.0, 4.0),
@@ -1250,7 +1407,7 @@ def test_pathtracer_homogeneous_boundary_nee_uses_vacuum_side(
     def make_boundary(scene: f2.Scene) -> f2.Material:
         return scene.create_material(
             f2.StandardMaterial,
-            _standard_props(
+            f2.Properties(
                 {
                     "base_color_factor": spy.float3(1.0),
                     "roughness_factor": 0.5,
@@ -1310,7 +1467,7 @@ def test_pathtracer_homogeneous_boundary_nee_uses_vacuum_side(
     assert np.min(exit_with_nee[0, 0]) > 1e-4
 
 
-@pytest.mark.nightly_if_not_vk
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pathtracer_homogeneous_extinction_matches_beer_lambert(
     device_type: spy.DeviceType, device: spy.Device
@@ -1326,7 +1483,7 @@ def test_pathtracer_homogeneous_extinction_matches_beer_lambert(
         scene = f2.Scene.create(device)
         medium = scene.create_material(
             f2.StandardMaterial,
-            _standard_props(
+            f2.Properties(
                 {
                     "base_color_factor": spy.float3(1.0),
                     "roughness_factor": 0.0,
@@ -1340,7 +1497,7 @@ def test_pathtracer_homogeneous_extinction_matches_beer_lambert(
         )
         emitter = scene.create_material(
             f2.StandardMaterial,
-            _standard_props(
+            f2.Properties(
                 {
                     "base_color_factor": spy.float3(0.0),
                     "emissive_factor": spy.float3(1.0),
@@ -1400,7 +1557,7 @@ def test_pathtracer_homogeneous_forward_scattering_preserves_transmission(
         scene = f2.Scene.create(device)
         medium = scene.create_material(
             f2.StandardMaterial,
-            _standard_props(
+            f2.Properties(
                 {
                     "base_color_factor": spy.float3(1.0),
                     "roughness_factor": 0.0,
@@ -1415,7 +1572,7 @@ def test_pathtracer_homogeneous_forward_scattering_preserves_transmission(
         )
         emitter = scene.create_material(
             f2.StandardMaterial,
-            _standard_props(
+            f2.Properties(
                 {
                     "base_color_factor": spy.float3(0.0),
                     "emissive_factor": spy.float3(1.0),
@@ -1455,7 +1612,7 @@ def test_pathtracer_disables_nee_inside_tracked_interior(
         scene = f2.Scene.create(device)
         boundary = scene.create_material(
             f2.StandardMaterial,
-            _standard_props(
+            f2.Properties(
                 {
                     "base_color_factor": spy.float3(1.0),
                     "roughness_factor": 0.0,
@@ -1468,7 +1625,7 @@ def test_pathtracer_disables_nee_inside_tracked_interior(
         )
         receiver = scene.create_material(
             f2.StandardMaterial,
-            _standard_props(
+            f2.Properties(
                 {
                     "base_color_factor": spy.float3(1.0),
                     "roughness_factor": 1.0,
@@ -1510,7 +1667,7 @@ def test_pathtracer_environment_direct_hit_mis_is_finite(
     scene = f2.Scene.create(device)
     material = scene.create_material(
         f2.StandardMaterial,
-        _standard_props(
+        f2.Properties(
             {
                 "base_color_factor": spy.float3(1.0, 1.0, 1.0),
                 "roughness_factor": 1.0,
@@ -1537,7 +1694,7 @@ def test_pathtracer_environment_direct_hit_mis_is_finite(
     assert image.mean() > 1e-4
 
 
-@pytest.mark.nightly_if_not_vk
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pathtracer_area_light_mis_preserves_energy(
     device_type: spy.DeviceType, device: spy.Device
@@ -1545,7 +1702,7 @@ def test_pathtracer_area_light_mis_preserves_energy(
     scene = f2.Scene.create(device)
     material = scene.create_material(
         f2.StandardMaterial,
-        _standard_props(
+        f2.Properties(
             {
                 "base_color_factor": spy.float3(1.0, 1.0, 1.0),
                 "roughness_factor": 1.0,
@@ -1592,7 +1749,7 @@ def test_pathtracer_area_light_mis_preserves_energy(
     )
 
 
-@pytest.mark.nightly_if_not_vk
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pathtracer_area_light_geometry_visibility(
     device_type: spy.DeviceType, device: spy.Device
@@ -1665,7 +1822,7 @@ def test_pathtracer_area_light_secondary_continuation(
     scene = f2.Scene.create(device)
     mirror = scene.create_material(
         f2.StandardMaterial,
-        _standard_props(
+        f2.Properties(
             {
                 "base_color_factor": spy.float3(1.0),
                 "metallic_factor": 1.0,
@@ -1754,7 +1911,7 @@ def test_pathtracer_area_light_visibility_controls_shadows(
     scene = f2.Scene.create(device)
     receiver = scene.create_material(
         f2.StandardMaterial,
-        _standard_props(
+        f2.Properties(
             {
                 "base_color_factor": spy.float3(1.0),
                 "roughness_factor": 1.0,
@@ -1766,7 +1923,7 @@ def test_pathtracer_area_light_visibility_controls_shadows(
 
     target_emitter = scene.create_material(
         f2.StandardMaterial,
-        _standard_props(
+        f2.Properties(
             {
                 "base_color_factor": spy.float3(0.0),
                 "emissive_factor": spy.float3(20.0, 0.0, 0.0),
@@ -1834,7 +1991,7 @@ def test_pathtracer_small_distant_light_nee_converges(
     scene = f2.Scene.create(device)
     material = scene.create_material(
         f2.StandardMaterial,
-        _standard_props(
+        f2.Properties(
             {
                 "base_color_factor": spy.float3(1.0, 1.0, 1.0),
                 "roughness_factor": 1.0,
@@ -1936,7 +2093,7 @@ def test_pathtracer_multiple_environment_lights_nee_mis_matches_order_and_refere
     scene = f2.Scene.create(device)
     material = scene.create_material(
         f2.StandardMaterial,
-        _standard_props(
+        f2.Properties(
             {
                 "base_color_factor": spy.float3(1.0, 1.0, 1.0),
                 "roughness_factor": 1.0,
@@ -1992,7 +2149,7 @@ def test_pathtracer_multiple_environment_lights_nee_mis_matches_order_and_refere
     )
 
 
-@pytest.mark.nightly_if_not_vk
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pathtracer_delta_reflection_environment_with_nee_without_mis(
     device_type: spy.DeviceType, device: spy.Device
@@ -2000,7 +2157,7 @@ def test_pathtracer_delta_reflection_environment_with_nee_without_mis(
     scene = f2.Scene.create(device)
     material = scene.create_material(
         f2.StandardMaterial,
-        _standard_props(
+        f2.Properties(
             {
                 "base_color_factor": spy.float3(1.0, 1.0, 1.0),
                 "metallic_factor": 1.0,
@@ -2028,6 +2185,7 @@ def test_pathtracer_delta_reflection_environment_with_nee_without_mis(
     assert image.mean() > 1e-4
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pathtracer_settings_change(device_type: spy.DeviceType, device: spy.Device) -> None:
     """Changing constants and settings updates their respective dictionaries."""
@@ -2071,7 +2229,7 @@ def test_pathtracer_settings_change(device_type: spy.DeviceType, device: spy.Dev
     assert pt._settings["background_color"] == spy.float3(0.1, 0.2, 0.3)
 
 
-@pytest.mark.nightly_if_not_vk
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pathtracer_russian_roulette_is_unbiased(
     device_type: spy.DeviceType, device: spy.Device
@@ -2080,7 +2238,7 @@ def test_pathtracer_russian_roulette_is_unbiased(
     scene = f2.Scene.create(device)
     material = scene.create_material(
         f2.StandardMaterial,
-        _standard_props(
+        f2.Properties(
             {
                 "base_color_factor": spy.float3(0.25, 0.25, 0.25),
                 "roughness_factor": 1.0,
@@ -2131,7 +2289,7 @@ def test_pathtracer_late_visibility_preserves_direct_lighting_with_roulette(
     scene = f2.Scene.create(device)
     material = scene.create_material(
         f2.StandardMaterial,
-        _standard_props(
+        f2.Properties(
             {
                 "base_color_factor": spy.float3(0.01),
                 "roughness_factor": 1.0,
@@ -2172,6 +2330,7 @@ def test_pathtracer_late_visibility_preserves_direct_lighting_with_roulette(
     np.testing.assert_allclose(images[1], images[0], rtol=1e-4, atol=1e-5)
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pathtracer_scheduler_and_visibility_modes(
     device_type: spy.DeviceType, device: spy.Device
@@ -2219,54 +2378,7 @@ def test_pathtracer_scheduler_and_visibility_modes(
             node.scheduling_mode = SchedulingMode.ser
 
 
-def _make_capability_scene(
-    device: spy.Device, color: spy.float3
-) -> tuple[f2.Scene, f2.StandardMaterial, f2.StaticMeshGeometry, f2.Camera]:
-    scene = f2.Scene.create(device)
-    material = scene.create_material(f2.StandardMaterial)
-    material.base_color_factor = spy.float3(0)
-    material.emissive_factor = color
-    geometry = scene.create_geometry(f2.StaticMeshGeometry)
-    geometry.set_mesh_data(
-        positions=np.array([[-2, -2, 0], [2, -2, 0], [-2, 2, 0], [2, 2, 0]], dtype=np.float32),
-        sub_mesh_indices=[np.array([[0, 2, 1], [2, 3, 1]], dtype=np.uint32)],
-        normals=np.tile(np.array([0, 0, -1], dtype=np.float32), (4, 1)),
-        texcoords=np.tile(np.array([0.25, 0.5], dtype=np.float32), (4, 1)),
-        vertex_attributes=[
-            f2.MeshVertexAttribute(
-                f2.MeshAttributeSemantic.tex_coord,
-                1,
-                np.tile(np.array([0.75, 0.5], dtype=np.float32), (4, 1)),
-            ),
-        ],
-    )
-    instance = scene.create_entity().create_component(f2.GeometryInstance)
-    instance.geometry = geometry
-    instance.materials = [material]
-    camera = _make_quad_camera(scene, width=4, height=4)
-    scene.update()
-    return scene, material, geometry, camera
-
-
-def _make_capability_renderer(
-    device: spy.Device, policy: f2.SceneCapabilityPolicy = f2.SceneCapabilityPolicy.all
-) -> ReferencePathTracerNode:
-    node = ReferencePathTracerNode.create(device)
-    assert node.scene_capability_policy == f2.SceneCapabilityPolicy.required
-    node.scene_capability_policy = policy
-    node.max_depth = 1
-    node.visibility_ray_mode = VisibilityRayMode.trace_ray
-    node.pixel_filter = f2.BoxReconstructionFilter(width=0)
-    return node
-
-
-def _render_capability_scene(
-    node: ReferencePathTracerNode, scene: f2.Scene, camera: f2.Camera
-) -> np.ndarray:
-    image, _ = node(scene, camera, iteration=0)
-    return image.to_numpy()[..., :3]
-
-
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pathtracer_default_capabilities_drive_interior_tracking(device: spy.Device) -> None:
     scene, material, _, camera = _make_capability_scene(device, spy.float3(1, 0, 0))
@@ -2293,6 +2405,7 @@ def test_pathtracer_default_capabilities_drive_interior_tracking(device: spy.Dev
     assert node.capabilities.has(f2.SceneCapabilityFlags.solid_transmission)
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pathtracer_specified_policy_requires_explicit_capabilities(device: spy.Device) -> None:
     scene, _, _, _ = _make_capability_scene(device, spy.float3(1, 0, 0))
@@ -2302,6 +2415,7 @@ def test_pathtracer_specified_policy_requires_explicit_capabilities(device: spy.
         node._get_module(scene)
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 @pytest.mark.parametrize(
     "policy",
@@ -2338,6 +2452,7 @@ def test_pathtracer_capabilities_scene_switch(
         assert node.capabilities == expected
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pathtracer_capabilities_opacity_changes(device: spy.Device) -> None:
     scene, material, _, camera = _make_capability_scene(device, spy.float3(1, 0, 0))
@@ -2364,6 +2479,7 @@ def test_pathtracer_capabilities_opacity_changes(device: spy.Device) -> None:
         assert general.capabilities == f2.SceneCapabilities.all()
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pathtracer_capabilities_geometry_changes(device: spy.Device) -> None:
     scene, material, _, camera = _make_capability_scene(device, spy.float3(1, 0, 0))
@@ -2400,6 +2516,7 @@ def test_pathtracer_capabilities_geometry_changes(device: spy.Device) -> None:
     np.testing.assert_allclose(_render_capability_scene(optimized, scene, camera), image, atol=1e-4)
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pathtracer_capabilities_removal(device: spy.Device) -> None:
     scene, material, geometry, camera = _make_capability_scene(device, spy.float3(1, 0, 0))
@@ -2430,7 +2547,7 @@ def test_pathtracer_capabilities_removal(device: spy.Device) -> None:
     assert optimized.capabilities == f2.SceneCapabilities()
 
 
-@pytest.mark.nightly_if_not_vk
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pathtracer_module_caching(
     device_type: spy.DeviceType, device: spy.Device, empty_scene: f2.Scene
@@ -2444,6 +2561,7 @@ def test_pathtracer_module_caching(
     assert pt._scene_requirements is requirements
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
 def test_pathtracer_resolves_only_after_invalidation(
     device: spy.Device, monkeypatch: pytest.MonkeyPatch
@@ -2506,6 +2624,7 @@ def test_pathtracer_resolves_only_after_invalidation(
     assert calls == 7
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_path_tracer_respects_explicit_output_dims(
     device_type: spy.DeviceType, device: spy.Device, helmet_scene: f2.Scene
@@ -2522,7 +2641,7 @@ def test_path_tracer_respects_explicit_output_dims(
     assert camera.width == 64
 
 
-@pytest.mark.nightly_if_not_vk
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_path_tracer_resets_previous_camera_when_render_dims_change(
     device_type: spy.DeviceType,
@@ -2567,7 +2686,7 @@ def test_path_tracer_resets_previous_camera_when_render_dims_change(
     assert camera.height == 64
 
 
-@pytest.mark.nightly_if_not_vk
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_path_tracer_uses_camera_dims_as_fallback(
     device_type: spy.DeviceType, device: spy.Device, helmet_scene: f2.Scene
@@ -2581,6 +2700,7 @@ def test_path_tracer_uses_camera_dims_as_fallback(
     assert image.width == 37
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_path_tracer_default_color_format_by_backend(
     device_type: spy.DeviceType, device: spy.Device
@@ -2679,6 +2799,7 @@ def test_pathtracer_non_dlss_guides_with_geometry(
     assert np.allclose(geometric_normals[valid_geometry, :3], (0.0, 0.0, -1.0), atol=1e-3)
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pathtracer_unlit_geometry_guides(device: spy.Device) -> None:
     scene = f2.Scene.create(device)
@@ -2780,6 +2901,7 @@ def test_pathtracer_guide_specs_respect_user_texture_spec(
     assert guides["depth"].height == 8
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pathtracer_dlss_rr_guides_with_geometry(
     device_type: spy.DeviceType, device: spy.Device
@@ -2951,7 +3073,7 @@ def test_runtime_background_settings(device_type: spy.DeviceType, device: spy.De
     np.testing.assert_allclose(image[..., 3], 1.0, atol=1e-6)
 
 
-@pytest.mark.nightly_if_not_vk
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_scene_shader_helper(
     device_type: spy.DeviceType, device: spy.Device, empty_scene: f2.Scene
@@ -2972,7 +3094,7 @@ def test_scene_shader_helper(
     assert requirements is lower_left.requirements
 
 
-@pytest.mark.nightly_if_not_vk
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_scene_shader_helper_accepts_loaded_module(
     device_type: spy.DeviceType, device: spy.Device, empty_scene: f2.Scene

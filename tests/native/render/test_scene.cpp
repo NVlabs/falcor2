@@ -1153,6 +1153,11 @@ TEST_CASE_GPU("importer scene uses default material for missing assignments")
 TEST_CASE_GPU("importer material constructor creates and names live material")
 {
     auto importer_scene = make_ref<ImporterScene>();
+    importer_scene->nodes.resize(2);
+    importer_scene->nodes[0].name = "Parent";
+    importer_scene->nodes[0].children = {1};
+    importer_scene->nodes[1].name = "Child";
+    importer_scene->root_nodes = {0};
     bool constructor_called = false;
 
     ImporterMaterial importer_material;
@@ -1163,6 +1168,12 @@ TEST_CASE_GPU("importer material constructor creates and names live material")
         constructor_called = true;
         CHECK_EQ(source.name, "Constructed Material");
         CHECK_EQ(source.params.get<float>("roughness_factor"), 0.25f);
+        // Resource construction can resolve entities anywhere in the imported hierarchy.
+        auto* parent = destination.entities().find("Parent");
+        auto* child = destination.entities().find("Child");
+        REQUIRE(parent != nullptr);
+        REQUIRE(child != nullptr);
+        CHECK_EQ(child->parent(), parent);
         return destination.create_material<StandardMaterial>(source.params);
     };
     importer_scene->materials.push_back(std::move(importer_material));
@@ -2334,7 +2345,7 @@ static GeometryInstance* create_emissive_triangle(Scene* scene, Entity* entity)
     return instance;
 }
 
-TEST_CASE_GPU("emissive transform stretch classification")
+TEST_CASE_GPU_DEBUG_NIGHTLY("emissive transform stretch classification")
 {
     auto scene = Scene::create(ref(ctx.device));
     auto* parent = scene->create_entity();
@@ -2636,7 +2647,7 @@ TEST_CASE_GPU("emissive flux detects changed basis angles with unchanged basis l
     }
 }
 
-TEST_CASE_GPU("emissive transform cache follows contributing entities")
+TEST_CASE_GPU_DEBUG_NIGHTLY("emissive transform cache follows contributing entities")
 {
     auto scene = Scene::create(ref(ctx.device));
     Properties properties;

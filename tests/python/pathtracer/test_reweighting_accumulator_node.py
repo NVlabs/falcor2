@@ -55,6 +55,7 @@ def _gpu_result(
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_fixed_anchors_split_and_unbiased_reconstruction(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
@@ -98,6 +99,7 @@ def test_count_weight_singleton_and_repeated_acceptance(
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_kappa_monotonically_suppresses_without_reset(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
@@ -118,6 +120,7 @@ def test_kappa_monotonically_suppresses_without_reset(
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_bin_count_change_releases_incompatible_history(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
@@ -140,6 +143,7 @@ def test_bin_count_change_releases_incompatible_history(
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_spatial_singleton_suppression_fades_in(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
@@ -160,6 +164,7 @@ def test_spatial_singleton_suppression_fades_in(
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_value_weight_recovers_supported_bright_sample(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
@@ -179,6 +184,7 @@ def test_value_weight_recovers_supported_bright_sample(
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_reset_and_default_nonfinite_sanitization(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
@@ -196,6 +202,7 @@ def test_reset_and_default_nonfinite_sanitization(
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_fp16_tensor_and_texture_outputs(device_type: spy.DeviceType, device: spy.Device) -> None:
     half_input = _constant_image(device, 8.0, shape=(2, 3), dtype=np.float16)
     accumulator = ReweightingAccumulatorNode.create(
@@ -228,6 +235,7 @@ def test_fp16_tensor_and_texture_outputs(device_type: spy.DeviceType, device: sp
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_input_format_and_empty_resolve(device_type: spy.DeviceType, device: spy.Device) -> None:
     accumulator = ReweightingAccumulatorNode.create(device)
     integer_input = spy.Tensor.empty(device, shape=(1, 1), dtype="uint4")
@@ -237,6 +245,7 @@ def test_input_format_and_empty_resolve(device_type: spy.DeviceType, device: spy
         accumulator.resolve()
 
 
+@pytest.mark.nightly
 def test_torch_output() -> None:
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available() or spy.DeviceType.cuda not in helpers.DEFAULT_DEVICE_TYPES:

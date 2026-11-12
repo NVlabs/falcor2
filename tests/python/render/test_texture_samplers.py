@@ -135,6 +135,7 @@ def _rgba(value: spy.float4) -> list[float]:
     return [value.x, value.y, value.z, value.w]
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 @pytest.mark.parametrize("image_source", ["external", "embedded"])
 @pytest.mark.parametrize("image_mode", ["L", "LA", "RGBA"])

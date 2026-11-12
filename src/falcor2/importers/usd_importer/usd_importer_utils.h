@@ -34,6 +34,7 @@ BEGIN_DISABLE_USD_WARNINGS
 #include <pxr/usd/sdf/assetPath.h>
 #include <pxr/usd/sdf/schema.h>
 #include <pxr/usd/usd/attribute.h>
+#include <pxr/usd/usd/stage.h>
 
 #include <pxr/usd/usdGeom/tokens.h>
 #include <pxr/usd/usdGeom/basisCurves.h>
@@ -46,6 +47,7 @@ BEGIN_DISABLE_USD_WARNINGS
 END_DISABLE_USD_WARNINGS
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <optional>
 #include <span>
@@ -55,6 +57,29 @@ END_DISABLE_USD_WARNINGS
 
 namespace falcor {
 namespace usd_importer {
+
+/// Use one finite positive rate for all USD time-code to seconds conversions.
+inline double get_time_codes_per_second(const pxr::UsdStage& stage)
+{
+    const double rate = stage.GetTimeCodesPerSecond();
+    return std::isfinite(rate) && rate > 0.0 ? rate : 24.0;
+}
+
+/// Preserve the authored playback interval independently of the animation key interval.
+inline AnimationTimeRange get_playback_range(const pxr::UsdStage& stage)
+{
+    if (!stage.HasAuthoredTimeCodeRange())
+        return {};
+    const double rate = get_time_codes_per_second(stage);
+    const AnimationTimeRange range{float(stage.GetStartTimeCode() / rate), float(stage.GetEndTimeCode() / rate)};
+    return std::isfinite(range.start) && std::isfinite(range.end) && range.is_valid() ? range : AnimationTimeRange{};
+}
+
+/// Match usdview's initial frame: authored playback start, or numeric zero without a complete range.
+inline pxr::UsdTimeCode get_initial_time(const pxr::UsdStage& stage)
+{
+    return pxr::UsdTimeCode(stage.HasAuthoredTimeCodeRange() ? stage.GetStartTimeCode() : 0.0);
+}
 
 /// Return the authored varying value count per strand for valid USD BasisCurves topology at time.
 /// Counts include pinned end spans and are independent of tessellation or the rendered curve representation.
@@ -72,7 +97,7 @@ bool read_fixed_indices(
 /// Shared authored-time selection and metadata for fixed-topology geometry motion.
 /// no_samples selects the representation's existing fallback when motion has no authored times.
 struct GeometrySampleTimes {
-    /// Nonempty USD evaluation schedule; motion-disabled imports use EarliestTime, which also reads default-only data.
+    /// Nonempty USD evaluation schedule; motion-disabled imports use the initial viewing time.
     std::vector<pxr::UsdTimeCode> sample_times;
     /// Timeline seconds; clip keys may reference the same stored sample. Empty for static geometry.
     std::vector<float> motion_times;
@@ -83,6 +108,7 @@ struct GeometrySampleTimes {
         const pxr::UsdPrim& prim,
         const std::vector<pxr::UsdAttribute>& attributes,
         bool import_motion,
+        pxr::UsdTimeCode initial_time,
         pxr::UsdTimeCode no_samples = pxr::UsdTimeCode::Default()
     );
 
@@ -151,7 +177,7 @@ inline pxr::TfToken get_purpose(const pxr::UsdGeomImageable& prim)
     return prim.ComputePurpose();
 }
 
-inline bool is_renderable(const pxr::UsdGeomImageable& geomImageable)
+inline bool is_renderable(const pxr::UsdGeomImageable& geomImageable, pxr::UsdTimeCode time)
 {
     using namespace pxr;
     TfToken purpose = get_purpose(geomImageable);
@@ -161,7 +187,7 @@ inline bool is_renderable(const pxr::UsdGeomImageable& geomImageable)
     UsdAttribute visibilityAttr(geomImageable.GetVisibilityAttr());
     if (visibilityAttr) {
         TfToken visibility;
-        visibilityAttr.Get(&visibility);
+        visibilityAttr.Get(&visibility, time);
         if (visibility == UsdGeomTokens->invisible) {
             return false;
         }
@@ -171,7 +197,7 @@ inline bool is_renderable(const pxr::UsdGeomImageable& geomImageable)
     // USD documentation warns that ComputeVisiblity() can be inefficient, as it walks up
     // towards the root every it is called, rather than caching inherited visibility.
     // However, there has yet been no indication that this is a meaningful performance issue in practice.
-    return geomImageable.ComputeVisibility() != UsdGeomTokens->invisible;
+    return geomImageable.ComputeVisibility(time) != UsdGeomTokens->invisible;
 }
 
 // Helper function that returns the main attribute if it is authored (non-default),
@@ -179,37 +205,47 @@ inline bool is_renderable(const pxr::UsdGeomImageable& geomImageable)
 // This is used to provide compatibility, e.g. when the default disk light radius changed from "radius" to
 // "inputs:radius"
 template<class T>
-inline T
-get_authored_attribute(const pxr::UsdAttribute& mainAttrib, const pxr::UsdAttribute& fallbackAttrib, const T& def)
+inline T get_authored_attribute(
+    const pxr::UsdAttribute& mainAttrib,
+    const pxr::UsdAttribute& fallbackAttrib,
+    const T& def,
+    pxr::UsdTimeCode time
+)
 {
     T val = def;
     if (mainAttrib && mainAttrib.IsAuthored()) {
-        mainAttrib.Get(&val);
+        mainAttrib.Get(&val, time);
     } else if (fallbackAttrib) {
-        fallbackAttrib.Get(&val);
+        fallbackAttrib.Get(&val, time);
     }
     return val;
 }
 
 template<typename T>
-inline T get_attribute(const pxr::UsdAttribute& attr, const T& default_value)
+inline T get_attribute(const pxr::UsdAttribute& attr, const T& default_value, pxr::UsdTimeCode time)
 {
     T result = default_value;
     if (attr.IsValid())
-        attr.Get(&result);
+        attr.Get(&result, time);
     return result;
 }
 
 template<typename T>
-inline T get_attribute(const pxr::UsdPrim& prim, const std::string& attr_name, const T& default_value)
+inline T
+get_attribute(const pxr::UsdPrim& prim, const std::string& attr_name, const T& default_value, pxr::UsdTimeCode time)
 {
-    return get_attribute<T>(prim.GetAttribute(pxr::TfToken(attr_name)), default_value);
+    return get_attribute<T>(prim.GetAttribute(pxr::TfToken(attr_name)), default_value, time);
 }
 
 /// Overlay one authored import control. Missing or blocked values retain the initialized property.
 template<typename T>
-inline void
-read_import_property(const pxr::UsdPrim& prim, const char* attr_name, Properties& properties, const char* key)
+inline void read_import_property(
+    const pxr::UsdPrim& prim,
+    const char* attr_name,
+    Properties& properties,
+    const char* key,
+    pxr::UsdTimeCode time
+)
 {
     const auto attr = prim.GetAttribute(pxr::TfToken(attr_name));
     if (!attr || !attr.IsAuthored())
@@ -225,7 +261,7 @@ read_import_property(const pxr::UsdPrim& prim, const char* attr_name, Properties
     if (!attr.HasValue())
         return;
     T value;
-    FALCOR_CHECK(attr.Get(&value), "Cannot read prim '{}' attribute '{}'", prim.GetPath().GetString(), attr_name);
+    FALCOR_CHECK(attr.Get(&value, time), "Cannot read prim '{}' attribute '{}'", prim.GetPath().GetString(), attr_name);
     if constexpr (std::is_same_v<T, int>) {
         FALCOR_CHECK(
             value >= 0 && value <= 256,

@@ -629,6 +629,20 @@ def build_wheels(args: Any) -> None:
         raise RuntimeError(f"Expected one Falcor2 wheel, found {len(falcor2_wheels)}")
 
 
+def python_test_device_type(args: Any) -> str | None:
+    """Select Python test backends, preserving explicit job overrides."""
+    if device_types := os.environ.get("SLANGPY_DEVICE"):
+        return device_types
+    platform = getattr(args, "os", get_os())
+    if platform not in ("windows", "linux"):
+        return None
+    if bool(getattr(args, "nightly", False)):
+        return "d3d12,vulkan,cuda" if platform == "windows" else "vulkan,cuda"
+    if args.config.lower() == "debug":
+        return "vulkan"
+    return "d3d12,cuda" if platform == "windows" else "vulkan,cuda"
+
+
 def cpp_test_command(args: Any) -> list[str]:
     command = [
         f"{args.bin_dir}/falcor2_tests",
@@ -640,12 +654,18 @@ def cpp_test_command(args: Any) -> list[str]:
         command.append(f"-module-and-shader-cache-dir={args.module_and_shader_cache_dir}")
     if bool(getattr(args, "nightly", False)):
         command.append("-nightly")
+    if args.config.lower() == "debug":
+        device_type = {"windows": "d3d12", "linux": "vulkan"}.get(getattr(args, "os", get_os()))
+        if device_type:
+            command.append(f"-device-type={device_type}")
     return command
 
 
 def python_test_command(args: Any) -> list[str]:
     workers = int(getattr(args, "pytest_workers", 4))
     command = [
+        sys.executable,
+        "-m",
         "pytest",
         "./tests/python",
         "-vra",
@@ -666,6 +686,8 @@ def python_test_command(args: Any) -> list[str]:
         command.append(f"--module-and-shader-cache-dir={args.module_and_shader_cache_dir}")
     if bool(getattr(args, "nightly", False)):
         command.append("--nightly")
+    if device_type := python_test_device_type(args):
+        command.append(f"--device-type={device_type}")
     return command
 
 
@@ -1003,7 +1025,7 @@ def create_parser() -> argparse.ArgumentParser:
         "--parallel-test-phases",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Overlap native and Python phases in unit-test (default: serial)",
+        help="Overlap regular native and Python phases (nightly always runs sequentially)",
     )
     parser.add_argument(
         "--use-custom-slang",
@@ -1141,8 +1163,8 @@ def main(argv: Optional[Sequence[str]] = None):
     args["module_cache"] = parse_bool(args["module_cache"], "CI_MODULE_CACHE")
     args["shader_cache"] = parse_bool(args["shader_cache"], "CI_SHADER_CACHE")
     args["nightly"] = parse_bool(args["nightly"], "CI_NIGHTLY")
-    args["parallel_test_phases"] = parse_bool(
-        args["parallel_test_phases"], "CI_PARALLEL_TEST_PHASES"
+    args["parallel_test_phases"] = (
+        parse_bool(args["parallel_test_phases"], "CI_PARALLEL_TEST_PHASES") and not args["nightly"]
     )
     args["force_image_test_report"] = parse_bool(
         args["force_image_test_report"], "CI_FORCE_IMAGE_TEST_REPORT"

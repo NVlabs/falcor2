@@ -235,6 +235,7 @@ bool get_named_float_values(
 ImporterMesh convert_usd_mesh(
     const pxr::UsdGeomMesh& usd_mesh,
     const ResolveMaterial& resolve_material,
+    pxr::UsdTimeCode viewing_time,
     const ImportOptions& import_options,
     const pxr::UsdSkelSkinningQuery* skinning
 )
@@ -247,8 +248,20 @@ ImporterMesh convert_usd_mesh(
 
     TessellatorInputMesh input;
     input.properties = ImporterMesh::make_properties(import_options);
-    read_import_property<int>(usd_mesh.GetPrim(), "refinementLevel", input.properties, "refinement_level");
-    read_import_property<bool>(usd_mesh.GetPrim(), "falcor:recomputeNormals", input.properties, "recompute_normals");
+    read_import_property<int>(
+        usd_mesh.GetPrim(),
+        "refinementLevel",
+        input.properties,
+        "refinement_level",
+        viewing_time
+    );
+    read_import_property<bool>(
+        usd_mesh.GetPrim(),
+        "falcor:recomputeNormals",
+        input.properties,
+        "recompute_normals",
+        viewing_time
+    );
     // Influences address the control points. Refinement can be enabled when it runs after skinning.
     if (skinning)
         input.properties.set("refinement_level", 0);
@@ -256,16 +269,17 @@ ImporterMesh convert_usd_mesh(
     const auto& texcoord_primvar_names = import_options.usd_texcoord_primvar_names;
     input.name = mesh_name;
     input.subdivision_scheme = get_subdivision_scheme(
-        get_attribute(usd_mesh.GetSubdivisionSchemeAttr(), UsdGeomTokens->catmullClark),
+        get_attribute(usd_mesh.GetSubdivisionSchemeAttr(), UsdGeomTokens->catmullClark, viewing_time),
         mesh_name
     );
-    input.orientation = get_mesh_orientation(get_attribute(usd_mesh.GetOrientationAttr(), UsdGeomTokens->rightHanded));
+    input.orientation
+        = get_mesh_orientation(get_attribute(usd_mesh.GetOrientationAttr(), UsdGeomTokens->rightHanded, viewing_time));
     input.face_varying_linear_interpolation = get_face_varying_linear_interpolation(
-        get_attribute(usd_mesh.GetFaceVaryingLinearInterpolationAttr(), UsdGeomTokens->cornersPlus1),
+        get_attribute(usd_mesh.GetFaceVaryingLinearInterpolationAttr(), UsdGeomTokens->cornersPlus1, viewing_time),
         mesh_name
     );
     input.vertex_boundary_interpolation = get_vertex_boundary_interpolation(
-        get_attribute(usd_mesh.GetInterpolateBoundaryAttr(), UsdGeomTokens->edgeAndCorner),
+        get_attribute(usd_mesh.GetInterpolateBoundaryAttr(), UsdGeomTokens->edgeAndCorner, viewing_time),
         mesh_name
     );
 
@@ -278,7 +292,8 @@ ImporterMesh convert_usd_mesh(
     std::vector<UsdAttribute> sampled_attributes = {usd_mesh.GetPointsAttr()};
     if (normal_attribute)
         sampled_attributes.push_back(normal_attribute);
-    const GeometrySampleTimes times(usd_mesh.GetPrim(), sampled_attributes, import_options.import_mesh_motion);
+    const GeometrySampleTimes
+        times(usd_mesh.GetPrim(), sampled_attributes, import_options.import_mesh_motion, viewing_time);
     if (skinning) {
         for (const auto& attribute :
              {skinning->GetGeomBindTransformAttr(),

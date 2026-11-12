@@ -81,7 +81,7 @@ void UsdImporterContext::prepare_skinning(const pxr::UsdPrim& root)
             );
     }
     for (const UsdPrim& prim : UsdPrimRange(root, predicate)) {
-        if (!prim.IsA<UsdGeomPointBased>() || !is_renderable(UsdGeomImageable(prim)))
+        if (!prim.IsA<UsdGeomPointBased>() || !is_renderable(UsdGeomImageable(prim), m_initial_time))
             continue;
         const UsdSkelBindingAPI binding(prim);
         const std::string path = prim.GetPath().GetString();
@@ -146,10 +146,8 @@ ImporterSkin UsdImporterContext::import_skeleton(const pxr::UsdSkelSkeletonQuery
     FALCOR_CHECK(topology.Validate(&error), "Invalid skeleton '{}': {}", path.GetString(), error);
     VtMatrix4dArray locals, binds;
     FALCOR_CHECK(
-        (query.ComputeJointLocalTransforms(&locals, UsdTimeCode::Default())
-         || query.ComputeJointLocalTransforms(&locals, UsdTimeCode::EarliestTime()))
-            && query.GetJointWorldBindTransforms(&binds) && locals.size() == order.size()
-            && binds.size() == order.size(),
+        query.ComputeJointLocalTransforms(&locals, m_initial_time) && query.GetJointWorldBindTransforms(&binds)
+            && locals.size() == order.size() && binds.size() == order.size(),
         "Invalid bind/rest transforms for skeleton '{}'",
         path.GetString()
     );
@@ -171,7 +169,7 @@ ImporterSkin UsdImporterContext::import_skeleton(const pxr::UsdSkelSkeletonQuery
         || !animation.GetScalesAttr().HasValue())
         return skin; // Missing TRS components select the rest pose, as in UsdSkel.
     const auto animation_order = animation_query.GetJointOrder();
-    const double rate = m_usd_stage->GetTimeCodesPerSecond();
+    const double rate = get_time_codes_per_second(*m_usd_stage);
     const auto interpolation = m_usd_stage->GetInterpolationType() == UsdInterpolationTypeHeld
         ? AnimationInterpolationMode::step
         : AnimationInterpolationMode::linear;
@@ -226,7 +224,7 @@ void UsdImporterContext::extract_skinning()
             ImporterSkin skin;
             skin.name = path.GetString();
             skin.skeleton_root = skeleton->second.skeleton_root;
-            skin.bind_from_mesh = to_falcor(binding.mesh.GetGeomBindTransform(UsdTimeCode::EarliestTime()));
+            skin.bind_from_mesh = to_falcor(binding.mesh.GetGeomBindTransform(m_initial_time));
             const auto order = binding.skeleton.GetJointOrder();
             VtTokenArray palette;
             if (!binding.mesh.GetJointOrder(&palette))

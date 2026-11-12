@@ -99,6 +99,7 @@ def test_mdl_texture_parameters(
     assert (tmp_path / "regenerated.slang").is_file()
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("textured_default", [False, True], ids=["empty", "srgb-default"])
 @pytest.mark.parametrize(
     "color_spaces, image_mode, gamma, expected_srgb",
