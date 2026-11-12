@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "falcor2/core/config.h"
 #include <sgl/core/config.h>
 
 // If crashpad is enabled, we disable doctest's SEH and signal handlers.
@@ -17,7 +18,9 @@
 #include <filesystem>
 #include <optional>
 #include <sgl/device/device.h>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace falcor::testing {
@@ -26,6 +29,7 @@ struct Options {
     bool nightly{false};
     bool module_cache_enabled{false};
     bool shader_cache_enabled{false};
+    std::optional<sgl::DeviceType> device_type;
     std::filesystem::path module_and_shader_cache_dir = ".shader-cache/tests";
 };
 
@@ -37,8 +41,16 @@ inline Options& options()
 
 // Reserved doctest description metadata. Selection preserves test names and suites.
 inline constexpr const char* NIGHTLY_TEST_DESCRIPTION = "falcor2 nightly";
+inline constexpr const char* DEBUG_NIGHTLY_TEST_DESCRIPTION = "falcor2 debug nightly";
+inline constexpr bool IS_DEBUG_BUILD = std::string_view(FALCOR_BUILD_TYPE) == "Debug";
 
 bool is_nightly_test(const doctest::TestCaseData& test);
+
+/// Device-specific cases are excluded before their bodies run when another API is selected.
+bool is_test_device_selected(
+    const doctest::TestCaseData& test,
+    std::optional<sgl::DeviceType> selected = options().device_type
+);
 
 /// Construct the doctest subcase only when nightly work is enabled, so an excluded
 /// branch is never entered, scheduled, or reported as a successful subcase.
@@ -81,7 +93,7 @@ void static_init();
 void static_shutdown();
 
 /// GPU APIs exercised by the native tests, in execution order.
-/// API-independent checks can use the first entry to run only once.
+/// Use get_device_types() to apply the explicit command-line selection.
 #if SGL_WINDOWS
 inline constexpr std::array DEFAULT_DEVICE_TYPES{sgl::DeviceType::d3d12, sgl::DeviceType::vulkan};
 #elif SGL_LINUX
@@ -89,6 +101,15 @@ inline constexpr std::array DEFAULT_DEVICE_TYPES{sgl::DeviceType::vulkan};
 #elif SGL_MACOS
 inline constexpr std::array DEFAULT_DEVICE_TYPES{sgl::DeviceType::metal};
 #endif
+
+/// Parse a graphics API available in this platform's default native test matrix.
+std::optional<sgl::DeviceType> parse_test_device_type(std::string_view name);
+
+/// Filter a test's supported APIs; API-independent checks can use the first selected entry.
+std::vector<sgl::DeviceType> get_device_types(
+    std::span<const sgl::DeviceType> available = DEFAULT_DEVICE_TYPES,
+    std::optional<sgl::DeviceType> selected = options().device_type
+);
 
 struct GpuTestContext {
     sgl::Device* device;
@@ -120,6 +141,13 @@ void release_cached_devices();
 #define TEST_CASE_NIGHTLY(name) TEST_CASE(name* doctest::description(::falcor::testing::NIGHTLY_TEST_DESCRIPTION))
 #define TEST_CASE_GPU_NIGHTLY(name)                                                                                    \
     TEST_CASE_GPU(name* doctest::description(::falcor::testing::NIGHTLY_TEST_DESCRIPTION))
+
+#define TEST_CASE_DEBUG_NIGHTLY(name)                                                                                  \
+    TEST_CASE(name* doctest::description(::falcor::testing::DEBUG_NIGHTLY_TEST_DESCRIPTION))
+#define TEST_CASE_GPU_DEBUG_NIGHTLY(name)                                                                              \
+    TEST_CASE_GPU(name* doctest::description(::falcor::testing::DEBUG_NIGHTLY_TEST_DESCRIPTION))
+
+#define TEST_CASE_DEVICE(name, device_type) TEST_CASE(name* doctest::description("falcor2 device " #device_type))
 
 #define SUBCASE_NIGHTLY(name)                                                                                          \
     if (const ::falcor::testing::NightlySubcase DOCTEST_ANONYMOUS(nightly_subcase){name, __FILE__, __LINE__})

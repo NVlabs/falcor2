@@ -12,14 +12,30 @@ case. Python CI runs four workers, enables slow tests and uses the persistent
 shader cache. Release also enables image comparisons. Individual phases remain
 available as `unit-test-cpp` and `unit-test-python`.
 
-To experiment with overlapping the native process and the four Python workers:
+Debug CI selects only D3D12 on Windows and Vulkan on Linux, including nightly
+runs. Release retains the complete backend matrix. This policy is applied by
+`tools/ci.py`; direct native/pytest runs keep their usual backend defaults.
+For an explicit local selection, use native `-device-type=d3d12` or pytest
+`--device-type=d3d12` (substitute `vulkan` as needed). The pytest option also
+filters explicit backend parameters and skips hardcoded requests for another
+backend before creating a device. `SLANGPY_DEVICE` continues to set the default
+Python parameter matrix; an explicit `--device-type` takes precedence.
+Existing Vulkan-only regular cases therefore run in Windows Debug nightlies;
+their regular coverage remains in Linux Debug and Release.
+
+Regular CI overlaps the native process and the four Python workers. Nightly
+runs always execute the phases sequentially. To enable overlap in a direct
+regular run of the CI driver:
 
 ```powershell
 python tools/ci.py --config Release --parallel-test-phases unit-test
 ```
 
 `CI_NIGHTLY` and `CI_PARALLEL_TEST_PHASES` provide the equivalent CI settings.
-Phase overlap is opt-in because both processes use the same GPU. The combined
+CI defaults `CI_PARALLEL_TEST_PHASES` to `true`; use `false` or
+`--no-parallel-test-phases` to disable overlap. Nightly takes precedence over an
+explicit overlap request. Direct CI-driver runs without that environment setting
+default to sequential phases. The combined
 command saves phase timings to `reports/test-phases.json`, separate native and
 Python logs, both JUnit reports, and `reports/system-telemetry-combined.json`.
 The combined sampler includes both process trees. The existing
@@ -36,7 +52,8 @@ are deselected before scheduling and do not count as successful coverage.
 New tests are regular unless explicitly tagged. Keep representative assertions in
 regular tests and defer repeated or expensive matrices using source annotations.
 
-Python whole functions use `@pytest.mark.nightly`. Parameter lists can attach
+Python whole modules use `pytestmark = pytest.mark.nightly`; whole functions use
+`@pytest.mark.nightly`. Parameter lists can attach
 `marks=pytest.mark.nightly` to individual `pytest.param` values. For intersecting
 parameter dimensions, use explicit excluded values:
 
@@ -71,11 +88,22 @@ fixtures create devices or other resources. Separate nightly marks still combine
 as alternatives, so a whole-case nightly mark also defers Vulkan.
 
 Native uses `TEST_CASE_NIGHTLY`, `TEST_CASE_GPU_NIGHTLY`, and `SUBCASE_NIGHTLY`.
-Native GPU cases run every supported graphics API in both tiers. Whole-case nightly
-metadata reserves the doctest description `falcor2 nightly`; case and suite names
-stay unchanged.
+For cases that are expensive specifically in Debug, use `TEST_CASE_DEBUG_NIGHTLY`
+or `TEST_CASE_GPU_DEBUG_NIGHTLY`. These require `-nightly` in a compiled Debug
+binary and remain regular in Release. Native GPU cases run every supported
+graphics API unless `-device-type` selects one. Whole-case tier metadata reserves
+the doctest descriptions `falcor2 nightly` and `falcor2 debug nightly`; case and
+suite names stay unchanged. Device-specific host-style cases use
+`TEST_CASE_DEVICE(name, cuda)` so graphics-only runs exclude them before the body.
 Keep at least one regular branch in a mixed-subcase case. If every branch is
 deferred, tag the whole case instead.
+
+The initial Debug-only native set contains the five families taking more than
+10 seconds each in the Windows Debug serial profile: MaterialX emitted-operation
+geometry capabilities, MaterialX uniform emission eligibility, emissive transform
+stretch classification, emissive transform cache contributing entities, and the
+NGX native smoke test. The Python MDL emission, MaterialX emission, glTF backface
+culling, and LSS closest-hit modules are nightly in all configurations.
 
 ## Test assets and regression fixtures
 

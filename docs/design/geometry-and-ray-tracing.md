@@ -1,300 +1,258 @@
 ---
 status: current
 audience: Falcor2 contributors and coding agents
-last_verified: 2026-10-27
-verified_against: "eabf25d588bc365f6773906c930d9d63d6ed6356"
+last_verified: 2026-11-11
+verified_against: "e4bb4b384a6a6888211f4f2593404ec05a884139"
 ---
 
 (falcor2-design-geometry-and-ray-tracing)=
 # Geometry and ray tracing
 
-Falcor2 separates scene-owned geometry from the compact device representation used for ray traversal. A `Geometry`
-retains CPU-side mesh or curve data, including typed per-vertex properties, while an entity's `GeometryInstance`
-supplies placement and per-part materials. During `Scene.update()`, these objects populate `RenderScene` pools,
-shared device buffers, transform records, and two levels of acceleration structure. Optional attributes use separate
-packed buffers and per-hit accessors so they do not enlarge the hot traversal vertex. A fixed hit-group policy and
-`SceneRayTracingSetup` keep instance IDs, shader-table ordering, geometry types, and Slang hit reconstruction
-consistent across renderers. Immediate native curve shading can reuse traversal endpoints, while saved hits and
-other reconstruction contexts retain buffer access.
+Falcor2 separates scene-owned geometry and placement from the device representation used for ray traversal.
+Static geometry supplies packed vertices; dynamic geometry owns fixed topology and a deformer that produces
+current and previous vertices on the GPU. `RenderScene` owns pooled storage, a shared buffer-pointer table,
+instance descriptors, transforms, and acceleration structures. Its update orders uploads and deformation before
+bounds and traversal structures. Typed additional attributes remain separate from the hot packed vertices.
+Renderers consume this synchronized representation through scene binding and a common hit-group policy, while
+hit reconstruction distinguishes immediate native curve hits from reusable hit records.
 
 ## Purpose and scope
 
-This page explains live geometry ownership, mesh and curve representation, typed additional vertex attributes,
-instancing, `RenderScene` storage, acceleration-structure updates, hit-group indexing, and renderer ray-tracing
-setup, including the boundary between current-hit intrinsics and reusable hit records. It also records the exact
-vertex deduplication contract applied while imported meshes are still CPU-side data.
+This page explains how live geometry, device storage, updates and hit reconstruction fit together. It defines
+ownership and indexing boundaries that must remain consistent when changing geometry or a renderer. It covers
+the deformation boundary; sample acquisition, clip timing and deformer algorithms are separate concerns.
 
-File decoding and live-scene realization belong in [Scene loading and authoring](scene-loading-and-authoring.md).
-General object lifecycle and update ordering belong in [Scene model](scene-model.md). Material evaluation, light
-sampling, and path-transport policy are outside this page; see their focused pages and
-[Render pipeline](render-pipeline.md).
+[Scene loading and authoring](scene-loading-and-authoring.md) covers decoding and realization;
+[Scene model](scene-model.md) covers object lifecycle. [Geometry deformation](geometry-deformation.md) explains
+sample selection, update scheduling and current/previous vertex history. [Buffer pointers](buffer-pointers.md)
+defines indirect access and resource lifetime. Material evaluation and analytic-light transport belong to their
+respective pages.
 
 ## Architecture
 
-### Scene geometry and placement
+### Geometry, deformation and placement
 
-`Scene` owns `StaticMeshGeometry` and `StaticCurveGeometry` objects. Each mesh sub-mesh has packed position,
-normal, tangent, handedness and UV vertices plus triangle indices. Loading extracts its referenced vertices in
-first-reference order and applies the same remap to additional attributes. A static curve stores packed
-center/radius/UV0 vertices and segment indices for linear swept spheres (LSS), plus optional per-control-point
-attributes. List-form segment pairs are converted to the successive convention required by the device path,
-duplicating or reordering endpoints and their attributes when pairs are not already adjacent.
+`Scene` owns static and dynamic mesh and curve geometry. Meshes contain sub-meshes of packed position, normal,
+tangent, handedness and UV vertices with triangle indices. Curves use packed center/radius/UV vertices and
+successive segment indices for linear swept spheres (LSS). Static authoring copies caller data into owned
+storage. Mesh extraction preserves first-reference order and remaps additional attributes consistently; curve
+list conversion duplicates or reorders endpoints and attributes when segment pairs are not adjacent.
 
-A `GeometryInstance` component attaches geometry to an entity. The entity supplies the world transform, while the
-component supplies one material slot per contained render geometry. A mesh creates one low-level triangle geometry
-per sub-mesh and groups them; a curve creates one LSS geometry and a one-entry group. The component creates one
-low-level group instance and exposes the base `GeometryInstanceID` plus the number of consecutive descriptors owned
-by that instance after update. Missing material slots use material ID zero.
+`DynamicMeshGeometry` and `DynamicCurveGeometry` own prepared topology, static additional attributes and one
+typed `GeometryDeformer`. Geometry owns the output ranges; the deformer chooses input samples and history work.
+Attached deformers register with shared typed updaters owned by the corresponding render-geometry collection.
+Updaters prepare participants and batch GPU work, while geometry supplies current/previous output pointers.
+Replacing topology and deformer together recreates render state and resets history.
 
-The public `GeometryGroup` is an unimplemented placeholder; internal `RenderGeometryGroup` is the working collection.
+A `GeometryInstance` component combines geometry with an entity transform and per-part materials. A mesh creates
+one low-level triangle entry per sub-mesh; a curve creates one LSS entry. Entries form a homogeneous
+`RenderGeometryGroup`, shared by its placed instances. The public `GeometryGroup` class remains a placeholder;
+`RenderGeometryGroup` is the working internal collection. Missing material slots use material ID zero.
 
-### Additional vertex attributes
+### Pooled device storage
 
-Meshes and curves accept non-owning `GeometryVertexAttributeDesc` records describing semantic, index, type,
-component count, byte layout and data pointer. Geometry validates and copies streams into owned, tightly packed
-`GeometryVertexAttribute` storage. Python `MeshVertexAttribute` arrays and existing mesh-property convenience
-arguments feed this same representation.
+`RenderScene` maintains typed handle pools for geometries, groups, instances and transforms. Packed vertices
+and indices occupy ranges in lazy `ManagedBufferPool` storage, rather than one device buffer per geometry.
+Static and dynamic vertices use separate pools. Allocation selects a tuple width: static vertices need one
+buffer; dynamic vertices need two synchronized buffers with the same offset for current and previous data.
+Index storage is shared within the geometry type. Procedural LSS bounds have synchronized primitive ranges.
 
-`Scene` assigns attribute IDs in a 32-bit namespace: UV0-7 occupy IDs 0-7, color zero uses ID 8, and named properties
-use monotonic scene-lifetime IDs 16-31. Core packed properties need no additional ID. Material reads can reserve
-names without establishing storage or presence. The first geometry source fixes type and width; later sources must
-agree. Reads retain their requested type and fallback, while availability remains per geometry.
+All geometry pools publish into one scene-wide `BufferHandleTable`. Despite its name, the table stores
+`BufferPtr` values. A geometry descriptor carries table indices and element offsets; shader loaders resolve a
+pointer, form the appropriate typed view and index the allocation. Tuple members occupy consecutive table
+entries. Reallocation refreshes the table before table-based traversal and shading readers use it. Pointer
+values do not own resources or establish barriers; the pools and update pass retain those responsibilities.
 
-CPU geometry retains types outside the shader ABI, warning when lowering cannot expose one. The supported ABI is
-Boolean, signed 32-bit integer, half, and float with one through four components; Boolean values become packed
-zero-or-one bytes. Ordinary float32 float2 UV0 resides in `PackedTriangleVertex` or `PackedLSSVertex`; wider UV0
-and other properties use additional streams. LSS surface reconstruction interpolates the packed endpoint UVs.
+The pools use CPU-backed `ManagedVector` storage. Ordinary static updates upload dirty ranges. Dynamic output
+pools suppress ordinary CPU uploads and are written by deformation kernels. Dynamic geometry creation,
+destruction or data replacement can request collection-wide deformation initialization: the implementation
+recomputes output and resets history rather than preserving GPU output across pool growth. The independent
+`DeviceVector` utility supports content-preserving growth, but that behavior is not the geometry-pool contract.
 
-### RenderScene storage
+### Typed additional attributes
 
-`RenderScene` is the scene's private renderer-facing geometry layer. Typed integer handles address pools for triangle
-geometry, LSS geometry, analytic area-light geometry, geometry groups, instances, and transforms. Triangle and LSS
-pools allocate ranges in shared
-managed arrays for packed vertices and indices; a handle-indexed descriptor records each range. Dirty ranges are
-uploaded to device buffers rather than giving every geometry a separate vertex or index buffer.
+Non-owning `GeometryVertexAttributeDesc` inputs are validated and copied into owned, tightly packed streams.
+Scene attribute IDs occupy a 32-bit mask: UV0-7 use IDs 0-7, color zero uses 8, and named properties receive
+monotonic scene-lifetime IDs 16-31. Material readers may reserve a name before geometry establishes its type and
+width. Subsequent sources for the same named property must agree; presence remains per geometry.
 
-Triangle and LSS pools each own `RenderGeometryAdditionalAttributeStorage`. Each geometry has 33 two-word records:
-a presence mask followed by descriptors in attribute-ID order. Mask testing and population count locate byte offset,
-type and width without searching. Values use a separate aligned raw buffer, updated and bound only when that
-geometry type has additional streams. Zero-mask rows remain valid.
+The shader ABI supports Boolean, signed 32-bit integer, half and float values with one to four components.
+Boolean values are normalized to zero-or-one bytes. Unsupported source types can remain in CPU geometry but
+are omitted from shader lowering with a warning. Ordinary float32 float2 UV0 is already packed with the vertex;
+wider UV0 and other properties use additional streams. Dynamic geometry keeps these additional streams static.
 
-Each `RenderGeometryGroup` contains entries of one geometry type: triangles, LSS, or analytic area lights. It owns a
-bottom-level acceleration
-structure (BLAS): a device search structure over the primitives of one reusable geometry group. A corresponding
-`RenderGeometryInstance` references the group, one lazily created entity transform, and its material IDs. For
-shaders, `RenderScene` builds one `GeometryInstanceDesc` per geometry inside every group. The descriptors identify
-geometry type, geometry handle, material, transform, and buffer ranges. Separate arrays hold current, inverse, and
-previous transforms for shading and motion vectors.
+Triangle and LSS collections each own `RenderGeometryAdditionalAttributeStorage`. Every geometry has a row of
+33 two-word records: a presence mask followed by present descriptors in attribute-ID order. Mask testing and
+population count locate each stream's byte offset, type and width. Values occupy a separate aligned raw buffer,
+so optional attributes do not enlarge traversal vertices. Empty rows remain valid; raw data is uploaded and
+bound only when that geometry type has additional streams.
 
-One low-level group instance contributes one native instance to the top-level acceleration structure (TLAS): a
-device search structure over placed BLASes and their transforms. Its native instance ID is the base index of that
-group's shader descriptors. Within a hit shader, `InstanceID() + GeometryIndex2()` therefore selects the descriptor
-for the exact sub-mesh or curve entry that was hit. `Scene.bind()` exposes the TLAS, geometry buffers, descriptors,
-and transform arrays under `g_scene`.
+### Instances and acceleration structures
 
-LSS uses native hardware primitives when the device advertises support. Otherwise, Falcor2 computes segment
-axis-aligned bounding boxes, builds procedural primitives, and supplies a custom intersection shader. Both paths
-retain the same scene-facing LSS descriptors and hit-information interface. Analytic light intersection and
-transport semantics belong in [Lighting and sampling](lighting-and-sampling.md).
+A geometry group owns a bottom-level acceleration structure (BLAS) over its triangle, LSS or analytic-light
+primitives. A placed group contributes one native instance to the top-level acceleration structure (TLAS).
+Instances share the BLAS while providing transforms and material assignments.
 
-### Procedural LSS mathematics and native policy
+`RenderScene` emits one `GeometryInstanceDesc` for every entry in every placed group. The native instance ID is
+the base descriptor index, so `InstanceID() + GeometryIndex2()` selects the exact sub-mesh or curve entry.
+Descriptors identify geometry, material and transform and carry the buffer-range and motion information needed
+by shaders. Current, inverse and previous transforms are stored separately. `Scene.bind()` exposes the TLAS,
+pointer table, descriptors and resources under `g_scene`.
 
-The fallback uses the tangent-cone geometry and clipping planes of
-[Han et al. (2019)](https://doi.org/10.1111/cgf.13703), Section 3.2.2
-([author copy](https://www.sci.utah.edu/~feng/assets/papers/tubes.pdf)). An endpoint quadratic avoids a distant apex
-near equal radii and remains defined for cylinders.
-[Embree's cone intersector](https://github.com/RenderKit/embree/blob/3d9cb89b9ea099c630e6272d37767e7dd4e78e74/kernels/geometry/roundline_intersector.h#L229-L332)
-implements an equivalent quadratic under
-[Apache-2.0](https://github.com/RenderKit/embree/blob/3d9cb89b9ea099c630e6272d37767e7dd4e78e74/LICENSE.txt);
-this is a mathematical comparison, not a provenance claim.
+LSS uses native primitives when the device supports them, unless the implementation's force-procedural switch
+is enabled. Otherwise a GPU pass computes segment bounding boxes and traversal uses a procedural intersection
+shader. Both paths expose the same logical geometry and hit interface. Analytic-light geometry has its own type
+and hit-group block; its transport semantics belong in [Lighting and sampling](lighting-and-sampling.md).
 
-Let `a = p1 - p0`, `dr = r1 - r0`, `q = x - p0`, and `g = dot(a, a) - dr*dr`. Minimizing
-`|q - u*a|^2 - (r0 + u*dr)^2` over the interpolated spheres gives, for `g > 0`,
+### Hit groups and reconstruction
 
-```text
-u(q) = (dot(q, a) + r0*dr) / g
-F(q) = g * (dot(q, q) - r0*r0) - (dot(q, a) + r0*dr)^2 = 0
-```
+The scene's `HitGroupPolicy` fixes three ray-type slots and three geometry types, with records shared per type.
+The TLAS contribution is `geometry_type * ray_type_count`; the geometry contribution multiplier is zero.
+The shader table orders triangle, LSS and analytic-light blocks, then ray types, independently of instance count.
 
-Clipping `u` to the segment gives Han's tangent planes. Substituting the shifted ray gives
-`A*t*t + 2*B*t + C = 0` (Embree's `B` is twice this coefficient). Cross-product identities reduce cancellation
-near axis-parallel cylinders; `fma` preserves the small radius-difference contribution in `C`. For `g <= 0`,
-containment eliminates the body. Nonunit directions support instance scaling. Centered coordinates, signed roots,
-stable entry-root selection, a linear case and explicit zero-radius handling address numerical edge cases.
+`SceneRayTracingSetup` derives miss, closest-hit, any-hit and procedural-intersection entry points from renderer
+ray descriptions. It pads omitted ray types, can omit real records for unused geometry types and enables the
+hardware-LSS pipeline flag when needed. Native pipeline creation and SlangPy dispatch consume the same metadata.
 
-Hit acceptance follows the [native LSS intersection rules](https://docs.vulkan.org/spec/latest/chapters/raytraversal.html#ray-intersection-candidate-determination):
-only the entry boundary is accepted. Starting inside a segment, entering through its disabled cap, or clipping
-its entry with `t_min` does not expose an exit as a replacement hit. `Scene.intersect_lss` implements
-[successive-index chained caps](https://docs.vulkan.org/refpages/latest/refpages/source/VkRayTracingLssPrimitiveEndCapsModeNV.html):
-both caps on the first primitive and only the trailing cap on subsequent primitives.
+`IDeferredHitInfo.create()` produces geometry-specific hit information. Packed hits retain geometry type,
+instance identity, primitive index and local hit coordinates. LSS coordinates include caps. Immediate native
+LSS shading may obtain endpoints from `GetLssPositionsAndRadii()` through the default-false
+`HasTracingIntrinsics` generic. The reference tracer enables it only for native LSS closest-hit shading under
+both its simple and SER schedulers. UVs and transforms still come from buffers.
 
-Rejection is per segment: another segment's enabled cap remains hittable from inside a strand. Whole-tube CSG
-merging and neighboring-cone subtraction are excluded because they would change native chained-cap semantics.
-
-The generic `intersect_ray_linear_swept_sphere_han19` utility retains the tangent-cone/unit-cone method and nearest
-component-hit behavior, including possible exit hits; scene traversal no longer calls it. `curve_parameters_to_hit_pos`
-uses Han's tangent geometry to reconstruct accepted hits from Falcor's cap-inclusive axial/azimuthal coordinates.
-
-### Hit groups and renderer setup
-
-The scene currently fixes `HitGroupPolicy` to three ray-type slots and three geometry types, with shader-table records
-shared per geometry type. The TLAS instance contribution is therefore `geometry_type * ray_type_count`; the geometry
-contribution multiplier is zero. The shader binding table is ordered by triangle, LSS, or area-light type, then
-ray type, independent of instance count.
-
-`SceneRayTracingSetup` is the renderer-facing bridge for that policy. Given ray descriptions, it derives standard
-miss, closest-hit, any-hit, and procedural intersection entry-point names, pads omitted types with dummy records,
-and can omit real records for unused geometry types. It also enables the hardware-LSS pipeline flag
-when required. The helper exposes this metadata to Python and can link a native program, pipeline, and shader table;
-the reference path tracer passes the same metadata to SlangPy's ray-tracing dispatch.
-
-### Current-hit endpoint reuse
-
-`IDeferredHitInfo.create()` produces a geometry-specific `IHitInfo`. Native LSS hit creation uses
-`GetLssPositionsAndRadii()` to compute cap-inclusive axial/azimuthal coordinates. Packing retains geometry type,
-instance identity, primitive index and those coordinates, without endpoints or an intrinsic-availability flag.
-
-The reference tracer enables the default-false `HasTracingIntrinsics` generic only in its native LSS closest-hit
-callback. It reaches `Scene.make_surface_interaction` at the ordinary shading point under both schedulers.
-`detail::load_lss_segment` then selects native endpoints instead of buffer positions/radii. Buffer-backed UV
-interpolation, curve reconstruction, coordinate conversions and transform access remain unchanged.
-
-The helper's stage switch admits the intrinsic in closest-hit and any-hit stages and preserves compute/query
-callability under Slang's capability checking. Other stages use buffers. The tracer's any-hit opacity path does
-not enable the capability. Cached hits, procedural LSS, generic/query callers and previous-position reconstruction
-also use buffers. Current-hit intrinsics cannot supply deformation or transform history.
+Cached hits, procedural hits, query callers, opacity any-hit shading and previous-position reconstruction keep
+buffer access. The helper admits the intrinsic only in supported hit stages, but stage eligibility alone does
+not prove that a supplied hit is the current native hit. Persistent hits and payloads carry neither endpoints
+nor an intrinsic-availability flag.
 
 ## Runtime flow
 
 ```text
- CPU mesh or curve data
-          |
-          v
- Geometry ---- GeometryInstance ---- Entity transform
-          \             |                  /
-           +------ Scene.update() --------+
-                         |
-              packed shared buffers
-                         |
-              geometry group -> BLAS
-                         |
-              placed group(s) -> TLAS
-                         |
-          hit-group table + bound g_scene
-                         |
-                 renderer traversal
+ scene geometry + deformer       instance materials + entity transforms
+             |                                  |
+             +----------- Scene.update() -------+
+                                |
+                    uploads + GPU deformation
+                                |
+                   LSS bounds + pointer table
+                                |
+                   dirty group BLAS build/refit
+                                |
+                    instance records + TLAS
+                                |
+                 bound g_scene + hit-group table
+                                |
+                      renderer traversal
 ```
 
-1. Import or programmatic authoring fills CPU-side geometry and marks its render state dirty. Supported additional
-   streams register fixed or named scene IDs when geometry is attached or reauthored, reusing any names already
-   reserved by material codegen. `Scene.update()` processes
-   geometry before entity transforms and components. A static geometry update recreates its low-level entries and
-   group; a component update recreates its low-level instance when geometry or materials change.
-2. Geometry lowering preserves remapped vertex order and normalizes Boolean data. `RenderScene` uploads dirty core,
-   additional-attribute, and transform ranges. Changed geometry dirties its groups and their instances; changed
-   transforms mark only referencing instances.
-3. Before BLAS construction, pending geometry uploads are submitted. The current implementation rebuilds every
-   geometry-group BLAS whenever any group is dirty, allocating a new structure for each group. There is no BLAS
-   refit path. A shared scratch buffer grows to the largest build requested and is reused.
-4. Structural, group, material, culling, or opacity changes regenerate logical descriptors and native TLAS instance
-   records. Transform-only changes preserve their layout; a compute kernel patches transforms from scene buffers.
-5. TLAS work is skipped for descriptor-payload-only changes or clean instance state. Transform-only changes use
-   in-place TLAS update (refit) by default; other changes perform a full build. New allocations require a full build.
-   With no instances, the bound TLAS is null.
-6. Renderer compilation obtains the scene's requirements and ray-tracing setup. At dispatch, the renderer binds
-   `g_scene`; traversal selects the geometry-type/ray-type record, and the generated hit wrapper reconstructs the
-   logical geometry instance and typed hit information used by shading. With custom attributes enabled, a
-   `SurfaceInteraction` retains packed hit identity and creates a triangle, LSS, or invalid `IGeomPropAccessor` for
-   typed values and object/world transforms.
+1. Scene updates synchronize geometry before entity/component render state. Static reauthoring replaces
+   low-level entries and groups. Dynamic preparation updates existing fixed output ranges; deformation dirtiness
+   reaches geometry consumers, including emissive geometry, without treating each frame as topology replacement.
+2. `RenderScene` uploads descriptors, indices and static data, then prepares and dispatches geometry updaters.
+   Dynamic buffers transition for writes and subsequent reads explicitly. LSS bounds consume the resulting
+   current vertices through direct pointer work records. The shared table is then refreshed for traversal and
+   shading readers.
+3. Only dirty geometry groups receive BLAS work. Dynamic groups allow updates; a refit requires an existing
+   BLAS, a refit request and no rebuild request. Rebuild takes precedence. Full builds reuse a sufficiently large
+   allocation, and new or undersized allocations require a full build. Shared scratch storage covers build and
+   update requirements; pending geometry work is submitted before BLAS execution.
+4. Structural, group, material, culling or opacity changes regenerate instance records. Transform-only changes
+   preserve their layout and use a compute pass to patch native transforms from scene buffers.
+5. Clean or descriptor-payload-only instance changes skip TLAS work. Transform-only changes use in-place TLAS
+   update by default; other changes and new allocations require a full build. A changed BLAS group currently
+   causes a full TLAS build even when the BLAS itself was refitted. An empty scene binds a null TLAS.
+6. The renderer resolves scene requirements and ray-tracing setup, binds synchronized resources and dispatches.
+   Hit wrappers recover the logical instance and surface interaction. Motion reconstruction combines previous
+   vertices, where available, with previous transforms; additional-property access uses the same hit identity.
 
 ## Invariants and rationale
 
-Instances share geometry groups and BLASes while supplying different transforms and materials. A group's geometry
-type must be uniform because its TLAS contribution selects one hit-group block.
+### Identity, history and traversal policy
 
-`GeometryInstanceID` identifies a descriptor snapshot, not a persistent scene object. A component exposes its first
-descriptor and `geometry_instance_count`. Structural updates can repack indices; resolve entity identity against
-the synchronized scene. Geometry and transform edits reach device state through `Scene.update()`.
+`GeometryInstanceID` identifies a synchronized descriptor snapshot, not a persistent scene object. A component
+exposes its base ID and consecutive descriptor count; structural updates can repack them. Geometry groups must
+be homogeneous because one TLAS contribution selects one geometry-type block.
 
-Opacity is conservative at the traversal boundary. Geometry build inputs are marked opaque, but when any current
-material requires opacity evaluation, every triangle TLAS instance receives the native `no_opaque` flag and
-renderers request the corresponding any-hit entry points. This is a scene-wide choice today; material-level opacity
-semantics belong in the material-system design.
+Dynamic topology and vertex correspondence stay fixed while deforming. Current and previous vertex ranges share
+indices. Deformer history distinguishes initialization, changed inputs and catching previous data up on a paused
+frame. Catch-up alone does not mark current geometry deformed. Geometry replacement or collection initialization
+resets history; callers must not assume continuity across such changes.
 
-Imported mesh deduplication compares meaningful bytes of every declared attribute, ignoring padding and preserving
-first occurrence. Hashes select buckets; byte comparison resolves collisions and preserves authored seams. The
-dependency-free remapper returns both mapping directions for consistent index and attribute rewriting.
-`StaticMeshGeometry` subsequently extracts self-contained sub-meshes; that operation is not another deduplication.
+Opacity remains conservative: geometry build inputs are opaque, but any opacity-requiring material makes all
+triangle TLAS instances non-opaque so renderers can evaluate any-hit opacity. Backface culling is a separate
+contract. Each instance stores eligibility derived from its configured material list; material culling edits
+update it without replacing the instance handle. Reference-tracer culling is an explicit, default-off renderer
+specialization. Ineligible instances disable native culling, and picking remains two-sided.
 
-Additional attributes do not enlarge packed vertices or acceleration-structure inputs. The mask-and-rank layout
-bounds geometry to 32 shader-visible properties and keeps lookup constant-time. Fixed IDs are authoring-order
-independent; scene-wide named IDs avoid per-mesh name searches. Registration changes runtime data without itself
-invalidating scene shader requirements.
+### LSS intersection and endpoint reuse
 
-Floating-point access converts half or float data to the requested width, zero-fills trailing components, and
-interpolates over the hit. Integer and Boolean access chooses the greatest-weight triangle vertex or nearer LSS
-endpoint; ties favor the first vertex. Missing or type-mismatched queries fail with zero output. Ordinary
-float32 float2 UV0 for triangles and LSS comes from `SurfaceInteraction.uv`; wider UV0 is also an additional attribute.
+The procedural scene intersector solves an endpoint quadratic for the tangent-cone body, including the cylinder
+case, and tests enabled endpoint caps. It accepts the entry boundary only: starting inside a segment, clipping
+its entry with `t_min`, or entering through a disabled cap does not substitute an exit hit. Successive-index
+chains enable both caps on the first primitive of each chain and only the trailing cap thereafter. Acceptance
+is per segment; whole-strand CSG merging would change that contract.
 
-Enabling `HasTracingIntrinsics` promises that the supplied hit is the current native LSS hit; shader stage alone
-does not establish this. No endpoint state is added to packed hits or ray payloads. Access changes can affect
-floating-point optimization, so matching endpoint bits alone does not establish identical rendered paths.
-Native-hit image tests complement generic/query reconstruction tests.
+The generic `intersect_ray_linear_swept_sphere_han19` utility has different nearest-component semantics and can
+return exits; scene traversal does not call it. Reconstruction uses the cap-inclusive coordinates of accepted
+hits. Current-hit intrinsics replace only endpoint reads and cannot provide previous geometry or transform
+history. Matching endpoint bits alone does not prove identical floating-point shading paths, so native-hit
+render tests complement generic reconstruction coverage.
 
-`SceneConfig.enable_custom_attributes` is immutable and defaults to enabled. Disabling it specializes packed hit
-identity out of `SurfaceInteraction`, leaving the invalid accessor fallback. MaterialX and MDL both use the
-production per-hit accessor; the former static mock-provider interface has been removed.
-MaterialX-specific name and semantic lowering is described in [MaterialX integration](materialx-integration.md).
+### Attribute and remapping contracts
+
+Importer deduplication compares meaningful bytes of every declared stream, ignoring padding and preserving the
+first occurrence. Hashes choose buckets; exact comparison resolves collisions. The remap applies to indices and
+all attributes, preserving authored seams. Subsequent sub-mesh extraction is not another deduplication pass.
+
+Floating-point property access converts half/float values, zero-fills trailing components and interpolates at
+the hit. Integer and Boolean access selects the greatest-weight triangle vertex or nearer LSS endpoint, with
+ties favoring the first vertex. Missing or incompatible queries fail with zero output; convenience getters apply
+their fallback. Ordinary float2 UV0 comes from the surface interaction.
+
+`SceneConfig.enable_custom_attributes` is immutable and defaults to enabled. Disabling it removes packed hit
+identity from `SurfaceInteraction` and selects an invalid accessor. When enabled, MaterialX and MDL use the
+production geometry accessor. Attribute registration changes runtime data without itself invalidating shader
+requirements; geometry availability and other scene capabilities are tracked separately.
 
 ## Source landmarks
 
-- `src/falcor2/render/geometry.h`, `src/falcor2/render/geometry/geometry_vertex_attribute.cpp`,
-  `src/falcor2/render/geometry/geometry_attribute_registry.cpp`,
-  `src/falcor2/render/geometry/static_mesh_geometry.cpp`,
-  `src/falcor2/render/geometry/static_curve_geometry.cpp`, and `src/falcor2/render/geometry/geometry_group.h` - CPU
-  geometry, generic vertex streams, scene attribute IDs, packing, remapping, bounds, low-level group creation, and
-  the public placeholder.
-- `src/falcor2/render/scene.cpp`, `src/falcor2/render/component/geometry_instance.cpp`, and
-  `src/falcor2/render/entity.cpp` - update order, placement, material slots, lazy render transforms, base IDs, and
-  component synchronization.
-- `src/falcor2/render/render_scene.h` and `src/falcor2/render/render_scene.cpp` - typed pools, shared device arrays,
-  descriptor construction, dirty propagation, BLAS/TLAS builds, transform history, and shader binding.
-- `src/falcor2/render/ray_tracing_policy.h` and `src/falcor2/render/ray_tracing_setup.cpp` - hit-group arithmetic,
-  entry-point collection, dummy records, shader-table ordering, and LSS pipeline flags.
-- `slang/falcor2/render/scene_types.slang`, `slang/falcor2/render/scene.slang`, and
-  `slang/falcor2/render/scene_ray_tracing.slangh` - shared IDs, bound scene layout, and generated hit wrappers.
-- `slang/falcor2/render/geomprop_accessor.slang`,
-  `slang/falcor2/render/geometry/triangle_geometry_types.slang`,
-  `slang/falcor2/render/geometry/triangle_geometry.slang`, and
-  `slang/falcor2/render/geometry/lss_geometry.slang` - packed attribute ABI, typed geometry-polymorphic access,
-  transform queries, hit reconstruction, surface interactions, and production per-hit property access.
-- `slang/falcor2/render/geometry/lss_geometry_types.slang`, `slang/falcor2/render/hit_info.slang`, and
-  `slang/falcor2/rendernodes/reference_pathtracer.slang` - packed curve vertices, persistent/deferred hit contracts,
-  native endpoint eligibility, and reconstruction placement under simple and SER scheduling.
-- `src/falcor2/importers/vertex_remap.h`, `src/falcor2/importers/vertex_remap.cpp`, and
-  `src/falcor2/importers/importer_types.cpp` - exact, collision-safe importer vertex remapping and stream compaction.
-- `src/falcor2_ext/render/scene.cpp`, `src/falcor2_ext/render/mesh.cpp`, and
-  `src/falcor2_ext/render/ray_tracing_setup.cpp` - Python scene, mesh-editing, instance-ID, and setup interfaces.
-- `tests/native/render/test_scene.cpp`, `tests/native/render/test_static_curve_geometry.cpp`, and
-  `tests/native/importers/test_vertex_deduplication.cpp` - shader-table layout, placement, curve conversion, and
-  remapping, attribute-registry, allocation-enablement, and deduplication invariants.
-- `tests/python/render/test_static_mesh_geometry.py`, `tests/python/render/test_geometry_properties.py`,
-  `tests/python/render/test_geometry_properties.slang`, `tests/python/render/test_object_ids.py`, and
-  `tests/python/pathtracer/test_pathtracer.py` - Python authoring/readback, typed triangle and LSS attribute access,
-  multi-geometry allocation and update, specialization, opacity, and end-to-end traversal.
-- `tests/python/pathtracer/test_lss_closest_hit.py`, `tests/python/pathtracer/test_lss_closest_hit.slang`,
-  `tests/python/render/test_usd_curves.py`, and `tests/python/render/test_motion_vectors.py` - native/procedural
-  closest hits, UV interpolation, collapsed segments, cached reconstruction, and previous-position behavior.
-- `examples/pathtracer/simple.py` and `examples/pathtracer/headless.py` - interactive and headless consumers of the
-  same scene geometry and ray-tracing setup.
+- `src/falcor2/render/geometry.h`, `src/falcor2/render/geometry/static_mesh_geometry.cpp`,
+  `src/falcor2/render/geometry/static_curve_geometry.cpp`, and
+  `src/falcor2/render/component/geometry_instance.cpp` - geometry ownership, packing and placement.
+- `src/falcor2/render/geometry/dynamic_mesh_geometry.cpp`,
+  `src/falcor2/render/geometry/dynamic_curve_geometry.cpp`,
+  `src/falcor2/render/geometry/geometry_deformer.h`, and
+  `src/falcor2/render/geometry/vertex_cache_updater.cpp` - output ownership and shared deformation preparation.
+- `src/falcor2/render/render_scene.h`, `src/falcor2/render/render_scene.cpp`, and
+  `src/falcor2/render/scene.cpp` - pools, update order, dirty propagation, BLAS/TLAS and binding.
+- `src/falcor2/utils/managed_buffer_pool.h` and `src/falcor2/utils/buffer_handle_table.h` - lazy typed
+  allocations, buffer tuples and the shared pointer table.
+- `src/falcor2/render/geometry/geometry_attribute_registry.cpp`,
+  `src/falcor2/render/geometry/geometry_vertex_attribute.cpp`, and
+  `src/falcor2/importers/vertex_remap.cpp` - typed streams, IDs and exact remapping.
+- `src/falcor2/render/ray_tracing_policy.h`, `src/falcor2/render/ray_tracing_setup.cpp`,
+  `src/falcor2_ext/render/scene.cpp`, `src/falcor2_ext/render/mesh.cpp`, and
+  `src/falcor2_ext/render/ray_tracing_setup.cpp` - shared policy and Python interfaces.
+- `slang/falcor2/render/scene.slang`, `slang/falcor2/render/scene_ray_tracing.slangh`,
+  `slang/falcor2/render/geomprop_accessor.slang`, and `slang/falcor2/render/geometry/` - device layout,
+  hit wrappers, geometry loaders, property access and LSS intersection/reconstruction.
+- `slang/falcor2/rendernodes/reference_pathtracer.slang` and
+  `falcor2/rendernodes/reference_pathtracer_node.py` - renderer culling and native endpoint eligibility.
+- `tests/native/render/test_scene.cpp`, `tests/native/render/test_dynamic_geometry.cpp`, and
+  `tests/native/importers/test_vertex_deduplication.cpp` - BLAS rebuild/refit, deformation, IDs and remapping.
+- `tests/python/render/test_geometry_properties.py`, `tests/python/render/test_motion_vectors.py`,
+  `tests/python/render/test_mesh_motion.py`, `tests/python/render/test_gltf_backface_culling.py`, and
+  `tests/python/pathtracer/test_lss_closest_hit.py` - typed access, deformation/history, culling and hits.
+- `examples/pathtracer/simple.py` and `examples/pathtracer/headless.py` - consumers of the common setup.
 
 ## Related design documents
 
-- [Falcor2 system overview](overview.md)
+- [Geometry deformation](geometry-deformation.md)
 - [Scene model](scene-model.md)
 - [Scene loading and authoring](scene-loading-and-authoring.md)
+- [Buffer pointers and indirect GPU access](buffer-pointers.md)
 - [Render pipeline](render-pipeline.md)
-- [Falcor2 design documentation](index.md)
 - [Material system](material-system.md)
 - [MaterialX integration](materialx-integration.md)
 - [Lighting and sampling](lighting-and-sampling.md)
+- [Falcor2 design documentation](index.md)

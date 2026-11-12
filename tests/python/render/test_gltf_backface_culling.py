@@ -16,6 +16,8 @@ import falcor2.ui as ui
 from falcor2.editor import SceneShaderHelper
 from falcor2.rendernodes import ReferencePathTracerNode
 
+pytestmark = pytest.mark.nightly
+
 
 def _write_exact_opposite_fixture(
     tmp_path: Path,

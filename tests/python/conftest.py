@@ -18,6 +18,7 @@ import falcor2 as f2
 import falcor2.testing.helpers as helpers
 from falcor2.testing.image_test_plugin import ImageTestPlugin
 from falcor2.testing.tier_selection import deselect_nightly_items
+from falcor2.testing.device_selection import deselect_device_items, parse_device_types
 from falcor2.testing.shader_test_plugin import SlangTestFile, clear_dispatcher_cache
 from falcor2.testing.telemetry_plugin import (
     DEFAULT_TELEMETRY_OUTPUT_PATH,
@@ -46,6 +47,15 @@ class _HelmetSceneEntry:
 
 def pytest_addoption(parser: pytest.Parser):
     """Add command line options for testing."""
+    parser.addoption(
+        "--device-type",
+        metavar="BACKENDS",
+        default=None,
+        help=(
+            "Run GPU tests on these comma-separated backends (d3d12, vulkan, cuda, metal); "
+            "overrides SLANGPY_DEVICE, including explicit device requests"
+        ),
+    )
     parser.addoption(
         "--image-tests-generate",
         action="store_true",
@@ -142,6 +152,13 @@ def _benchmark_requested(config: pytest.Config) -> bool:
 
 def pytest_configure(config: pytest.Config):
     """Configure the image test plugin."""
+    device_type = config.getoption("--device-type")
+    try:
+        helpers.configure_test_device_type(
+            parse_device_types(device_type) if device_type is not None else None
+        )
+    except ValueError as exc:
+        raise pytest.UsageError(str(exc)) from exc
     if _benchmark_requested(config):
         config.option.benchmark = True
 
@@ -252,6 +269,13 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         gen_images = False
 
     deselect_nightly_items(config, items, nightly=nightly)
+    deselect_device_items(
+        config,
+        items,
+        device_type=(
+            helpers.DEFAULT_DEVICE_TYPES if helpers.SELECTED_DEVICE_TYPE is not None else None
+        ),
+    )
 
     for item in items:
         uses_image_test = "image_test" in getattr(item, "fixturenames", [])

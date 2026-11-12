@@ -102,20 +102,30 @@ std::map<pxr::SdfPath, pxr::SdfPath> build_prototype_source_paths(const pxr::Usd
 }
 
 template<typename T>
-T get_light_attribute(const pxr::UsdAttribute& attribute, const pxr::UsdAttribute& legacy_attribute, const T& fallback)
+T get_light_attribute(
+    const pxr::UsdAttribute& attribute,
+    const pxr::UsdAttribute& legacy_attribute,
+    const T& fallback,
+    pxr::UsdTimeCode time
+)
 {
     T value = fallback;
     if (attribute && attribute.IsAuthored())
-        attribute.Get(&value);
+        attribute.Get(&value, time);
     else if (legacy_attribute && legacy_attribute.IsAuthored())
-        legacy_attribute.Get(&value);
+        legacy_attribute.Get(&value, time);
     else if (attribute)
-        attribute.Get(&value);
+        attribute.Get(&value, time);
     return value;
 }
 
 template<typename TUsdLuxDomeLightType>
-void read_dome_light_properties(const TUsdLuxDomeLightType& light, const pxr::UsdPrim& prim, ImporterLight& result)
+void read_dome_light_properties(
+    const TUsdLuxDomeLightType& light,
+    const pxr::UsdPrim& prim,
+    ImporterLight& result,
+    pxr::UsdTimeCode time
+)
 {
     using namespace pxr;
 
@@ -124,18 +134,19 @@ void read_dome_light_properties(const TUsdLuxDomeLightType& light, const pxr::Us
     const SdfAssetPath texture_path = get_authored_attribute(
         light.GetTextureFileAttr(),
         prim.GetAttribute(TfToken("texture:file")),
-        SdfAssetPath()
+        SdfAssetPath(),
+        time
     );
     result.env_map_path = texture_path.GetResolvedPath();
 }
 
-EnvMapPoleAxis get_dome_light_pole_axis(const pxr::UsdLuxDomeLight_1& light)
+EnvMapPoleAxis get_dome_light_pole_axis(const pxr::UsdLuxDomeLight_1& light, pxr::UsdTimeCode time)
 {
     using namespace pxr;
 
     const UsdPrim prim = light.GetPrim();
     TfToken pole_axis = UsdLuxTokens->scene;
-    light.GetPoleAxisAttr().Get(&pole_axis);
+    light.GetPoleAxisAttr().Get(&pole_axis, time);
     if (pole_axis == UsdLuxTokens->scene)
         pole_axis = UsdGeomGetStageUpAxis(prim.GetStage()) == UsdGeomTokens->z ? UsdLuxTokens->Z : UsdLuxTokens->Y;
 
@@ -169,7 +180,7 @@ float4x4 sanitize_planar_light_transform(const pxr::UsdPrim& prim, float4x4 tran
     return transform;
 }
 
-bool read_light_shaping(const pxr::UsdPrim& prim, ImporterLight& light)
+bool read_light_shaping(const pxr::UsdPrim& prim, ImporterLight& light, pxr::UsdTimeCode time)
 {
     using namespace pxr;
 
@@ -180,13 +191,15 @@ bool read_light_shaping(const pxr::UsdPrim& prim, ImporterLight& light)
     light.shaping_cone_angle = get_authored_attribute(
         shaping.GetShapingConeAngleAttr(),
         prim.GetAttribute(TfToken("inputs:shaping:cone:angle")),
-        light.shaping_cone_angle
+        light.shaping_cone_angle,
+        time
     );
     light.shaping_cone_softness = std::clamp(
         get_authored_attribute(
             shaping.GetShapingConeSoftnessAttr(),
             prim.GetAttribute(TfToken("inputs:shaping:cone:softness")),
-            light.shaping_cone_softness
+            light.shaping_cone_softness,
+            time
         ),
         0.f,
         1.f
@@ -195,7 +208,8 @@ bool read_light_shaping(const pxr::UsdPrim& prim, ImporterLight& light)
         get_authored_attribute(
             shaping.GetShapingFocusAttr(),
             prim.GetAttribute(TfToken("inputs:shaping:focus")),
-            light.shaping_focus
+            light.shaping_focus,
+            time
         ),
         0.f
     );
@@ -402,7 +416,7 @@ DecomposedTransform get_xform_at_time(
 }
 
 /// Potentially animated common transforms need helpers for an effective pivot, even if its value is zero.
-std::optional<float3> get_initial_pivot(const pxr::UsdGeomXformable& prim)
+std::optional<float3> get_initial_pivot(const pxr::UsdGeomXformable& prim, pxr::UsdTimeCode time)
 {
     if (!prim.GetPrim().GetAttribute(pxr::TfToken("xformOp:translate:pivot")))
         return std::nullopt;
@@ -413,7 +427,7 @@ std::optional<float3> get_initial_pivot(const pxr::UsdGeomXformable& prim)
     // OpNone retrieves effective common ops without authoring or reordering them.
     if (!xform_api || !xform_api.CreateXformOps(pxr::UsdGeomXformCommonAPI::OpNone).pivotOp)
         return std::nullopt;
-    return get_xform_at_time(xform_api, prim, pxr::UsdTimeCode::EarliestTime()).pivot;
+    return get_xform_at_time(xform_api, prim, time).pivot;
 }
 
 bool has_unreal_exporter_provenance(const pxr::UsdStageRefPtr& stage)
@@ -433,11 +447,13 @@ bool has_unreal_exporter_provenance(const pxr::UsdStageRefPtr& stage)
 
 UsdImporterContext::UsdImporterContext(
     const pxr::UsdStageRefPtr& stage,
+    pxr::UsdTimeCode initial_time,
     const ImportOptions& import_options,
     ustring source_asset_path,
     bool parallel_adds
 )
     : m_usd_stage(stage)
+    , m_initial_time(initial_time)
     , m_resolver_context(stage->GetPathResolverContext())
     , m_source_asset_path(source_asset_path)
     , m_prototype_source_paths(build_prototype_source_paths(stage))
@@ -482,12 +498,13 @@ int UsdImporterContext::push_transform(const pxr::UsdGeomXformable& prim)
 {
     bool resets = false;
     pxr::GfMatrix4d usd_transform;
-    prim.GetLocalTransformation(&usd_transform, &resets, pxr::UsdTimeCode::EarliestTime());
+    prim.GetLocalTransformation(&usd_transform, &resets, m_initial_time);
 
     const pxr::UsdPrim usd_prim = prim.GetPrim();
     const float4x4 transform = sanitize_planar_light_transform(usd_prim, to_falcor(usd_transform));
     const int parent = resets ? root_node_idx() : current_node_idx();
-    const TransformNodes nodes = add_transform_nodes(transform, get_name(usd_prim), parent, get_initial_pivot(prim));
+    const TransformNodes nodes
+        = add_transform_nodes(transform, get_name(usd_prim), parent, get_initial_pivot(prim, m_initial_time));
     m_scene->nodes[nodes.authored].source_asset_ref = source_asset_ref_for_prim(usd_prim);
     // Retain every imported copy so they share the prim's animation channels.
     m_prim_path_to_nodes[usd_prim.GetPath()].push_back(nodes);
@@ -508,7 +525,7 @@ int UsdImporterContext::resolve_material(const pxr::UsdShadeMaterialBindingAPI& 
         geometry_prim = geometry_prim.GetParent();
     bool double_sided = false;
     if (UsdGeomGprim gprim{geometry_prim})
-        gprim.GetDoubleSidedAttr().Get(&double_sided);
+        gprim.GetDoubleSidedAttr().Get(&double_sided, m_initial_time);
 
     auto usd_material = get_bound_material(binding_api);
     std::string material_name = usd_material.GetPath().GetString();
@@ -562,7 +579,8 @@ int UsdImporterContext::resolve_material(const pxr::UsdShadeMaterialBindingAPI& 
                 make_terminal_name(it, "surface"),
                 shader_source_types,
                 context_vector,
-                register_asset
+                register_asset,
+                m_initial_time
             );
         }
 
@@ -573,7 +591,8 @@ int UsdImporterContext::resolve_material(const pxr::UsdShadeMaterialBindingAPI& 
                 make_terminal_name(it, "displacement"),
                 shader_source_types,
                 context_vector,
-                register_asset
+                register_asset,
+                m_initial_time
             );
         }
 
@@ -584,7 +603,8 @@ int UsdImporterContext::resolve_material(const pxr::UsdShadeMaterialBindingAPI& 
                 make_terminal_name(it, "volume"),
                 shader_source_types,
                 context_vector,
-                register_asset
+                register_asset,
+                m_initial_time
             );
         }
     }
@@ -661,7 +681,7 @@ void UsdImporterContext::traverse_scene(const pxr::UsdPrim& root)
             auto is_renderable_prim = [&]()
             {
                 UsdGeomImageable imageable(prim);
-                return !imageable || is_renderable(imageable);
+                return !imageable || is_renderable(imageable, m_initial_time);
             };
 
             if (is_instance) {
@@ -783,7 +803,7 @@ void UsdImporterContext::add_point_instancer(pxr::UsdPrim prim, int node_idx)
     pxr::VtArray<int> prototype_usd_indices;
     UsdAttribute prototype_usd_indices_attr(instancer.GetProtoIndicesAttr());
     if (!prototype_usd_indices_attr.IsDefined()
-        || !prototype_usd_indices_attr.Get(&prototype_usd_indices, UsdTimeCode::EarliestTime())) {
+        || !prototype_usd_indices_attr.Get(&prototype_usd_indices, m_initial_time)) {
         sgl::log_error("Point instancer '{}' has no prototype indices. Ignoring prim.", name);
         return;
     }
@@ -810,8 +830,8 @@ void UsdImporterContext::add_point_instancer(pxr::UsdPrim prim, int node_idx)
     // Keep original array indices aligned with prototype indices and generated node names.
     if (!instancer.ComputeInstanceTransformsAtTime(
             &static_xforms,
-            UsdTimeCode::EarliestTime(),
-            UsdTimeCode::EarliestTime(),
+            m_initial_time,
+            m_initial_time,
             UsdGeomPointInstancer::ProtoXformInclusion::ExcludeProtoXform,
             UsdGeomPointInstancer::MaskApplication::IgnoreMask
         )) {
@@ -828,7 +848,7 @@ void UsdImporterContext::add_point_instancer(pxr::UsdPrim prim, int node_idx)
         return;
     }
 
-    const auto mask = instancer.ComputeMaskAtTime(UsdTimeCode::EarliestTime());
+    const auto mask = instancer.ComputeMaskAtTime(m_initial_time);
     if (!mask.empty() && mask.size() != prototype_usd_indices.size()) {
         sgl::log_error(
             "Point instancer '{}' has {} prototype indices but {} mask entries. Ignoring prim.",
@@ -899,6 +919,7 @@ void UsdImporterContext::extract_mesh(pxr::UsdPrim prim, int node_idx)
     ImporterMesh result = convert_usd_mesh(
         usd_mesh,
         resolve_material_func,
+        m_initial_time,
         m_import_options,
         binding == m_skin_bindings.end() ? nullptr : &binding->second.mesh
     );
@@ -925,6 +946,7 @@ void UsdImporterContext::extract_curve(pxr::UsdPrim prim, int node_idx)
         {
             return resolve_material(binding, name);
         },
+        m_initial_time,
         m_import_options
     );
     if (!geometry)
@@ -961,53 +983,83 @@ void UsdImporterContext::extract_light(pxr::UsdPrim prim, int node_idx)
     result.name = prim.GetPath().GetString();
     result.source_asset_ref = source_asset_ref_for_prim(prim);
     const UsdLuxLightAPI light_api(prim);
-    result.intensity
-        = get_light_attribute(light_api.GetIntensityAttr(), prim.GetAttribute(TfToken("intensity")), result.intensity);
+    result.intensity = get_light_attribute(
+        light_api.GetIntensityAttr(),
+        prim.GetAttribute(TfToken("intensity")),
+        result.intensity,
+        m_initial_time
+    );
     result.color = to_falcor(get_light_attribute(
         light_api.GetColorAttr(),
         prim.GetAttribute(TfToken("color")),
-        GfVec3f(result.color.x, result.color.y, result.color.z)
+        GfVec3f(result.color.x, result.color.y, result.color.z),
+        m_initial_time
     ));
-    result.exposure
-        = get_light_attribute(light_api.GetExposureAttr(), prim.GetAttribute(TfToken("exposure")), result.exposure);
-    result.normalize
-        = get_light_attribute(light_api.GetNormalizeAttr(), prim.GetAttribute(TfToken("normalize")), result.normalize);
+    result.exposure = get_light_attribute(
+        light_api.GetExposureAttr(),
+        prim.GetAttribute(TfToken("exposure")),
+        result.exposure,
+        m_initial_time
+    );
+    result.normalize = get_light_attribute(
+        light_api.GetNormalizeAttr(),
+        prim.GetAttribute(TfToken("normalize")),
+        result.normalize,
+        m_initial_time
+    );
     result.enable_color_temperature = get_light_attribute(
         light_api.GetEnableColorTemperatureAttr(),
         prim.GetAttribute(TfToken("enableColorTemperature")),
-        result.enable_color_temperature
+        result.enable_color_temperature,
+        m_initial_time
     );
     result.color_temperature = get_light_attribute(
         light_api.GetColorTemperatureAttr(),
         prim.GetAttribute(TfToken("colorTemperature")),
-        result.color_temperature
+        result.color_temperature,
+        m_initial_time
     );
 
+    result.geometry_visible = get_attribute(
+        prim.GetAttribute(TfToken("inputs:enableInPrimaryRay")),
+        result.geometry_visible,
+        m_initial_time
+    );
+    result.geometry_visible = get_attribute(
+        prim.GetAttribute(TfToken("karma:light:renderlightgeo")),
+        result.geometry_visible,
+        m_initial_time
+    );
     result.geometry_visible
-        = get_attribute(prim.GetAttribute(TfToken("inputs:enableInPrimaryRay")), result.geometry_visible);
-    result.geometry_visible
-        = get_attribute(prim.GetAttribute(TfToken("karma:light:renderlightgeo")), result.geometry_visible);
-    result.geometry_visible
-        = get_attribute(prim.GetAttribute(TfToken("falcor:geometryVisible")), result.geometry_visible);
+        = get_attribute(prim.GetAttribute(TfToken("falcor:geometryVisible")), result.geometry_visible, m_initial_time);
 
     if (auto distant_light = UsdLuxDistantLight(prim)) {
         result.type = ImporterLight::Type::distant;
         result.degree_angular_diameter = get_light_attribute(
             distant_light.GetAngleAttr(),
             prim.GetAttribute(TfToken("angle")),
-            result.degree_angular_diameter
+            result.degree_angular_diameter,
+            m_initial_time
         );
     } else if (auto rect_light = UsdLuxRectLight(prim)) {
         result.type = ImporterLight::Type::rectangular;
-        result.enable_shaping = read_light_shaping(prim, result);
-        result.width
-            = get_light_attribute(rect_light.GetWidthAttr(), prim.GetAttribute(TfToken("width")), result.width);
-        result.height
-            = get_light_attribute(rect_light.GetHeightAttr(), prim.GetAttribute(TfToken("height")), result.height);
+        result.enable_shaping = read_light_shaping(prim, result, m_initial_time);
+        result.width = get_light_attribute(
+            rect_light.GetWidthAttr(),
+            prim.GetAttribute(TfToken("width")),
+            result.width,
+            m_initial_time
+        );
+        result.height = get_light_attribute(
+            rect_light.GetHeightAttr(),
+            prim.GetAttribute(TfToken("height")),
+            result.height,
+            m_initial_time
+        );
     } else if (auto sphere_light = UsdLuxSphereLight(prim)) {
         result.type = ImporterLight::Type::sphere;
         const float4x4 world_from_light
-            = to_falcor(UsdGeomXformable(prim).ComputeLocalToWorldTransform(UsdTimeCode::Default()));
+            = to_falcor(UsdGeomXformable(prim).ComputeLocalToWorldTransform(m_initial_time));
         if (!is_similarity_transform(world_from_light)) {
             sgl::log_warn(
                 "SphereLight '{}' has non-uniform world scaling or shear; using volume-equivalent uniform scale {}.",
@@ -1015,32 +1067,46 @@ void UsdImporterContext::extract_light(pxr::UsdPrim prim, int node_idx)
                 volume_equivalent_uniform_scale(world_from_light)
             );
         }
-        result.radius
-            = get_light_attribute(sphere_light.GetRadiusAttr(), prim.GetAttribute(TfToken("radius")), result.radius);
-        result.enable_shaping = read_light_shaping(prim, result);
+        result.radius = get_light_attribute(
+            sphere_light.GetRadiusAttr(),
+            prim.GetAttribute(TfToken("radius")),
+            result.radius,
+            m_initial_time
+        );
+        result.enable_shaping = read_light_shaping(prim, result, m_initial_time);
         result.treat_as_point = get_light_attribute(
             sphere_light.GetTreatAsPointAttr(),
             prim.GetAttribute(TfToken("treatAsPoint")),
-            result.treat_as_point
+            result.treat_as_point,
+            m_initial_time
         );
 
         result.enable_virtual_sphere_shrinking
             = m_enable_virtual_sphere_shrinking && result.type == ImporterLight::Type::sphere && !result.treat_as_point;
     } else if (auto cylinder_light = UsdLuxCylinderLight(prim)) {
         result.type = ImporterLight::Type::cylinder;
-        result.enable_shaping = read_light_shaping(prim, result);
-        result.radius
-            = get_light_attribute(cylinder_light.GetRadiusAttr(), prim.GetAttribute(TfToken("radius")), result.radius);
-        result.length
-            = get_light_attribute(cylinder_light.GetLengthAttr(), prim.GetAttribute(TfToken("length")), result.length);
+        result.enable_shaping = read_light_shaping(prim, result, m_initial_time);
+        result.radius = get_light_attribute(
+            cylinder_light.GetRadiusAttr(),
+            prim.GetAttribute(TfToken("radius")),
+            result.radius,
+            m_initial_time
+        );
+        result.length = get_light_attribute(
+            cylinder_light.GetLengthAttr(),
+            prim.GetAttribute(TfToken("length")),
+            result.length,
+            m_initial_time
+        );
         result.treat_as_line = get_light_attribute(
             cylinder_light.GetTreatAsLineAttr(),
             prim.GetAttribute(TfToken("treatAsLine")),
-            result.treat_as_line
+            result.treat_as_line,
+            m_initial_time
         );
 
         const float4x4 world_from_light
-            = to_falcor(UsdGeomXformable(prim).ComputeLocalToWorldTransform(UsdTimeCode::Default()));
+            = to_falcor(UsdGeomXformable(prim).ComputeLocalToWorldTransform(m_initial_time));
         if (!is_axially_symmetric_transform(world_from_light, 0)) {
             sgl::log_warn(
                 "CylinderLight '{}' has radial non-uniform scaling or shear; using an area-equivalent circular "
@@ -1050,18 +1116,22 @@ void UsdImporterContext::extract_light(pxr::UsdPrim prim, int node_idx)
         }
     } else if (auto disk_light = UsdLuxDiskLight(prim)) {
         result.type = ImporterLight::Type::disk;
-        result.enable_shaping = read_light_shaping(prim, result);
-        result.radius
-            = get_light_attribute(disk_light.GetRadiusAttr(), prim.GetAttribute(TfToken("radius")), result.radius);
+        result.enable_shaping = read_light_shaping(prim, result, m_initial_time);
+        result.radius = get_light_attribute(
+            disk_light.GetRadiusAttr(),
+            prim.GetAttribute(TfToken("radius")),
+            result.radius,
+            m_initial_time
+        );
     } else if (auto dome_light = UsdLuxDomeLight(prim)) {
-        read_dome_light_properties(dome_light, prim, result);
+        read_dome_light_properties(dome_light, prim, result, m_initial_time);
     } else if (auto dome_light_1 = UsdLuxDomeLight_1(prim)) {
-        read_dome_light_properties(dome_light_1, prim, result);
-        result.pole_axis = get_dome_light_pole_axis(dome_light_1);
+        read_dome_light_properties(dome_light_1, prim, result, m_initial_time);
+        result.pole_axis = get_dome_light_pole_axis(dome_light_1, m_initial_time);
     }
 
     result.properties = ImporterLight::make_properties(m_import_options, result.type);
-    read_import_property<bool>(prim, "falcor:convertToMesh", result.properties, "convert_to_mesh");
+    read_import_property<bool>(prim, "falcor:convertToMesh", result.properties, "convert_to_mesh", m_initial_time);
 
     if (!result.env_map_path.empty())
         add_asset_to_scene(result.env_map_path);
@@ -1078,7 +1148,7 @@ void UsdImporterContext::extract_camera(pxr::UsdPrim prim, int node_idx)
     using namespace pxr;
 
     const UsdGeomCamera camera_schema(prim);
-    GfCamera usd_camera = camera_schema.GetCamera(0.f);
+    GfCamera usd_camera = camera_schema.GetCamera(m_initial_time);
 
     ImporterCamera result;
     result.name = prim.GetName().GetString();
@@ -1090,7 +1160,7 @@ void UsdImporterContext::extract_camera(pxr::UsdPrim prim, int node_idx)
     // Focal length, per the USD spec, is supposed to be specified in tenths of a USD world unit.
     // However, it seems to always be specified in mm in OV assets.
     result.focal_length = usd_camera.GetFocalLength();
-    camera_schema.GetExposureAttr().Get(&result.exposure, UsdTimeCode::EarliestTime());
+    camera_schema.GetExposureAttr().Get(&result.exposure, m_initial_time);
     const float usd_fstop = usd_camera.GetFStop();
     if (usd_fstop > 0.f)
         result.fstop = usd_fstop;
@@ -1173,9 +1243,7 @@ void UsdImporterContext::extract_animations()
     if (m_prim_path_to_nodes.empty())
         return;
 
-    double time_codes_per_second = m_usd_stage->GetTimeCodesPerSecond();
-    if (time_codes_per_second <= 0.0)
-        time_codes_per_second = 24.0;
+    const double time_codes_per_second = get_time_codes_per_second(*m_usd_stage);
 
     const auto interpolation = m_usd_stage->GetInterpolationType() == pxr::UsdInterpolationTypeHeld
         ? AnimationInterpolationMode::step

@@ -96,21 +96,34 @@ def test_usd_baking_uses_retained_animation(time_seconds: float) -> None:
     assert scene.animation.channels
 
 
-def test_usd_convenience_bake_matches_imported_zero_time() -> None:
+def test_usd_convenience_bake_matches_initial_viewing_time() -> None:
     stage = _animated_stage()
-    original = stage.GetRootLayer().ExportToString()
-    options = f2.ImportOptions()
-    options.usd_import_skinning = True
-    retained = f2.UsdImporter().import_stage(stage, options)
-    retained.bake_pose(0)
-    options.bake_poses = True
-    baked = f2.UsdImporter().import_stage(stage, options)
-    np.testing.assert_array_equal(baked.meshes[0].positions, retained.meshes[0].positions)
-    np.testing.assert_array_equal(baked.meshes[0].normals, retained.meshes[0].normals)
-    assert len(baked.animation.channels) == len(retained.animation.channels)
-    for actual, expected in zip(baked.nodes, retained.nodes):
-        np.testing.assert_array_equal(actual.transform.to_numpy(), expected.transform.to_numpy())
-    assert stage.GetRootLayer().ExportToString() == original
+    for source_rate in (2, 0):
+        stage.SetTimeCodesPerSecond(source_rate)
+        stage.GetRootLayer().ClearStartTimeCode()
+        stage.GetRootLayer().ClearEndTimeCode()
+        for time in (0, 1):
+            if time:
+                stage.SetStartTimeCode(time)
+                stage.SetEndTimeCode(600)
+            original = stage.GetRootLayer().ExportToString()
+            options = f2.ImportOptions()
+            options.usd_import_skinning = True
+            retained = f2.UsdImporter().import_stage(stage, options)
+            rate = stage.GetTimeCodesPerSecond() if stage.GetTimeCodesPerSecond() > 0 else 24
+            for channel in retained.animation.channels:
+                assert np.isfinite(channel.times).all()
+            retained.bake_pose(time / rate)
+            options.bake_poses = True
+            baked = f2.UsdImporter().import_stage(stage, options)
+            np.testing.assert_array_equal(baked.meshes[0].positions, retained.meshes[0].positions)
+            np.testing.assert_array_equal(baked.meshes[0].normals, retained.meshes[0].normals)
+            assert len(baked.animation.channels) == len(retained.animation.channels)
+            for actual, expected in zip(baked.nodes, retained.nodes):
+                np.testing.assert_array_equal(
+                    actual.transform.to_numpy(), expected.transform.to_numpy()
+                )
+            assert stage.GetRootLayer().ExportToString() == original
 
 
 def test_usd_mesh_bindings_share_joint_nodes() -> None:

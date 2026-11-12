@@ -323,6 +323,28 @@ void Scene::set_active_camera(Camera* camera)
     m_initial_camera_selection_pending = false;
 }
 
+MeshBounds Scene::calculate_bounds(const float4x4& transform) const
+{
+    detail::validate_bounds_transform(transform);
+    MeshBounds bounds;
+    for (const Component* component : m_components) {
+        const auto* instance = component->as<const GeometryInstance>();
+        if (instance && instance->is_valid())
+            bounds.expand(instance->calculate_bounds(transform));
+    }
+    return bounds;
+}
+
+void Scene::apply_transform(const Transform& transform)
+{
+    const float4x4 matrix = transform.matrix();
+    detail::validate_bounds_transform(matrix);
+    for (Entity* entity : entities()) {
+        if (entity->is_valid() && !entity->is_builtin() && !entity->parent())
+            entity->set_transform(Transform(mul(matrix, entity->transform().matrix())));
+    }
+}
+
 void Scene::frame_free_camera(float aspect, float2 default_depth_range)
 {
     Camera* camera = m_free_camera;
@@ -424,6 +446,8 @@ void Scene::update_geometry_animation_cache() const
 
 AnimationTimeRange Scene::animation_range() const
 {
+    if (m_imported_playback_range.is_valid())
+        return m_imported_playback_range;
     AnimationTimeRange range;
     for (const ref<Animation>& anim : m_animation_collection.objects()) {
         if (anim->is_valid())

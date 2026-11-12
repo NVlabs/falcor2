@@ -1,0 +1,48 @@
+# Initialize OpenPBR RGB temporaries that Slang cannot prove are assigned by fixed loops.
+# Apply only to the staged shader copy; the upstream submodule remains unchanged.
+# All six initial values are overwritten before use.
+
+--- a/impl/openpbr_bsdf.h
++++ b/impl/openpbr_bsdf.h
+@@ -572,9 +572,9 @@
+ 
+     float dispersion;  // will be set below if dispersion is enabled
+ 
+-    vec3 relative_ior_for_refraction_with_dispersion;
+-    vec3 relative_ior_for_trans_reflection_with_dispersion;
+-    vec3 relative_ior_for_opaque_reflection_with_dispersion;
++    vec3 relative_ior_for_refraction_with_dispersion = {};
++    vec3 relative_ior_for_trans_reflection_with_dispersion = {};
++    vec3 relative_ior_for_opaque_reflection_with_dispersion = {};
+ 
+     if (OPENPBR_GET_SPECIALIZATION_CONSTANT(EnableDispersion) && resolved_inputs.transmission_dispersion_scale > 0.0f &&
+         resolved_inputs.base_metalness < 1.0f)  // dispersion check (subset of openpbr_needs_rgb_wavelengths)
+--- a/impl/openpbr_thin_film_iridescence_utils.h
++++ b/impl/openpbr_thin_film_iridescence_utils.h
+@@ -290,7 +290,7 @@
+ {
+     // Compute Fresnel coefficients at base-to-film interface for dielectric base
+     // Note: Must keep complex r23 to preserve phase under TIR at the base interface
+-    OpenPBR_PolarizedComplex r23[OpenPBR_NumRgbChannels];
++    OpenPBR_PolarizedComplex r23[OpenPBR_NumRgbChannels] = {};
+ 
+     for (int color_channel = 0; color_channel < OpenPBR_NumRgbChannels; ++color_channel)
+     {
+@@ -313,7 +313,7 @@
+     }
+ 
+     // Compute reflectance for each color channel
+-    vec3 reflectance_dielectric;
++    vec3 reflectance_dielectric = {};
+     for (int color_channel = 0; color_channel < OpenPBR_NumRgbChannels; ++color_channel)
+     {
+         reflectance_dielectric[color_channel] =
+@@ -335,7 +335,7 @@
+                                        const vec3 metal_F82_tint)
+ {
+     // Compute reflectance for each color channel
+-    vec3 reflectance_metal;
++    vec3 reflectance_metal = {};
+     for (int color_channel = 0; color_channel < OpenPBR_NumRgbChannels; ++color_channel)
+     {
+         // Compute complex IOR n and k from metal_F0 and metal_F82_tint

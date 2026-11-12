@@ -111,8 +111,7 @@ resolve_asset_attribute(const SdfAssetPath& assetPath, const UsdAttribute& attr,
     return SdfAssetPath(assetPath.GetAssetPath(), resolvedPath);
 }
 
-pxr::VtValue
-resolve_material_param_value(const pxr::UsdAttribute& attr, const UsdTimeCode& time = UsdTimeCode::EarliestTime())
+pxr::VtValue resolve_material_param_value(const pxr::UsdAttribute& attr, const UsdTimeCode& time)
 {
     using namespace pxr;
 
@@ -189,7 +188,8 @@ void walk_graph(
     const pxr::UsdShadeConnectableAPI& shade_node,
     const pxr::TfTokenVector& shader_source_types,
     const pxr::TfTokenVector& render_contexts,
-    const std::function<void(const std::filesystem::path&)>& register_asset
+    const std::function<void(const std::filesystem::path&)>& register_asset,
+    pxr::UsdTimeCode time
 )
 {
     using namespace pxr;
@@ -223,7 +223,8 @@ void walk_graph(
                     UsdShadeConnectableAPI(attr.GetPrim()),
                     shader_source_types,
                     render_contexts,
-                    register_asset
+                    register_asset,
+                    time
                 );
 
                 /// Add relationship
@@ -233,7 +234,7 @@ void walk_graph(
                 );
             } else if (attr_type == UsdShadeAttributeType::Input) {
 
-                const VtValue value = resolve_material_param_value(attr);
+                const VtValue value = resolve_material_param_value(attr, time);
                 if (!value.IsEmpty()) {
                     set_from_value(params, input_name, value);
                     if (value.IsHolding<SdfAssetPath>()) {
@@ -301,7 +302,8 @@ void build_material(
     const std::string_view& terminal_identifier,
     const pxr::TfTokenVector& shader_source_types,
     const pxr::TfTokenVector& render_contexts,
-    const std::function<void(const std::filesystem::path&)>& register_asset
+    const std::function<void(const std::filesystem::path&)>& register_asset,
+    pxr::UsdTimeCode time
 )
 {
     using namespace pxr;
@@ -316,7 +318,8 @@ void build_material(
         pxr::UsdShadeConnectableAPI(usd_terminal),
         shader_source_types,
         render_contexts,
-        register_asset
+        register_asset,
+        time
     );
 
     if (!TF_VERIFY(!nodes.empty()))

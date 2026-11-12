@@ -1021,6 +1021,14 @@ public:
     /// Animation data (single animation per scene, empty channels if no animation).
     ImporterAnimation animation;
 
+    /// Authored playback interval in seconds, independent of key times. Invalid when unspecified.
+    /// Composing imports unions their effective animation ranges when either has an authored interval.
+    AnimationTimeRange playback_range;
+
+    /// Authored playback interval, or the union of transform and geometry sample intervals when unspecified.
+    /// Invalid when neither an authored interval nor animation samples exist. Does not shift key timestamps.
+    AnimationTimeRange animation_range() const;
+
     /// Calculate AABBs for all meshes and nodes in the scene.
     void calculate_aabbs();
 

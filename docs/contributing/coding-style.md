@@ -21,6 +21,7 @@ an intentional cleanup.
 This flexibility applies to style, not correctness, ownership, or API requirements. The configured formatters
 still apply. Account for callers and bindings when renaming a public API.
 
+Architectural explanations live in the
 [design documentation](../design/index.md).
 
 ## Formatting
@@ -296,6 +297,7 @@ cmake --build --preset linux-gcc-release --target falcor2_pydoc
 cmake --build --preset linux-gcc-release
 ```
 
+Include the generation,
 build, and help checks performed in the change description.
 
 ### When generation tools are unavailable

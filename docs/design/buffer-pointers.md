@@ -1,8 +1,8 @@
 ---
 status: draft
 audience: Falcor2 practitioners, contributors and coding agents
-last_verified: 2026-11-05
-verified_against: "c3edb3222c099b4df69c5d09d7f988f8f9310da0"
+last_verified: 2026-11-11
+verified_against: "5dc69ce8590615db2434f1c592287c89d0c27c5f"
 ---
 
 (falcor2-design-buffer-pointers)=
@@ -33,8 +33,9 @@ hold compiler reproductions. `BufferPtr` and `RWBufferPtr` replace Falcor's `Buf
 `BufferOffsetPair`, and `BufferView`, including the `to_handle` and `to_rw_handle` host factories. SGL's
 `BufferOffsetPair` resource ranges and tinygltf's `BufferView` asset records are unrelated and remain in use.
 
-Import `falcor2.utils` to use BufferPtr, as with the other utilities. The implementation is an included part of
-that module. Use subscripts for element access and `load`/`store` for byte-oriented access.
+In Slang, import `falcor2.utils` to use `BufferPtr` and `RWBufferPtr`. Python exposes the pointer types and
+the `to_buffer_ptr` and `to_rw_buffer_ptr` factories directly through `falcor2`. In shaders, use subscripts
+for element access and `load`/`store` for byte-oriented access.
 
 ## Architecture
 
@@ -83,11 +84,16 @@ resource residency integration, and GPU behavior have not been validated. See
 The shader interface intentionally has no runtime bounds checks. Host validation establishes an initial location;
 it cannot validate subsequent shader arithmetic, resource lifetime, or layout compatibility.
 
-## Production consumers
+### Production consumers
 
 Geometry tables and LSS bounds work records carry buffer pointers. Vertex and index readers form typed views with
 `as<T>()` and use element indices. Table indices, pooled allocation offsets, ownership and resource-state handling
 remain with the geometry systems. The host `BufferHandleTable` retains its name but stores BufferPtr payloads.
+
+Deformation work records carry direct source `BufferPtr` values and current/previous `RWBufferPtr` destinations.
+Preparation resolves these locations after pool updates; the updater batches the records while source owners
+and output collections retain resources and declare states. [Geometry deformation](geometry-deformation.md)
+describes this boundary.
 
 Shared glTF, SpecGloss and spilled MaterialX data use allocation pointers in place of separate buffer/offset pairs.
 MDL's read-only data, argument-block and texture-table offsets are relative to its allocation pointer, with
@@ -117,6 +123,10 @@ The Vulkan implementation avoids the native negative-offset lowering problem tra
 [Slang #14305](https://github.com/shader-slang/slang/issues/14305); this is not a prohibition on negative BufferPtr
 indices that remain within the allocation.
 
+Arithmetic requires a non-null pointer and a result within the same allocation or one-past-end, without address
+overflow. On D3D12 the byte offset must remain representable in 32 bits. One-past-end values cannot be accessed;
+shader arithmetic does not check these conditions.
+
 Three alignment interfaces serve different purposes:
 
 | Interface | Responsibility |
@@ -128,8 +138,9 @@ Three alignment interfaces serve different purposes:
 Aligned operations support operands of 4, 8 or 16 bytes. The pointer type accepts only 0, 4, 8 or 16;
 zero selects plain access. `load_alignment` applies to stores as well as loads.
 It neither changes stride nor certifies an address. Arithmetic preserves it, so the caller must ensure each
-effective address satisfies the promise, not just the allocation base. Plain access still requires the backend's
-natural type alignment and the portable four-byte access granularity.
+effective address satisfies the promise, not just the allocation base. Every access requires a complete value
+whose nonzero size is divisible by four, and an address aligned to at least four bytes and the type's natural
+alignment. Plain access preserves these requirements.
 
 ### Layout compatibility must include fields
 
@@ -155,9 +166,10 @@ Explicit native-backend casts may change access mode; a writable result still re
 rejects access-mode changes because reinterpreting an SRV index cannot produce the required UAV, or vice versa.
 Obtain the other access mode from the host factory instead.
 
-Equality accepts compatible pointees, including typed/void pairs, and ignores the alignment operand. On D3D12 it
-compares encoded view identity, so different descriptors for the same allocation are not canonicalized. Ordering
-is meaningful only within the same allocation and, on D3D12, the same descriptor view.
+Equality accepts matching pointees or typed/void pairs and ignores the alignment operand. D3D12 additionally
+requires matching access modes and compares encoded view identity; different descriptors for the same allocation
+are not canonicalized. Native backends allow equality across access modes. Ordering requires matching pointee
+and access types and is meaningful only within the same allocation and, on D3D12, the same descriptor view.
 
 Use `nullptr` for null comparisons and `bits()` for deliberate encoding comparisons. Numeric comparisons are
 rejected. Boolean and custom bool-convertible operands can still trigger Slang's implicit-bool fallback rather
@@ -165,33 +177,13 @@ than pointer equality, as tracked in [Slang #14268](https://github.com/shader-sl
 retains boolean conversion for ordinary conditions; callers must restrict comparisons to compatible pointers or
 `nullptr`. `is_valid()` is only a sentinel test, not a lifetime or bounds check.
 
-## Deferred Metal integration
+### Deferred Metal integration
 
-The wrapper is expected to use a native device pointer on Metal. The emission-only tests stage a temporary
-copy with Metal enabled in the two native-pointer storage/constructor branches; production remains disabled.
-The cases cover readable/writable typed access, byte offsets, aligned access, float3 and both matrix shapes,
-pointer tables, casts, nulls, arithmetic and nested records. Run them with:
-
-```text
-python -m pytest tests/python/utils/test_buffer_ptr_nightly.py --nightly -k metal_emission
-```
-
-The test finds the configured build's Slang CLI or accepts `SLANGC`. It emits MSL on the host and never invokes
-Apple's compiler or executes a Metal GPU. Successful emission is feasibility evidence, not an ABI guarantee.
-
-Before enabling Metal, validate the following on a recorded Mac/GPU:
-
-- Apple compilation, host/cursor ABI, vector/matrix layout and stride, access modes, alignment, nulls and arithmetic.
-- Residency for all indirectly reached buffers, including pointers stored inside GPU tables. Reflection of direct
-  parameter fields does not discover arbitrary pointed-to data. Check both residency-set and useResources paths.
-- Null residency handling: the pointer sentinel is all-ones, while the inspected RHI fallback skips address zero.
-  Choose explicit integration behavior rather than silently changing the portable sentinel.
-- Resource lifetime through submission and synchronization independently of residency. Enable host/shader branches
-  and native GPU tests only with this validation; the native harness's Metal cases are not currently supported.
-
-Slang-RHI landmarks are `src/metal/metal-buffer.cpp` (GPU address/registration), `metal-shader-object-layout.cpp`
-(pointer-field collection), `metal-shader-object.cpp` (pointer residency), and `metal-command.cpp` (resource use).
-Recheck these against the dependency revision used for integration.
+Both the host factory and production shader reject Metal. Guarded nightly tests stage a temporary shader copy
+with native pointer storage enabled and emit Metal Shading Language (MSL) for typed and aligned access,
+vector/matrix layouts, pointer tables, casts and nested records. These tests neither invoke Apple's compiler
+nor execute a Metal GPU. Successful emission establishes neither a runtime ABI nor residency, lifetime or
+synchronization for indirectly reached resources. The all-ones null contract is unchanged.
 
 ## Source landmarks
 
@@ -199,9 +191,15 @@ Recheck these against the dependency revision used for integration.
 - [Host value and factories](../../src/falcor2/utils/buffer_ptr.h): encoding, validation and cursor contract.
 - [Cursor registration](../../src/falcor2/utils/buffer_ptr.cpp) and
   [Python bindings](../../src/falcor2_ext/utils/buffer_ptr.cpp): host/shader integration.
+- [Geometry table](../../src/falcor2/utils/buffer_handle_table.h),
+  [deformation work](../../src/falcor2/render/geometry/vertex_cache_deformer.h) and
+  [material storage updates](../../src/falcor2/render/material_system.cpp): production pointer publication and
+  resource-state ownership.
 - [Regular CI tests](../../tests/python/utils/test_buffer_ptr.py) and
   [shader cases](../../tests/python/utils/test_buffer_ptr.slang): host construction, cursor and functional
   bindings, basic reads/writes, byte offsets and nulls. These run on each selected backend.
+- [Access regressions](../../tests/python/utils/test_buffer_ptr_access.py): divergent pointers and writable
+  vector access.
 - [Nightly tests](../../tests/python/utils/test_buffer_ptr_nightly.py) and
   [shader cases](../../tests/python/utils/test_buffer_ptr_nightly.slang): arithmetic and cast sweeps, alignment,
   aggregate layout, aliasing, pointer traversal and emitted code. The module-level `nightly` marker defers these
@@ -214,4 +212,5 @@ Recheck these against the dependency revision used for integration.
 
 - [Python and native integration](python-native-integration.md): binding and package boundaries.
 - [Geometry and ray tracing](geometry-and-ray-tracing.md): existing buffer-backed geometry consumers.
+- [Geometry deformation](geometry-deformation.md): direct source and destination pointers in batched updates.
 - [Design index](index.md): architecture navigation for contributors and coding agents.

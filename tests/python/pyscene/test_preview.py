@@ -441,6 +441,9 @@ def test_render_scene_cameras_batches_large_sample_counts(
     reason="Headless render currently crashes during Falcor2 shutdown on Linux",
 )
 def test_guarded_scene_renders_headlessly_from_unrelated_cwd(tmp_path: Path) -> None:
+    device_type = helpers.SELECTED_DEVICE_TYPE
+    if device_type is not None and device_type.name not in preview_module.DEVICE_TYPE_CHOICES:
+        pytest.skip(f"Preview does not support the selected {device_type.name} backend")
     # The child owns its graphics device. Release any session-cached parent device
     # so the smoke test does not depend on which GPU-backed tests ran before it.
     helpers.close_all_devices()
@@ -465,6 +468,7 @@ def test_guarded_scene_renders_headlessly_from_unrelated_cwd(tmp_path: Path) -> 
             "64",
             "--spp",
             "1",
+            *(["--device-type", device_type.name] if device_type is not None else []),
         ],
         cwd=child_cwd,
         env=env,

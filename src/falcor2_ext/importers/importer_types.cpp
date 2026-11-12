@@ -750,6 +750,8 @@ NB_NOINLINE void bind_importer_scene(nb::module_& m)
         .DEF_RW(ImporterScene, prototypes, nb::rv_policy::reference_internal)
         .DEF_RW(ImporterScene, root_nodes, nb::rv_policy::reference_internal)
         .DEF_RW(ImporterScene, animation, nb::rv_policy::reference_internal)
+        .DEF_RW(ImporterScene, playback_range)
+        .def("animation_range", &ImporterScene::animation_range, D(ImporterScene, animation_range))
         .def("calculate_aabbs", &ImporterScene::calculate_aabbs, D(ImporterScene, calculate_aabbs))
         .def("bake_pose", &ImporterScene::bake_pose, "time_seconds"_a = nb::none(), D(ImporterScene, bake_pose))
         .def(

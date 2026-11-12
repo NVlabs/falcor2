@@ -1105,14 +1105,20 @@ TEST_CASE("UsdImporter - invisible hierarchy preserves camera but not renderable
     {
         std::ofstream file(scene_path);
         file << R"usd(#usda 1.0
+(
+    startTimeCode = 10
+    endTimeCode = 600
+)
 
 def Xform "HiddenGroup"
 {
-    token visibility = "invisible"
+    token visibility = "inherited"
+    token visibility.timeSamples = {0: "inherited", 10: "invisible"}
 
     def Camera "ValidationCamera"
     {
-        float focalLength = 50
+        float focalLength = 5
+        float focalLength.timeSamples = {0: 25, 20: 75}
         float horizontalAperture = 36
         float verticalAperture = 24
     }
@@ -1136,6 +1142,7 @@ def Xform "HiddenGroup"
     REQUIRE(scene);
     REQUIRE_EQ(scene->cameras.size(), 1);
     CHECK_EQ(scene->cameras[0].name, "ValidationCamera");
+    CHECK_EQ(scene->cameras[0].focal_length, doctest::Approx(50.f));
     CHECK(scene->meshes.empty());
     CHECK(scene->lights.empty());
 }

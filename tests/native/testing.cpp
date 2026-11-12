@@ -22,7 +22,38 @@ namespace falcor::testing {
 
 bool is_nightly_test(const doctest::TestCaseData& test)
 {
-    return test.m_description && std::string_view(test.m_description) == NIGHTLY_TEST_DESCRIPTION;
+    if (!test.m_description)
+        return false;
+    const std::string_view description(test.m_description);
+    return description == NIGHTLY_TEST_DESCRIPTION || (IS_DEBUG_BUILD && description == DEBUG_NIGHTLY_TEST_DESCRIPTION);
+}
+
+bool is_test_device_selected(const doctest::TestCaseData& test, std::optional<DeviceType> selected)
+{
+    if (!selected || !test.m_description)
+        return true;
+    constexpr std::string_view prefix = "falcor2 device ";
+    const std::string_view description(test.m_description);
+    return !description.starts_with(prefix) || description.substr(prefix.size()) == enum_to_string(*selected);
+}
+
+std::optional<DeviceType> parse_test_device_type(std::string_view name)
+{
+    for (DeviceType device_type : DEFAULT_DEVICE_TYPES) {
+        if (enum_to_string(device_type) == name)
+            return device_type;
+    }
+    return std::nullopt;
+}
+
+std::vector<DeviceType> get_device_types(std::span<const DeviceType> available, std::optional<DeviceType> selected)
+{
+    std::vector<DeviceType> result;
+    for (DeviceType device_type : available) {
+        if (!selected || device_type == *selected)
+            result.push_back(device_type);
+    }
+    return result;
 }
 
 // Cached devices.
@@ -203,7 +234,7 @@ void run_gpu_test(void (*func)(GpuTestContext&))
 {
     bool use_cached_device = true;
 
-    for (DeviceType device_type : DEFAULT_DEVICE_TYPES) {
+    for (DeviceType device_type : get_device_types()) {
         SUBCASE(enum_to_string(device_type).c_str())
         {
             ref<Device> device;

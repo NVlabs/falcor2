@@ -1381,6 +1381,7 @@ def _mtlx_hint_bindings(family: str, scatter: str = "RT") -> dict[str, Any]:
     }
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("family", ["Dielectric", "GeneralizedSchlick"])
 @pytest.mark.parametrize("compensation", ["", "TurquinAnalyticCompensation", "NoCompensation"])
 @pytest.mark.parametrize("scatter", ["RT", "R", "T"])
@@ -1455,6 +1456,7 @@ def test_mtlx_lobe_sampling_hint(
             assert pdfs.y == pytest.approx(pdfs.w / (1.0 - p_r), rel=2e-5)
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("family", ["Dielectric", "GeneralizedSchlick"])
 @pytest.mark.parametrize("hint", [BSDFFlags.reflection, BSDFFlags.transmission])
 @pytest.mark.parametrize("wi", [WI_30DEG, WI_GRAZING])
@@ -1478,6 +1480,7 @@ def test_mtlx_lobe_sampling_hint_eval_sample_consistency(
     assert test.run(), test.messages
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("family", ["Dielectric", "GeneralizedSchlick"])
 @pytest.mark.parametrize("hint", [BSDFFlags.reflection, BSDFFlags.transmission, BSDFFlags.curve])
 def test_mtlx_lobe_sampling_hint_total_internal_reflection(
@@ -1509,6 +1512,7 @@ def test_mtlx_lobe_sampling_hint_total_internal_reflection(
         assert np.asarray(kernel(**args, check=3)) == pytest.approx([0.0] * 4)
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize(
     "bsdf_type,bindings",
     [

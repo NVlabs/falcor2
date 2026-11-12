@@ -398,7 +398,7 @@ TEST_CASE("ImporterSkinning - USD retains static joint matrices")
     CHECK_NOTHROW(scene->bake_pose(0.3));
 }
 
-TEST_CASE("ImporterSkinning - USD static meshes use the earliest authored geometry")
+TEST_CASE("ImporterSkinning - USD static meshes use the initial viewing time")
 {
     using namespace pxr;
     auto stage = make_retained_skin_stage();
@@ -422,24 +422,39 @@ TEST_CASE("ImporterSkinning - USD static meshes use the earliest authored geomet
         mesh.GetNormalsAttr().Set(VtVec3fArray(3, GfVec3f(0, 1, 0)));
     }
     if (author_samples) {
-        mesh.GetPointsAttr().Set(points, 1);
-        mesh.GetNormalsAttr().Set(normals, 1);
-        mesh.GetPointsAttr().Set(VtVec3fArray(3, GfVec3f(200)), 24);
-        mesh.GetNormalsAttr().Set(VtVec3fArray(3, GfVec3f(0, 1, 0)), 24);
-    }
-    for (bool skinning : {false, true}) {
-        CAPTURE(skinning);
-        const auto scene = UsdImporter().import_stage(*stage, {.usd_import_skinning = skinning});
-        CHECK_EQ(scene->skins.size(), skinning ? 1 : 0);
-        REQUIRE_EQ(scene->meshes.size(), 1);
-        auto& imported = scene->meshes[0];
-        REQUIRE_EQ(imported.vertex_count(), 3);
-        CHECK(imported.motion_times.empty());
-        const auto positions = imported.position_stream();
-        const auto imported_normals = imported.find_stream<float3>(ImporterSemantic::normal);
+        auto before = points, after = points;
         for (size_t i = 0; i < points.size(); ++i) {
-            CHECK_EQ(positions[i], float3(points[i][0], points[i][1], points[i][2]));
-            CHECK_EQ(imported_normals[i], float3(0, 0, 1));
+            before[i][2] -= 2;
+            after[i][2] += 2;
+        }
+        mesh.GetPointsAttr().Set(before, -1);
+        mesh.GetPointsAttr().Set(after, 1);
+        mesh.GetNormalsAttr().Set(normals, -1);
+        mesh.GetNormalsAttr().Set(normals, 1);
+    }
+    for (double time : {0.0, 0.5}) {
+        CAPTURE(time);
+        if (time != 0.0) {
+            stage->SetStartTimeCode(time);
+            stage->SetEndTimeCode(600);
+        }
+        for (bool skinning : {false, true}) {
+            CAPTURE(skinning);
+            const auto scene = UsdImporter().import_stage(*stage, {.usd_import_skinning = skinning});
+            CHECK_EQ(scene->skins.size(), skinning ? 1 : 0);
+            REQUIRE_EQ(scene->meshes.size(), 1);
+            auto& imported = scene->meshes[0];
+            REQUIRE_EQ(imported.vertex_count(), 3);
+            CHECK(imported.motion_times.empty());
+            const auto positions = imported.position_stream();
+            const auto imported_normals = imported.find_stream<float3>(ImporterSemantic::normal);
+            for (size_t i = 0; i < points.size(); ++i) {
+                CHECK_EQ(
+                    positions[i],
+                    float3(points[i][0], points[i][1], points[i][2] + (author_samples ? float(2 * time) : 0.f))
+                );
+                CHECK_EQ(imported_normals[i], float3(0, 0, 1));
+            }
         }
     }
 }

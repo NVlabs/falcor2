@@ -261,6 +261,20 @@ public:
     /// Built-in permanent navigation camera with editable pose and camera settings.
     Camera* free_camera() const { return m_free_camera; }
 
+    /// Calculate exact mesh bounds by combining the bounds of all live geometry instances.
+    /// Call update() first to evaluate the desired animation pose. This method does not update the scene.
+    /// Empty scenes return an invalid AABB and zero radius. Unsupported geometry throws.
+    /// @param transform Finite affine transform applied after each instance's world transform.
+    /// @return Vertex bounds and maximum distance from the transformed coordinate system's origin.
+    MeshBounds calculate_bounds(const float4x4& transform = float4x4::identity()) const;
+
+    /// Apply a transform to each authored root entity, leaving hierarchy and descendant local transforms unchanged.
+    /// Composes transform * root.transform using Transform's TRS decomposition, which removes shear.
+    /// Excludes built-in entities. Later animation evaluation can replace keyed root transform components.
+    /// Call update() afterwards to publish the transforms; this method does not update the scene.
+    /// @param transform Finite transform to apply to the authored scene.
+    void apply_transform(const Transform& transform);
+
     /// Fit the free camera to valid, finite geometry-instance bounds using its current lens.
     /// Updates pose, focus distance, and clipping planes; preserves camera dimensions and active-camera selection.
     /// Call after update() for current bounds; this method does not update the scene.
@@ -346,7 +360,8 @@ public:
     /// This will only take effect on the next update() call.
     void set_time(double time);
 
-    /// Get the keyframe interval across all animations in seconds; invalid when there are no keys.
+    /// Get the imported playback interval in seconds, falling back to the union of animation key/sample intervals.
+    /// New animated scenes start at this interval's beginning. Appending assets preserves the current time.
     AnimationTimeRange animation_range() const;
 
     /// True if a live entity has a bound animation channel with keyframes.
@@ -597,6 +612,7 @@ private:
     ComponentCollectionView m_components;
 
     // Shared by animation_range() and has_animation(); playback and transforms do not invalidate it.
+    AnimationTimeRange m_imported_playback_range;
     mutable AnimationTimeRange m_geometry_animation_range;
     mutable bool m_has_geometry_animation{false};
     mutable bool m_geometry_animation_cache_dirty{true};

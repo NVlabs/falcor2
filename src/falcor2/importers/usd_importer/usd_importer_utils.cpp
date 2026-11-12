@@ -159,6 +159,7 @@ GeometrySampleTimes::GeometrySampleTimes(
     const pxr::UsdPrim& prim,
     const std::vector<pxr::UsdAttribute>& attributes,
     bool import_motion,
+    pxr::UsdTimeCode initial_time,
     pxr::UsdTimeCode no_samples
 )
 {
@@ -180,14 +181,12 @@ GeometrySampleTimes::GeometrySampleTimes(
         pxr::UsdAttribute::GetUnionedTimeSamples(attributes, &authored_times);
     sample_times.assign(authored_times.begin(), authored_times.end());
     if (sample_times.empty())
-        sample_times.push_back(import_motion ? no_samples : pxr::UsdTimeCode::EarliestTime());
+        sample_times.push_back(import_motion ? no_samples : initial_time);
     if (authored_times.size() > 1) {
         interpolation = prim.GetStage()->GetInterpolationType() == pxr::UsdInterpolationTypeHeld
             ? AnimationInterpolationMode::step
             : AnimationInterpolationMode::linear;
-        double rate = prim.GetStage()->GetTimeCodesPerSecond();
-        if (rate <= 0.0)
-            rate = 24.0;
+        const double rate = get_time_codes_per_second(*prim.GetStage());
         for (double time : authored_times)
             motion_times.push_back(static_cast<float>(time / rate));
     }
@@ -212,9 +211,7 @@ void GeometrySampleTimes::setup_clips(
     interpolation = prim.GetStage()->GetInterpolationType() == UsdInterpolationTypeHeld
         ? AnimationInterpolationMode::step
         : AnimationInterpolationMode::linear;
-    double rate = prim.GetStage()->GetTimeCodesPerSecond();
-    if (rate <= 0.0)
-        rate = 24.0;
+    const double rate = get_time_codes_per_second(*prim.GetStage());
 
     // Leave clip selection, layer offsets and boundary interpolation to USD. Intern complete resolved samples
     // before tessellation, so repeated cycles reuse both CPU vertex streams and resident GPU source storage.

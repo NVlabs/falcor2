@@ -41,6 +41,7 @@ target_sources(falcor2_tests PRIVATE
     native/render/test_emissive_triangle_tree.cpp
     native/render/test_material_aov_registry.cpp
     native/render/test_materials.cpp
+    native/render/test_mesh_bounds.cpp
     native/render/test_scene_object.cpp
     native/render/test_scene.cpp
     native/render/test_dynamic_geometry.cpp

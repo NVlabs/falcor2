@@ -1,276 +1,218 @@
 ---
-status: current
+status: draft
 audience: Falcor2 contributors and coding agents
-last_verified: 2026-10-09
-verified_against: "9c2e77d60f9a07fd62394c5cf7b22dc0623d0174"
+last_verified: 2026-11-11
+verified_against: "de2eda3d86ff9104cd529812696806a62989fe44"
 ---
 
 (falcor2-design-render-pipeline)=
 # Render pipeline
 
-Falcor2's render pipeline is a Python composition of callable render nodes around a scene-specialized Slang path
-tracer. `PathTracerPipeline` updates the scene, chooses a camera, renders one or more raw linear-radiance samples,
-selects an accumulation policy, optionally denoises the result, and tone maps it for display. Renderer-owned pixel
-filters choose primary-ray positions independently of temporal reconstruction. `ContainerSpec` and `Container`
-carry images across SGL textures, SlangPy tensors, and supported CUDA Torch tensors. The returned container can serve
-an interactive editor, a headless image writer, or another Python processing pipeline.
+Falcor2's render pipeline composes Python render nodes around a scene-specialized Slang path tracer.
+`PathTracerPipeline` synchronizes the scene, chooses a camera, renders linear radiance, accumulates or reconstructs
+samples, optionally denoises them, and tone maps the result. Scene requirements determine shader and ray-tracing
+setup, while renderers own output storage, dispatch specialization, pixel filters, and temporal history. These
+resources have different reuse rules: a scene edit can preserve a linked module while changing its dispatch or
+invalidating accumulated color. Containers carry the resulting images to the editor, headless callers, or another
+Python processing stage.
 
 ## Purpose and scope
 
-This page explains how Falcor2's Python render-node layer, reference path tracer, accumulation modes, denoising
-boundaries, tone mapper, and presentation paths compose into a frame. It covers pixel-filter ownership and sampling,
-data contracts, ordering, and temporal reset rules.
+For contributors familiar with Python and path tracing, this page explains how a synchronized scene becomes a
+frame and which changes invalidate modules, dispatches, or image history. It covers ownership, sample delivery,
+pixel filters, denoiser integration, and presentation.
 
-The scene's update internals belong in [Scene model](scene-model.md). Ray traversal and acceleration structures
-belong in [Geometry and ray tracing](geometry-and-ray-tracing.md); material evaluation belongs in
-[Material system](material-system.md); and light selection belongs in
-[Lighting and sampling](lighting-and-sampling.md). The transport estimator and denoiser algorithms are also outside
-this page; only their integration contracts are described here.
+[Scene model](scene-model.md) explains requirement derivation and scene updates; [Geometry and ray tracing](geometry-and-ray-tracing.md)
+explains traversal; [Lighting and sampling](lighting-and-sampling.md) explains light selection. Transport and
+denoiser algorithms are outside this page.
 
 ## Architecture
 
-### Node and container layer
+### Nodes, containers, and outputs
 
-`RenderNode` is a small callable protocol, not a static directed graph. A subclass implements `_exec()`, while
-`forward()` records nested node execution and calls that implementation. When an editor is active, the outermost
-node becomes the root shown by the graph-settings panel. A composite node can expose named child settings and react
-to their edits; `PathTracerPipeline` uses this mechanism to expose its path tracer, accumulators, denoisers, and tone
-mapper.
+`RenderNode.forward()` tracks nested calls and invokes the subclass's `_exec()`; the outermost node supplies
+the active editor's settings tree. `PathTracerPipeline` owns and explicitly orders its tracer, accumulators,
+denoisers, and tone mapper.
 
-`ContainerSpec` describes container type, pixel format, and logical dimensions, resolving automatic fields against
-a fallback such as the camera's `(height, width)`. `Container` allocates and reuses storage. Textures and SlangPy
-tensors use render layout; Torch images have a public channel-first shape adapted at shader-call boundaries.
-Nodes own their outputs and history while preserving the requested container kind where their contracts allow it.
+`ContainerSpec` describes container kind, format, and logical `(height, width)`, resolving automatic fields against
+a fallback. `Container` supports SGL textures, SlangPy tensors, and supported CUDA Torch tensors. Torch exposes
+channel-first images adapted at shader-call boundaries. Nodes can reuse non-Torch output allocations; callers
+must copy results that need to survive later calls overwriting them. Temporary Torch outputs are newly allocated.
 
-`OutputPrelude` reflects fixed shader guides from `IWriteGuide`, including formats, clear values, and write or
-increment behavior. It generates code specialized to concrete targets; disabled outputs become no-ops.
-Material-defined outputs use the indexed delivery described in [Named material outputs](material-aovs.md).
+`ReferencePathTracerNode` owns color and guide targets. `OutputPrelude` generates writers for enabled fixed guides
+and indexed material AOVs (auxiliary outputs). Formats and target types affect generated writers; actual resources
+bind on each call. Requested material names must already exist in the synchronized scene catalog. Storage remains
+renderer-owned, as described in [Named material outputs](material-aovs.md).
 
-### Pipeline stages
+### Requirements, modules, and dispatch reuse
 
-`ReferencePathTracerNode` owns the renderer module, scene-aware shader linker, light sampler, output specifications,
-and previous-camera state used by motion-vector guides. Before dispatch it updates the light sampler and obtains a
-cached module linked against the scene's current modules and type conformances. When the scene requirements or
-specialization inputs change, native `SceneRayTracingSetup` supplies the required miss shaders, hit groups,
-shader-table ordering, and pipeline flags for a rebuilt dispatch. One invocation then emits one stochastic,
-scene-linear RGBA sample per pixel plus requested guides.
+After `Scene.update()`, `SceneShaderHelper.prepare()` returns a linked module and the exact immutable
+`SceneRequirements` snapshot used to prepare it. Helper and scene must share a device. The reference tracer
+defaults to `scene_capability_policy=required`, selecting scene and consumer demand, including interior tracking
+when `solid_transmission` is selected. `all` explicitly enables the broader feature set; `specified` validates
+the supplied mask against supported and required capabilities. Required specialization can reduce shader work
+while producing more variants across scenes.
 
-`PathTracerPipeline` explicitly orders its owned nodes. The normal branch chooses no accumulation, a conventional
-running mean (the default), or a luminance-binned reweighting estimator. OptiX can denoise the accumulated linear
-HDR result using diffuse-albedo and normal guides. The alternative DLSS Ray Reconstruction branch chooses its own
-internal render resolution, requires a larger guide set, applies subpixel jitter, and produces the final-size image
-without using either normal accumulator or OptiX. `TonemapperNode` follows either branch and preserves the selected
-container while applying exposure and a display curve; auto exposure and the ACES film curve are the defaults.
+The preparation and dispatch layers compare different inputs:
+
+| Layer | Reuse condition |
+| --- | --- |
+| Requirement resolution | Same scene requirement generation, policy, specified mask, requested AOV names, and explicit consumer capabilities. |
+| Linked module | Same source module and matching snapshot shader inputs: capabilities, conformances, and underlying Slang component identities. |
+| Tracer dispatch | Same constants, guide-writer signature, light-sampler type and shader generation, sample-generator choice, and full requirements snapshot. |
+
+The helper copies AOV sequences into its resolution key, so editing the same list is observed. A new requirement
+generation triggers resolution, not necessarily compilation. Full snapshot comparison additionally includes
+geometry types, hit-group policy, LSS intersection mode, and pipeline flags. Adding the first geometry of a type
+can therefore preserve shader inputs while changing ray-tracing setup. Equivalent scenes can reuse a module while
+binding different scene data.
+
+The tracer passes the returned snapshot to `SceneRayTracingSetup.create()` for hit groups, shader-table ordering,
+and flags. Its generated prelude also includes ray-tracing metadata so downstream SlangPy code-based caching
+distinguishes pipeline layouts. Runtime settings such as maximum depth and background color bind per call.
+Changing these values or replacing a guide target with the same signature need not change specialization.
+
+The Python helper retains its current module and the tracer its current dispatch. Failed helper preparation
+preserves the previous successful module, snapshot, keys, and bound scene; invalid inputs retry on subsequent calls.
+
 
 ### Pixel filters and camera jitter
 
-`ReferencePathTracerNode.pixel_filter` is a plain Python field of type `ReconstructionFilter`, independent of
-Scene ownership. Python selects an implementation by assigning a native Box or Gaussian object; the field is not
-reflected as a settings-editor selector.
-The reference path tracer and native `scene_test` path-traced mode default to `GaussianReconstructionFilter(sigma=0.5,
-radius=1.5)`, matching PBRT's filter shape and parameters.
+`ReferencePathTracerNode.pixel_filter` is a renderer-owned native `ReconstructionFilter`, assigned through a plain
+Python field. The default is `GaussianReconstructionFilter(sigma=0.5, radius=1.5)`.
+Filter distances are in input-render pixels, independent of final display resolution.
 
-The Slang module `falcor2.render` owns `IReconstructionFilter`, `ReconstructionFilterSample`,
-`BoxReconstructionFilter`, and `GaussianReconstructionFilter`. The interface exposes instance methods;
-each concrete Slang struct holds its own parameters.
 
-Python passes the native object directly to the shader's `IReconstructionFilter pixel_filter` argument alongside
-the camera. `ReconstructionFilterMarshall` follows the Material marshalling pattern: it resolves `slang_type_name`
-to the concrete shader type and uses SlangPy's `WriteToCursorMarshall`. A registered native cursor writer delegates
-the upload to the filter's `write_to_cursor()`. The filter is one uniform value shared across the dispatch.
+Slang's `IReconstructionFilter.sample()` takes two caller-supplied uniform values and returns an offset and
+importance weight: normalized kernel value divided by sampling density. `eval()` returns the normalized kernel
+per square input pixel, zero outside support. Neither method exposes a probability density function (PDF).
 
-The native and Python marshalling signatures identify the concrete shader type, excluding parameter values,
-generation, and object identity. SlangPy specializes calls for Box or Gaussian; parameter edits and replacement
-with another object of the same type reuse that specialization while uploading current values.
+- Box samples a square of full `width`, with unit weights. The default width is one pixel. Width zero samples
+  the center with weight one and evaluates to zero as a delta distribution.
+- Gaussian is the normalized product of two boundary-subtracted kernels,
+  `max(exp(-x*x/(2*sigma*sigma)) - exp(-radius*radius/(2*sigma*sigma)), 0)`. It uses square support and truncated
+  Gaussian proposals with compensating weights.
 
-Only native `scene_test` uses a filter link-time type. Its shader declares
-`extern struct ReconstructionFilter : IReconstructionFilter = BoxReconstructionFilter`. Its existing generated
-constants module exports the selected concrete type using the native object's `slang_type_name()`. The filter is
-an ordinary field of `RenderParams`, uploaded through `g_params.pixel_filter`, with Box as the shader fallback and
-Gaussian selected at initialization. Native pipeline caching does not track filter-type changes; switching the
-type after compilation requires invalidating that cache.
+Before the camera UV Y flip, film position is `pixel + 0.5 + pixel_offset + filter_offset`.
+`pixel_offset` defaults to zero and is supplied per call. Samples contribute only to the owning output pixel,
+without splatting or clamping to pixel/image boundaries. Two random values are consumed even for width-zero Box,
+preserving subsequent sampling dimensions. Radiance receives the filter weight; guides remain unweighted.
 
-Gaussian's native implementation derives normalization and sampling constants from `sigma` and `radius`
-at binding time and uploads them once per dispatch as fields of the Gaussian instance. Box uploads only its width
-and calculates its inexpensive reciprocal-area kernel value when evaluated.
+`ReconstructionFilterMarshall` resolves the native object's concrete Slang type and delegates parameter upload
+to its cursor writer. Signatures contain the type, excluding parameters, generation, and object identity.
+Same-type replacements and parameter edits reuse specialization while uploading current values. Binding validates
+finite, representable parameters and prepares Gaussian normalization/sampling constants; construction alone does
+not validate them.
 
-All filter distances are in input-render pixels, independent of output resolution. Samples return an offset
-and importance weight: the normalized filter value divided by the internal sampling PDF. The renderer weights radiance
-and contributes only to the owning pixel, even if the ray position lies outside that pixel or image. There is no
-splatting or pixel-boundary clamping.
-
-`eval(offset)` returns the normalized kernel value as a `float` at a center-relative offset,
-excluding shared jitter. The value is zero outside support, in units of inverse square input pixels. Evaluation
-permits future splatting approaches such as Mitsuba's; selecting neighboring pixels and accumulating their
-contributions are separate renderer work. Neither sampling nor evaluation exposes a PDF.
-
-- `BoxReconstructionFilter(width=1)` samples a full-pixel square, with offsets from -0.5 to +0.5 on each axis and unit weights.
-  `width=0` samples the center exactly: offset zero and weight one. Its continuous evaluation is zero,
-  matching the BSDF delta convention.
-- `GaussianReconstructionFilter(sigma=0.5, radius=1.5)` uses square support and the normalized product of
-  `max(exp(-x*x/(2*sigma*sigma)) - exp(-radius*radius/(2*sigma*sigma)), 0)` on each axis. This is PBRT/Mitsuba's
-  boundary-subtracted shape. Its defaults match PBRT's equal-axis Gaussian; `radius=4*sigma` matches Mitsuba's
-  cutoff. Sampling uses two independent truncated, unshifted Gaussian proposals through inverse erf, with a
-  `value/pdf` weight. PBRT instead uses a tabulated approximation; Mitsuba evaluates its reconstruction filter
-  for splatting. Equivalent kernel shape does not mean identical samples or reconstruction behavior.
-
-The per-call renderer argument `pixel_offset`, default `(0, 0)`, shifts the pixel's sampling footprint in input pixels.
-Before the camera UV Y flip, film position is pixel index plus `(0.5, 0.5)`, plus `pixel_offset`, plus the sampled
-filter offset. The output pixel address is unchanged. Filters contain no jitter state.
-
-Ordinary reconstruction keeps the filter centered on the output pixel. Importance sampling that fixed kernel and
-splatting uniformly distributed film samples target the same normalized convolution when they use the same film
-domain and boundary handling, with different sample sharing and noise. Independently jittering the center and
-averaging into the same pixel would convolve the filter with the center-jitter distribution, changing the intended
-kernel. DLSS instead uses shared jitter to displace its temporal
-sampling grid and receives that displacement explicitly.
-
-The renderer consumes two values from its random generator and passes them to `sample()`, even at width zero,
-preserving subsequent RNG dimensions. There is no filter-local stratification. Constructors and edits store values;
-binding validates finite nonnegative Box width, positive Gaussian parameters, and representable support and density. Stable Gaussian
-formulas handle tight cutoffs; guards reject parameters unsuitable for the shader's finite precision.
 
 ### Filter edits and temporal ownership
 
-Each filter receives a globally unique generation at construction and after persistent reflected writes, including
-same-value assignments. Each pipeline polls its effective filter after DLSS selection and before rendering.
-A changed generation requests a history reset; independent consumers therefore detect shared edits separately.
-Replacing a filter resets history even with equal parameters; reassigning the same object does not.
-Direct C++ field edits require `notify_changed()`; reflected Python/editor writes notify automatically.
-The counter invalidates accumulated images; parameters are uploaded on every dispatch regardless of generation.
-Polling detects both replacement and in-place edits without a property setter or change subscriptions on the tracer.
+Filter construction and persistent reflected writes receive globally unique generations, including same-value
+writes. Direct C++ field edits require `notify_changed()`. The pipeline polls its effective filter: replacement
+or edits request a history reset independently for each consumer. Reassigning the same unchanged object does not.
+Generation controls history invalidation; parameters upload on every dispatch regardless.
 
-The caller passes `pixel_offset` on each renderer invocation. It does not change filter generation or request
-a history reset. A caller changing a fixed target position must explicitly reset history. Standalone tracer
-users own accumulation and its invalidation.
+On entering DLSS Ray Reconstruction, the pipeline saves the ordinary filter and installs a persistent zero-width
+Box; on exit it restores the saved filter. The swap occurs only on transitions, so callers select their ordinary
+filter outside DLSS mode. Assignments during DLSS are not intercepted. Each frame passes shared Halton jitter as
+`pixel_offset` and reports its negative to DLSS. Width-zero Box adds no per-ray film jitter. The separate DLSS
+Super Resolution example uses the same shared-offset policy for all color and guide samples.
 
-On entry to DLSS rendering, `PathTracerPipeline` saves the ordinary filter and selects a persistent zero-width Box;
-on exit it restores the saved filter. Each DLSS frame passes shared Halton jitter to the renderer and reports it
-to the DLSS node as `(-jitter_x, -jitter_y)`. Callers select their ordinary filter outside DLSS mode: the swap occurs
-only on mode transitions, so assignments made during DLSS are not intercepted. History resets leave pending
-filter transitions intact.
-The standalone `examples/pathtracer/dlss.py` demo uses a zero-width Box for guides and all color samples.
-Every sample uses the same frame jitter, which is also reported to DLSS, without additional per-ray
-pixel-filter jitter. The demo retains cross-frame accumulation until camera
-uniforms change. These input-sampling policies do not establish equivalence between DLSS reconstruction and the
-ordinary accumulated pixel filter.
+Changing `pixel_offset` does not advance filter generation or request reset; callers changing a fixed target
+position must invalidate history themselves. Standalone tracer users own accumulation and its invalidation.
+Ordinary filtering keeps a fixed kernel center; averaging independently shifted centers changes the effective
+kernel. DLSS's temporal reconstruction does not establish equivalence to ordinary filtered accumulation.
 
 ## Runtime flow
 
+The pipeline first updates the scene, then resolves the explicit or active camera. Every sample in that call sees
+the same synchronized scene. A standalone tracer expects callers to perform this update themselves. The pipeline
+selects the effective filter and checks history before rendering.
+
 ```text
-                         Scene.update()
-                               |
-                     camera and reset decision
-                               |
-               ReferencePathTracerNode iteration(s)
-                    |                 |
-               linear color     optional guides
-                    \                 /
-                     +-------+-------+
-                             |
-                 +-----------+-----------+
-                 |                       |
-       off / running mean /        DLSS-RR temporal path
-       weighted resolve                   |
-                 |                       |
-          optional OptiX                  |
-                 +-----------+-----------+
-                             |
-                   optional tone mapping
-                             |
-                      returned container
-                       /             \
-                Editor.present()    headless consumer
+Scene.update -> camera -> tracer: linear color + guides
+                            |                  |
+                  accumulation -> OptiX     DLSS-RR
+                            |                  |
+                            +---- tone map ----+
+                                      |
+                           returned container -> consumer
 ```
 
-1. Call `Scene.update()`, then resolve the explicit or active camera; return `None` if none exists. Every sample
-   in the call sees the same synchronized scene state. Select the effective filter and poll its generation.
-2. In the normal branch, pending configuration changes, a changed scene update generation, or changed camera
-   uniforms restart the iteration counter and both accumulation histories. Accumulation `off` renders exactly one
-   raw iteration. `normal` renders `spp` iterations and updates the conventional mean after each. `weighted` adds all
-   `spp` samples to reweighting history and resolves once after the batch.
-3. The tracer resolves and prepares color/guide containers, binds scene and filter data, and dispatches ray tracing.
-   The iteration number seeds sampling. OptiX automatically requests missing diffuse-albedo and normal guides.
-4. OptiX, when supported by a CUDA or CUDA-interoperable device, runs after normal accumulation and before tone
-   mapping. DLSS-RR instead requests its optimal low-resolution color and complete guide set, resets history when its
-   render size, target size, or quality key changes, and reconstructs the target-size result.
-5. Tone mapping is optional and always follows the selected temporal branch. Its default auto-exposure mode uses one
-   stored exposure value from the previous frame, meters the current image, and rate-limits the value prepared for
-   the next call using `delta_time`. The first call after a full reset applies current-frame exposure immediately.
-6. Return the image, or `(image, guides)` if requested. The editor presents supported containers; headless callers
-   can process or save them without an editor.
+OptiX and tone mapping are optional. DLSS bypasses both ordinary accumulators and OptiX. The normal branch uses:
+
+| Accumulation mode | Samples and delivery |
+| --- | --- |
+| `off` | One raw sample per call, ignoring `spp`. |
+| `normal` (default) | `spp` samples, delivered as equal-size batch means using `samples_per_dispatch` (default one). |
+| `weighted` | Each of `spp` raw samples enters the luminance-binned estimator separately, followed by one resolve. |
+
+Batching above one requires normal accumulation without DLSS, and `spp` must be divisible by batch size.
+Each shader batch uses consecutive sample indices and averages already filter-weighted radiance. The pipeline
+advances its iteration by sample count; the conventional accumulator counts batch means. Equal-size batches
+preserve relative sample weighting, but sanitization and luminance clamping act on each batch mean, so batching
+need not reproduce individually clamped samples. Guide writes retain their overwrite/increment semantics rather
+than becoming averaged guides.
+
+Before dispatch the tracer resolves outputs, updates its light sampler, prepares requirements and dispatch,
+and binds scene, camera, filter, settings, and guide resources. Previous-camera state supplies motion-vector guides.
+OptiX receives linear color after the selected non-DLSS accumulation policy and automatically requested
+albedo/normal guides. DLSS instead renders one sample at its chosen internal resolution, requires its complete
+guide set, and reconstructs the target size.
+
+`TonemapperNode` follows either branch, preserving container kind. ACES film is the default curve; auto exposure
+is disabled by default. When enabled in its default `previous_frame` mode, it applies retained exposure, meters
+the current image, and adapts the next exposure using `delta_time`; initialization applies current exposure
+immediately. The pipeline returns an image or `(image, guides)`. DLSS guides also include its low-resolution input
+color. The editor presents supported containers; headless consumers can process or save them.
 
 ## Invariants and rationale
 
-Radiance remains linear through tracing, accumulation, and denoising; display mapping follows. Each raw ray sample
-enters the chosen accumulator separately. In particular, Zirr's luminance-binned reweighting receives individual
-samples rather than a pre-averaged batch. The conventional accumulator averages already importance-weighted radiance
-by sample count; it does not divide by a random sum of filter weights. Guides describe the sampled ray and remain
-unweighted. Filter importance sampling preserves the per-sample input contract, not a guarantee that firefly
-reweighting is unbiased. Negative-lobed filters are outside the supported nonnegative-filter contract.
+Shader reuse and valid image history are independent. Normal accumulation resets its iteration and both color
+histories for pending resets, changed scene update generation, or changed camera uniforms. Changing batch size,
+sample generator, or effective filter requests reset. Full `reset()` additionally clears previous-camera state,
+NaN tracking, DLSS history, and exposure history. Programmatic tracer-setting changes may require an explicit
+history reset even when the next dispatch correctly receives the new setting.
 
-Container dimensions use `(height, width)` even though camera and presentation APIs commonly speak in width and
-height. A concrete container's type, format, dimensions, and device are part of stage compatibility. The standard
-accumulator starts new history when its complete input specification changes, and pipeline output-spec changes
-request a normal-history reset. Nodes may cache and reuse allocations only while those contracts continue to match.
+DLSS consumes pending resets and separately keys history on input size, output size, and quality. It does not run
+the normal scene/camera reset check; callers remain responsible for other invalidation. Allocation compatibility
+likewise differs from history validity: the conventional accumulator restarts when its complete input specification
+changes, and pipeline output-spec edits request reset.
 
-Normal accumulation reset and full pipeline reset have different scopes in the current code.
-Scene or camera changes restart normal color histories and iteration count. `reset()` additionally clears
-previous-camera and NaN state, DLSS-RR history, and exposure history. DLSS consumes pending configuration/filter
-resets and separately keys history on render dimensions, target dimensions, and quality. It does not use the normal
-scene/camera `_needs_reset()` branch; callers retain explicit reset responsibility for other invalidation.
+Color stays linear through tracing, accumulation, and denoising. Ordinary averaging divides by sample/batch count,
+not by a random sum of filter weights. Weighted firefly suppression is a distinct estimator; filter importance
+sampling does not make it unbiased. Only normalized nonnegative reconstruction filters are supported.
 
-Guide availability is a compile-time and storage contract, not merely a returned dictionary entry. Enabling a guide
-changes generated shader code and dispatch specialization, and each consumer requires matching names, formats, and
-dimensions. OptiX accepts optional albedo and normal guides but the pipeline supplies both; DLSS-RR requires every
-guide in its declared set.
-
-Most stages accept an optional caller-owned command encoder so their GPU work can be recorded in pipeline order;
-without one, each stage uses its standalone execution path. Backend boundaries still apply: OptiX can record into a
-caller-owned encoder only for a CUDA device, because graphics-backend encoders do not expose the CUDA stream it
-needs.
+Stages accept a caller-owned command encoder where supported, but `PathTracerPipeline` calls `Scene.update()`
+separately without forwarding that encoder. OptiX can append to a supplied encoder only on CUDA; a graphics-backend
+encoder cannot supply its required CUDA stream. Guide names, formats, dimensions, and backend support remain
+consumer contracts even when storage uses a common container abstraction.
 
 ## Source landmarks
 
-- `falcor2/rendergraph/render_node.py`, `falcor2/rendergraph/container_spec.py`, and
-  `falcor2/rendergraph/container.py` - callable-node tracking and concrete container contracts.
-- `falcor2/rendergraph/output_prelude.py` - reflection, specialization, and binding of optional shader outputs.
-- `falcor2/rendernodes/pathtracer_pipeline_node.py` - frame orchestration, accumulation selection, reset decisions,
-  denoiser branches, tone mapping, and returned guides.
-- `falcor2/rendernodes/reference_pathtracer_node.py` and
-  `slang/falcor2/rendernodes/reference_pathtracer.slang` - scene-specialized dispatch, stochastic iterations, and
-  guide production.
-- `src/falcor2/render/reconstruction_filter.h`, `src/falcor2/render/reconstruction_filter.cpp`, and
-  `src/falcor2_ext/render/reconstruction_filter.cpp` - native reflection, validation, generations, and Python bindings.
-- `slang/falcor2/render/reconstruction_filter.slang` - shared interface, sample result, concrete filter structs, and sampling maps.
-- `falcor2/extensions/reconstructionfiltermarshall.py` - SlangPy interface-argument resolution and native cursor marshalling.
-- `src/internal/scene_test/scene_test.cpp` and `src/internal/scene_test/scene_test.slang` - native filter specialization
-  through the generated constants module and binding inside `g_params`.
-- `falcor2/utils/jitter.py` and `examples/pathtracer/dlss.py` - shared frame jitter and the SR demo's sampling policy.
-- `falcor2/rendernodes/accumulator_node.py`, `falcor2/rendernodes/reweighting_accumulator_node.py`, and
-  `falcor2/rendernodes/tonemapper_node.py` - temporal color histories, weighted resolve, exposure, and display
-  mapping.
-- `falcor2/rendernodes/optix_denoiser_node.py`, `falcor2/rendernodes/dlss_ray_recon_node.py`, and
-  `src/falcor2/denoisers/optix_denoiser.h` - denoiser integration and native OptiX boundary.
-- `src/falcor2/render/ray_tracing_setup.h` and `src/falcor2_ext/render/ray_tracing_setup.cpp` - native ray-type,
-  hit-group, and pipeline metadata exposed to Python.
-- `falcor2/editor/editor.py` - frame acquisition, root-node settings discovery, container presentation, UI drawing,
-  submission, and swapchain presentation.
-- `examples/pathtracer/simple.py`, `examples/pathtracer/headless.py`, and `examples/pathtracer/dlss_rr.py` -
-  interactive, storage-selectable headless, and DLSS-RR compositions.
-- `tests/python/pathtracer/test_pipeline.py`, `tests/python/pathtracer/test_pathtracer.py`,
-  `tests/python/pathtracer/test_accumulator_node.py`, `tests/python/pathtracer/test_tone_mapper.py`, and
-  `tests/python/rendergraph/test_container_spec.py` - stage ordering, resets, guides, containers, and output behavior.
-- `tests/python/render/test_pixel_filter.py` - deterministic Box/Gaussian sampling and evaluation, parameter edits,
-  and validation through a shared interface-argument callable.
+- `falcor2/rendergraph/render_node.py`, `falcor2/rendergraph/container_spec.py`,
+  `falcor2/rendergraph/container.py`, and `falcor2/rendergraph/output_prelude.py` - node execution, storage, and writers.
+- `falcor2/editor/scene_shader.py`, `src/falcor2/render/scene_requirements.h`,
+  `src/falcor2/render/ray_tracing_setup.cpp`, and `src/falcor2_ext/render/scene.cpp` - preparation and snapshot contracts.
+- `falcor2/rendernodes/pathtracer_pipeline_node.py`, `falcor2/rendernodes/reference_pathtracer_node.py`, and
+  `slang/falcor2/rendernodes/reference_pathtracer.slang` - orchestration, dispatch reuse, and sample batching.
+- `src/falcor2/render/reconstruction_filter.cpp`, `src/falcor2_ext/render/reconstruction_filter.cpp`,
+  `slang/falcor2/render/reconstruction_filter.slang`, and `falcor2/extensions/reconstructionfiltermarshall.py` - filters and binding.
+
+- `falcor2/rendernodes/accumulator_node.py`, `falcor2/rendernodes/reweighting_accumulator_node.py`,
+  `falcor2/rendernodes/tonemapper_node.py`, `falcor2/rendernodes/optix_denoiser_node.py`, and
+  `falcor2/rendernodes/dlss_ray_recon_node.py` - image histories and downstream consumers.
+- `falcor2/utils/jitter.py`, `falcor2/editor/editor.py`, `examples/pathtracer/headless.py`,
+  `examples/pathtracer/dlss.py`, and `examples/pathtracer/dlss_rr.py` - jitter and presentation compositions.
+- `tests/python/render/test_scene.py`, `tests/python/pathtracer/test_pathtracer.py`, and
+  `tests/python/pathtracer/test_pipeline.py` - requirement/dispatch reuse, batching, and resets.
+- `tests/python/render/test_pixel_filter.py`, `tests/python/pathtracer/test_accumulator_node.py`,
+  `tests/python/pathtracer/test_tone_mapper.py`, and `tests/python/rendergraph/test_container_spec.py` - numerical and storage contracts.
 
 ## Related design documents
 
-- [Falcor2 system overview](overview.md)
-- [Scene model](scene-model.md)
-- [Scene loading and authoring](scene-loading-and-authoring.md)
-- [Falcor2 design documentation](index.md)
-- [Geometry and ray tracing](geometry-and-ray-tracing.md)
-- [Material system](material-system.md)
-- [BSDF contract](bsdf-contract.md)
-- [Lighting and sampling](lighting-and-sampling.md)
+- [Scene model](scene-model.md) - synchronized scene state and capability selection.
+- [Geometry and ray tracing](geometry-and-ray-tracing.md) - traversal and acceleration structures.
+- [Lighting and sampling](lighting-and-sampling.md) - sampler ownership and transport integration.
+- [Named material outputs](material-aovs.md) - declarations and indexed guide delivery.
+- [Python and native integration](python-native-integration.md) - ownership across language boundaries.

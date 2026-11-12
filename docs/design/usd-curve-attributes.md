@@ -1,80 +1,124 @@
 ---
 status: draft
 audience: Falcor2 contributors and coding agents
-last_verified: 2026-10-19
-verified_against: "82b7ae929"
+last_verified: 2026-11-11
+verified_against: "892f7b3bec19aebcb1f645206e7089e81387586a"
 ---
 
 (falcor2-design-usd-curve-attributes)=
 # USD curve attribute counts and interpolation
 
-Falcor2's USD importer separates the number of authored curve attributes from the number of vertices produced by
-tessellation. A varying attribute supplies linearly interpolated values at curve-span boundaries; it is not a
-per-control-point attribute merely because the two counts sometimes coincide. The importer owns this distinction
-before curves become linear swept spheres. Its shared varying-count helper follows the USD schema's segment rules,
-including the end spans of pinned splines, instead of reproducing conflicting behavior in OpenUSD's varying-size
-helper and Storm. This contract keeps batched strands from reading one another's widths or texture coordinates.
+Falcor2's USD importer separates authored curve attribute counts from tessellated vertex counts. Its shared
+adapter flattens primvars into a borrowed `CurveInput`, then the same evaluator supplies round curves and
+triangle ribbons. Varying attributes interpolate linearly between span boundaries; vertex attributes follow
+control-point basis weights, even when their array lengths coincide. A schema-based count helper preserves
+strand boundaries through pinned endpoint evaluation, periodic compatibility behavior and changes in
+refinement. Representation-specific validation retains round-width fallbacks without redefining the authored
+layout. This contract prevents one strand from consuming another strand's widths, UVs or oriented-curve normals.
 
 ## Purpose and scope
 
-This page explains how the importer sizes, partitions, and samples authored varying data on USD `BasisCurves`, and
-why its count differs from some upstream implementations. The same authored cardinality applies whether a consumer
-represents a curve as a round primitive or a ribbon: normals and the eventual surface representation do not change
-USD's interpolation rules.
+This page explains who determines authored cardinality, how flattened arrays are partitioned, and how their
+values reach both curve representations. A strand is one curve in a `curveVertexCounts` batch; a span is one
+polynomial interval. Normals can select a different surface representation without changing USD's interpolation
+rules.
 
-The implemented consumer described here is round-curve import. Ribbon construction, generated texture-coordinate
-conventions, and shader shading frames are separate concerns. General stage traversal belongs in
-[Scene loading and authoring](scene-loading-and-authoring.md); live geometry and ray traversal belong in
-[Geometry and ray tracing](geometry-and-ray-tracing.md).
+[Curve import and tessellation](curve-import-and-tessellation.md) covers representation selection, refinement,
+ribbon frames, generated UVs and output assembly. [Scene loading and authoring](scene-loading-and-authoring.md)
+covers the surrounding importer, and [Geometry deformation](geometry-deformation.md) covers runtime sample
+storage and playback. This page concerns authored attributes and import-time evaluation.
 
 ## Architecture
 
-`compute_curve_varying_counts()` in the USD importer utilities owns the authored varying count for each strand. A
-strand is one curve within the batch described by `curveVertexCounts`. The helper takes a `UsdGeomBasisCurves` and a
-time code, obtains its segment counts, and adds the final boundary value for every nonperiodic or pinned strand.
-Periodic strands share their first and final boundary and need no additional value. The helper expects valid USD
-topology; it is not a general topology validator or a repair mechanism for malformed curves.
+`compute_curve_varying_counts()` in the USD importer utilities owns the per-strand authored varying count.
+It calls `UsdGeomBasisCurves::ComputeSegmentCounts()` at the requested time and adds a final boundary for
+nonperiodic and pinned strands. Periodic strands reuse their first boundary and need no extra authored value.
+The helper assumes valid USD topology; it is not a general topology validator or repair pass.
 
-`UsdImporterContext::extract_curve()` reads widths, texture coordinates, interpolation tokens, and topology. It
-records the helper's per-strand counts in `TesselatorInputCurve`. The tessellator maintains separate offsets for
-control-point data and varying data as it walks a batch. Those offsets must follow the authored topology even when
-the renderer omits some spans or chooses a different sampling rate.
+`convert_usd_curves()` resolves and reads the attributes, converts interpolation tokens, and supplies those
+counts in `curve_tessellator::CurveInput::varying_counts` whenever varying data is present. The adapter owns
+the USD arrays and converted vectors during evaluation. `CurveInput` borrows their flattened spans and contains
+no USD objects. First-sample effective normals choose the writer; `UsdImporterContext::extract_curve()` routes
+the resulting `ImporterCurve` or `ImporterMesh` into the imported scene.
 
-The tessellator produces `ImporterCurve` positions, radii, UVs, and line-segment indices. Widths are diameters and
-are converted to radii after interpolation. Motion import reuses the reference layout for subsequent position and
-radius samples; changing topology or primvar indices is rejected by the existing fixed-layout motion checks.
+The shared evaluator maintains independent control-point and varying offsets for each strand. Offsets advance
+by authored counts even if a writer samples fewer spans or emits more vertices. The round writer converts
+evaluated widths from diameters to radii. The ribbon writer uses evaluated widths and normals to place edge
+vertices; it copies each authored centerline UV to both edges. Returned importer geometry owns its output
+storage. Neither writer infers the input layout from the output vertex count.
 
 ## Attribute flow
 
-The importer prefers an authored `primvars:widths` over the schema `widths` attribute. Indexed primvars are flattened
-before partitioning them into strands. Therefore the varying count describes the flattened values, or the primvar
-index-array length, rather than the size of the compact value table. An authored `st` primvar similarly retains its
-interpolation after flattening, and its flattened count is validated before tessellation.
+### Resolve, flatten and partition
 
-Constant attributes apply to the whole primitive, uniform attributes supply one value per strand, and vertex
-attributes use control-point ranges. Varying attributes use the shared count helper. Existing round-width behavior
-still allows an absent array to use the default radius and a single value to broadcast. These conventions do not
-change the number of varying values specified by USD.
+A valued, possibly inherited `primvars:widths` or `primvars:normals` takes precedence over its built-in attribute.
+The adapter resolves this choice before collecting motion times. Indexed primvars are flattened before strand
+partitioning, so authored cardinality describes the flattened array, or index-array length, rather than the
+compact value table. An indexed varying width table with two unique values can describe many boundaries if
+its indices supply the required flattened entries. Inherited `st` is likewise flattened while preserving its
+interpolation mode.
 
-At refinement zero, cubic curves use their control polygon. Varying data is distributed across that polygon's
-vertex ordinals. For pinned B-spline and Catmull-Rom curves there are N varying values for N control points, so each
-control vertex receives the corresponding varying value. At positive refinement, vertex data is evaluated with the
-cubic basis, while varying widths and UVs remain linear between span boundaries.
+| Interpolation | Authored layout | Evaluation |
+| --- | --- | --- |
+| Constant | One value for the primitive | Broadcast to every strand |
+| Uniform | One value per strand | Select by strand index |
+| Vertex | One value per control point | Evaluate with the position basis |
+| Varying | One value per span boundary | Interpolate linearly within each span |
 
-At positive refinement, pinned B-spline and Catmull-Rom curves reflect one phantom control at each endpoint:
-`P[-1] = 2 * P[0] - P[1]` and `P[N] = 2 * P[N-1] - P[N-2]`. The same reflection applies to vertex widths and UVs.
-All N - 1 spans are evaluated, including both endpoint spans, so two- and three-point pinned strands are supported.
-Varying widths and UVs use the N authored boundary values directly, without phantom values or an interior offset.
-Motion samples use the same endpoint evaluation and attribute layout.
+For example, pinned spline strands with four and five controls require four and five varying values. The second
+strand begins at varying offset four, regardless of refinement or how many tessellated samples the first strand
+produces. Compact primvar table entries may be reused, but the flattened strand ranges must remain separate.
 
-For linear and Bezier curves, pinned has the same behavior as nonperiodic. Periodic round cubic geometry retains
-its existing nonperiodic fallback; its authored attribute count must nevertheless remain periodic.
+### Evaluate control polygons and polynomial spans
+
+At refinement zero, cubic curves use their control polygon and varying data is mapped across vertex ordinals.
+Pinned B-spline and Catmull-Rom curves have N varying values for N controls, so each polygon vertex receives its
+corresponding varying value. Positive refinement changes the output sample density: vertex attributes use the
+cubic basis, while varying widths, UVs and ribbon normals remain linear between span boundaries.
+
+Equal counts do not imply equal interpolation. For a positively refined pinned B-spline with four width values
+`[2, 2, 8, 2]`, the start of its second span evaluates vertex width as `(2 + 4 * 2 + 8) / 6 = 3`; varying width
+at that same boundary is the second authored value, `2`. These are diameters in both representations, with the
+round writer halving the evaluated result afterward.
+
+At positive refinement, pinned B-spline and Catmull-Rom evaluation reflects phantom endpoint controls:
+`P[-1] = 2 * P[0] - P[1]` and `P[N] = 2 * P[N-1] - P[N-2]`. Vertex attributes use the same reflection,
+including widths, UVs and ribbon normals. All N - 1 spans are evaluated, including endpoint spans on two- and
+three-control strands. Varying attributes use the N authored boundary values directly; they receive neither
+phantom values nor an interior offset.
+
+Pinned linear and Bezier curves follow nonperiodic behavior. Periodic ribbons close their geometry, while
+round curves retain open geometric scheduling, including the nonperiodic fallback for cubic input. Both still
+partition varying data using the authored periodic counts. A geometric fallback must not shift the next strand's
+attribute offset or reinterpret periodic boundary values as an open layout.
+
+### Validate values and preserve motion layout
+
+The shared interpretation does not imply identical input validation. Nonempty ribbon normals, widths and UVs
+must have exactly the count required by their interpolation. Normals are required for ribbon evaluation; empty
+widths can use the default diameter. The USD adapter requires exact flattened `st` cardinality for round curves
+as well, and rejects an authored empty or unreadable `st` instead of treating it as missing.
+
+Round widths retain compatibility behavior: missing built-in widths can select the default radius, and a
+singleton broadcasts regardless of its interpolation token. Larger width arrays must cover all required strand
+ranges, but surplus values are permitted. An effective empty width primvar is rejected for round import.
+These exceptions do not create an alternate varying-count formula or an N - 2 partition for pinned splines.
+
+With `import_curve_motion`, the adapter checks fixed point counts and raw normal/width table lengths before
+flattening each sample. `curveVertexCounts` and normal, width and UV index arrays must remain identical across
+their authored times. This also prevents changing representation by switching between empty and nonempty
+normals. Type, basis, wrap and interpolation are read once as fixed metadata; the adapter does not claim to
+validate every possible animated metadata change.
+
+`st` values are read only at the initial geometry sample and do not contribute motion times. Later UV value-table
+changes are not imported, even though index changes are checked. Later deformation samples reuse the reference
+indices and UVs and write only round positions/radii or ribbon positions/normals into allocated streams.
 
 ## Invariants and rationale
 
 ### The schema determines authored cardinality
 
-For valid topology, let N be the number of authored control points in one strand. The
+For valid topology, let N be the number of authored controls in one strand. The
 [USD BasisCurves specification](https://openusd.org/release/api/class_usd_geom_basis_curves.html) defines these counts:
 
 | Curve type and basis | Nonperiodic varying count | Periodic varying count | Pinned varying count |
@@ -83,63 +127,50 @@ For valid topology, let N be the number of authored control points in one strand
 | Cubic Bezier | (N - 4) / 3 + 2 | N / 3 | (N - 4) / 3 + 2 |
 | Cubic B-spline / Catmull-Rom | N - 2 | N | N |
 
-Pinned affects B-spline and Catmull-Rom endpoint evaluation; it does not add an analogous Bezier rule. A pinned
-spline has N - 1 spans, including the two end spans, and therefore N boundary values. Varying interpolation remains
-linear even where its count equals the vertex count. Tessellation refinement changes output sampling density,
-never the required authored array size.
+Pinned affects B-spline and Catmull-Rom endpoints; it does not add an analogous Bezier rule. A pinned spline
+has N - 1 spans and therefore N boundary values. Refinement, ribbon edge duplication and runtime storage
+cannot change these authored counts. The count helper derives partitions from topology without branching
+on an OpenUSD version.
 
-### OpenUSD has conflicting implementations
+### Why counts come from segment topology
 
-`UsdGeomBasisCurves::ComputeVaryingDataSize()` and `HdBasisCurvesTopology` historically treat pinned spline varying
-data like ordinary nonperiodic data. The
-[UsdGeom implementation rationale](https://github.com/PixarAnimationStudios/OpenUSD/commit/587cbc36d2a74ff5be6d40d482dfb660f192cbe5)
-asserts that the extra pinned spans should not require authored values. That assertion conflicts with the schema.
-The affected implementation also attempts to clamp short curves with unsigned arithmetic after subtracting four, so its
-count can wrap before the clamp takes effect. In OpenUSD 26.08, for N equal to 2, 3, 4, and 7 it returns 0, 1, 2, and 5; the Hydra
-topology helper clamps in signed arithmetic and returns 2, 2, 2, and 5. Neither sequence is the specified pinned
-count of 2, 3, 4, and 7.
+Falcor2 uses segment topology because agreement between upstream varying-size helpers does not establish the
+schema's authored layout. [OpenUSD issue #2775](https://github.com/PixarAnimationStudios/OpenUSD/issues/2775)
+records Storm rejecting seven varying widths on a seven-control pinned curve because it expected five,
+then using a fallback width. That N - 2 count omits the pinned endpoint boundaries.
 
-[OpenUSD issue #2775](https://github.com/PixarAnimationStudios/OpenUSD/issues/2775) reports the concrete consequence:
-a seven-point pinned curve with seven varying widths is rejected by Storm because it expects five. The discussion
-also identifies the UsdGeom calculation as incorrect, records internal issue USD-8899, and includes maintainer
-requests for a contribution to fix it. Agreement between those two legacy helpers is therefore insufficient
-validation of an importer.
+The [Hdsi pinned-curve correction](https://github.com/PixarAnimationStudios/OpenUSD/commit/7b3db0b60b6d36f4c1378388d5b076912410e469)
+uses N input varying values for N pinned controls. Delegate-specific endpoint expansion is a later representation
+conversion; any values it adds are not extra authored USD entries. The separate
+[pinned endpoint discussion](https://forum.aousd.org/t/evaluating-pinned-curves/2868) distinguishes specification
+reflection from legacy endpoint duplication. That geometric conversion must not replace the authored-count rule.
 
-Hydra itself is not uniform. The
-[correction to HdsiPinnedCurveExpandingSceneIndex](https://github.com/PixarAnimationStudios/OpenUSD/commit/7b3db0b60b6d36f4c1378388d5b076912410e469),
-used by HdPrman, explicitly derives N input varying values for N pinned control points. Its tests use four values
-for four-point curves and seven for seven-point curves. Endpoint expansion for that delegate is a subsequent
-representation conversion: Catmull-Rom can retain the varying array, whereas its duplicated-endpoint B-spline
-conversion adds one varying value at each end. Those expanded counts are not the authored USD counts.
-
-The separate [pinned endpoint discussion](https://forum.aousd.org/t/evaluating-pinned-curves/2868) explains why Hydra's
-endpoint duplication differs from the specification's reflected phantom points. Maintainers advise following the
-specification and describe the duplication as legacy pipeline behavior. That discussion concerns geometry; it
-does not substitute for the varying-count evidence above.
-
-Falcor2 consequently uses `ComputeSegmentCounts()`, whose pinned treatment agrees with the schema, and derives its
-own varying counts from those spans. It neither branches on an OpenUSD version nor accepts an N - 2 pinned array
-as an alternate valid layout. The small helper can remain correct after the upstream varying-size routines are
-fixed. Tests assert schema-derived counts and imported values, rather than requiring an upstream bug to persist.
+Falcor2 derives counts from segment topology and verifies imported values and strand isolation. Tests assert
+schema-derived results rather than requiring an upstream defect to persist. Width compatibility fallbacks
+remain explicit exceptions to validation, not evidence for changing the helper's layout.
 
 ## Source landmarks
 
 - `src/falcor2/importers/usd_importer/usd_importer_utils.h` and
-  `src/falcor2/importers/usd_importer/usd_importer_utils.cpp` - shared varying-count contract and rationale.
-- `src/falcor2/importers/usd_importer/usd_importer_curve_adapter.cpp` - attribute selection, flattening, per-strand counts,
-  UV validation, and motion sample extraction.
-- `src/falcor2/importers/curve_tessellator/curve_tessellator.h` - shared Falcor input types and round/ribbon entry points.
-- `src/falcor2/importers/curve_tessellator/curve_tessellator_internal.h` - shared strand offsets, basis evaluation,
-  varying interpolation, and reflected pinned endpoints.
-- `src/falcor2/importers/curve_tessellator/curve_tessellator.cpp` and `curve_tessellator_ribbons.cpp` in the same
-  directory - round output and ribbon frame/joint/triangle assembly.
-- `src/falcor2/importers/importer_types.h` - `ImporterCurve` storage and sample streams.
-- `tests/native/usd_importer/test_usd_importer.cpp` - schema-count matrix, mixed strand lengths, short pinned curves,
-  nonconstant widths and UVs, indexed attributes, and sampled radii.
-- `tests/python/importers/test_curve_motion.py` - motion sample correspondence and layout rejection.
+  `src/falcor2/importers/usd_importer/usd_importer_utils.cpp` - authored counts and fixed-index checks.
+- `src/falcor2/importers/usd_importer/usd_importer_curve_adapter.cpp` - effective sources, flattening, cardinality
+  validation and motion extraction.
+- `src/falcor2/importers/curve_tessellator/curve_tessellator.h` and
+  `src/falcor2/importers/curve_tessellator/curve_tessellator_internal.h` - borrowed input, strand ranges and evaluation.
+- `src/falcor2/importers/curve_tessellator/curve_tessellator.cpp` and
+  `src/falcor2/importers/curve_tessellator/curve_tessellator_ribbons.cpp` - width conversion, output-specific
+  validation and ribbon attributes.
+- `src/falcor2_ext/importers/importer_types.cpp` - owned-output Python views and sample access.
+- `tests/native/usd_importer/test_usd_importer.cpp` - schema-count matrix, mixed strands, short pinned endpoints
+  and an in-memory indexed varying-motion example.
+- `tests/native/importers/test_ribbon_tessellator.cpp` - ribbon interpolation, malformed attributes and seams.
+- `tests/python/importers/test_ribbons.py`, `tests/python/importers/test_ribbon_motion.py` and
+  `tests/python/importers/test_curve_motion.py` - shared evaluation, frozen samples and layout rejection.
 
 ## Related design documents
 
+- [Curve import and tessellation](curve-import-and-tessellation.md)
 - [Scene loading and authoring](scene-loading-and-authoring.md)
+- [Geometry deformation](geometry-deformation.md)
 - [Geometry and ray tracing](geometry-and-ray-tracing.md)
 - [Falcor2 design documentation](index.md)

@@ -227,13 +227,21 @@ include(falcor2_usd_deployment)
 # OpenPBR shaders
 # -----------------------------------------------------------------------------
 
+find_package(Git REQUIRED)
 file(GLOB_RECURSE _openpbr_files CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/external/openpbr-bsdf/*")
-set(_openpbr_stamp "${CMAKE_CURRENT_BINARY_DIR}/openpbr_copy.stamp")
+set(_openpbr_stamp "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/openpbr_copy.stamp")
 add_custom_command(
     OUTPUT "${_openpbr_stamp}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>"
     COMMAND ${CMAKE_COMMAND} -E ${FALCOR_COPY_DIRECTORY} "${CMAKE_SOURCE_DIR}/external/openpbr-bsdf" "${FALCOR_SHADER_OUTPUT_DIRECTORY}/openpbr-bsdf"
+    # Absolute paths support build directories outside the source tree.
+    COMMAND "${GIT_EXECUTABLE}" apply --unsafe-paths
+        "--directory=${FALCOR_SHADER_OUTPUT_DIRECTORY}/openpbr-bsdf"
+        "${CMAKE_SOURCE_DIR}/external/patches/openpbr-initialize-rgb-values.patch"
     COMMAND ${CMAKE_COMMAND} -E touch "${_openpbr_stamp}"
     DEPENDS ${_openpbr_files}
+        "${CMAKE_SOURCE_DIR}/external/patches/openpbr-initialize-rgb-values.patch"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     COMMENT "Sync OpenPBR shaders"
     VERBATIM
 )

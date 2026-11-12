@@ -206,21 +206,49 @@ def test_usd_texcoord_primvar_mapping_stage_entry_points(
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])
-def test_scene_from_usd_stage(device_type: spy.DeviceType) -> None:
+def test_scene_from_usd_stage(device_type: spy.DeviceType, tmp_path: Path) -> None:
     from falcor2.pxr import Usd, UsdGeom
 
     stage = Usd.Stage.CreateInMemory()
-    UsdGeom.Xform.Define(stage, "/StageRoot")
+    stage.SetTimeCodesPerSecond(2)
+    UsdGeom.SetStageMetersPerUnit(stage, 1)
+    transform = UsdGeom.Xform.Define(stage, "/StageRoot").AddTranslateOp()
+    transform.Set((10, 0, 0), 10)
+    transform.Set((30, 0, 0), 30)
     mesh = UsdGeom.Mesh.Define(stage, "/StageRoot/Triangle")
     mesh.CreatePointsAttr([(0, 0, 0), (1, 0, 0), (0, 1, 0)])
     mesh.CreateFaceVertexCountsAttr([3])
     mesh.CreateFaceVertexIndicesAttr([0, 1, 2])
 
     device = helpers.get_device(device_type)
-    scene = f2.Scene.from_stage(device, stage)
-
-    assert scene.entities.find(name="/StageRoot") is not None
-    assert len(scene.geometries) == 1
+    for authored in (False, True):
+        if authored:
+            stage.SetStartTimeCode(20)
+            stage.SetEndTimeCode(24)
+        expected_start, expected_end = (10, 12) if authored else (5, 15)
+        imported = f2.UsdImporter().import_stage(stage)
+        assert imported.animation.key_range().start == 5
+        assert imported.animation.key_range().end == 15
+        assert imported.animation_range().start == expected_start
+        assert imported.animation_range().end == expected_end
+        path = tmp_path / "animated.usda"
+        stage.GetRootLayer().Export(str(path))
+        for scene in (f2.Scene.from_stage(device, stage), f2.Scene.load(device, path)):
+            entity = scene.entities.find(name="/StageRoot")
+            assert entity is not None
+            assert len(scene.geometries) == 1
+            assert scene.animation_range.start == expected_start
+            assert scene.animation_range.end == expected_end
+            assert scene.time == expected_start
+            scene.update()
+            assert entity.transform.translation.x == pytest.approx(2 * expected_start)
+            scene.time = expected_start + 1
+            scene.update()
+            assert entity.transform.translation.x == pytest.approx(2 * (expected_start + 1))
+            scene.append(imported)
+            assert scene.time == expected_start + 1
+            scene.update()
+            assert entity.transform.translation.x == pytest.approx(2 * (expected_start + 1))
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES[:1])

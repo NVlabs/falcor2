@@ -88,7 +88,8 @@ def test_mesh_motion_playback_seeks(device: spy.Device) -> None:
     assert not ordinary.meshes[0].motion_times
     assert not ordinary.curves[0].motion_times
     assert ordinary.curves[0].sample_count == 1
-    np.testing.assert_allclose(ordinary.meshes[0].positions[:, 2], -1)
+    # Static import matches usdview opening this stage at numeric time zero.
+    np.testing.assert_allclose(ordinary.meshes[0].positions[:, 2], 0)
 
     options = mesh_motion_options()
     options.import_curve_motion = True
