@@ -407,7 +407,7 @@ TEST_CASE_GPU("TransformAnimation - has_channels")
 TEST_CASE_GPU("TransformAnimation - binding lifecycle")
 {
     // Backlinks and ownership are independent of the GPU backend.
-    if (ctx.device->type() != testing::DEFAULT_DEVICE_TYPES.front())
+    if (ctx.device->type() != testing::get_device_types().front())
         return;
     auto scene = Scene::create(ref(ctx.device));
     ref<Animation> first(scene->create_animation());
@@ -822,7 +822,7 @@ TEST_CASE_GPU("Scene - transform-only fast path with animation")
 
 TEST_CASE_GPU("Animation - editor playback with nonzero starts")
 {
-    if (ctx.device->type() != testing::DEFAULT_DEVICE_TYPES.front())
+    if (ctx.device->type() != testing::get_device_types().front())
         return;
     auto scene = Scene::create(ref(ctx.device));
     auto* animation = scene->create_animation();

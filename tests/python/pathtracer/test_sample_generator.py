@@ -17,6 +17,7 @@ from falcor2.rendernodes import (
 )
 
 
+@pytest.mark.nightly
 def test_sampler_property_reflection():
     reflection = f2.reflection.PythonClassReflection(ReferencePathTracerNode)
     assert reflection.find_property("sample_generator") is not None
@@ -62,6 +63,7 @@ def test_sampler_render_and_ser(device_type, device, helmet_scene, sampler):
     np.testing.assert_array_equal(images[-1], color.to_numpy())
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_sampler_switch_invalidates_pipeline(device_type, device, helmet_scene):
     pipeline = PathTracerPipeline.create(device)
@@ -77,6 +79,7 @@ def test_sampler_switch_invalidates_pipeline(device_type, device, helmet_scene):
         assert pipeline._iteration == 1
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_sampler_payload_layout(device_type, device):
     module = spy.Module(device.load_module("pathtracer/sample_generator_layout.slang"))

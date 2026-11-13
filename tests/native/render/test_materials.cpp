@@ -1280,7 +1280,7 @@ TEST_CASE("material header metadata codec")
 TEST_CASE_GPU_NIGHTLY("material nested priority properties")
 {
     // This checks API-independent host behavior, so one device is sufficient.
-    if (ctx.device->type() != testing::DEFAULT_DEVICE_TYPES.front())
+    if (ctx.device->type() != testing::get_device_types().front())
         return;
     auto scene = Scene::create(ref(ctx.device));
 
@@ -2075,7 +2075,7 @@ TEST_CASE("material opacity data round-trips through packed header")
 TEST_CASE_GPU("scene materialx representative layered material loads")
 {
     // Only the Slang frontend is tested here, so one device is sufficient.
-    if (ctx.device->type() != testing::DEFAULT_DEVICE_TYPES.front())
+    if (ctx.device->type() != testing::get_device_types().front())
         return;
     // Python covers numerical evaluation. Keep one regular native generation
     // and module-load witness, using the default backend and normal optimization.
@@ -2442,7 +2442,7 @@ TEST_CASE_GPU_NIGHTLY("scene materialx preserves independent parameter and textu
 {
     // Texture registration requires a scene with a device. This test
     // never updates the scene, compiles a generated material, or dispatches work.
-    if (ctx.device->type() != testing::DEFAULT_DEVICE_TYPES.front())
+    if (ctx.device->type() != testing::get_device_types().front())
         return;
     auto scene = Scene::create(ref(ctx.device));
     const std::string shader = R"(<materialx version="1.39" colorspace="lin_rec709">
@@ -2958,7 +2958,7 @@ void check_editable_emission_predicate(const mtlx::CodeGenResult& result, std::s
 
 } // namespace
 
-TEST_CASE("scene materialx current uniform emission eligibility")
+TEST_CASE_DEBUG_NIGHTLY("scene materialx current uniform emission eligibility")
 {
     // Keep the primary behavior matrix on the build's default backend.
     const std::array surfaces = {
@@ -3225,7 +3225,7 @@ void main(BufferPtr payload, float factor, RWStructuredBuffer<uint> result, uint
 TEST_CASE_GPU_NIGHTLY("scene materialx publishes root opacity classification")
 {
     // This checks API-independent host behavior, so one device is sufficient.
-    if (ctx.device->type() != testing::DEFAULT_DEVICE_TYPES.front())
+    if (ctx.device->type() != testing::get_device_types().front())
         return;
     // This checks the mapping from codegen's three opacity kinds to Material.
     // The CPU matrix above covers folding, luma conversion and authored forms;
@@ -3807,7 +3807,7 @@ TEST_CASE_NIGHTLY("scene materialx preserves saturated weights when pruning asym
 TEST_CASE_GPU_NIGHTLY("scene materialx compiles color-weighted asymmetric mix pruning")
 {
     // Only the Slang frontend is tested here, so one device is sufficient.
-    if (ctx.device->type() != testing::DEFAULT_DEVICE_TYPES.front())
+    if (ctx.device->type() != testing::get_device_types().front())
         return;
     mtlx::CodeGenDesc desc;
     desc.document = asymmetric_bsdf_mix_shader("color3", false);
@@ -3847,7 +3847,7 @@ TEST_CASE_NIGHTLY("scene materialx distinguishes frames in nested reused nodegra
 TEST_CASE_GPU_NIGHTLY("scene materialx imports shared unlit transmission BSDF")
 {
     // Compile the public shared type independently of generated material source.
-    if (ctx.device->type() != testing::DEFAULT_DEVICE_TYPES.front())
+    if (ctx.device->type() != testing::get_device_types().front())
         return;
     REQUIRE(ctx.device->load_module_from_source(
         "test_shared_unlit_transmission",
@@ -3886,7 +3886,7 @@ public mtlx::MxSurfaceUnlitTransparentBSDF make_transparent(float3 tint)
 TEST_CASE_GPU_NIGHTLY("scene materialx preserves an emissive surface without a BSDF")
 {
     // Only the Slang frontend is tested here, so one device is sufficient.
-    if (ctx.device->type() != testing::DEFAULT_DEVICE_TYPES.front())
+    if (ctx.device->type() != testing::get_device_types().front())
         return;
     const std::vector modes = {
         mtlx::LayeringMode::bsdf_mix,
@@ -4265,7 +4265,7 @@ TEST_CASE_NIGHTLY("scene materialx emits registered material AOV producers")
 TEST_CASE_GPU_NIGHTLY("scene materialx reconciles shared microfacet specializations")
 {
     // Only the Slang frontend is tested here, so one device is sufficient.
-    if (ctx.device->type() != testing::DEFAULT_DEVICE_TYPES.front())
+    if (ctx.device->type() != testing::get_device_types().front())
         return;
     const std::vector modes = {
         mtlx::LayeringMode::bsdf_mix,
@@ -4530,7 +4530,7 @@ TEST_CASE_NIGHTLY("scene materialx emits production geometry accessor reads")
 TEST_CASE_GPU_NIGHTLY("scene materialx binds blind names to its Scene registry")
 {
     // This checks API-independent host behavior, so one device is sufficient.
-    if (ctx.device->type() != testing::DEFAULT_DEVICE_TYPES.front())
+    if (ctx.device->type() != testing::get_device_types().front())
         return;
     auto scene = Scene::create(ref(ctx.device));
     Properties props;
@@ -4693,7 +4693,7 @@ TEST_CASE_NIGHTLY("scene materialx OpenPBR uses generated source without the leg
 TEST_CASE_GPU_NIGHTLY("scene materialx 1.39 static closure pruning property is removed")
 {
     // This checks API-independent host behavior, so one device is sufficient.
-    if (ctx.device->type() != testing::DEFAULT_DEVICE_TYPES.front())
+    if (ctx.device->type() != testing::get_device_types().front())
         return;
     auto scene = Scene::create(ref(ctx.device));
 
@@ -4721,7 +4721,7 @@ TEST_CASE_GPU_NIGHTLY("scene materialx 1.39 static closure pruning property is r
 TEST_CASE_GPU_NIGHTLY("scene materialx 1.39 reflected property changes regenerate shader")
 {
     // This checks API-independent host behavior, so one device is sufficient.
-    if (ctx.device->type() != testing::DEFAULT_DEVICE_TYPES.front())
+    if (ctx.device->type() != testing::get_device_types().front())
         return;
     // Exercise the C++ reflected setter and its invalidation once. GPU backend
     // compilation is covered independently by the material integration tests.
@@ -5115,13 +5115,14 @@ TEST_CASE_GPU_NIGHTLY("scene mdl opacity classification and shader linkage")
     }
 }
 
-TEST_CASE("materialx reports geometry capabilities from emitted operations")
+TEST_CASE_DEBUG_NIGHTLY("materialx reports geometry capabilities from emitted operations")
 {
     struct Case {
         const char* category;
         const char* type;
         const char* inputs;
         bool uses_geometry;
+        const char* geometry_definition = "";
     };
     const std::array cases = {
         Case{"constant", "float", R"(<input name="value" type="float" value="0.5" />)", false},
@@ -5133,8 +5134,20 @@ TEST_CASE("materialx reports geometry capabilities from emitted operations")
         Case{"position", "vector3", R"(<input name="space" type="string" value="object" />)", true},
         Case{"normal", "vector3", R"(<input name="space" type="string" value="model" />)", true},
         Case{"geompropvalue", "vector3", R"(<input name="geomprop" type="string" value="Pref" />)", true},
-        Case{"geompropvalue", "vector2", R"(<input name="geomprop" type="string" value="primary_uv" />)", false},
-        Case{"geompropvalue", "vector2", R"(<input name="geomprop" type="string" value="secondary_uv" />)", true},
+        Case{
+            "geompropvalue",
+            "vector2",
+            R"(<input name="geomprop" type="string" value="primary_uv" />)",
+            false,
+            R"(<geompropdef name="primary_uv" type="vector2" geomprop="texcoord" index="0" />)"
+        },
+        Case{
+            "geompropvalue",
+            "vector2",
+            R"(<input name="geomprop" type="string" value="secondary_uv" />)",
+            true,
+            R"(<geompropdef name="secondary_uv" type="vector2" geomprop="texcoord" index="1" />)"
+        },
         Case{
             "transformpoint",
             "vector3",
@@ -5158,8 +5171,7 @@ TEST_CASE("materialx reports geometry capabilities from emitted operations")
             desc.node_name = "surface";
             desc.document = fmt::format(
                 R"(<materialx version="1.39">
-<geompropdef name="primary_uv" type="vector2" geomprop="texcoord" index="0" />
-<geompropdef name="secondary_uv" type="vector2" geomprop="texcoord" index="1" />
+{3}
 <oren_nayar_diffuse_bsdf name="diffuse" type="BSDF" />
 <surface name="surface" type="surfaceshader"><input name="bsdf" type="BSDF" nodename="diffuse" /></surface>
 <{0} name="probe" type="{1}">{2}</{0}>
@@ -5167,22 +5179,21 @@ TEST_CASE("materialx reports geometry capabilities from emitted operations")
 </materialx>)",
                 test.category,
                 test.type,
-                test.inputs
+                test.inputs,
+                test.geometry_definition
             );
             desc.reserve_geometry_attribute_id = [](std::string_view)
             {
                 return 77u;
             };
-            const auto result = mtlx::CodeGen::generate(desc);
+            mtlx::CodeGenCache cache;
+            const auto result = mtlx::CodeGen::generate(desc, &cache);
             REQUIRE(result);
             CHECK_EQ(result->uses_geometry_properties, test.uses_geometry);
-            mtlx::CodeGenCache cache;
-            for (int pass = 0; pass < 2; ++pass) {
-                const auto cached = mtlx::CodeGen::generate(desc, &cache);
-                REQUIRE(cached);
-                CHECK_EQ(cached->uses_geometry_properties, test.uses_geometry);
-                CHECK_EQ(cached->module_source, result->module_source);
-            }
+            const auto cached = mtlx::CodeGen::generate(desc, &cache);
+            REQUIRE(cached);
+            CHECK_EQ(cached->uses_geometry_properties, test.uses_geometry);
+            CHECK_EQ(cached->module_source, result->module_source);
             CHECK_EQ(cache.size(), 1);
         }
     }

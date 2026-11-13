@@ -55,6 +55,11 @@ void append_move(std::vector<T>& destination, std::vector<T>& source)
 
 void append_imported_scene(ImporterScene& destination, ImporterScene& source)
 {
+    if (destination.playback_range.is_valid() || source.playback_range.is_valid()) {
+        AnimationTimeRange range = destination.animation_range();
+        range.expand(source.animation_range());
+        destination.playback_range = range;
+    }
     if (!has_scene_content(destination)) {
         destination.uv_origin = source.uv_origin;
     }

@@ -39,7 +39,7 @@ def test_device_cache_policy_is_python_only() -> None:
 def test_python_test_command_uses_configured_workers() -> None:
     command = ci.python_test_command(_test_args(pytest_workers=3))
 
-    assert command[1] == "./tests/python"
+    assert command[:4] == [sys.executable, "-m", "pytest", "./tests/python"]
     assert command[command.index("-n") + 1] == "3"
     assert "--maxprocesses=3" in command
     assert "--dist=worksteal" in command

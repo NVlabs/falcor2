@@ -17,6 +17,7 @@ from .gltf_sphere_scene import SPP, TILE_SIZE, render_spheres, save_contact_shee
 
 
 @pytest.mark.nightly_if_not_vk
+@pytest.mark.nightly_if(family=("layers", "anisotropy", "transmission", "textures", "converters"))
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 @pytest.mark.parametrize("family", list(sphere_cases()))
 def test_gltf_sphere_grid(

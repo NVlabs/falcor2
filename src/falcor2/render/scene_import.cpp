@@ -510,6 +510,44 @@ static SceneConfig resolve_scene_config(std::optional<SceneConfig> config, const
 
 static void append_importer_scene(Scene* scene, const ImporterScene& importer_scene)
 {
+    // Create the full hierarchy first so resources and components can reference any imported entity.
+    struct ImportedEntity {
+        const ImporterNode* node;
+        Entity* entity;
+    };
+    std::vector<ImportedEntity> entities;
+    entities.reserve(importer_scene.nodes.size());
+    auto create_entities_recursive = [&](int node_idx, Entity* parent, std::string_view prefix, auto recurse) -> void
+    {
+        const ImporterNode& importer_node = importer_scene.nodes[node_idx];
+
+        Entity* entity = scene->create_entity();
+        entity->set_transform(Transform(importer_node.transform));
+        entity->set_parent(parent);
+        entity->set_name(fmt::format("{}{}", prefix, importer_node.name));
+        entity->_set_source_asset_ref(importer_node.source_asset_ref);
+        entities.push_back({&importer_node, entity});
+
+        // Recursively process children
+        for (int child_idx : importer_node.children) {
+            recurse(child_idx, entity, prefix, recurse);
+        }
+
+        // Process instanced prototype
+        if (importer_node.prototype_index >= 0) {
+            FALCOR_ASSERT_LT(static_cast<size_t>(importer_node.prototype_index), importer_scene.prototypes.size());
+            recurse(
+                importer_scene.prototypes[importer_node.prototype_index].root_node,
+                entity,
+                entity->name() + "/",
+                recurse
+            );
+        }
+    };
+
+    for (auto root_idx : importer_scene.root_nodes)
+        create_entities_recursive(root_idx, nullptr, "", create_entities_recursive);
+
     ImportedTextureResolver texture_resolver(scene, importer_scene.assets, importer_scene.textures);
 
     std::vector<bool> indexed_vertex_color_materials(importer_scene.materials.size(), false);
@@ -593,7 +631,7 @@ static void append_importer_scene(Scene* scene, const ImporterScene& importer_sc
         curve_geometry_to_material[curve_geometry] = resolve_material(importer_curve.material_index);
     }
 
-    // Create Animation object from importer scene (before entities, so TransformAnimation can reference it).
+    // Create Animation before attaching TransformAnimation components.
     Animation* animation = nullptr;
     if (!importer_scene.animation.channels.empty()) {
         animation = scene->create_animation();
@@ -614,15 +652,10 @@ static void append_importer_scene(Scene* scene, const ImporterScene& importer_sc
         animation->set_channels(std::move(channels));
     }
 
-    auto create_entities_recursive = [&](int node_idx, Entity* parent, std::string_view prefix, auto recurse) -> void
-    {
-        const ImporterNode& importer_node = importer_scene.nodes[node_idx];
-
-        Entity* entity = scene->create_entity();
-        entity->set_transform(Transform(importer_node.transform));
-        entity->set_parent(parent);
-        entity->set_name(fmt::format("{}{}", prefix, importer_node.name));
-        entity->_set_source_asset_ref(importer_node.source_asset_ref);
+    // Attach components to the completed hierarchy.
+    for (const auto& imported : entities) {
+        const ImporterNode& importer_node = *imported.node;
+        Entity* entity = imported.entity;
 
         // Create TransformAnimation component if this node has animation channels.
         if (animation
@@ -693,26 +726,7 @@ static void append_importer_scene(Scene* scene, const ImporterScene& importer_sc
             camera->set_focus_distance(importer_camera.focus_distance);
             camera->set_depth_range(importer_camera.depth_range);
         }
-
-        // Recursively process children
-        for (int child_idx : importer_node.children) {
-            recurse(child_idx, entity, prefix, recurse);
-        }
-
-        // Process instanced prototype
-        if (importer_node.prototype_index >= 0) {
-            FALCOR_ASSERT_LT(static_cast<size_t>(importer_node.prototype_index), importer_scene.prototypes.size());
-            recurse(
-                importer_scene.prototypes[importer_node.prototype_index].root_node,
-                entity,
-                entity->name() + "/",
-                recurse
-            );
-        }
-    };
-
-    for (auto root_idx : importer_scene.root_nodes)
-        create_entities_recursive(root_idx, nullptr, "", create_entities_recursive);
+    }
 }
 
 struct LoadedImporter {
@@ -792,6 +806,9 @@ ref<Scene> Scene::from_importer_scene(
 {
     auto scene = ref<Scene>{new Scene(std::move(device), resolve_scene_config(config, importer_scene))};
     scene->append(importer_scene);
+    const AnimationTimeRange range = scene->animation_range();
+    if (scene->has_animation() && range.is_valid())
+        scene->set_time(range.start);
     return scene;
 }
 
@@ -824,6 +841,11 @@ void Scene::append(const std::filesystem::path& path, std::optional<ImportOption
 
 void Scene::append(const ImporterScene& importer_scene)
 {
+    if (m_imported_playback_range.is_valid() || importer_scene.playback_range.is_valid()) {
+        AnimationTimeRange range = animation_range();
+        range.expand(importer_scene.animation_range());
+        m_imported_playback_range = range;
+    }
     append_importer_scene(this, importer_scene);
     select_initial_camera();
 }

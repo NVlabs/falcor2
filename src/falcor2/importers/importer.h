@@ -56,6 +56,7 @@ SGL_ENUM_INFO(
 SGL_ENUM_REGISTER(GLTFMaterialMode);
 
 /// Options used when importing source scene assets.
+/// USD static values use the authored playback start, or numeric zero without a complete playback range.
 struct ImportOptions {
     /// Import USD mesh position and normal time samples. Scene loading uses sample zero; curves are unaffected.
     bool import_mesh_motion = false;
@@ -72,7 +73,7 @@ struct ImportOptions {
     bool repair_broken_geometry = true;
     /// Default for per-mesh normal and tangent recomputation after asset import.
     bool recompute_normals = false;
-    /// Bake imported skin bindings into static geometry. USD evaluates imported animation at zero seconds;
+    /// Bake imported skin bindings into static geometry. USD evaluates imported animation at its initial viewing time;
     /// glTF uses the stored pose. Ordinary node transforms and animation remain unchanged.
     /// Skinned USD meshes retain their control cage. Combined mesh motion and skinning, blend shapes,
     /// dual-quaternion skinning and instanced USD skinning are unsupported.

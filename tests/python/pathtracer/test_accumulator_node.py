@@ -70,6 +70,7 @@ def test_accumulator_update_and_output(device_type: spy.DeviceType, device: spy.
 
 @pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_accumulator_nonfinite_sanitization_is_optional(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
@@ -97,6 +98,7 @@ def test_accumulator_nonfinite_sanitization_is_optional(
 
 @pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_accumulator_max_sample_luminance_clamps_before_accumulation(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
@@ -133,6 +135,7 @@ def test_accumulator_max_sample_luminance_clamps_before_accumulation(
 
 @pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_accumulator_max_sample_luminance_rejects_invalid_values(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
@@ -145,6 +148,7 @@ def test_accumulator_max_sample_luminance_rejects_invalid_values(
 
 @pytest.mark.nightly_if(device_type=(spy.DeviceType.d3d12,))
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_accumulator_cancellation(device_type: spy.DeviceType, device: spy.Device) -> None:
     expected = np.float32(1.0 / 3.0)
     for precision in _supported_precisions(device):
@@ -163,6 +167,7 @@ def test_accumulator_cancellation(device_type: spy.DeviceType, device: spy.Devic
 
 @pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_accumulator_promotes_fp16_history(device_type: spy.DeviceType, device: spy.Device) -> None:
     for precision in _supported_precisions(device):
         acc = AccumulatorNode.create(device, precision)
@@ -176,6 +181,7 @@ def test_accumulator_promotes_fp16_history(device_type: spy.DeviceType, device: 
 
 @pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_accumulator_reset(device_type: spy.DeviceType, device: spy.Device) -> None:
     acc = AccumulatorNode.create(device)
     acc(_image(device, 1.0))
@@ -191,6 +197,7 @@ def test_accumulator_reset(device_type: spy.DeviceType, device: spy.Device) -> N
 
 @pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_accumulator_precision_changes_reset_state(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
@@ -216,6 +223,7 @@ def test_accumulator_precision_changes_reset_state(
 
 @pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_input_spec_change_resets_history(device_type: spy.DeviceType, device: spy.Device) -> None:
     acc = AccumulatorNode.create(device)
     first = _image(device, 1.0, np.float16)
@@ -232,6 +240,7 @@ def test_input_spec_change_resets_history(device_type: spy.DeviceType, device: s
 
 @pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_typed_tensor_state_and_output_reuse(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
@@ -253,6 +262,7 @@ def test_typed_tensor_state_and_output_reuse(
 
 @pytest.mark.nightly_if(device_type=(spy.DeviceType.cuda,))
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_texture_state_formats(device_type: spy.DeviceType, device: spy.Device) -> None:
     texture = device.create_texture(
         type=spy.TextureType.texture_2d,
@@ -281,6 +291,7 @@ def test_texture_state_formats(device_type: spy.DeviceType, device: spy.Device) 
 
 @pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_command_encoder_captures_counts(device_type: spy.DeviceType, device: spy.Device) -> None:
     acc = AccumulatorNode.create(device)
     encoder = device.create_command_encoder()
@@ -298,6 +309,7 @@ def test_command_encoder_captures_counts(device_type: spy.DeviceType, device: sp
 
 @pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_sample_count_overflow(device_type: spy.DeviceType, device: spy.Device) -> None:
     acc = AccumulatorNode.create(device)
     acc(_image(device, 1.0))
@@ -316,6 +328,7 @@ def test_sample_count_overflow(device_type: spy.DeviceType, device: spy.Device) 
     assert acc._history is history
 
 
+@pytest.mark.nightly
 def test_torch_layout_and_double_history() -> None:
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available() or spy.DeviceType.cuda not in helpers.DEFAULT_DEVICE_TYPES:

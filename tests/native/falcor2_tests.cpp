@@ -35,22 +35,30 @@ std::string get_current_test_case_name()
 // Keep the doctest registry dependency beside the existing context helpers in
 // this implementation TU. Removing reserved nightly metadata before Context::run
 // also applies to list/count queries and does not override user filters or skips.
-static void select_test_tier()
+static void select_tests()
 {
-    if (options().nightly)
-        return;
-
     auto& tests = doctest::detail::getRegisteredTests();
-    size_t excluded = 0;
+    size_t excluded_nightly = 0;
+    size_t excluded_device = 0;
     for (auto it = tests.begin(); it != tests.end();) {
-        if (is_nightly_test(*it)) {
+        if (!options().nightly && is_nightly_test(*it)) {
             it = tests.erase(it);
-            ++excluded;
+            ++excluded_nightly;
+        } else if (!is_test_device_selected(*it)) {
+            it = tests.erase(it);
+            ++excluded_device;
         } else {
             ++it;
         }
     }
-    std::printf("[falcor2] Excluded %zu nightly test cases; use -nightly for the full suite.\n", excluded);
+    std::printf("[falcor2] Excluded %zu nightly test cases; use -nightly for the full tier.\n", excluded_nightly);
+    if (options().device_type) {
+        std::printf(
+            "[falcor2] Selected device type %s; excluded %zu backend-specific test cases.\n",
+            enum_to_string(*options().device_type).c_str(),
+            excluded_device
+        );
+    }
 }
 
 } // namespace falcor::testing
@@ -74,6 +82,19 @@ int main(int argc, char** argv)
         doctest::String cache_dir;
         if (doctest::parseOption(argc, argv, "module-and-shader-cache-dir=", &cache_dir))
             options.module_and_shader_cache_dir = cache_dir.c_str();
+
+        doctest::String device_type;
+        if (doctest::parseOption(argc, argv, "device-type=", &device_type)
+            || doctest::parseFlag(argc, argv, "device-type") || doctest::parseFlag(argc, argv, "device-type=")) {
+            options.device_type = falcor::testing::parse_test_device_type(device_type.c_str());
+            if (!options.device_type) {
+                std::fprintf(stderr, "Invalid -device-type=%s. Available graphics APIs:", device_type.c_str());
+                for (DeviceType available : falcor::testing::DEFAULT_DEVICE_TYPES)
+                    std::fprintf(stderr, " %s", enum_to_string(available).c_str());
+                std::fprintf(stderr, "\n");
+                return 2;
+            }
+        }
     }
 
 #if SGL_HAS_CRASHPAD
@@ -96,7 +117,7 @@ int main(int argc, char** argv)
     {
         falcor::testing::static_init();
 
-        falcor::testing::select_test_tier();
+        falcor::testing::select_tests();
         doctest::Context context(argc, argv);
 
         // Select specific test suite to run
@@ -111,6 +132,7 @@ int main(int argc, char** argv)
             std::printf(
                 "\nAdditional options:\n"
                 " -nightly                            Include nightly cases and subcases\n"
+                " -device-type=<name>                 Select one platform graphics API (default: all)\n"
                 " -module-cache                       Enable the persistent module cache\n"
                 " -no-module-cache                    Disable the persistent module cache\n"
                 " -shader-cache                       Enable the persistent shader cache\n"

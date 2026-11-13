@@ -55,6 +55,7 @@ def test_materialx_discovery_uses_highest_priority_resolver_root(tmp_path: Path)
     assert "red" in names
 
 
+@pytest.mark.nightly
 def test_materialx_canonical_names_are_independent_of_editable_inputs() -> None:
     device_type = next(
         (
@@ -629,6 +630,7 @@ _MATERIALX_LARGE_EDITABLE_DATA_DOCUMENT = """\
 """
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_materialx_editable_data_buffer_uses_packed_reflected_stride(
     device_type: spy.DeviceType, tmp_path: Path
@@ -1137,6 +1139,7 @@ def test_mdl_material_opacity_evaluation(device_type: spy.DeviceType) -> None:
         assert texture_opacity_cursor[index].read() == pytest.approx(expected)
 
 
+@pytest.mark.nightly
 @pytest.mark.nightly_if(device_type=(spy.DeviceType.cuda,))
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_materialx_material_opacity_evaluation(

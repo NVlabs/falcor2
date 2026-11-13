@@ -13,6 +13,7 @@ import falcor2 as f2
 import falcor2.testing.helpers as helpers
 
 
+@pytest.mark.nightly
 def test_pipeline_is_reflected_and_owns_its_settings() -> None:
     from falcor2.rendernodes.pathtracer_pipeline_node import AccumulationMode, PathTracerPipeline
 
@@ -90,6 +91,7 @@ def test_pipeline_single_iteration(
     assert pipeline.reweighting_accumulator._sample_count == 0
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", [spy.DeviceType.cuda])
 @pytest.mark.parametrize("samples_per_dispatch", [4, 8])
 @pytest.mark.parametrize("exposure", [0.0, 2.0])
@@ -126,6 +128,7 @@ def test_pipeline_batched_samples_match_single_sample_dispatches(
     assert batched.accumulator._sample_count == spp // samples_per_dispatch
 
 
+@pytest.mark.nightly
 @pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pipeline_updates_scene_before_resolving_active_camera(
@@ -186,6 +189,7 @@ def test_pipeline_updates_scene_before_resolving_active_camera(
     assert pipeline.path_tracer.pixel_filter is ordinary_filter
 
 
+@pytest.mark.nightly
 @pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pipeline_accumulation_modes_select_exactly_one_policy(
@@ -291,6 +295,7 @@ def test_pipeline_accumulation_converges(
     assert img9.max() > 0.0
 
 
+@pytest.mark.nightly
 @pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pipeline_resets_on_camera_change(
@@ -327,6 +332,7 @@ def test_pipeline_tonemap(
     assert image.max() <= 1.0 + 1e-5
 
 
+@pytest.mark.nightly
 @pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pipeline_auto_exposure_forwards_delta_time_and_resets_history(
@@ -364,6 +370,7 @@ def test_pipeline_auto_exposure_forwards_delta_time_and_resets_history(
     assert not pipeline.tonemapper._exposure_history_valid
 
 
+@pytest.mark.nightly
 @pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pipeline_request_reset_resets_next_render(
@@ -384,6 +391,7 @@ def test_pipeline_request_reset_resets_next_render(
     assert pipeline._iteration == 1
 
 
+@pytest.mark.nightly
 @pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pipeline_reweighting_mode_accumulates_each_spp_and_resolves_once(
@@ -452,6 +460,7 @@ def test_pipeline_reweighting_mode_accumulates_each_spp_and_resolves_once(
     assert data.max() <= 1.0 + 1e-5
 
 
+@pytest.mark.nightly
 @pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_pipeline_reweighting_reset_and_resolve_controls(
@@ -501,6 +510,7 @@ def test_pipeline_reweighting_reset_and_resolve_controls(
     assert pipeline.reweighting_accumulator._sample_count == 0
 
 
+@pytest.mark.nightly
 @pytest.mark.nightly_if(
     device_type=(
         spy.DeviceType.d3d12,
@@ -563,6 +573,7 @@ def test_pipeline_can_output_torch_tensor() -> None:
     assert image.dtype == torch.float32
 
 
+@pytest.mark.nightly
 def test_pipeline_can_mix_torch_color_and_tensor_diffuse_albedo_guide() -> None:
     """Guide specs can return render-layout tensors while color output is torch."""
     try:

@@ -90,6 +90,7 @@ def _make_probes(
     return function("probe"), function("evaluate_reference"), scene
 
 
+@pytest.mark.nightly
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
 def test_light_sample_reference_black_environment(
     device_type: spy.DeviceType, device: spy.Device, tmp_path: Path

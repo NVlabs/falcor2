@@ -46,6 +46,7 @@ def _expected_rgba(height: int, width: int, rgba: tuple[float, float, float, flo
     return expected
 
 
+@pytest.mark.nightly
 def test_frame_jitter_bounds() -> None:
     from falcor2.utils.jitter import frame_jitter
 
@@ -56,6 +57,7 @@ def test_frame_jitter_bounds() -> None:
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_dlss_rr_get_optimal_specs_returns_color_and_guide_specs(
     device_type: spy.DeviceType,
     device: spy.Device,
@@ -81,6 +83,7 @@ def test_dlss_rr_get_optimal_specs_returns_color_and_guide_specs(
 
 @pytest.mark.nightly_if_not_vk
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_dlss_rr_forward_rejects_missing_guides(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
@@ -140,6 +143,7 @@ def test_dlss_rr_forward_copies_texture_output_to_tensor(
     np.testing.assert_allclose(output.to_numpy(), expected, atol=1e-6)
 
 
+@pytest.mark.nightly
 def test_dlss_rr_forward_copies_texture_output_to_torch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -200,6 +204,7 @@ def test_dlss_rr_forward_copies_texture_output_to_torch(
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_dlss_sr_forward_copies_texture_output_to_tensor(
     device_type: spy.DeviceType,
     device: spy.Device,
@@ -234,6 +239,7 @@ def test_dlss_sr_forward_copies_texture_output_to_tensor(
     np.testing.assert_allclose(output.to_numpy(), expected, atol=1e-6)
 
 
+@pytest.mark.nightly
 def test_dlss_sr_forward_copies_texture_output_to_torch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -277,6 +283,7 @@ def test_dlss_sr_forward_copies_texture_output_to_torch(
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_dlss_sr_forward_rejects_missing_guides(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
@@ -300,6 +307,7 @@ def test_dlss_sr_forward_rejects_missing_guides(
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_dlss_frame_generation_forward_rejects_missing_guides(
     device_type: spy.DeviceType, device: spy.Device
 ) -> None:
@@ -325,6 +333,7 @@ def test_dlss_frame_generation_forward_rejects_missing_guides(
 
 
 @pytest.mark.parametrize("device_type", helpers.DEFAULT_DEVICE_TYPES)
+@pytest.mark.nightly
 def test_dlss_frame_generation_forward_copies_texture_output_to_tensor(
     device_type: spy.DeviceType,
     device: spy.Device,
@@ -368,6 +377,7 @@ def test_dlss_frame_generation_forward_copies_texture_output_to_tensor(
     np.testing.assert_allclose(output.to_numpy(), expected, atol=1e-6)
 
 
+@pytest.mark.nightly
 def test_dlss_frame_generation_forward_copies_texture_output_to_torch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

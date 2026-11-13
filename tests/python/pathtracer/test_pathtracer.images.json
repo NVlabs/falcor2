@@ -1,0 +1,29 @@
+{
+  "test_pathtracer_render_with_dlss_rr[DeviceType.d3d12]": {
+    "reference": "56c20d42c3f4419dbf853e1c18547eb1301ab67164a245eb0a339ac5cd138b31"
+  },
+  "test_pathtracer_render_with_dlss_rr[DeviceType.vulkan]": {
+    "reference": "15998734e2861b0ff08ba1298e5ff4d887f2506b3f4a85afb738813dfa731d75"
+  },
+  "test_pathtracer_render_with_dlss_rr[DeviceType.cuda]": {
+    "reference": "121b00ec681858e1cfac1935bcfa5b6d561cbab58dae76f9f94030babad53636"
+  },
+  "test_pathtracer_render_with_ser[DeviceType.d3d12]": {
+    "reference": "27b63987a7e3923dcd7a1f7506e48a51e90cbdbd4645cdd9c846efc38f6d9388"
+  },
+  "test_pathtracer_render_with_ser[DeviceType.vulkan]": {
+    "reference": "24a1ab5661d7ffd0286f1f9bfd9eb8e40cc9205821ee23fb35851c5e35528cdd"
+  },
+  "test_pathtracer_render_with_ser[DeviceType.cuda]": {
+    "reference": "feb9e93b96a61e3ff31e7d9b3b4eeefb02cc47f665df8bef09c0e1d342b22b05"
+  },
+  "test_pathtracer_render_with_all_capabilities[DeviceType.d3d12]": {
+    "reference": "27b63987a7e3923dcd7a1f7506e48a51e90cbdbd4645cdd9c846efc38f6d9388"
+  },
+  "test_pathtracer_render_with_all_capabilities[DeviceType.vulkan]": {
+    "reference": "24a1ab5661d7ffd0286f1f9bfd9eb8e40cc9205821ee23fb35851c5e35528cdd"
+  },
+  "test_pathtracer_render_with_all_capabilities[DeviceType.cuda]": {
+    "reference": "feb9e93b96a61e3ff31e7d9b3b4eeefb02cc47f665df8bef09c0e1d342b22b05"
+  }
+}

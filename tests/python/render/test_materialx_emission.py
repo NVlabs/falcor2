@@ -14,6 +14,8 @@ import falcor2 as f2
 import falcor2.testing.helpers as helpers
 from falcor2.editor import SceneShaderHelper
 
+pytestmark = pytest.mark.nightly
+
 
 _DEVICE_TYPES = [
     device_type

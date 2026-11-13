@@ -124,6 +124,7 @@ void copy_values(const pxr::VtArray<T>& source, auto& destination)
 std::optional<CurveGeometry> convert_usd_curves(
     const pxr::UsdGeomBasisCurves& curves,
     const ResolveMaterial& resolve_material,
+    pxr::UsdTimeCode viewing_time,
     const ImportOptions& options
 )
 {
@@ -136,6 +137,7 @@ std::optional<CurveGeometry> convert_usd_curves(
         prim,
         {curves.GetPointsAttr(), normals_source.attribute, widths_source.attribute},
         options.import_curve_motion,
+        viewing_time,
         UsdTimeCode::EarliestTime()
     );
     const auto& sample_times = times.sample_times;
@@ -193,12 +195,18 @@ std::optional<CurveGeometry> convert_usd_curves(
         );
     input.left_handed = orientation == UsdGeomTokens->leftHanded;
     auto curve_properties = ImporterCurve::make_properties(options);
-    read_import_property<int>(prim, "refinementLevel", curve_properties, "refinement_level");
+    read_import_property<int>(prim, "refinementLevel", curve_properties, "refinement_level", viewing_time);
     input.refinement_level = curve_properties.get<int>("refinement_level");
     input.properties = oriented ? ImporterMesh::make_properties(options) : curve_properties;
     if (oriented) {
         input.properties.set("refinement_level", input.refinement_level);
-        read_import_property<bool>(prim, "falcor:recomputeNormals", input.properties, "recompute_normals");
+        read_import_property<bool>(
+            prim,
+            "falcor:recomputeNormals",
+            input.properties,
+            "recompute_normals",
+            viewing_time
+        );
     }
     input.remove_coincident_edges = sample_times.size() == 1;
     input.material_index = resolve_material(UsdShadeMaterialBindingAPI(curves), input.name);

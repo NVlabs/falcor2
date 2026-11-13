@@ -15,6 +15,8 @@ from falcor2.rendernodes.reference_pathtracer_node import (
     VisibilityRayMode,
 )
 
+pytestmark = pytest.mark.nightly
+
 
 class _LSSHitMaterial(f2.Material):
     def __init__(self) -> None:

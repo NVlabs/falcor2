@@ -63,6 +63,19 @@ uint32_t GeometryInstance::geometry_instance_count() const
     return 0;
 }
 
+MeshBounds GeometryInstance::calculate_bounds(const float4x4& additional_transform) const
+{
+    detail::validate_bounds_transform(additional_transform);
+    FALCOR_CHECK(
+        is_valid() && m_entity && m_entity->is_valid() && m_scene,
+        "Cannot calculate bounds for a removed or unattached geometry instance."
+    );
+    if (!m_geometry || !m_geometry->is_valid())
+        return {};
+    FALCOR_CHECK(m_geometry->scene() == m_scene, "Geometry instance and geometry must belong to the same scene.");
+    return m_geometry->calculate_bounds(sgl::math::mul(additional_transform, m_entity->world_from_object_matrix()));
+}
+
 void GeometryInstance::clear_invalid_references()
 {
     if (m_geometry && !m_geometry->is_valid())
